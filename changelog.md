@@ -147,6 +147,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The zsh completion works. An apostrophe inside a single-quoted description left a quote open for the rest of the file, so zsh answered a parse error instead of completing anything; nothing had ever run the file, only compared the option table inside it.
+
 - Reading the info-string of an empty binding reports `Empty`, not `BadType`. The raw-content read beside it always said `Empty` on the same line, and two neighbouring reads should not disagree about what an empty binding is. A binding carrying a value that is not a block is still `BadType`.
 
 - A file whose name runs past about 240 characters can be rewritten. The temporary file written beside it carried the whole name plus the process id, which put it over the filesystem's own limit, and the exact length that failed moved with the width of the pid - so the same file saved on one machine and failed at exit 8 on another. The temporary name now borrows at most the first 64 characters.

@@ -114,6 +114,64 @@ for mode in "${compModes[@]}"; do
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
 done
 
+##	20260904 item 35: the zsh completion had never been run by anything - only
+##	its option table was diffed - and it did not parse at all. An apostrophe
+##	inside a single-quoted description left a quote open for the rest of the
+##	file, so every zsh user got a parse error instead of a completion. Driven
+##	here with the completion helpers stubbed, so the answers are assertable.
+if fHave zsh; then
+	## Stubs record what each helper was offered rather than completing it.
+	#  shellcheck disable=2016  ## zsh's own $variables, quoted so bash leaves them alone.
+	cat > "${tmpDir}/zdrv.zsh" <<'ZEOF'
+emulate -L zsh
+typeset -ga OFFERED=()
+_describe() { local -a a; eval "a=(\"\${${4:-cmds}[@]}\")"; local e; for e in "${a[@]}"; do OFFERED+=("${e%%:*}"); done }
+_values()   { shift; OFFERED+=("$@") }
+_files()    { OFFERED+=("<files>") }
+compadd()   { local a; for a in "$@"; do [[ "$a" == -- ]] && continue; OFFERED+=("$a"); done }
+compset()   { [[ "${words[CURRENT]}" == "${2}"* ]] }
+typeset -ga words=(${=1})
+[[ "$1" == *" " ]] && words+=("")
+typeset -gi CURRENT=${#words}
+source "${ZDRV_FILE}"
+print -r -- "${(o)OFFERED[@]}"
+ZEOF
+	fZComplete(){ ZDRV_FILE="${repoDir}/source/completions/_shcl" zsh -f "${tmpDir}/zdrv.zsh" "$1" 2>&1 || true ;}
+
+	##	It has to parse before any of the answers below mean anything.
+	if ! out="$(zsh -n "${repoDir}/source/completions/_shcl" 2>&1)"; then
+		fBad "the zsh completion does not parse: ${out@Q}"
+	else
+		out="$(fZComplete "shcl ")"
+		[[ " ${out} " == *" get "* && " ${out} " == *" --donate "* ]] || fBad "zsh completion word 2: ${out@Q}"
+		out="$(fZComplete "shcl check --strictness ")"
+		[[ "${out}" == "1 2 3 loose standard strict" ]] || fBad "zsh completion on --strictness: ${out@Q}"
+		out="$(fZComplete "shcl get --on-bad=")"
+		[[ "${out}" == "default error flag" ]] || fBad "zsh completion on --on-bad=: ${out@Q}"
+		out="$(fZComplete "shcl check --schema ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion on --schema: ${out@Q}"
+		out="$(fZComplete "shcl check ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion lost the FILE slot: ${out@Q}"
+		out="$(fZComplete "shcl fmt --set x=1 ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion gave the FILE slot to a --set value: ${out@Q}"
+		out="$(fZComplete "shcl check a.shcl ")"
+		[[ -z "${out}" ]] || fBad "zsh completion offered files where a PATH goes: ${out@Q}"
+		##	`-w` is the only short option the CLI takes on a subcommand, and the
+		##	comment in both completions says so. Offered where --write is and
+		##	nowhere else; -h is informational and rides along everywhere.
+		out="$(fZComplete "shcl fmt -")"
+		[[ " ${out} " == *" -w "* ]] || fBad "zsh completion did not offer -w on fmt: ${out@Q}"
+		for sub in get check init count instances children paths; do
+			out="$(fZComplete "shcl ${sub} -")"
+			[[ " ${out} " != *" -w "* ]] || fBad "zsh completion offered -w on ${sub}, which takes no --write"
+			bad="$(tr ' ' '\n' <<<"${out}" | { grep -xE -- '-[A-Za-z]' || true ;} | { grep -vx -- '-h' || true ;})"
+			[[ -z "${bad}" ]] || fBad "zsh completion offers a short option other than -w on ${sub}: ${bad@Q}"
+		done
+	fi
+else
+	echo "shell-regress: zsh not installed - zsh completion rows skipped"
+fi
+
 if fHave pwsh; then
 	##	20260904 item 16: PowerShell reads a bare `--` as its own token and drops
 	##	it before a dot-sourced function sees its arguments; the quoted spelling
@@ -208,6 +266,7 @@ done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/u
 ##	is what privilege buys: a directory the calling shell cannot read and the
 ##	command it runs can.
 eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	udir="${tmpDir}/uninst"
 	mkdir -p "${udir}/code" "${udir}/scripts" "${udir}/man" "${udir}/completions"
@@ -233,12 +292,13 @@ eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
 		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
 	done
 	rmdir "${udir}" 2>/dev/null || fBad "install.bash uninstall did not empty the install directory"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 36: only a real file at the bin path was refused, so a
 ##	symlink to a cargo-built or hand-built copy was replaced with nothing said.
 eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	odir="${tmpDir}/owner"; mkdir -p "${odir}/dest" "${odir}/bin" "${odir}/other"
 	printf 'x\n' > "${odir}/dest/shcl"; printf 'x\n' > "${odir}/other/shcl"
@@ -253,13 +313,14 @@ eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
 	rm -f "${odir}/bin/shcl"; printf 'x\n' > "${odir}/bin/shcl"
 	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "file" ]] \
 		|| fBad "install.bash would replace a real file at the bin path"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 37: the receipt ran the link the installer had just written,
 ##	so another shcl earlier on PATH was invisible and the next one the user
 ##	typed was someone else's.
 eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	sdir="${tmpDir}/shadow"; mkdir -p "${sdir}/ours" "${sdir}/theirs"
 	printf '#!/bin/sh\necho ours\n' > "${sdir}/ours/shcl"; chmod 755 "${sdir}/ours/shcl"
@@ -271,7 +332,7 @@ eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
 		|| fBad "install.bash did not see the copy shadowing it: ${out@Q}"
 	PATH="${sdir}/nowhere:/nonexistent" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
 		&& fBad "install.bash reported a shadow where there is no shcl at all"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
 	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
@@ -280,6 +341,7 @@ grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1
 ##	failed on a raw mkdir error. The destinations are probed first, and the
 ##	probe has to walk up to whatever exists.
 eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	wdir="${tmpDir}/writable"; mkdir -p "${wdir}/home"
 	[[ "$(fNearestExisting "${wdir}/home/.local/share/shcl")" == "${wdir}/home" ]] \
@@ -290,7 +352,7 @@ eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
 	near="$(fNearestExisting "${wdir}/home/.local/share/shcl")"
 	[[ -w "${near}" ]] && fBad "install.bash would have downloaded into a read-only home"
 	chmod 700 "${wdir}/home"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 # shellcheck disable=SC2016  ## install.bash's own $variable, matched literally
 downloadLine="$( { grep -n 'downloading \${asset}' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
@@ -303,6 +365,7 @@ fi
 ##	to branch from dev. The lifted function decides; an existing checkout or an
 ##	edited tree is left where it is.
 eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
+nBadBefore="${nBad}"
 (
 	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
 	git -C "${gdir}/origin" init -q --initial-branch=main
@@ -325,7 +388,7 @@ eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
 	fStartOnDev "${gdir}/c"
 	[[ "$(git -C "${gdir}/c" branch --show-current)" == "main" ]] \
 		|| fBad "install-dev.bash moved a clone of a repo with no dev branch"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 41: an unauthenticated 403 is the API's rate limit and both

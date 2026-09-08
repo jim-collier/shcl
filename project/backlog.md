@@ -72,10 +72,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-173200
 		- Closed: 20260908-130000
 
-	- 🔘 Item 35: `check-completions.bash` proves the option table and nothing a user types.
+	- ✅ Item 35: `check-completions.bash` proves the option table and nothing a user types.
 		- It never sources or runs either completion file. Everything it does not cover is a live defect: the value-option skip list, the `=VALUE` handling, the `--strictness` and `--on-bad` value lists, the file-slot map, the "`-w` is the only short option" claim, and where the informational flags are offered.
 		- Note: driving `_shcl` with a fixed `COMP_WORDS`/`COMP_CWORD`, and the zsh function with stubbed `_describe`/`_values`/`_files`/`compadd`/`compset`, is about fifteen lines each. Items 10 and 11 both came out of exactly that.
+		- Reproduced, and worse than filed: the zsh completion did not parse at all. `'tokens:each line's lexical spans'` closed its quote at the apostrophe and left one open for the rest of the file, so every zsh user got a parse error where a completion should have been. Nothing had ever run the file.
+		- Fixed: that description is rewritten without the apostrophe. Changelog Fixed entry.
+		- Pinned by: `shell-regress.bash` drives `_shcl` with `_describe`, `_values`, `_files`, `compadd` and `compset` stubbed that record what they were offered - word 2, both value-option spellings, the file slot, the slot after a `--set` value, the nothing where a PATH goes, and the short-option claim (`-w` where `--write` is and nowhere else, `-h` aside). It syntax-checks the file first, since none of the answers mean anything if it does not parse.
+		- Left alone: the bash half. `shell-regress.bash` has driven it under readline's word split since the 20260905 round, which covers the value-option skip list, the `=VALUE` form, both value lists and the file slot.
+		- Found on the way: a failure before the five subshelled installer blocks was counted six times, because each inherits the running total, exits with it and has one added back. Each reports its own count now.
 		- Opened: 20260904-173300
+		- Closed: 20260908-172000
 
 	- ✅ Item 36: give `perf-gate.bash` a self-test.
 		- Two bait CLIs, one exiting 1 instantly and one printing nothing, and two assertions, in the shape `shell-regress.bash`'s own scan self-test already uses. That closes item 26's first bullet properly rather than leaving the checks to be deleted by the next person tidying the script.
