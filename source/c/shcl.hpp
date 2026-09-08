@@ -108,6 +108,14 @@ public:
 	// refuses a line whose array would exceed max_elements, E022 ends a
 	// diagnostics list cut at max_diags with a count of the rest; 0 = no cap).
 	static Document parse_limited(std::string_view t, Strictness s, std::size_t max_nodes, std::size_t max_elements, std::size_t max_diags) { return Document(shcl_parse_limited(t.data(), t.size(), static_cast<shcl_strictness>(s), max_nodes, max_elements, max_diags)); }
+	// A document written under the 2.x lexical rules, rewritten so this parser
+	// reads the same tree; text to text, no document involved.
+	static std::string migrate(std::string_view t) {
+		std::size_t n = 0;
+		// Owned from the call on, so a throw below cannot leak the C buffer.
+		std::unique_ptr<char, void (*)(void *)> p(shcl_migrate(t.data(), t.size(), &n), &std::free);
+		return std::string(p.get(), n);
+	}
 
 #ifndef SHCL_NO_FILE_IO
 	// File tier: load does not fail on the file's account (the document always

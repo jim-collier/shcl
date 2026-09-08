@@ -80,6 +80,11 @@ Usage:
                                          out)
   shcl paths [options] FILE              every field path in the document, one
                                          per line
+  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
+                                         rules (print it, or rewrite FILE in
+                                         place with --write)
+  shcl tokens FILE                       each line's lexical spans, for seeing
+                                         why the parser read a line as it did
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -119,10 +124,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
-  --lossy                                (fmt/set) with --write, rewrite even
-                                         when the load dropped lines this write
-                                         would delete; without it the write
-                                         refuses and nothing is changed
+  --lossy                                (fmt/set/migrate) with --write, rewrite
+                                         even when the load dropped lines this
+                                         write would delete; without it the
+                                         write refuses and nothing is changed
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -301,49 +306,16 @@ def _set_value_opt(o, name, v):
 
 def split_set(arg):
 	# PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-	# holding one (`x[a=b].c=1`) still addresses its instance. A quote opens
-	# only where the path scanner opens one - a segment's or a selector body's
-	# first char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare
-	# selector body runs to the first `]`.
-	in_quote = None
-	in_sel = False
-	at_start = True
-	i = 0
-	n = len(arg)
-	while i < n:
-		c = arg[i]
-		if in_quote is not None:
-			if c == "\\":
-				i += 2
-				continue
-			if c == in_quote:
-				in_quote = None
-			i += 1
-			continue
-		if c == " " or c == "\t":
-			i += 1
-			continue
-		if in_sel:
-			if c == "]":
-				in_sel = False
-			elif at_start and (c == '"' or c == "'"):
-				in_quote = c
-		elif (c == '"' or c == "'") and at_start:
-			in_quote = c
-		elif c == "[":
-			in_sel = True
-			at_start = True
-			i += 1
-			continue
-		elif c == ".":
-			at_start = True
-			i += 1
-			continue
-		elif c == "=":
-			return arg[:i], arg[i + 1:]
-		at_start = False
-		i += 1
-	return None
+	# holding one (`x[a=b].c=1`) still addresses its instance. The tokenizer
+	# reads the path half with `=` as its separator, so quotes and brackets
+	# mean here exactly what they mean in a file; an argument whose path half
+	# is not a path at all has no `=` to split at. The offset is a byte
+	# offset, so the split is made on the bytes.
+	tok = shcl.Tokens()
+	shcl.tokenize(arg, "=", True, shcl.RULES_CURRENT, tok)
+	if tok.sep is None:
+		return None
+	return tok.src[:tok.sep].decode("utf-8"), tok.src[tok.sep + 1:].decode("utf-8")
 
 
 def asked_for(argv):
@@ -564,6 +536,10 @@ def check_opts(cmd, o):
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
+	elif cmd == "migrate":
+		allowed = ("--write", "--lossy")
+	elif cmd == "tokens":
+		allowed = ()
 	elif cmd in ("count", "instances", "children", "paths"):
 		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	else:
@@ -829,6 +805,109 @@ def do_fmt(o):
 	if o.write:
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
+	return 0
+
+
+def do_migrate(o):
+	# A 2.x file rewritten for the current rules. The rewrite is text to text;
+	# the load after it is for the diagnostics and the save gate, the same
+	# gate fmt --write goes through.
+	if len(o.args) != 1:
+		sys.stderr.write("usage: shcl migrate [--write|-w] FILE (see --help)\n")
+		return 1
+	file = o.args[0]
+	if o.write and file == "-":
+		sys.stderr.write("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
+		return 1
+	try:
+		text = read_input(file)
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return EXIT_IO
+	migrated = shcl.migrate(text)
+	doc, code = load_doc_from("", migrated, o.strictness)
+	if doc is None:
+		return code
+	say_diagnostics_from("", doc.diagnostics())
+	if o.write:
+		if doc.lost_count() != 0 and not o.lossy:
+			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
+			return 7
+		err = shcl.write_file_atomic(file, migrated)
+		if err is not None:
+			sys.stderr.write(err + "\n")
+			return EXIT_IO
+		return 0
+	sys.stdout.write(migrated)
+	return 0
+
+
+def _span(p):
+	mark = {shcl.Quote.NONE: "", shcl.Quote.SINGLE: "'", shcl.Quote.DOUBLE: '"', shcl.Quote.OPEN: "?"}[p.quote]
+	return f"{p.start}-{p.end}{mark}"
+
+
+def do_tokens(o):
+	# Every line's spans, one line of output per input line: the indent
+	# length, then each token as kind=start-end with a mark for how it was
+	# quoted (', ", or ? for a quote that never closed), offsets counted in
+	# bytes from the first character after the indent. A blank line and a
+	# comment line say so; every other line is tokenized on its own, raw
+	# bodies included, since this is the lexical view and not the parse.
+	if len(o.args) != 1:
+		sys.stderr.write("usage: shcl tokens FILE (see --help)\n")
+		return 1
+	try:
+		text = read_input(o.args[0])
+	except (OSError, ValueError) as e:
+		sys.stderr.write(str(e) + "\n")
+		return EXIT_IO
+	if text.startswith("\ufeff"):
+		text = text[1:]
+	lines = [ln.rstrip("\r") for ln in text.split("\n")]
+	if text.endswith("\n"):
+		lines.pop()
+	tok = shcl.Tokens()
+	out = []
+	for i, line in enumerate(lines):
+		rest = line.lstrip(" \t")
+		ilen = len(line) - len(rest)
+		rest = rest.rstrip(" \t\r")
+		out.append(f"{i + 1}:{ilen}")
+		if not rest:
+			out.append(" blank\n")
+			continue
+		if rest.startswith("#"):
+			out.append(" comment\n")
+			continue
+		# A stacked element and a fence line are value halves on their own.
+		star = rest.startswith("*") and rest[1:2] in (" ", "\t")
+		fence = rest.startswith("```") or rest.startswith("~~~")
+		if star or fence:
+			shcl.tokenize_value(rest, int(star), shcl.RULES_CURRENT, tok)
+			out.append(" star" if star else " fence")
+			out.append(f" value={tok.value[0]}-{tok.value[1]}")
+			for p in tok.elements:
+				out.append(f" elem={_span(p)}")
+			if tok.comment is not None:
+				out.append(f" comment={tok.comment}")
+			out.append("\n")
+			continue
+		shcl.tokenize(rest, ":", False, shcl.RULES_CURRENT, tok)
+		for seg in tok.segments:
+			out.append(f" {'star' if seg.star else 'name'}={_span(seg.name)}")
+			if seg.selector is not None:
+				out.append(f" sel={_span(seg.selector)}")
+		if tok.sep is not None:
+			out.append(f" sep={tok.sep} value={tok.value[0]}-{tok.value[1]}")
+			for p in tok.elements:
+				out.append(f" elem={_span(p)}")
+		if tok.comment is not None:
+			out.append(f" comment={tok.comment}")
+		if tok.fault is not None:
+			out.append(f" fault={tok.fault[0]}:{tok.fault[1]}")
+		out.append("\n")
+	sys.stdout.write("".join(out))
 	return 0
 
 
@@ -1255,7 +1334,7 @@ def do_paths(o):
 	return 0
 
 
-COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths")
+COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens")
 
 
 def run(argv):
@@ -1322,6 +1401,10 @@ def run(argv):
 		return do_children(o)
 	if cmd == "paths":
 		return do_paths(o)
+	if cmd == "migrate":
+		return do_migrate(o)
+	if cmd == "tokens":
+		return do_tokens(o)
 	# A refusal rather than a fall-through: with one, adding a name to COMMANDS
 	# without adding a branch here quietly ran whichever command the last line
 	# named, with no message. run() gates on COMMANDS first, so this is only

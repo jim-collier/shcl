@@ -872,12 +872,14 @@ def main():
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
 	# The count the cap judges is the count the array reads back as, spelling
-	# by spelling: quoted and escaped commas, empty and blank slots, a Unicode
-	# blank (content: only a space or a tab is blank), a quote that never closes. Refused at one under, kept at exact.
+	# by spelling: quoted commas, a backslash (a character, so it shields
+	# nothing), empty and blank slots, a Unicode blank (content: only a space
+	# or a tab is blank), a quote that never closes (a character too, so the
+	# comma after it splits). Refused at one under, kept at exact.
 	counts = [
-		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 2), ("a,,b", 2),
+		("1, 2, 3", 3), ('"a, b", c', 2), ("a\\, b, c", 3), ("a,,b", 2),
 		("a, , b", 2), (" a ", 1), ("\"\", ''", 2), ("'a\", b'", 1),
-		('"open, b', 1), ("\\", 1), ("x,\u3000", 2), ("x, \u00a0y", 2), (", , ,", 0),
+		('"open, b', 2), ("\\", 1), ("x,\u3000", 2), ("x, \u00a0y", 2), (", , ,", 0),
 	]
 	for spelling, n in counts:
 		text = f"v: {spelling}\n"
@@ -1323,13 +1325,17 @@ def main():
 		raise SystemExit("set_raw accepted an info with a line break")
 	if rawdoc.set_raw("q", "x", "a # b"):
 		raise SystemExit("set_raw accepted an info with an unquoted #")
-	if not rawdoc.set_raw("q", "  a\n  b", '"a # b"'):
-		raise SystemExit("set_raw refused a quoted #")
+	# An info string has no quoting of its own: quotes are characters in it,
+	# so they hide nothing, and a `#` with no space before it is content.
+	if rawdoc.set_raw("q", "x", '"a # b"'):
+		raise SystemExit("set_raw accepted a quoted #")
+	if not rawdoc.set_raw("q", "  a\n  b", "c#"):
+		raise SystemExit("set_raw refused a # with no space before it")
 	rawback = shcl.Document.parse(rawdoc.to_canonical())
 	if rawback.get_raw("q") != "  a\n  b":
 		raise SystemExit("refused set_raw changed the document")
-	if rawback.read_raw_info("q").value != '"a # b"':
-		raise SystemExit(f"set_raw quoted info got {rawback.read_raw_info('q').value!r}")
+	if rawback.read_raw_info("q").value != "c#":
+		raise SystemExit(f"set_raw hash info got {rawback.read_raw_info('q').value!r}")
 	# A body line ending in CR has no fence spelling: the load takes the whole
 	# trailing CR run off every line, so it is refused rather than lost. A CR
 	# mid-line is content and still round-trips.
@@ -1431,11 +1437,12 @@ def main():
 	if key_calls[0]:
 		raise SystemExit(f"the source-attach guard built {key_calls[0]} value key(s) on 200 plain lines")
 
-	# The path scanner's two helpers are module level. Defined inside it they
-	# would be rebuilt, with a fresh cell each, once per document line.
-	inner = [c.co_name for c in shcl._scan_path_ex.__code__.co_consts if isinstance(c, types.CodeType)]
-	if inner:
-		raise SystemExit(f"the path scanner rebuilds {inner} on every call")
+	# The tokenizer's helpers are module level. Defined inside it they would
+	# be rebuilt, with a fresh cell each, once per document line.
+	for fn in (shcl.tokenize, shcl.tokenize_value, shcl._scan_piece):
+		inner = [c.co_name for c in fn.__code__.co_consts if isinstance(c, types.CodeType)]
+		if inner:
+			raise SystemExit(f"{fn.__name__} rebuilds {inner} on every call")
 
 	print(f"conformance: {len(cases)} case(s) pass")
 	return 0

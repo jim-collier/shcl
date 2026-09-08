@@ -33,6 +33,7 @@
 ##		                     read one typed value
 ##		shcl_array           read an array (pass a --type, else --string)
 ##		shcl_fmt shcl_check shcl_count shcl_instances shcl_children shcl_paths
+##		shcl_migrate shcl_tokens
 ##		                     the matching subcommands
 ##
 ##	Finding the binary (first hit wins):
@@ -126,6 +127,8 @@ shcl_count()     { shcl count "$@"          ; }
 shcl_instances() { shcl instances "$@"      ; }
 shcl_children()  { shcl children "$@"       ; }
 shcl_paths()     { shcl paths "$@"          ; }
+shcl_migrate()   { shcl migrate "$@"        ; }
+shcl_tokens()    { shcl tokens "$@"         ; }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Run path

@@ -63,6 +63,11 @@ static const char *HELP =
 	"                                         out)\n"
 	"  shcl paths [options] FILE              every field path in the document, one\n"
 	"                                         per line\n"
+	"  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current\n"
+	"                                         rules (print it, or rewrite FILE in\n"
+	"                                         place with --write)\n"
+	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
+	"                                         why the parser read a line as it did\n"
 	"  shcl help | version                    this help, or the version (also\n"
 	"                                         -h/--help, -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
@@ -102,10 +107,10 @@ static const char *HELP =
 	"                                         wildcard slot)\n"
 	"  --no-banner                            (init) leave out the footer naming the\n"
 	"                                         format and pointing at its spec\n"
-	"  --lossy                                (fmt/set) with --write, rewrite even\n"
-	"                                         when the load dropped lines this write\n"
-	"                                         would delete; without it the write\n"
-	"                                         refuses and nothing is changed\n"
+	"  --lossy                                (fmt/set/migrate) with --write, rewrite\n"
+	"                                         even when the load dropped lines this\n"
+	"                                         write would delete; without it the\n"
+	"                                         write refuses and nothing is changed\n"
 	"  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default\n"
 	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
@@ -416,31 +421,18 @@ static void say_layered_diagnostics(const LayeredDoc *L) {
 // strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
 // *out on success, else an exit code (nothing to free on failure).
 // PATH=VALUE at the first `=` outside quotes and brackets, so a selector
-// holding one (`x[a=b].c=1`) still addresses its instance. A quote opens only
-// where the path scanner opens one - a segment's or a selector body's first
-// char - so `srv[O'Brien].port=8080` splits at its `=`, and a bare selector
-// body runs to the first `]`. Returns 0 when there is no such `=`.
+// holding one (`x[a=b].c=1`) still addresses its instance. The tokenizer reads
+// the path half with `=` as its separator, so quotes and brackets mean here
+// exactly what they mean in a file; an argument whose path half is not a path
+// at all has no `=` to split at. Returns 0 then.
 static int split_set(const char *arg, size_t *plen, const char **val) {
-	char in_quote = 0; int in_sel = 0, at_start = 1;
-	for (size_t i = 0; arg[i]; i++) {
-		char b = arg[i];
-		if (in_quote) {
-			if (b == '\\') { if (arg[i + 1]) i++; }
-			else if (b == in_quote) in_quote = 0;
-			continue;
-		}
-		if (b == ' ' || b == '\t') continue;
-		if (in_sel) {
-			if (b == ']') in_sel = 0;
-			else if (at_start && (b == '"' || b == '\'')) in_quote = b;
-		}
-		else if ((b == '"' || b == '\'') && at_start) in_quote = b;
-		else if (b == '[') { in_sel = 1; at_start = 1; continue; }
-		else if (b == '.') { at_start = 1; continue; }
-		else if (b == '=') { *plen = i; *val = arg + i + 1; return 1; }
-		at_start = 0;
-	}
-	return 0;
+	ShclArena a; memset(&a, 0, sizeof a);
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize(&a, s_lit(arg), '=', 1, SHCL_RULES_CURRENT, &tok);
+	int ok = tok.has_sep;
+	*plen = ok ? tok.sep : 0; *val = ok ? arg + tok.sep + 1 : arg;
+	arena_free(&a);
+	return ok;
 }
 
 // Apply one --set/--set-literal override. Both spellings share a list so they
@@ -679,6 +671,104 @@ static int do_fmt(Opts *o) {
 		rc = 0;
 	}
 	layered_free(&L); return rc;
+}
+
+// A 2.x file rewritten for the current rules. The rewrite is text to text;
+// the load after it is for the diagnostics and the save gate, the same gate
+// `fmt --write` goes through.
+static int do_migrate(const Opts *o) {
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl migrate [--write|-w] FILE (see --help)\n"); return 1; }
+	const char *file = o->args[0];
+	if (o->write && strcmp(file, "-") == 0) {
+		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
+		return 1;
+	}
+	size_t len; char *text = read_input(file, &len);
+	if (!text) return EXIT_IO;
+	size_t mlen; char *migrated = shcl_migrate(text, len, &mlen);
+	shcl_doc *d = xdoc(shcl_parse_with(migrated, mlen, o->strictness));
+	int rc = strict_gate(d);
+	if (rc) { shcl_free(d); free(migrated); free(text); return rc; }
+	say_diagnostics_from("", d);
+	if (o->write) {
+		if (shcl_lost_count(d) != 0 && !o->lossy) {
+			fprintf(stderr, "%s: refusing to rewrite: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
+			rc = 7;
+		} else if (!shcl_write_file_atomic(file, migrated, mlen)) {
+			int e = errno;
+			if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
+			else fprintf(stderr, "%s: %s\n", file, strerror(e));
+			rc = EXIT_IO;
+		}
+	} else fwrite(migrated, 1, mlen, stdout);
+	shcl_free(d); free(migrated); free(text);
+	return rc;
+}
+
+// One piece's span for `tokens`: start-end plus a mark for how it was quoted
+// (`'`, `"`, or `?` for a quote that never closed).
+static void say_span(const shcl_piece *p) {
+	const char *mark = p->quote == SHCL_QUOTE_SINGLE ? "'" : p->quote == SHCL_QUOTE_DOUBLE ? "\"" : p->quote == SHCL_QUOTE_OPEN ? "?" : "";
+	printf("%zu-%zu%s", p->start, p->end, mark);
+}
+
+// Every line's spans, one line of output per input line: the indent length,
+// then each token as `kind=start-end` with its quote mark, offsets counted
+// from the first character after the indent. A blank line and a comment line
+// say so; every other line is tokenized on its own, raw bodies included, since
+// this is the lexical view and not the parse.
+static int do_tokens(const Opts *o) {
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl tokens FILE (see --help)\n"); return 1; }
+	size_t len; char *text = read_input(o->args[0], &len);
+	if (!text) return EXIT_IO;
+	const char *p = text; size_t n = len;
+	if (n >= 3 && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) { p += 3; n -= 3; }
+	ShclArena a; memset(&a, 0, sizeof a);
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	size_t start = 0, lineno = 0;
+	for (size_t i = 0; i <= n; i++) {
+		if (i < n && p[i] != '\n') continue;
+		// A newline-terminated text splits into one more piece than it has
+		// lines; that empty tail is not a line.
+		if (i == n && n > 0 && p[n - 1] == '\n') break;
+		ShclStr line; line.p = p + start; line.n = i - start;
+		start = i + 1;
+		while (line.n > 0 && line.p[line.n - 1] == '\r') line.n--;
+		lineno++;
+		size_t ilen = 0;
+		while (ilen < line.n && (line.p[ilen] == ' ' || line.p[ilen] == '\t')) ilen++;
+		ShclStr rest = trim_wsp_end(s_slice(line, ilen, line.n));
+		printf("%zu:%zu", lineno, ilen);
+		if (rest.n == 0) { printf(" blank\n"); continue; }
+		if (rest.p[0] == '#') { printf(" comment\n"); continue; }
+		// A stacked element and a fence line are value halves on their own.
+		int star = rest.p[0] == '*' && rest.n > 1 && (rest.p[1] == ' ' || rest.p[1] == '\t');
+		int fence = s_starts(rest, "```") || s_starts(rest, "~~~");
+		if (star || fence) {
+			tokenize_value(&a, rest, star ? 1 : 0, SHCL_RULES_CURRENT, &tok);
+			printf(star ? " star" : " fence");
+			printf(" value=%zu-%zu", tok.value_start, tok.value_end);
+			for (size_t k = 0; k < tok.nelem; k++) { printf(" elem="); say_span(&tok.elements[k]); }
+			if (tok.has_comment) printf(" comment=%zu", tok.comment);
+			printf("\n");
+			continue;
+		}
+		tokenize(&a, rest, ':', 0, SHCL_RULES_CURRENT, &tok);
+		for (size_t k = 0; k < tok.nseg; k++) {
+			printf(" %s=", tok.segments[k].star ? "star" : "name"); say_span(&tok.segments[k].name);
+			if (tok.segments[k].has_selector) { printf(" sel="); say_span(&tok.segments[k].selector); }
+		}
+		if (tok.has_sep) {
+			printf(" sep=%zu value=%zu-%zu", tok.sep, tok.value_start, tok.value_end);
+			for (size_t k = 0; k < tok.nelem; k++) { printf(" elem="); say_span(&tok.elements[k]); }
+		}
+		if (tok.has_comment) printf(" comment=%zu", tok.comment);
+		if (tok.has_fault) printf(" fault=%zu:%s", tok.fault_at, tok.fault_why);
+		printf("\n");
+	}
+	arena_free(&a);
+	free(text);
+	return 0;
 }
 
 // Reads an open stream fully into a malloc'd buffer (ops script; no UTF-8 gate).
@@ -1225,6 +1315,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
+	static const char *migrate_ok[] = { "--write", "--lossy", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;
@@ -1233,6 +1324,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	else if (!strcmp(cmd, "fmt")) allowed = fmt_ok;
 	else if (!strcmp(cmd, "check")) allowed = check_ok;
 	else if (!strcmp(cmd, "init")) allowed = init_ok;
+	else if (!strcmp(cmd, "migrate")) allowed = migrate_ok;
 	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")
 	         || !strcmp(cmd, "children") || !strcmp(cmd, "paths")) allowed = enum_ok;
 	for (int i = 0; i < o->nseen; i++) {
@@ -1319,7 +1411,7 @@ static const char *asked_for(int argc, char **argv) {
 	return NULL;
 }
 
-static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths" };
+static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens" };
 static int is_command(const char *cmd) {
 	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0]; i++)
 		if (!strcmp(cmd, COMMANDS[i])) return 1;
@@ -1408,6 +1500,8 @@ static int cli_main(int argc, char **argv) {
 	else if (!strcmp(cmd, "instances")) rc = do_enum(&o, 0);
 	else if (!strcmp(cmd, "children")) rc = do_children(&o);
 	else if (!strcmp(cmd, "paths")) rc = do_paths(&o);
+	else if (!strcmp(cmd, "migrate")) rc = do_migrate(&o);
+	else if (!strcmp(cmd, "tokens")) rc = do_tokens(&o);
 	// A refusal rather than a fall-through: with one, adding a name to COMMANDS
 	// without adding a branch here quietly ran whichever command the last line
 	// named, with no message. main gates on COMMANDS first, so this is only

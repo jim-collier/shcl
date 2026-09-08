@@ -107,11 +107,11 @@ printf 'db:\n\thost: h\n\t"odd.key": 2\nweb:\n\tport: 1\n' > "${tmpDir}/tree.shc
 ## Two plain keys, for the edit options: what each one leaves behind is the
 ## whole assertion, so the document has to be small enough to spell out.
 printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
-## Bracket text on a value line. Two elements in brackets fold into one string,
-## which is the loss the save gate refuses; one bracketed value reads the same
-## as the bare spelling and is the documented `field:[disc]` sugar, so the
-## rewrite has to go through. The sugar file is copied fresh for every run of a
-## row that names %W%, since a rewrite is the thing being tested.
+## Bracket text on a value line is kept verbatim and binds nothing, so the
+## rewrite goes through unchanged. The 2.x selector sugar reads the same way
+## now, and the line under it goes with it, so that file refuses to save until
+## migrate rewrites it. The sugar file is copied fresh for every run of a row
+## that names %W%, since a rewrite is the thing being tested.
 printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
 printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 
@@ -200,15 +200,19 @@ rows=(
 	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 0\n|-"
 	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x: a=b\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
-	## 20260905 item 1: a bracket array and selector sugar are spelled the same,
-	## and both were an error that counted lost, so a file written with the
-	## documented `base:[Boston]` failed check and could not be saved. Only the
-	## comma-bearing shape loses anything.
+	## 3.0: bracket text after the colon is one outcome, kept verbatim. The
+	## 2.x selector sugar is that shape now too, and migrate is what carries
+	## a file written with it across.
 	'bracket-array-check|check %BA%|-|6|line 1: Error: E019\nfailed: 1 diagnostic(s), 1 error(s)\n|-'
-	'bracket-array-write-refused|fmt --write %BA%|-|7|-|dropped 1 line'
-	'sugar-check|check %W%|-|0|line 1: Hint: E019\nok (1 diagnostic(s))\n|-'
-	'sugar-check-strict|check --strictness=strict %W%|-|0|-|-'
-	'sugar-write|fmt --write %W%|-|0||-'
+	'bracket-array-write-kept|fmt --write %BA%|-|0||-'
+	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
+	'sugar-check-strict|check --strictness=strict %W%|-|6|-|-'
+	'sugar-write-refused|fmt --write %W%|-|7|-|dropped 1 line'
+	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|-'
+	'sugar-migrate-write|migrate --write %W%|-|0||-'
+	'sugar-migrate-write-stdin|migrate --write -|-|1|-|cannot rewrite stdin'
+	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
+	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
 	## about a line the load had dropped, so a damaged file read clean at exit 0.
 	'get-diags|get %B% a|-|0|1|E015 missing colon'

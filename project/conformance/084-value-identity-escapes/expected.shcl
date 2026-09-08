@@ -1,5 +1,5 @@
 # Two spellings of one value are one instance, and one selector finds it.
-a: "q\"uote"
+a: 'q"uote'
 	p: 1
 	q: 2
 b: "tab\there"

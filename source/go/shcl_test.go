@@ -1079,15 +1079,20 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if doc.SetRaw("q", "x", "a # b") {
 		t.Error("info with an unquoted # was accepted")
 	}
-	if !doc.SetRaw("q", "  a\n  b", "\"a # b\"") {
-		t.Fatal("SetRaw with a quoted # failed")
+	// An info string has no quoting of its own: quotes are characters in it,
+	// so they hide nothing, and a `#` with no space before it is content.
+	if doc.SetRaw("q", "x", "\"a # b\"") {
+		t.Error("info with a quoted # was accepted")
+	}
+	if !doc.SetRaw("q", "  a\n  b", "c#") {
+		t.Fatal("SetRaw with a # in the info failed")
 	}
 	back = Parse(doc.ToCanonical())
 	if v, st := back.GetRaw("q"); st != Good || v != "  a\n  b" {
 		t.Errorf("after the refusals: got %q %v", v, st)
 	}
-	if info := back.ReadRawInfo("q").Value; info != "\"a # b\"" {
-		t.Errorf("quoted info: got %q", info)
+	if info := back.ReadRawInfo("q").Value; info != "c#" {
+		t.Errorf("info with a #: got %q", info)
 	}
 	// A body line ending in CR has no fence spelling: the load takes the whole
 	// trailing CR run off every line, so it is refused rather than lost. A CR
@@ -1434,15 +1439,17 @@ func TestParseLimitedCaps(t *testing.T) {
 		t.Fatalf("star array: %v %v", v, st)
 	}
 	// The count the cap judges is the count the array reads back as, spelling
-	// by spelling: quoted and escaped commas, empty and blank slots, a Unicode
-	// blank (content: only a space or a tab is blank), a quote that never closes. Refused at one under, kept at exact.
+	// by spelling: quoted commas, a backslash (a character, so it shields
+	// nothing), empty and blank slots, a Unicode blank (content: only a space
+	// or a tab is blank), a quote that never closes (a character too, so the
+	// comma after it splits). Refused at one under, kept at exact.
 	counts := []struct {
 		spelling string
 		n        int
 	}{
-		{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 2}, {"a,,b", 2},
+		{"1, 2, 3", 3}, {"\"a, b\", c", 2}, {"a\\, b, c", 3}, {"a,,b", 2},
 		{"a, , b", 2}, {" a ", 1}, {"\"\", ''", 2}, {"'a\", b'", 1},
-		{"\"open, b", 1}, {"\\", 1}, {"x,\u3000", 2}, {"x, \u00a0y", 2}, {", , ,", 0},
+		{"\"open, b", 2}, {"\\", 1}, {"x,\u3000", 2}, {"x, \u00a0y", 2}, {", , ,", 0},
 	}
 	for _, c := range counts {
 		text := "v: " + c.spelling + "\n"

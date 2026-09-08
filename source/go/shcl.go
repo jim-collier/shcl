@@ -324,7 +324,7 @@ func FormatFloat(v float64) string {
 // merge when (name, value) matches; empty values merge into the wrapper node.
 
 type element struct {
-	text   string // quote-stripped, escapes NOT applied (applied on string read; names differ - see scanPathEx)
+	text   string // the logical string: quotes stripped, escapes resolved
 	quoted bool
 }
 
@@ -378,18 +378,6 @@ type value struct {
 	raw  *rawValue // behind a pointer: inline, its four fields would ride on every node
 }
 
-// keyText is the identity spelling of an element's text: escapes resolved, so
-// two spellings of one string are one instance. Names have followed that rule
-// since 2.0, and a `[value]` selector matches on the resolved text already -
-// without this, one selector addressed two instances. The common case has
-// nothing to resolve and returns the input.
-func keyText(s string) string {
-	if !strings.Contains(s, "\\") {
-		return s
-	}
-	return applyEscapes(s)
-}
-
 // key is the merge key: nodes with equal (name, key) collapse into one.
 func (v *value) key() string {
 	switch v.kind {
@@ -402,10 +390,9 @@ func (v *value) key() string {
 		var b strings.Builder
 		b.WriteString("c:")
 		for _, e := range v.els {
-			t := keyText(e.text)
-			b.WriteString(strconv.Itoa(len(t)))
+			b.WriteString(strconv.Itoa(len(e.text)))
 			b.WriteByte(':')
-			b.WriteString(t)
+			b.WriteString(e.text)
 		}
 		return b.String()
 	}
@@ -691,8 +678,459 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 const MaxDepth = 512
 
 // ---------------------------------------------------------------------------
-// Lexical helpers
+// Tokenizer - the one place the lexical rules live
 // ---------------------------------------------------------------------------
+//
+// Every reading of a line's parts goes through Tokenize: the parser's line
+// dispatch, the path scanner behind every lookup and setter, the comment and
+// comma splits, the element cap, the unterminated-quote check, SetLiteral
+// and the CLI's --set split. Seven scanners used to carry their own copy of
+// these rules, and every scanner defect since July was two of them
+// disagreeing. The rules, one sentence each:
+//
+//   - A piece (a name, a selector body, a value element) is quoted only when
+//     its first character is a quote and the next matching quote is the last
+//     thing before the piece ends; inside double quotes a backslash escapes the
+//     next character, inside single quotes nothing does. Anywhere else a quote
+//     is an ordinary character, and a piece that began with one it never closed
+//     is kept literally and reported (E017).
+//   - Escapes are processed inside double quotes only; bare text and single
+//     quotes never process a backslash.
+//   - `#` opens a comment when it is outside quotes and either first in the
+//     text or preceded by a space or tab.
+//   - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
+//     name opens a selector, whose bare body runs to the first `]`; a `[` after
+//     the separator starts the value, which the parser refuses (E019).
+//   - A value is split on unquoted commas, each piece trimmed.
+//
+// Under RulesV2 the tokenizer reads the 2.x spellings instead, for Migrate:
+// any unquoted `#` is a comment, a backslash shields the next character in
+// bare and single-quoted text, a separator followed by `[` is the selector
+// sugar, and an open quote swallows the rest of the line.
+
+// Quote is how a piece was quoted. QuoteOpen is a piece that began with a
+// quote and never closed with the matching quote as its last character: the
+// whole piece is kept literally, quotes and all.
+type Quote int
+
+const (
+	QuoteNone Quote = iota
+	QuoteSingle
+	QuoteDouble
+	QuoteOpen
+)
+
+// Piece is one piece of the text: byte offsets of its content. For a quoted
+// piece the quotes sit just outside the span; for an open or bare piece the
+// span is the trimmed text itself.
+type Piece struct {
+	Start int
+	End   int
+	Quote Quote
+}
+
+// SegTok is one path segment: its name, an optional [selector] body, and
+// whether the name was the bare `*` wildcard (lookups only).
+type SegTok struct {
+	Name     Piece
+	Selector *Piece
+	Star     bool
+}
+
+// Tokens is the spans of one line, or of one lookup path. Nothing is copied:
+// every field is an offset into the text that was tokenized. Tokenize sets
+// every field, so a zero Tokens is only a buffer to hand it.
+type Tokens struct {
+	Segments []SegTok
+	// Sep is the offset of the separator (`:` on a line, `=` in --set); -1
+	// when the path ran to the end of the text or into a comment.
+	Sep int
+	// Value is everything after the separator up to the comment, trimmed.
+	Value [2]int
+	// Elements are the value's comma-separated pieces, empty ones included,
+	// each trimmed.
+	Elements []Piece
+	// Comment is the offset of the `#` that opens a trailing comment; -1
+	// when there is none.
+	Comment int
+	// Fault is where the path stopped making sense (-1 when it did not), and
+	// FaultReason says why. A faulted line is malformed as a whole (E014).
+	Fault       int
+	FaultReason string
+	// Cap is the caller's element cap (0 = none): the scan stops as soon as
+	// the value holds more elements than this, so a capped parse never builds
+	// the array it is going to refuse. Kept across Tokenize calls.
+	Cap int
+	// Capped is true when the cap stopped the scan; Elements is then
+	// incomplete.
+	Capped bool
+}
+
+func (t *Tokens) clear() {
+	t.Segments = t.Segments[:0]
+	t.Sep = -1
+	t.Value = [2]int{0, 0}
+	t.Elements = t.Elements[:0]
+	t.Comment = -1
+	t.Fault = -1
+	t.FaultReason = ""
+	t.Capped = false
+}
+
+// ElementCount is how many elements the value holds: a quoted piece counts
+// even when empty ("" is a real element), an empty bare slot does not.
+func (t *Tokens) ElementCount() int {
+	n := 0
+	for i := range t.Elements {
+		if t.Elements[i].Quote != QuoteNone || t.Elements[i].End > t.Elements[i].Start {
+			n++
+		}
+	}
+	return n
+}
+
+// Rules is which spelling the tokenizer reads.
+type Rules int
+
+const (
+	// RulesCurrent is the current rules, listed at the top of this section.
+	RulesCurrent Rules = iota
+	// RulesV2 is the 2.x rules, for Migrate only.
+	RulesV2
+)
+
+func isWspByte(b byte) bool {
+	return b == ' ' || b == '\t'
+}
+
+func isBareNameByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || isASCIIDigit(b) || b == '-' || b == '_'
+}
+
+func skipWsp(s string, pos int) int {
+	for pos < len(s) && isWspByte(s[pos]) {
+		pos++
+	}
+	return pos
+}
+
+// utf8Len is the byte length of the UTF-8 character that starts with b. The
+// scan only ever compares against ASCII structure characters, which UTF-8
+// guarantees cannot appear inside a multibyte sequence, so it advances by
+// whole characters and every offset it records is a character boundary.
+func utf8Len(b byte) int {
+	switch {
+	case b <= 0x7F:
+		return 1
+	case b >= 0xC0 && b <= 0xDF:
+		return 2
+	case b >= 0xE0 && b <= 0xEF:
+		return 3
+	}
+	return 4
+}
+
+// quoteClose is the offset of the quote that closes the one at pos, or -1.
+func quoteClose(s string, pos int, rules Rules) int {
+	q := s[pos]
+	escapes := q == '"' || rules == RulesV2
+	i := pos + 1
+	for i < len(s) {
+		if escapes && s[i] == '\\' && i+1 < len(s) {
+			i += 1 + utf8Len(s[i+1])
+			continue
+		}
+		if s[i] == q {
+			return i
+		}
+		i += utf8Len(s[i])
+	}
+	return -1
+}
+
+// commentAt is true when the `#` at i opens a comment: outside quotes (the
+// caller's business) and, under the current rules, first in the text or
+// after a space or tab.
+func commentAt(s string, i int, rules Rules) bool {
+	return s[i] == '#' && (rules == RulesV2 || i == 0 || isWspByte(s[i-1]))
+}
+
+// scanPiece reads one piece from pos: a value element up to an unquoted comma
+// or comment, or a selector body up to an unquoted `]` (term). Returns the
+// trimmed piece and the offset of what ended it: the terminator, a comment's
+// `#`, or the end of the text.
+func scanPiece(s string, pos int, term byte, rules Rules) (Piece, int) {
+	clamp := func(i int) int {
+		if i > len(s) {
+			return len(s)
+		}
+		return i
+	}
+	pos = skipWsp(s, pos)
+	start := pos
+	quote := QuoteNone
+	if pos < len(s) && (s[pos] == '"' || s[pos] == '\'') {
+		if close := quoteClose(s, pos, rules); close >= 0 {
+			// A value piece may also end at a comment or the line end;
+			// a selector body ends at its bracket and nowhere else.
+			i := skipWsp(s, close+1)
+			var ended bool
+			if i < len(s) {
+				ended = s[i] == term || (term == ',' && commentAt(s, i, rules))
+			} else {
+				ended = term == ','
+			}
+			if ended {
+				q := QuoteSingle
+				if s[pos] == '"' {
+					q = QuoteDouble
+				}
+				return Piece{Start: pos + 1, End: close, Quote: q}, i
+			}
+			// Text after the closing quote: the quote was a character
+			// after all, and the scan restarts at it. 2.x went on from
+			// the close with the quotes read as a pair.
+			quote = QuoteOpen
+			if rules == RulesV2 {
+				pos = close + 1
+			}
+		} else {
+			quote = QuoteOpen
+			if rules == RulesV2 {
+				// 2.x: an open quote swallowed the rest of the line.
+				end := len(s)
+				for end > start && isWspByte(s[end-1]) {
+					end--
+				}
+				return Piece{Start: start, End: end, Quote: quote}, len(s)
+			}
+		}
+	}
+	shield := rules == RulesV2
+	contentEnd := start
+	for pos < len(s) {
+		b := s[pos]
+		if shield && b == '\\' && pos+1 < len(s) {
+			pos += 1 + utf8Len(s[pos+1])
+			contentEnd = clamp(pos)
+			continue
+		}
+		if b == term || commentAt(s, pos, rules) {
+			break
+		}
+		pos += utf8Len(b)
+		if !isWspByte(b) {
+			contentEnd = clamp(pos)
+		}
+	}
+	// 2.x judged a piece quoted by its shape after the scan: a quote at both
+	// ends, the last one not escaped, however many closes sat between.
+	if rules == RulesV2 && quote == QuoteOpen && contentEnd-start >= 2 && s[contentEnd-1] == s[start] {
+		run := 0
+		for j := contentEnd - 2; j >= start && s[j] == '\\'; j-- {
+			run++
+		}
+		if run%2 == 0 {
+			q := QuoteSingle
+			if s[start] == '"' {
+				q = QuoteDouble
+			}
+			return Piece{Start: start + 1, End: contentEnd - 1, Quote: q}, clamp(pos)
+		}
+	}
+	return Piece{Start: start, End: contentEnd, Quote: quote}, clamp(pos)
+}
+
+// TokenizeValue reads the value half: everything from `from` on, split into
+// pieces, with the comment found on the way. `from` is where the separator
+// ended, so a `#` right after it (`a:#x`) is content and one after a space is
+// a comment; at 0 the text starts a line and a leading `#` is a comment.
+func TokenizeValue(text string, from int, rules Rules, out *Tokens) {
+	out.clear()
+	scanValue(text, from, rules, out)
+}
+
+func scanValue(text string, from int, rules Rules, out *Tokens) {
+	s := text
+	pos := from
+	var stopAt int
+	count := 0
+	for {
+		piece, stop := scanPiece(s, pos, ',', rules)
+		out.Elements = append(out.Elements, piece)
+		if piece.Quote != QuoteNone || piece.End > piece.Start {
+			count++
+			if out.Cap != 0 && count > out.Cap {
+				out.Capped = true
+				out.Value = [2]int{from, from}
+				return
+			}
+		}
+		if stop < len(s) && s[stop] == ',' {
+			pos = stop + 1
+			continue
+		}
+		if stop < len(s) {
+			out.Comment = stop
+		}
+		stopAt = stop
+		break
+	}
+	a := skipWsp(s, from)
+	// The value ends where the line's content ends: a carriage return there
+	// comes off with the blanks, since the load strips one from every line
+	// end and an info string or a bare last element written back would
+	// otherwise end in one the next load would take.
+	b := stopAt
+	for b > a && (isWspByte(s[b-1]) || s[b-1] == '\r') {
+		b--
+	}
+	if a > b {
+		a = b
+	}
+	out.Value = [2]int{a, b}
+	if n := len(out.Elements); n > 0 {
+		last := &out.Elements[n-1]
+		if last.Quote != QuoteSingle && last.Quote != QuoteDouble && last.End > b {
+			last.End = b
+			if last.End < last.Start {
+				last.End = last.Start
+			}
+		}
+	}
+}
+
+// Tokenize reads one line (sep = ':') or one lookup path (stars admits the
+// bare `*` name wildcard); the CLI's --set passes '='. out is cleared and
+// reused, so a parse allocates once per document rather than once per line.
+// text is the line after its indent, or the path.
+func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
+	out.clear()
+	s := text
+	pos := 0
+	for {
+		pos = skipWsp(s, pos)
+		if pos >= len(s) {
+			out.Fault, out.FaultReason = pos, "expected a field name"
+			return
+		}
+		star := false
+		var name Piece
+		if s[pos] == '"' || s[pos] == '\'' {
+			close := quoteClose(s, pos, rules)
+			if close < 0 {
+				out.Fault, out.FaultReason = pos, "unterminated quote in a field name"
+				return
+			}
+			q := QuoteSingle
+			if s[pos] == '"' {
+				q = QuoteDouble
+			}
+			name = Piece{Start: pos + 1, End: close, Quote: q}
+			pos = close + 1
+		} else if stars && s[pos] == '*' {
+			star = true
+			pos++
+			name = Piece{Start: pos - 1, End: pos, Quote: QuoteNone}
+		} else {
+			start := pos
+			for pos < len(s) && isBareNameByte(s[pos]) {
+				pos++
+			}
+			if pos == start {
+				out.Fault, out.FaultReason = pos, "expected a field name"
+				return
+			}
+			name = Piece{Start: start, End: pos, Quote: QuoteNone}
+		}
+		pos = skipWsp(s, pos)
+		var selector *Piece
+		open := -1
+		if pos < len(s) && s[pos] == '[' {
+			open = pos
+		}
+		if open < 0 && rules == RulesV2 && pos < len(s) && s[pos] == sep {
+			q := skipWsp(s, pos+1)
+			if q < len(s) && s[q] == '[' {
+				open = q
+			}
+		}
+		if open >= 0 {
+			if star {
+				out.Fault, out.FaultReason = open, "selector on a name wildcard"
+				return
+			}
+			piece, stop := scanPiece(s, open+1, ']', rules)
+			if stop >= len(s) || s[stop] != ']' {
+				out.Fault, out.FaultReason = open, "unterminated selector"
+				return
+			}
+			if piece.End == piece.Start && piece.Quote == QuoteNone {
+				out.Fault, out.FaultReason = open, "empty selector"
+				return
+			}
+			if piece.Quote == QuoteOpen && rules == RulesV2 {
+				out.Fault, out.FaultReason = open, "unterminated quote in a selector"
+				return
+			}
+			selector = &piece
+			pos = skipWsp(s, stop+1)
+		}
+		out.Segments = append(out.Segments, SegTok{Name: name, Selector: selector, Star: star})
+		if pos >= len(s) {
+			return
+		}
+		b := s[pos]
+		if b == '.' {
+			pos++
+			continue
+		}
+		if b == sep {
+			out.Sep = pos
+			scanValue(text, pos+1, rules, out)
+			return
+		}
+		if commentAt(s, pos, rules) {
+			out.Comment = pos
+			return
+		}
+		out.Fault, out.FaultReason = pos, "unexpected character after the path"
+		return
+	}
+}
+
+// pieceText is the text of a piece as the reader sees it: escapes applied
+// inside double quotes, everything else as written.
+func pieceText(p *Piece, text string) string {
+	raw := text[p.Start:p.End]
+	if p.Quote == QuoteDouble && strings.Contains(raw, "\\") {
+		return applyEscapes(raw)
+	}
+	return raw
+}
+
+// elementOf is the element a value piece makes, or ok=false for an empty bare
+// slot (dropped, never an error).
+func elementOf(p *Piece, text string) (element, bool) {
+	if p.Quote == QuoteNone && p.End == p.Start {
+		return element{}, false
+	}
+	return element{text: pieceText(p, text), quoted: p.Quote == QuoteSingle || p.Quote == QuoteDouble}, true
+}
+
+// cellOfTokens is the value the tokenized pieces spell.
+func cellOfTokens(tok *Tokens, text string) value {
+	var els []element
+	for i := range tok.Elements {
+		if e, ok := elementOf(&tok.Elements[i], text); ok {
+			els = append(els, e)
+		}
+	}
+	if len(els) == 0 {
+		return value{kind: vEmpty}
+	}
+	return value{kind: vCell, els: els}
+}
 
 // asciiLower folds A-Z only; non-ASCII passes through untouched. Nearly every
 // name is already folded, so the scan comes first: copying and then finding
@@ -776,215 +1214,12 @@ func leadingWS(s string) string {
 	return s[:i]
 }
 
-// splitComment splits off an unquoted trailing comment from a field line:
-// (content, comment from `#` on, "" = none). The name half is read the
-// scanner's way and the value half the value's way (see valueCommentAt).
-// Comments are kept as trivia.
-func splitComment(s string) (string, string) {
-	if strings.IndexByte(s, '#') < 0 {
-		return s, ""
-	}
-	hash := -1
-	switch kind, i := nameHalf(s, true); kind {
-	case nameHash:
-		hash = i
-	case nameColon:
-		hash = valueCommentAt(s, i+1)
-	}
-	if hash < 0 {
-		return s, ""
-	}
-	return s[:hash], s[hash:]
-}
-
-// splitValueComment is the same for value text alone: a list element, or a
-// setter's argument.
-func splitValueComment(s string) (string, string) {
-	if strings.IndexByte(s, '#') < 0 {
-		return s, ""
-	}
-	hash := valueCommentAt(s, 0)
-	if hash < 0 {
-		return s, ""
-	}
-	return s[:hash], s[hash:]
-}
-
-// splitUnquotedCommas splits on unquoted commas; a quote opens only at the
-// start of a piece (see valueCommentAt), and `\` shields the next char.
-func splitUnquotedCommas(s string) []string {
-	if strings.IndexByte(s, ',') < 0 {
-		return []string{s}
-	}
-	var parts []string
-	var inQuote rune
-	atStart := true
-	skip := false
-	start := 0
-	for i, c := range s {
-		if skip {
-			skip = false
-			continue
-		}
-		if c == '\\' {
-			skip = true
-			atStart = false
-			continue
-		}
-		if inQuote != 0 {
-			if c == inQuote {
-				inQuote = 0
-			}
-		} else {
-			switch {
-			case (c == '"' || c == '\'') && atStart:
-				inQuote = c
-			case c == ',':
-				parts = append(parts, s[start:i])
-				start = i + 1
-				atStart = true
-				continue
-			}
-		}
-		if !isWsp(c) {
-			atStart = false
-		}
-	}
-	return append(parts, s[start:])
-}
-
-// normalizeDanglingBackslash: a dangling trailing backslash would swallow the
-// separator after it on re-emit; store the doubled spelling instead (identical
-// on string read).
-func normalizeDanglingBackslash(t string) string {
-	run := 0
-	for j := len(t) - 1; j >= 0 && t[j] == '\\'; j-- {
-		run++
-	}
-	if run%2 == 1 {
-		return t + "\\"
-	}
-	return t
-}
-
-// unterminatedQuote reports whether some piece starts with a quote that never
-// closes (missing or escaped). Such a piece stays literal - and the quote-aware
-// comment strip has already swallowed any trailing # comment into it - so the
-// parser calls it out instead of letting the typo look deliberate. Mid-text
-// apostrophes (it's fine) are legal prose and stay silent.
-func unterminatedQuote(text string) bool {
-	if strings.IndexByte(text, '"') < 0 && strings.IndexByte(text, '\'') < 0 {
-		return false
-	}
-	for _, piece := range splitUnquotedCommas(text) {
-		t := trimWsp(piece)
-		if !quotedShape(t) {
-			if t == "" {
-				continue
-			}
-			if first := t[0]; first == '"' || first == '\'' {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // oneLine is value text for a diagnostic message: line breaks and tabs escaped,
 // so one diagnostic is one line. A raw block's body is the value that made this
 // necessary - it carries its own newlines.
 func oneLine(s string) string {
 	r := strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t")
 	return r.Replace(s)
-}
-
-// quotedShape is true when the text is one quote pair: a quote char at both
-// ends, the last one not escaped. Bytes, not runes: both quotes and the
-// backslash are ASCII, and UTF-8 never puts an ASCII byte inside a multibyte
-// sequence, so the first byte, the last byte and the escape parity are the
-// same answers the decoded form gives.
-func quotedShape(t string) bool {
-	if t == "" {
-		return false
-	}
-	first := t[0]
-	if (first != '"' && first != '\'') || len(t) < 2 || t[len(t)-1] != first {
-		return false
-	}
-	esc := false
-	for i := 1; i+1 < len(t); i++ {
-		esc = t[i] == '\\' && !esc
-	}
-	return !esc
-}
-
-// parseElement trims, then strips one matching outer quote pair if present.
-// Unquoted empty slots return ok=false (dropped, never an error).
-func parseElement(piece string) (element, bool) {
-	t := trimWsp(piece)
-	if t == "" {
-		return element{}, false
-	}
-	if quotedShape(t) {
-		return element{text: t[1 : len(t)-1], quoted: true}, true
-	}
-	return element{text: normalizeDanglingBackslash(t)}, true
-}
-
-// cellExceeds reports whether parseCell would build more than max elements.
-// Counts the pieces the way the splitter cuts them, without building any, so
-// a capped parse refuses an over-long line before holding the array.
-func cellExceeds(text string, max int) bool {
-	count := 0
-	hasContent := false
-	var inQuote rune
-	skip := false
-	for _, c := range text {
-		if skip {
-			skip = false
-			continue
-		}
-		if c == '\\' {
-			hasContent = true
-			skip = true
-			continue
-		}
-		switch {
-		case inQuote != 0 && c == inQuote:
-			inQuote = 0
-		case inQuote == 0 && (c == '"' || c == '\'') && !hasContent:
-			inQuote = c
-		case inQuote == 0 && c == ',':
-			if hasContent {
-				count++
-				if count > max {
-					return true
-				}
-			}
-			hasContent = false
-			continue
-		}
-		if !isWsp(c) {
-			hasContent = true
-		}
-	}
-	if hasContent {
-		count++
-	}
-	return count > max
-}
-
-func parseCell(text string) value {
-	var els []element
-	for _, piece := range splitUnquotedCommas(text) {
-		if e, ok := parseElement(piece); ok {
-			els = append(els, e)
-		}
-	}
-	if len(els) == 0 {
-		return value{kind: vEmpty}
-	}
-	return value{kind: vCell, els: els}
 }
 
 // applyEscapes handles string reads: \t \n \\ \" \'; unknown escapes stay literal.
@@ -1026,8 +1261,8 @@ func applyEscapes(s string) string {
 	return string(out)
 }
 
-// dispKey is the predicate a [value] selector matches with: display form with
-// escapes applied on both sides, so ["q\"uote"] finds 'q"uote' - a
+// dispKey is the predicate a [value] selector matches with: the display form,
+// which is built from logical strings, so ["q\"uote"] finds 'q"uote' - a
 // logical-string match, not spelling against spelling.
 // singleScalar is the restriction a QUOTED [value] selector adds on top of
 // the display match: quoting selects the scalar spelling only, so the scalar
@@ -1037,7 +1272,7 @@ func singleScalar(v *value) bool {
 }
 
 func dispKey(v *value) string {
-	return applyEscapes(v.display())
+	return v.display()
 }
 
 // fnv is FNV-1a, fed the same byte sequence the key strings would spell - the
@@ -1091,10 +1326,9 @@ func mergeHash(name string, v *value) uint64 {
 	case vCell:
 		f.bytes("c:")
 		for i := range v.els {
-			t := keyText(v.els[i].text)
-			f.dec(len(t))
+			f.dec(len(v.els[i].text))
 			f.byte(':')
-			f.bytes(t)
+			f.bytes(v.els[i].text)
 		}
 	default:
 		f.bytes("r:")
@@ -1125,7 +1359,7 @@ func mergeEq(nameA string, va *value, nameB string, vb *value) bool {
 			return false
 		}
 		for i := range va.els {
-			if keyText(va.els[i].text) != keyText(vb.els[i].text) {
+			if va.els[i].text != vb.els[i].text {
 				return false
 			}
 		}
@@ -1134,77 +1368,30 @@ func mergeEq(nameA string, va *value, nameB string, vb *value) bool {
 	return va.raw.info == vb.raw.info && va.raw.content == vb.raw.content
 }
 
-// escHash is applyEscapes as a streaming feed into the hash - the same state
-// machine, one byte at a time, no intermediate string.
-type escHash struct {
-	f       fnv
-	pending bool
-}
-
-func (e *escHash) push(b byte) {
-	switch {
-	case e.pending:
-		e.pending = false
-		switch b {
-		case 't':
-			e.f.byte('\t')
-		case 'n':
-			e.f.byte('\n')
-		case '\\':
-			e.f.byte('\\')
-		case '"':
-			e.f.byte('"')
-		case '\'':
-			e.f.byte('\'')
-		default:
-			e.f.byte('\\')
-			e.f.byte(b)
-		}
-	case b == '\\':
-		e.pending = true
-	default:
-		e.f.byte(b)
-	}
-}
-
-func (e *escHash) pushString(s string) {
-	for i := 0; i < len(s); i++ {
-		e.push(s[i])
-	}
-}
-
-func (e *escHash) finish() uint64 {
-	if e.pending {
-		e.f.byte('\\')
-	}
-	return e.f.h
-}
-
-// dispHash hashes the (name, display-with-escapes-applied) pair a `[value]`
-// selector matches with - what dispKey would spell, streamed instead of built.
+// dispHash hashes the (name, display) pair a `[value]` selector matches with -
+// what dispKey would spell, streamed instead of built. Elements hold the
+// logical string, so the bytes feed straight in.
 func dispHash(name string, v *value) uint64 {
 	f := newFnv()
 	f.bytes(name)
 	f.byte(0xFF)
-	e := escHash{f: f}
 	switch v.kind {
 	case vEmpty:
 	case vCell:
 		for i := range v.els {
 			if i > 0 {
-				e.push(',')
-				e.push(' ')
+				f.bytes(", ")
 			}
-			e.pushString(v.els[i].text)
+			f.bytes(v.els[i].text)
 		}
 	default:
-		e.pushString(v.raw.content)
+		f.bytes(v.raw.content)
 	}
-	return e.finish()
+	return f.h
 }
 
-// dispHashText is the query-side twin of dispHash: the selector's text already
-// has its escapes applied, so its bytes feed straight in.
+// dispHashText is the query-side twin of dispHash: the selector's logical
+// text, the same bytes the display would spell.
 func dispHashText(name, want string) uint64 {
 	f := newFnv()
 	f.bytes(name)
@@ -1352,6 +1539,241 @@ func stripCommon(line, common string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Migration: a 2.x document rewritten for the current lexical rules
+// ---------------------------------------------------------------------------
+
+// openFence is the fence a migration is inside, so its body passes through
+// untouched.
+type openFence struct {
+	ch     byte
+	length int
+	open   bool
+}
+
+// Migrate rewrites a document written under the 2.x rules so this parser
+// reads the same tree. Each line is read with the 2.x tokenizer and
+// re-spelled only where the two rule sets disagree: a bare or single-quoted
+// piece whose backslash meant an escape is double-quoted with that escape; a
+// piece that opened a quote it never closed is quoted whole; a `#` that
+// opened a comment with no space before it gets one; the `name:[disc]`
+// selector sugar loses its colon, and on a last segment becomes `name: disc`.
+// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
+// could not read - comes through as written. One shape has no spelling here
+// at all: a fence line whose info string holds a whitespace-`#`, which now
+// ends the label and opens a comment.
+func Migrate(text string) string {
+	bom := ""
+	if strings.HasPrefix(text, "\ufeff") {
+		bom = "\ufeff"
+		text = text[len(bom):]
+	}
+	var out strings.Builder
+	out.Grow(len(text) + 32)
+	out.WriteString(bom)
+	var tok Tokens
+	var fence openFence
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		body := strings.TrimRight(line, "\r")
+		cr := line[len(body):]
+		if fence.open {
+			if isFenceClose(body, fence.ch, fence.length) {
+				fence.open = false
+			}
+			out.WriteString(line)
+			continue
+		}
+		indent := leadingWS(body)
+		restFull := body[len(indent):]
+		rest := trimEndWS(restFull)
+		out.WriteString(indent)
+		out.WriteString(migrateLine(rest, &tok, &fence))
+		out.WriteString(restFull[len(rest):])
+		out.WriteString(cr)
+	}
+	return out.String()
+}
+
+// edit is one edit to a line: replace start..end with the text.
+type edit struct {
+	start int
+	end   int
+	with  string
+}
+
+func splice(text string, edits []edit) string {
+	sort.SliceStable(edits, func(a, b int) bool { return edits[a].start < edits[b].start })
+	var out strings.Builder
+	out.Grow(len(text) + 8)
+	at := 0
+	for _, e := range edits {
+		out.WriteString(text[at:e.start])
+		out.WriteString(e.with)
+		at = e.end
+	}
+	out.WriteString(text[at:])
+	return out.String()
+}
+
+// readsSame is true when the current tokenizer reads this spelling as one
+// whole piece, quoted the same way, with exactly this text, so nothing has
+// to change.
+func readsSame(spelling string, quoted bool, logical string) bool {
+	var tok Tokens
+	TokenizeValue(spelling, 0, RulesCurrent, &tok)
+	if len(tok.Elements) != 1 || tok.Value != [2]int{0, len(spelling)} {
+		return false
+	}
+	p := &tok.Elements[0]
+	return (p.Quote == QuoteSingle || p.Quote == QuoteDouble) == quoted &&
+		p.Quote != QuoteOpen && pieceText(p, spelling) == logical
+}
+
+// valueEdits collects the re-spellings a value's pieces need. Each piece is
+// read the 2.x way (escapes everywhere, an open quote kept whole, a quote at
+// both ends making it quoted) and re-spelled only where the current rules
+// would read the same text as something else.
+func valueEdits(text string, tok *Tokens, edits *[]edit) {
+	for i := range tok.Elements {
+		p := &tok.Elements[i]
+		raw := text[p.Start:p.End]
+		quoted := p.Quote == QuoteSingle || p.Quote == QuoteDouble
+		a, b := p.Start, p.End
+		if quoted {
+			a, b = p.Start-1, p.End+1
+		}
+		if p.Quote == QuoteNone && !strings.Contains(raw, "\\") && raw != "" {
+			continue
+		}
+		logical := applyEscapes(raw)
+		if readsSame(text[a:b], quoted, logical) {
+			continue
+		}
+		var spelling string
+		if quoted || p.Quote == QuoteOpen {
+			spelling = quoteText(logical)
+		} else {
+			spelling = emitElement(&element{text: logical})
+		}
+		*edits = append(*edits, edit{start: a, end: b, with: spelling})
+	}
+}
+
+func migrateLine(rest string, tok *Tokens, fence *openFence) string {
+	if rest == "" || strings.HasPrefix(rest, "#") {
+		return rest
+	}
+	// A child-indent fence: 2.x read the info string to the end of the line.
+	if ch, length, _, ok := fenceOpen(rest); ok {
+		*fence = openFence{ch: ch, length: length, open: true}
+		return rest
+	}
+	s := rest
+	var edits []edit
+	if strings.HasPrefix(rest, "*") && len(s) > 1 && isWspByte(s[1]) {
+		TokenizeValue(rest, 1, RulesV2, tok)
+		// A bare comma was refused (E010), so there is nothing to carry.
+		if len(tok.Elements) == 1 {
+			valueEdits(rest, tok, &edits)
+		}
+	} else {
+		Tokenize(rest, ':', false, RulesV2, tok)
+		if tok.Fault >= 0 {
+			return rest
+		}
+		last := len(tok.Segments) - 1
+		for i := range tok.Segments {
+			seg := &tok.Segments[i]
+			name := rest[seg.Name.Start:seg.Name.End]
+			if seg.Name.Quote == QuoteSingle && applyEscapes(name) != name {
+				edits = append(edits, edit{start: seg.Name.Start - 1, end: seg.Name.End + 1, with: escapeName(applyEscapes(name))})
+			}
+			sel := seg.Selector
+			if sel == nil {
+				continue
+			}
+			quoted := sel.Quote == QuoteSingle || sel.Quote == QuoteDouble
+			// Back from the body to the `[`, and forward to the `]`.
+			open := sel.Start
+			if quoted {
+				open = sel.Start - 1
+			}
+			for open > 0 && isWspByte(s[open-1]) {
+				open--
+			}
+			open--
+			close := sel.End
+			if quoted {
+				close = sel.End + 1
+			}
+			for s[close] != ']' {
+				close++
+			}
+			colon := -1
+			k := open
+			for k > 0 && isWspByte(s[k-1]) {
+				k--
+			}
+			if k > 0 && s[k-1] == ':' {
+				colon = k - 1
+			}
+			body := rest[sel.Start:sel.End]
+			logical := applyEscapes(body)
+			if i == last && tok.Sep < 0 {
+				if colon >= 0 {
+					// `name:[disc]` with nothing after it: 2.x read it as
+					// `name: disc`. A bare comma in there was refused as a
+					// bracket array, and an index or the wildcard was refused
+					// as a selector, so those stay as written.
+					if !quoted && (strings.Contains(body, ",") || indexShape(body) || body == "*") {
+						return rest
+					}
+					var spelling string
+					if logical == body {
+						spelling = trimWsp(rest[open+1 : close])
+					} else {
+						spelling = quoteText(logical)
+					}
+					edits = append(edits, edit{start: colon, end: close + 1, with: ": " + spelling})
+					continue
+				}
+			} else if colon >= 0 {
+				// The colon goes, and one space after it when the author
+				// spaced both sides, so `base : [x]` comes out `base [x]`.
+				end := colon + 1
+				if colon > 0 && isWspByte(s[colon-1]) && isWspByte(s[colon+1]) {
+					end++
+				}
+				edits = append(edits, edit{start: colon, end: end})
+			}
+			if logical != body {
+				a, b := sel.Start, sel.End
+				if quoted {
+					a, b = sel.Start-1, sel.End+1
+				}
+				if sel.Quote != QuoteDouble {
+					edits = append(edits, edit{start: a, end: b, with: quoteText(logical)})
+				}
+			}
+		}
+		if tok.Sep >= 0 {
+			// A same-line fence: the info string ran to the end of the line.
+			if ch, length, _, ok := fenceOpen(rest[tok.Value[0]:]); ok {
+				*fence = openFence{ch: ch, length: length, open: true}
+				return splice(rest, edits)
+			}
+			valueEdits(rest, tok, &edits)
+		}
+	}
+	if c := tok.Comment; c > 0 && !isWspByte(s[c-1]) {
+		edits = append(edits, edit{start: c, end: c, with: " "})
+	}
+	return splice(rest, edits)
+}
+
+// ---------------------------------------------------------------------------
 // Path scanner (shared by file lines and accessor queries)
 // ---------------------------------------------------------------------------
 
@@ -1375,15 +1797,15 @@ type selector struct {
 }
 
 type segment struct {
-	name    string // folded
-	nameSrc string // as authored: unfolded, quotes stripped, escapes applied
+	name    string // folded, escapes resolved
+	nameSrc string // as authored: unfolded, quotes stripped, escapes as written
 	sel     *selector
 	star    bool // bare `*` name wildcard; quoted "*" stays a literal name
 }
 
 type pathScan struct {
 	segments  []segment
-	valueText *string // text after the separator colon, trimmed
+	valueText *string // text after the separator colon, before any comment, trimmed
 }
 
 // parseIndex mirrors the reference's unsigned-integer parse: one optional
@@ -1403,311 +1825,86 @@ func parseIndex(s string) (uint64, bool) {
 	return n, true
 }
 
-// scanPath scans `a . b : [sel] . c : value`. Whitespace around dots/colons/
-// brackets is insignificant. A colon is a selector colon only when the next
-// non-ws char is `[`; otherwise it separates the value. An error means
-// genuinely ambiguous input, which the caller skips with a diagnostic.
-// bracketArrayBody: the text between the brackets of a value spelled the way
-// JSON, TOML and YAML spell an array, or false when the line is not that shape.
-// The path scanner reads the brackets as a selector, so the line arrives with
-// no value text and the old repair blamed a colon that is plainly there. The
-// colon that counts is the field's own: one inside a quoted name or a selector
-// is not it. Selector sugar (`base:[Boston]`) is spelled the same way and is
-// legal, so the caller decides by what the brackets hold.
-func bracketArrayBody(content string) (string, bool) {
-	kind, colon := nameHalf(content, false)
-	if kind != nameColon {
-		return "", false
+// selectorOf is what a selector body means: `*` the wildcard, an index shape
+// an index, a quoted body a value match, anything else a bare value match.
+func selectorOf(p *Piece, text string) selector {
+	body := pieceText(p, text)
+	if p.Quote == QuoteSingle || p.Quote == QuoteDouble {
+		// quotes force a value match, even numeric - and scalar-only
+		return selector{kind: selByValue, value: body, quoted: true}
 	}
-	rest := strings.TrimSpace(content[colon+1:])
-	if len(rest) < 2 || !strings.HasPrefix(rest, "[") || !strings.HasSuffix(rest, "]") {
-		return "", false
+	if body == "*" {
+		return selector{kind: selWildcard}
 	}
-	return rest[1 : len(rest)-1], true
+	if n, ok := hashIndex(body); ok {
+		return selector{kind: selByIndex, index: n}
+	}
+	if n, ok := parseIndex(body); ok {
+		return selector{kind: selByIndex, index: n}
+	}
+	if indexShape(body) {
+		// All digits but past uint64: an index no instance can have, not a
+		// value selector that would create one on a write.
+		return selector{kind: selByIndex, index: math.MaxUint64}
+	}
+	return selector{kind: selByValue, value: body}
 }
 
-// How the name half of a field line ends.
-const (
-	nameEnd   = iota // no separator colon
-	nameColon        // the field's own colon
-	nameHash         // an unquoted `#` first: a comment, or a malformed name
-)
-
-// nameHalf scans a field line's name half the way the path scanner reads it. A
-// quote opens only where the scanner opens one - as a segment's first char (a
-// quoted name) or a selector body's first char (a quoted discriminator) - so
-// `O'Brien` in a bare selector is text, not an open quote hiding the `#` after
-// it. `\` shields the next char inside quotes only; a bare selector body runs
-// to the first `]` unescaped, as it does in the scanner. With sugar a colon
-// followed by `[` is selector sugar rather than the separator. An unquoted `#`
-// ends the half wherever it sits: a comment, or a malformed name. Returns the
-// kind and the byte offset it ended at.
-func nameHalf(s string, sugar bool) (int, int) {
-	var inQuote rune
-	inSel := false
-	atStart := true // first char of a segment, or of a selector body
-	skip := false
-	for i, c := range s {
-		if skip {
-			skip = false
-			continue
-		}
-		if inQuote != 0 {
-			if c == '\\' {
-				skip = true
-			} else if c == inQuote {
-				inQuote = 0
-			}
-			continue
-		}
-		if isWsp(c) {
-			continue
-		}
-		if c == '#' {
-			return nameHash, i
-		}
-		if inSel {
-			if c == ']' {
-				inSel = false
-			} else if atStart && (c == '"' || c == '\'') {
-				inQuote = c
-			}
-			atStart = false
-			continue
-		}
-		switch c {
-		case '"', '\'':
-			if atStart {
-				inQuote = c
-			}
-		case '[':
-			inSel = true
-			atStart = true
-			continue
-		case '.':
-			atStart = true
-			continue
-		case ':':
-			rest := strings.TrimLeft(s[i+1:], " \t")
-			if !(sugar && strings.HasPrefix(rest, "[")) {
-				return nameColon, i
-			}
-		}
-		atStart = false
+// pathOf is the path the tokens spell. An error is the tokenizer's fault:
+// input that is not a path at all, which the caller skips with a diagnostic.
+func pathOf(tok *Tokens, text string) (pathScan, error) {
+	if tok.Fault >= 0 {
+		return pathScan{}, errors.New(tok.FaultReason)
 	}
-	return nameEnd, 0
-}
-
-// valueCommentAt is the offset of the `#` that starts a comment in value text,
-// scanning from `from`; -1 when there is none. A quote opens a quoted piece
-// only at the start of a piece - the start of the value, or after an unquoted
-// comma - which is the spec's rule: a piece is quoted only when it begins with
-// one. So an apostrophe in prose (don't panic  # keep) hides nothing. `\`
-// shields the next char.
-func valueCommentAt(s string, from int) int {
-	var inQuote rune
-	atStart := true
-	skip := false
-	for i, c := range s[from:] {
-		if skip {
-			skip = false
-			continue
-		}
-		if c == '\\' {
-			skip = true
-			atStart = false
-			continue
-		}
-		if inQuote != 0 {
-			if c == inQuote {
-				inQuote = 0
-			}
-		} else {
-			switch {
-			case (c == '"' || c == '\'') && atStart:
-				inQuote = c
-			case c == '#':
-				return from + i
-			case c == ',':
-				atStart = true
-				continue
+	segments := make([]segment, 0, len(tok.Segments))
+	for i := range tok.Segments {
+		seg := &tok.Segments[i]
+		raw := text[seg.Name.Start:seg.Name.End]
+		// Names resolve escapes, the same rule values follow when they are
+		// compared: two spellings of one name are one name. nameSrc keeps
+		// the source spelling, which is what AuthoredName hands back - empty
+		// when it matches, the same sentinel nodeData uses.
+		//
+		// A name with nothing to resolve and no upper case is already its
+		// own resolved, folded spelling, so the source text becomes the name
+		// and nothing else is allocated. That is nearly every name in a
+		// document, and this runs once per segment per line.
+		upper := false
+		for k := 0; k < len(raw); k++ {
+			if raw[k] >= 'A' && raw[k] <= 'Z' {
+				upper = true
+				break
 			}
 		}
-		if !isWsp(c) {
-			atStart = false
-		}
-	}
-	return -1
-}
-
-func scanPath(input string) (pathScan, error) {
-	return scanPathEx(input, false)
-}
-
-// scanLookup is the query spelling of scanPath: also accepts a bare `*`
-// segment (the name wildcard - any child name). Document lines never take it;
-// only lookups (reads, the writer probe, schema paths) do.
-func scanLookup(input string) (pathScan, error) {
-	return scanPathEx(input, true)
-}
-
-func scanPathEx(input string, stars bool) (pathScan, error) {
-	// Byte cursor with inline rune decoding (a []rune per call was a parse hot
-	// spot). Every position the scanner stops on is a rune boundary: it only
-	// byte-matches ASCII structure chars, which UTF-8 guarantees cannot appear
-	// inside a multibyte sequence, and otherwise advances by whole runes.
-	// Backslash still shields the next RUNE, multibyte included.
-	pos := 0
-	skipWS := func() {
-		for pos < len(input) && (input[pos] == ' ' || input[pos] == '\t') {
-			pos++
-		}
-	}
-	// A span rebuilt rune-by-rune matches the old []rune round-trip exactly:
-	// invalid UTF-8 bytes each become U+FFFD, valid text passes through. The
-	// valid (overwhelmingly common) case slices instead of copying.
-	spanString := func(s string) string {
-		if utf8.ValidString(s) {
-			return s
-		}
-		var out []rune
-		for _, c := range s {
-			out = append(out, c)
-		}
-		return string(out)
-	}
-	readQuoted := func() (string, error) {
-		q := rune(input[pos]) // caller checked: ASCII quote
-		pos++
-		var out strings.Builder
-		for {
-			if pos >= len(input) {
-				return "", errors.New("unterminated quote")
-			}
-			c, cw := utf8.DecodeRuneInString(input[pos:])
-			if c == '\\' && pos+1 < len(input) {
-				next, nw := utf8.DecodeRuneInString(input[pos+1:])
-				out.WriteRune(c)
-				out.WriteRune(next)
-				pos += 1 + nw
-				continue
-			}
-			pos += cw
-			if c == q {
-				return out.String(), nil
-			}
-			out.WriteRune(c)
-		}
-	}
-	var segments []segment
-	for {
-		skipWS()
-		if pos >= len(input) {
-			return pathScan{}, errors.New("empty path")
-		}
-		// Field name: quoted, bare, or (lookups only) the `*` name wildcard.
-		var name string
-		star := false
-		if input[pos] == '"' || input[pos] == '\'' {
-			n, err := readQuoted()
-			if err != nil {
-				return pathScan{}, err
-			}
-			name = n
-		} else if stars && input[pos] == '*' {
-			pos++
-			star = true
-			name = "*"
-		} else {
-			start := pos
-			// Bare-name chars are ASCII, so the byte-as-rune view is exact
-			// (bytes >= 0x80 map to runes the predicate rejects either way).
-			for pos < len(input) && isBareNameChar(rune(input[pos])) {
-				pos++
-			}
-			if pos == start {
-				c, _ := utf8.DecodeRuneInString(input[pos:])
-				return pathScan{}, fmt.Errorf("expected field name, found '%c'", c)
-			}
-			name = input[start:pos]
+		plain := (seg.Name.Quote != QuoteDouble || !strings.Contains(raw, "\\")) && !upper
+		name, nameSrc := raw, ""
+		if !plain {
+			name, nameSrc = asciiLower(pieceText(&seg.Name, text)), raw
 		}
 		var sel *selector
-		skipWS()
-		// Optional selector, with its optional sugar colon (colon counts as
-		// selector sugar only when the next non-ws char is an open bracket).
-		bracketAt := -1
-		if pos < len(input) && input[pos] == '[' {
-			bracketAt = pos
-		} else if pos < len(input) && input[pos] == ':' {
-			q := pos + 1
-			for q < len(input) && (input[q] == ' ' || input[q] == '\t') {
-				q++
-			}
-			if q < len(input) && input[q] == '[' {
-				bracketAt = q
-			}
+		if seg.Selector != nil {
+			s := selectorOf(seg.Selector, text)
+			sel = &s
 		}
-		if bracketAt >= 0 {
-			pos = bracketAt + 1
-			skipWS()
-			if pos < len(input) && (input[pos] == '"' || input[pos] == '\'') {
-				v, err := readQuoted()
-				if err != nil {
-					return pathScan{}, err
-				}
-				// quotes force a value match, even numeric - and scalar-only
-				sel = &selector{kind: selByValue, value: v, quoted: true}
-			} else {
-				start := pos
-				for pos < len(input) && input[pos] != ']' {
-					pos++
-				}
-				body := trimWsp(spanString(input[start:pos]))
-				if body == "*" {
-					sel = &selector{kind: selWildcard}
-				} else if n, ok := hashIndex(body); ok {
-					sel = &selector{kind: selByIndex, index: n}
-				} else if n, ok := parseIndex(body); ok {
-					sel = &selector{kind: selByIndex, index: n}
-				} else if indexShape(body) {
-					// All digits but past uint64: an index no instance can have,
-					// not a value selector that would create one on a write.
-					sel = &selector{kind: selByIndex, index: math.MaxUint64}
-				} else if body == "" {
-					return pathScan{}, errors.New("empty selector")
-				} else {
-					sel = &selector{kind: selByValue, value: normalizeDanglingBackslash(body)}
-				}
-			}
-			skipWS()
-			if pos >= len(input) || input[pos] != ']' {
-				return pathScan{}, errors.New("unterminated selector")
-			}
-			pos++
-			skipWS()
-		}
-		if star && sel != nil {
-			return pathScan{}, errors.New("selector on a name wildcard")
-		}
-		// Names resolve escapes, the same rule values follow when they are
-		// compared: two spellings of one name are one name. nameSrc keeps the
-		// source spelling, which is what AuthoredName hands back.
-		segments = append(segments, segment{name: asciiLower(applyEscapes(name)), nameSrc: name, sel: sel, star: star})
-		if pos >= len(input) {
-			return pathScan{segments: segments}, nil
-		}
-		switch input[pos] {
-		case '.':
-			pos++
-		case ':':
-			pos++
-			rest := trimWsp(spanString(input[pos:]))
-			return pathScan{segments: segments, valueText: &rest}, nil
-		default:
-			c, _ := utf8.DecodeRuneInString(input[pos:])
-			return pathScan{}, fmt.Errorf("unexpected '%c' after field", c)
-		}
+		segments = append(segments, segment{name: name, nameSrc: nameSrc, sel: sel, star: seg.Star})
 	}
+	var valueText *string
+	if tok.Sep >= 0 {
+		v := text[tok.Value[0]:tok.Value[1]]
+		valueText = &v
+	}
+	return pathScan{segments: segments, valueText: valueText}, nil
+}
+
+// scanLookup scans a lookup path `a . b [sel] . c`: the document-line
+// spelling plus the bare `*` segment (the name wildcard - any child name),
+// which document lines never take; only lookups (reads, the writer probe,
+// schema paths) do. Whitespace around dots, colons and brackets is
+// insignificant.
+func scanLookup(input string) (pathScan, error) {
+	var tok Tokens
+	Tokenize(input, ':', true, RulesCurrent, &tok)
+	return pathOf(&tok, input)
 }
 
 // indexShape is the spelling of an index selector - an optional `#`, an
@@ -2227,7 +2424,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int, inden
 // text (escapes applied), or ok=false. Quoted selectors only match a single
 // scalar.
 func (p *parser) findByValue(cur int, name, text string, quoted bool) (int, bool) {
-	want := applyEscapes(text)
+	want := text
 	found, ok := 0, false
 	if m := p.dispMap[cur]; m != nil {
 		if c, hit := m[dispHashText(name, want)]; hit && p.arena[c].name == name && dispKey(&p.arena[c].value) == want {
@@ -2305,7 +2502,7 @@ func (p *parser) bindBlock(parent int, v value, line int, indent string) int {
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
 // parent's array.
-func (p *parser) addStarElement(parent int, body string, line int, indent string) {
+func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, indent string) {
 	if parent == root {
 		p.refuse(line, "E007", "list element with no parent field", outDropped, indent)
 		return
@@ -2315,23 +2512,19 @@ func (p *parser) addStarElement(parent int, body string, line int, indent string
 		p.refuse(line, "E008", "list element mixed with field children; ignored", outDropped, indent)
 		return
 	}
-	trimmed := trimWsp(body)
-	if trimmed == "" {
-		p.refuse(line, "E009", "empty list element", outDropped, indent)
-		return
-	}
 	// One scalar per line; a bare comma is an error, not a second element.
-	if len(splitUnquotedCommas(trimmed)) > 1 {
+	if len(tok.Elements) > 1 {
 		p.refuse(line, "E010", "bare comma in list element (one element per line)", outDropped, indent)
 		return
 	}
-	if unterminatedQuote(trimmed) {
-		p.err(line, "E017", "unterminated quote in value")
-	}
-	el, ok := parseElement(trimmed)
+	piece := tok.Elements[0]
+	el, ok := elementOf(&piece, text)
 	if !ok {
 		p.refuse(line, "E009", "empty list element", outDropped, indent)
 		return
+	}
+	if piece.Quote == QuoteOpen {
+		p.err(line, "E017", "unterminated quote in value")
 	}
 	// Element cap: each element line past it is refused on its own, the way
 	// any other bad element line is.
@@ -2441,6 +2634,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	}
 	i := 0
 	nodeCapped := false
+	tok := Tokens{Cap: p.maxElements}
 	for i < len(lines) {
 		// Node cap: reported at the first line not parsed, so the count can
 		// overshoot by at most one line's path. The unparsed remainder counts
@@ -2476,24 +2670,32 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// A binding line claims the pending comments - but deeper-written
 		// ones hang on their own block first.
 		p.hangDeeperPending(indent)
-		// Child-indent fence: a value line for its parent field.
-		if ch, length, info, ok := fenceOpen(rest); ok {
-			parent, okp := p.resolveParent(indent)
-			v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
-			if !okp {
-				// The body goes with its fence: parsed live, it would read as
-				// root bindings and the closing fence would open a second block.
-				p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
+		// Child-indent fence: a value line for its parent field. The fence
+		// and its info string are the value; a comment may follow them.
+		if rest[0] == '`' || rest[0] == '~' {
+			TokenizeValue(rest, 0, RulesCurrent, &tok)
+			if ch, length, info, ok := fenceOpen(rest[tok.Value[0]:tok.Value[1]]); ok {
+				comment := ""
+				if tok.Comment >= 0 {
+					comment = rest[tok.Comment:]
+				}
+				parent, okp := p.resolveParent(indent)
+				v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
+				if !okp {
+					// The body goes with its fence: parsed live, it would read as
+					// root bindings and the closing fence would open a second block.
+					p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
+					i = next
+					continue
+				}
+				if parent == dead {
+					p.skipUnderDead(lineno, indent)
+				} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
+					p.attachTrivia(node, comment)
+				}
 				i = next
 				continue
 			}
-			if parent == dead {
-				p.skipUnderDead(lineno, indent)
-			} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
-				p.attachTrivia(node, "")
-			}
-			i = next
-			continue
 		}
 		// Stacked-list element: colon-less by construction ('*' can't begin a name).
 		if strings.HasPrefix(rest, "*") {
@@ -2517,7 +2719,11 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					i++
 					continue
 				}
-				body, comment := splitValueComment(after)
+				TokenizeValue(rest, 1, RulesCurrent, &tok)
+				comment := ""
+				if tok.Comment >= 0 {
+					comment = rest[tok.Comment:]
+				}
 				// Elements have no node of their own; trivia rides the field. At the
 				// root there is no field (E007), so the comment rides the document like
 				// any other pending one.
@@ -2526,7 +2732,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				} else if comment != "" {
 					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 				}
-				p.addStarElement(parent, body, lineno, indent)
+				p.addStarElement(parent, &tok, rest, lineno, indent)
 				i++
 				continue
 			}
@@ -2549,27 +2755,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		// Field line.
-		before, comment := splitComment(rest)
-		// A same-line fence runs to the end of the line: the child-indent
-		// spelling keeps a `#` in its info-string, the grammar gives the
-		// same-line alternative no comment at all, and the emitter already
-		// assumes it. Without this, `a: ```c#` loses the `#`. The cheap test
-		// comes first so an ordinary commented line is not scanned twice.
-		if comment != "" && (strings.Contains(before, "```") || strings.Contains(before, "~~~")) {
-			if sc, err := scanPath(trimEndWS(before)); err == nil && sc.valueText != nil {
-				if _, _, _, okf := fenceOpen(*sc.valueText); okf {
-					before, comment = rest, ""
-				}
-			}
-		}
-		content := trimEndWS(before)
-		if content == "" {
-			// Only a comment survived (e.g. an escaped lead-in); keep it.
-			if comment != "" {
-				p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
-			}
-			i++
-			continue
+		Tokenize(rest, ':', false, RulesCurrent, &tok)
+		comment := ""
+		if tok.Comment >= 0 {
+			comment = rest[tok.Comment:]
 		}
 		parent, okp := p.resolveParent(indent)
 		if !okp {
@@ -2582,7 +2771,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			i++
 			continue
 		}
-		scan, serr := scanPath(content)
+		scan, serr := pathOf(&tok, rest)
 		if serr != nil {
 			// Content-malformed at any position, so retained - except a line
 			// led by a BOM, which the file-start strip would rewrite into
@@ -2596,53 +2785,47 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		next := i + 1
+		// Element cap: the whole line is refused, so a capped load never
+		// holds a truncated array that would read as the document's value.
+		// The scan stopped at the cap, so nothing past it was built either.
+		if tok.Capped {
+			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
+			i = next
+			continue
+		}
 		// The verbatim value span, kept for reads' Raw (only the plain
 		// scalar/inline-array case has a one-line source spelling).
 		srcText, haveSrc := "", false
 		var v value
 		switch {
 		case scan.valueText == nil:
-			if body, ok := bracketArrayBody(content); ok {
-				if len(splitUnquotedCommas(body)) > 1 {
-					// Two or more elements folded into one string. The brackets
-					// never survive the load, so a rewrite would bake the
-					// changed value in and the file would check clean forever
-					// after. Count it lost so the save gate stops that.
-					p.refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", outValueDropped, indent)
-				} else {
-					// One element reads as the selector the scanner made of it -
-					// `[Boston]` is `Boston` - and `field:[disc]` is documented
-					// sugar, so nothing is lost. A hint, for the JSON habit;
-					// same code, like E022.
-					p.diag(Diagnostic{Line: lineno, Severity: SeverityHint, Message: "bracket array syntax; read as a selector, the same value without the brackets", Code: "E019"})
-				}
-			} else {
-				// A clean path with no colon is the one defined repair:
-				// the obvious intent is that path with an empty value.
-				p.err(lineno, "E015", "missing colon; repaired as an empty value")
-			}
+			// A clean path with no colon is the one defined repair: the
+			// obvious intent is that path with an empty value.
+			p.err(lineno, "E015", "missing colon; repaired as an empty value")
 			v = value{kind: vEmpty}
 		case *scan.valueText == "":
 			v = value{kind: vEmpty}
+		case strings.HasPrefix(*scan.valueText, "["):
+			// A value spelled the way JSON, TOML and YAML spell an array. The
+			// brackets are not a selector after the colon, and reading the
+			// text without them would bake a changed value in, so the line
+			// is kept verbatim.
+			p.refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", outRetained(trimEndWS(rest), hadBlank), indent)
+			i = next
+			continue
 		default:
 			if ch, length, info, ok := fenceOpen(*scan.valueText); ok {
 				// Same-line fence spelling.
 				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
-				// Element cap: the whole line is refused, so a capped load
-				// never holds a truncated array that would read as the
-				// document's value. Counted before anything splits the value
-				// (the quote check does too), or the cap would bound nothing.
-				if p.maxElements != 0 && cellExceeds(*scan.valueText, p.maxElements) {
-					p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
-					i = next
-					continue
-				}
-				if unterminatedQuote(*scan.valueText) {
-					p.err(lineno, "E017", "unterminated quote in value")
+				for k := range tok.Elements {
+					if tok.Elements[k].Quote == QuoteOpen {
+						p.err(lineno, "E017", "unterminated quote in value")
+						break
+					}
 				}
 				srcText, haveSrc = *scan.valueText, true
-				v = parseCell(*scan.valueText)
+				v = cellOfTokens(&tok, rest)
 			}
 		}
 		// Record only when the bound node holds exactly this line's value
@@ -3497,7 +3680,7 @@ func emitElement(e *element) string {
 	if !needs {
 		for _, c := range t {
 			switch c {
-			case ' ', '\t', ',', ':', '#', '"', '\'', '[', ']':
+			case ' ', '\t', '\n', ',', ':', '#', '"', '\'', '[', ']':
 				needs = true
 			}
 			if needs {
@@ -3569,53 +3752,31 @@ func isDataFormat(e *element) bool {
 	return false
 }
 
-// bareQuoteCounts counts quote chars that are NOT already escaped in the raw
-// text; escaped ones must stay untouched or every round-trip would re-escape them.
-func bareQuoteCounts(t string) (dq, sq int) {
-	// Bytes: the three characters matched are ASCII, and a continuation byte
-	// matches none of them, so skipping one byte after a backslash counts the
-	// same as skipping one rune.
-	for i := 0; i < len(t); i++ {
-		switch t[i] {
-		case '\\':
-			i++
-		case '"':
-			dq++
-		case '\'':
-			sq++
-		}
-	}
-	return dq, sq
-}
-
+// quoteText quotes a logical string so the tokenizer reads it back as the
+// same string. Single quotes are literal, so they are the spelling for text
+// holding a double quote or a backslash; double quotes carry the escapes, so
+// they are the spelling for a line break, a tab, or text holding both quote
+// kinds.
 func quoteText(t string) string {
-	// A dangling trailing backslash would turn the closing quote into an
-	// escape pair - the scanner reads the path back wrong, or not at all.
-	// Store the doubled spelling (identical on string read), the same rule
-	// the element parser applies to bare text.
-	if strings.HasSuffix(t, "\\") {
-		t = normalizeDanglingBackslash(t)
-	}
-	dq, sq := bareQuoteCounts(t)
-	if dq == 0 {
-		return "\"" + t + "\""
-	}
-	if sq == 0 {
+	control := strings.ContainsAny(t, "\n\t")
+	if !control && !strings.Contains(t, "'") && strings.ContainsAny(t, "\"\\") {
 		return "'" + t + "'"
 	}
-	// Both quote kinds appear bare: escape the doubles, wrap in doubles.
+	// Bytes: every escape written here is ASCII, and a continuation byte is
+	// none of them, so the rest of the text copies through untouched.
 	var out strings.Builder
+	out.Grow(len(t) + 2)
 	out.WriteByte('"')
 	for i := 0; i < len(t); i++ {
 		switch t[i] {
 		case '\\':
-			out.WriteByte(t[i])
-			if i+1 < len(t) {
-				i++
-				out.WriteByte(t[i])
-			}
+			out.WriteString("\\\\")
 		case '"':
 			out.WriteString("\\\"")
+		case '\n':
+			out.WriteString("\\n")
+		case '\t':
+			out.WriteString("\\t")
 		default:
 			out.WriteByte(t[i])
 		}
@@ -3738,7 +3899,7 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 		case seg.sel == nil:
 			cur = next
 		case seg.sel.kind == selByValue:
-			want := applyEscapes(seg.sel.value)
+			want := seg.sel.value
 			var filtered []int
 			for _, c := range next {
 				if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
@@ -3980,68 +4141,28 @@ func boolText(v bool) string {
 // literalValue reads text as the value half of a line, for the setters that
 // take value syntax rather than data. Rejects what could not have come off one
 // line: a line break, or a quote that never closes. An unquoted # ends the
-// value here exactly as it would in a file.
+// value here exactly as it would in a file. Bracket-array text is refused
+// too: in a file it is E019 and the line is kept verbatim, so writing it as a
+// two-element array holding `[1` and `2]` would be a different wrong answer.
 func literalValue(text string) (value, bool) {
 	if strings.ContainsAny(text, "\n\r") {
 		return value{}, false
 	}
-	v, _ := splitValueComment(text)
-	v = trimWsp(v)
-	// Bracket-array text is refused too: in a file it is E019 and the line is
-	// lost, so writing it as a two-element array holding `[1` and `2]` would
-	// be a different wrong answer.
-	if unterminatedQuote(v) || (strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]")) {
+	var tok Tokens
+	TokenizeValue(text, 0, RulesCurrent, &tok)
+	for i := range tok.Elements {
+		if tok.Elements[i].Quote == QuoteOpen {
+			return value{}, false
+		}
+	}
+	if strings.HasPrefix(text[tok.Value[0]:], "[") {
 		return value{}, false
 	}
-	return parseCell(v), true
+	return cellOfTokens(&tok, text), true
 }
 
 func cellOf(text string) value {
 	return value{kind: vCell, els: []element{{text: text}}}
-}
-
-// encodeString is the inverse of a scalar string read (applyEscapes): only
-// backslash, newline, and tab need encoding; emitElement wraps quote/reserved
-// chars itself, and reparse strips that wrapping.
-func encodeString(s string) string {
-	var b strings.Builder
-	for _, c := range s {
-		switch c {
-		case '\\':
-			b.WriteString("\\\\")
-		case '\n':
-			b.WriteString("\\n")
-		case '\t':
-			b.WriteString("\\t")
-		default:
-			b.WriteRune(c)
-		}
-	}
-	out := b.String()
-	// The emitter escapes a bare double quote when both quote kinds appear, so
-	// a reparse of the written line stores the escaped spelling. Store it here
-	// too, or Instances and a read's raw text differ between a written document
-	// and its own reload.
-	dq, sq := bareQuoteCounts(out)
-	if dq > 0 && sq > 0 {
-		var e strings.Builder
-		for i := 0; i < len(out); i++ {
-			switch out[i] {
-			case '\\':
-				e.WriteByte(out[i])
-				if i+1 < len(out) {
-					i++
-					e.WriteByte(out[i])
-				}
-			case '"':
-				e.WriteString("\\\"")
-			default:
-				e.WriteByte(out[i])
-			}
-		}
-		return e.String()
-	}
-	return out
 }
 
 // chooseFence picks a backtick fence long enough that no content line closes it.
@@ -4151,7 +4272,7 @@ func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
 			}
 		case seg.sel.kind == selByValue:
 			if alive {
-				want := applyEscapes(seg.sel.value)
+				want := seg.sel.value
 				alive = false
 				for _, c := range d.childrenNamed(probe, seg.name) {
 					if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
@@ -4440,7 +4561,7 @@ func (d *Document) SetString(path, v string) bool {
 	if !utf8.ValidString(v) {
 		return false
 	}
-	return d.setValue(path, cellOf(encodeString(v)))
+	return d.setValue(path, cellOf(v))
 }
 
 // SetDateTime binds a datetime at path, in its canonical spelling. The
@@ -4466,7 +4587,14 @@ func (d *Document) SetEmpty(path string) bool {
 // fails for the same reason: the load takes the whole trailing CR run off every
 // line, so it would not read back.
 func (d *Document) SetRaw(path, content, info string) bool {
-	if _, c := splitComment(info); strings.ContainsAny(info, "\n\r") || c != "" {
+	if strings.ContainsAny(info, "\n\r") {
+		return false
+	}
+	// The fence line the block will be written as: the fence run and the
+	// info string are one bare piece, so a quote in the info hides nothing.
+	var tok Tokens
+	TokenizeValue("```"+info, 0, RulesCurrent, &tok)
+	if tok.Comment >= 0 {
 		return false
 	}
 	for _, line := range strings.Split(content, "\n") {
@@ -4518,7 +4646,7 @@ func (d *Document) SetStringArray(path string, v []string) bool {
 		if !utf8.ValidString(x) {
 			return false
 		}
-		texts[i] = encodeString(x)
+		texts[i] = x
 	}
 	return d.setValue(path, arrayCell(texts))
 }
@@ -5602,7 +5730,7 @@ func (d *Document) ReadString(path string) Read[string] {
 	case v.kind == vRaw:
 		return Read[string]{Value: v.raw.content, Status: Good, Raw: &raw}.at(line, false)
 	case len(v.els) == 1:
-		return Read[string]{Value: applyEscapes(v.els[0].text), Status: Good, Raw: &raw}.at(line, v.els[0].quoted)
+		return Read[string]{Value: v.els[0].text, Status: Good, Raw: &raw}.at(line, v.els[0].quoted)
 	}
 	// Canonical inline form (quoting + escapes intact), so the string
 	// re-parses to the same array - not the bare display join.
@@ -5747,7 +5875,7 @@ func (d *Document) ReadDateTimeArray(path string) Read[[]DateTime] {
 
 // ReadStringArray is the full-tier string-array read at path, escapes applied per element.
 func (d *Document) ReadStringArray(path string) Read[[]string] {
-	return readArray(d, path, func(e *element) (string, bool) { return applyEscapes(e.text), true })
+	return readArray(d, path, func(e *element) (string, bool) { return e.text, true })
 }
 
 // Full tier, status form: the value is only meaningful when the status is
@@ -6027,7 +6155,7 @@ func vdiag(out *[]Diagnostic, line int, code, msg string) {
 // singleText is one scalar constraint value (escapes applied), or not.
 func singleText(v *value) (string, bool) {
 	if v.kind == vCell && len(v.els) == 1 {
-		return applyEscapes(v.els[0].text), true
+		return v.els[0].text, true
 	}
 	return "", false
 }
@@ -6282,7 +6410,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 			if c.desc == nil && kid.value.kind == vCell {
 				parts := make([]string, len(kid.value.els))
 				for i := range kid.value.els {
-					parts[i] = applyEscapes(kid.value.els[i].text)
+					parts[i] = kid.value.els[i].text
 				}
 				t := strings.Join(parts, ", ")
 				c.desc = &t
@@ -6369,7 +6497,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		default:
 			set.kind = allowStrings
 			for i := range els {
-				set.strs = append(set.strs, applyEscapes(els[i].text))
+				set.strs = append(set.strs, els[i].text)
 			}
 		}
 		if ok {
@@ -6904,25 +7032,32 @@ func namesKey(names []string) string {
 	return b.String()
 }
 
-// genSelectorText is a default's spelling inside a `[value]` selector: the
-// value-side text as is, except that a bracket or a backslash would end or
-// escape the selector, so those go quoted (the selector matches on the
-// escaped display, so the quoted spelling finds the bare value).
+// genSelectorText is a default's spelling inside a `[value]` selector. A
+// quoted element is already a quoted selector body. A bare spelling goes in
+// as is unless a bare body would read it as something else - a bracket ends
+// the selector, a leading quote opens one, edge whitespace is trimmed, a
+// whitespace-`#` opens a comment, digits or `*` name an index or the
+// wildcard - and those go quoted (the selector matches on the display form,
+// so the quoted spelling finds the bare value).
 func genSelectorText(v string) string {
 	if strings.Contains(v, "\n") {
 		return genDefaultText(v)
 	}
-	// The scanner reads a bare selector body as an index when it is all digits
-	// (with an optional sign or `#`), and as a wildcard when it is `*`, so a
-	// default of that shape has to be quoted or the line names an instance
-	// that is not there.
+	var tok Tokens
+	TokenizeValue(v, 0, RulesCurrent, &tok)
+	if len(tok.Elements) == 1 && (tok.Elements[0].Quote == QuoteSingle || tok.Elements[0].Quote == QuoteDouble) &&
+		tok.Value == [2]int{0, len(v)} {
+		return v
+	}
 	body := strings.TrimSpace(v)
 	_, isIndex := parseIndex(body)
 	if !isIndex {
 		_, isIndex = hashIndex(body)
 	}
 	readsAsSelector := body == "*" || isIndex
-	if (strings.ContainsAny(v, "[]\\") || readsAsSelector) && !quotedShape(v) {
+	needs := v != trimWsp(v) || strings.HasPrefix(v, "\"") || strings.HasPrefix(v, "'") ||
+		strings.ContainsAny(v, "[]\t") || tok.Comment >= 0 || readsAsSelector
+	if needs {
 		return quoteText(v)
 	}
 	return v
@@ -7169,7 +7304,7 @@ func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vCo
 		}
 		switch seg.sel.kind {
 		case selByValue:
-			want := applyEscapes(seg.sel.value)
+			want := seg.sel.value
 			cur = nil
 			for _, c := range next {
 				if dispKey(&d.arena[c].value) == want && (!seg.sel.quoted || singleScalar(&d.arena[c].value)) {
@@ -7373,7 +7508,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			// set can fail, in logical-string space.
 			if c.allowed != nil && c.allowed.kind == allowStrings {
 				for i := range els {
-					s := applyEscapes(els[i].text)
+					s := els[i].text
 					if !containsString(c.allowed.strs, s) {
 						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(s)))
 						break
