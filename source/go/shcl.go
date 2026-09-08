@@ -817,6 +817,23 @@ func skipWsp(s string, pos int) int {
 	return pos
 }
 
+// crRunToComment is the end of a run of blanks and carriage returns that holds
+// at least one CR and runs into a `#`, or -1. 2.x cut a line at its first `#`
+// and then trimmed blanks and CR off the end of the half before it, so such a
+// run was never content. A CR anywhere else was malformed to 2.x as well, which
+// is why only this one position needs saying.
+func crRunToComment(s string, from int) int {
+	k, cr := from, false
+	for k < len(s) && (isWspByte(s[k]) || s[k] == '\r') {
+		cr = cr || s[k] == '\r'
+		k++
+	}
+	if cr && k < len(s) && s[k] == '#' {
+		return k
+	}
+	return -1
+}
+
 // utf8Len is the byte length of the UTF-8 character that starts with b. The
 // scan only ever compares against ASCII structure characters, which UTF-8
 // guarantees cannot appear inside a multibyte sequence, so it advances by
@@ -1047,6 +1064,11 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			name = Piece{Start: start, End: pos, Quote: QuoteNone}
 		}
 		pos = skipWsp(s, pos)
+		if rules == RulesV2 {
+			if k := crRunToComment(s, pos); k >= 0 {
+				pos = k
+			}
+		}
 		var selector *Piece
 		open := -1
 		if pos < len(s) && s[pos] == '[' {
@@ -1078,6 +1100,11 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			}
 			selector = &piece
 			pos = skipWsp(s, stop+1)
+			if rules == RulesV2 {
+				if k := crRunToComment(s, pos); k >= 0 {
+					pos = k
+				}
+			}
 		}
 		out.Segments = append(out.Segments, SegTok{Name: name, Selector: selector, Star: star})
 		if pos >= len(s) {
@@ -1567,8 +1594,9 @@ type openFence struct {
 // re-spelled only where the two rule sets disagree: a bare or single-quoted
 // piece whose backslash meant an escape is double-quoted with that escape; a
 // piece that opened a quote it never closed is quoted whole; a `#` that
-// opened a comment with no space before it gets one; the `name:[disc]`
-// selector sugar loses its colon, and on a last segment becomes `name: disc`.
+// opened a comment with no space before it gets one, and a CR run before
+// one goes with it, since 2.x trimmed that; the `name:[disc]` selector sugar
+// loses its colon, and on a last segment becomes `name: disc`.
 // Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 // could not read - comes through as written. One shape has no spelling here
 // at all: a fence line whose info string holds a whitespace-`#`, which now
@@ -1677,6 +1705,10 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 	if rest == "" || strings.HasPrefix(rest, "#") {
 		return rest
 	}
+	// A whole line 2.x read as a comment, once its leading CR run went.
+	if k := crRunToComment(rest, 0); k >= 0 {
+		return rest[k:]
+	}
 	// A child-indent fence: 2.x read the info string to the end of the line.
 	if ch, length, _, ok := fenceOpen(rest); ok {
 		*fence = openFence{ch: ch, length: length, open: true}
@@ -1779,8 +1811,16 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 			valueEdits(rest, tok, &edits)
 		}
 	}
-	if c := tok.Comment; c > 0 && !isWspByte(s[c-1]) {
-		edits = append(edits, edit{start: c, end: c, with: " "})
+	if c := tok.Comment; c >= 0 {
+		a := c
+		for a > 0 && (isWspByte(s[a-1]) || s[a-1] == '\r') {
+			a--
+		}
+		if strings.ContainsRune(s[a:c], '\r') {
+			edits = append(edits, edit{start: a, end: c, with: " "})
+		} else if a == c && c > 0 {
+			edits = append(edits, edit{start: c, end: c, with: " "})
+		}
 	}
 	return splice(rest, edits)
 }

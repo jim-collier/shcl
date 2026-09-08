@@ -1,0 +1,7 @@
+query	type	expected	status	level
+-	load	ok	-
+-	load	fail	-	strict
+ok	int	1	Good
+my	string	-	NotFound
+srv[web].port	int	-	NotFound
+-	lost	0	-

@@ -792,6 +792,21 @@ fn skip_wsp(s: &[u8], pos: &mut usize) {
 	}
 }
 
+/// End of a run of blanks and carriage returns that holds at least one CR and
+/// runs into a `#`. 2.x cut a line at its first `#` and then trimmed blanks and
+/// CR off the end of the half before it, so such a run was never content. A CR
+/// anywhere else was malformed to 2.x as well, which is why only this one
+/// position needs saying.
+fn cr_run_to_comment(s: &[u8], from: usize) -> Option<usize> {
+	let mut k = from;
+	let mut cr = false;
+	while k < s.len() && (is_wsp_byte(s[k]) || s[k] == b'\r') {
+		cr |= s[k] == b'\r';
+		k += 1;
+	}
+	(cr && k < s.len() && s[k] == b'#').then_some(k)
+}
+
 /// Byte length of the UTF-8 character that starts with `b`. The scan only
 /// ever compares against ASCII structure characters, which UTF-8 guarantees
 /// cannot appear inside a multibyte sequence, so it advances by whole
@@ -1050,6 +1065,11 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			}
 		};
 		skip_wsp(s, &mut pos);
+		if rules == Rules::V2
+			&& let Some(k) = cr_run_to_comment(s, pos)
+		{
+			pos = k;
+		}
 		let mut selector = None;
 		let mut open = (pos < s.len() && s[pos] == b'[').then_some(pos);
 		if open.is_none() && rules == Rules::V2 && pos < s.len() && s[pos] == sep {
@@ -1080,6 +1100,11 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			selector = Some(piece);
 			pos = stop + 1;
 			skip_wsp(s, &mut pos);
+			if rules == Rules::V2
+				&& let Some(k) = cr_run_to_comment(s, pos)
+			{
+				pos = k;
+			}
 		}
 		out.segments.push(SegTok {
 			name,
@@ -1443,7 +1468,8 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 /// where the two rule sets disagree: a bare or single-quoted piece whose
 /// backslash meant an escape is double-quoted with that escape; a piece
 /// that opened a quote it never closed is quoted whole; a `#` that opened a
-/// comment with no space before it gets one; the `name:[disc]` selector
+/// comment with no space before it gets one, and a CR run before one goes
+/// with it, since 2.x trimmed that; the `name:[disc]` selector
 /// sugar loses its colon, and on a last segment becomes `name: disc`.
 /// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 /// could not read - comes through as written. One shape has no spelling
@@ -1546,6 +1572,10 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 	if rest.is_empty() || rest.starts_with('#') {
 		return rest.to_string();
 	}
+	// A whole line 2.x read as a comment, once its leading CR run went.
+	if let Some(k) = cr_run_to_comment(rest.as_bytes(), 0) {
+		return rest[k..].to_string();
+	}
 	// A child-indent fence: 2.x read the info string to the end of the line.
 	if let Some((ch, len, _)) = fence_open(rest) {
 		*fence = Some((ch, len));
@@ -1641,11 +1671,16 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 			value_edits(rest, tok, &mut edits);
 		}
 	}
-	if let Some(c) = tok.comment
-		&& c > 0
-		&& !is_wsp_byte(s[c - 1])
-	{
-		edits.push((c, c, " ".to_string()));
+	if let Some(c) = tok.comment {
+		let mut a = c;
+		while a > 0 && (is_wsp_byte(s[a - 1]) || s[a - 1] == b'\r') {
+			a -= 1;
+		}
+		if s[a..c].contains(&b'\r') {
+			edits.push((a, c, " ".to_string()));
+		} else if a == c && c > 0 {
+			edits.push((c, c, " ".to_string()));
+		}
 	}
 	splice(rest, edits)
 }

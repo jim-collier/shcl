@@ -173,7 +173,8 @@ through the same gate as
 Only what the two rule sets read differently is touched: a backslash 2.x read
 as an escape outside double quotes, a quote that never closed, a
 .B #
-with no space before it, and the
+with no space before it (and any carriage-return run behind it, which 2.x
+trimmed), and the
 .B name:[disc]
 selector sugar. Comments, blank lines, raw bodies and layout come through as
 written. The migrated text's diagnostics are printed, so a line the new rules
