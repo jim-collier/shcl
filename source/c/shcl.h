@@ -47,6 +47,17 @@
 // unwinding at all, and a C recovery point needs nothing more, since nothing in
 // between has a destructor or a __finally. Include <setjmp.h> before using it.
 // The full shape is in style-guide.md under the C deviations.
+//
+// What it costs an embedder, on mingw x86_64 only: the jump skips the unwind,
+// so a C++ frame between the recovery point and the failed allocation does not
+// run its destructors, and a __finally block does not run either. That is
+// nothing for the library's own two recovery points, and it is not nothing for
+// an embedder arming one across their own frames - so on that target, keep the
+// frames between the two plain, or accept the leak. Everywhere else the plain
+// setjmp is in use and the unwind is the platform's ordinary one. mingw takes
+// the same unwinding branch on aarch64, and nothing builds this for aarch64
+// windows today; if that changes, the shape has to be measured there before
+// the guard is widened rather than assumed to match.
 #if defined(__MINGW32__) && defined(__x86_64__) && defined(__SEH__)
 	#define SHCL_SETJMP(buf) _setjmp((buf), NULL)
 #else
@@ -112,6 +123,9 @@ typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl
 // binding's stack, so a hostile or machine-generated document can make a load
 // fail but never crash the consumer.
 #define SHCL_MAX_DEPTH ((size_t)512)
+
+// How much of a file's own name the temporary file beside it borrows.
+#define SHCL_TMP_NAME_CHARS ((size_t)64)
 
 // A parse never fails on the document's account: bad lines are skipped and
 // diagnosed. It returns NULL only when an allocation failed, which is the one
@@ -342,12 +356,21 @@ shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t 
 // and results live until shcl_free, which is the documented contract and what a
 // read-once consumer wants. A process polling the same document in a loop calls
 // it between passes so the memory does not climb.
+// It levels off rather than going to zero: the largest block stays, so the next
+// pass writes into it instead of asking the system again. The resting cost
+// after this call is therefore the size of the biggest single result the
+// process has ever taken - a shcl_to_canonical of a 100 MiB document leaves
+// about that much held until shcl_free.
 void shcl_reads_release(shcl_doc *d);
 // The write-side counterpart. A write lands in a bump arena and the value it
 // replaced stays there until shcl_free, so a process rewriting one field in a
-// loop grows by a few dozen bytes per write. Compaction rebuilds the document
-// into fresh arenas holding only what it now contains - same content, same
-// diagnostics, same lost count, same strictness - and gives the old ones back.
+// loop grows by a few dozen bytes per write, and a removed node's storage goes
+// the same way. A merge is the case that makes this matter: folding a layer
+// rebuilds every parent it touches, so a process merging in a loop grows by
+// hundreds of kilobytes a call, not dozens of bytes.
+// Compaction rebuilds the document into fresh arenas holding only what it now
+// contains - same content, same diagnostics, same lost count, same strictness -
+// and gives the old ones back.
 // Every read result is invalid after it, as after shcl_reads_release. Optional,
 // for a long-running writer; a write-once consumer never needs it. On an
 // allocation failure the document is left as it was.
@@ -428,6 +451,7 @@ char *shcl_migrate(const char *text, size_t len, size_t *out_len);
 // writes a document missing the edit, and reports success doing it.
 shcl_doc *shcl_new(void); // an empty document (start point for generation), or NULL on an allocation failure
 int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
+// A removed node's storage is not reclaimed until shcl_compact or shcl_free.
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
@@ -484,8 +508,11 @@ int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, 
 // meets an overridden leaf, so a cached upper pair is not the same document the
 // CLI's left fold produces. d keeps its own strictness, so a value from a
 // stricter layer reads with d's coercion. And a replaced node is kept until
-// shcl_free or shcl_compact: this costs a pass over the touched scopes plus an
-// index rebuild on the next read.
+// shcl_free or shcl_compact - hundreds of kilobytes a merge on a large base,
+// four orders of magnitude more than a single write, so a process folding
+// layers in a loop is the one that has to call shcl_compact rather than the one
+// that rewrites a field. It costs a pass over the touched scopes plus an index
+// rebuild on the next read.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
@@ -4378,7 +4405,9 @@ shcl_read_str shcl_read_raw(shcl_doc *d, const char *path, size_t plen) {
 shcl_read_str shcl_read_raw_info(shcl_doc *d, const char *path, size_t plen) {
 	shcl_read_str R; ShclStr p; p.p = path; p.n = plen; ShclValue *v; shcl_status st = value_at(d, p, &v);
 	if (st != SHCL_GOOD) { R.value = s_empty(); R.status = st; return R; }
+	/* An empty binding has no block, so no info string: `Empty`, the same as a `read_raw` on it. Only a value that is there and is not a block is a type mismatch. */
 	if (v->kind == V_RAW) { R.value = v->raw->info; R.status = SHCL_GOOD; }
+	else if (v->kind == V_EMPTY) { R.value = s_empty(); R.status = SHCL_EMPTY; }
 	else { R.value = s_empty(); R.status = SHCL_BAD_TYPE; }
 	return R;
 }
@@ -5030,12 +5059,21 @@ DEFINE_VEC(ShclVecVFrag, ShclVFrag)
 // `field:` path, or a mount naming no declared fragment). Key-level faults
 // keep their entry's chain, so only these two classes can turn declared
 // fields into false unknowns - the sweep runs unless one of them happened.
-typedef struct { ShclVecVCons cons; ShclVecVFrag frags; int paths_complete; } ShclVSchemaDef;
+/* fmap: fragment name -> index in frags. The other three bindings hold their
+   fragments in a map; a linear scan here made the duplicate check quadratic in
+   the fragment count, and every mount pays it again. */
+typedef struct { ShclVecVCons cons; ShclVecVFrag frags; ShclCMap fmap; int paths_complete; } ShclVSchemaDef;
+
+static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
+	uint64_t h = cmap_hash(name, s_empty());
+	for (ShclCMapEnt *e = cmap_first(&def->fmap, h); e; e = cmap_next(e, h))
+		if (s_eq(def->frags.data[e->val].name, name)) return e->val;
+	return SIZE_MAX;
+}
 
 static const ShclVecVCons *v_frag_get(const ShclVSchemaDef *def, ShclStr name) {
-	for (size_t i = 0; i < def->frags.len; i++)
-		if (s_eq(def->frags.data[i].name, name)) return &def->frags.data[i].fields;
-	return NULL;
+	size_t i = v_frag_index(def, name);
+	return i == SIZE_MAX ? NULL : &def->frags.data[i].fields;
 }
 
 static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, const char *code, ShclStr msg) {
@@ -5341,6 +5379,7 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 					v_diag(a, faults, kid->line, "V094", sb_S(&s));
 				}
 			}
+			cmap_put(a, &def->fmap, cmap_hash(name, s_empty()), def->frags.len);
 			ShclVecVFrag_push(a, &def->frags, fr);
 		} else {
 			v_diag(a, faults, node->line, "V090", v_msg3(a, "unknown schema key '", node->name, "'"));
@@ -5632,6 +5671,9 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 	arena_reset(lv);
 	ShclVecVCtx ctxs = {0};
 	v_contexts(lv, d, &start, 1, c->segs.data, c->segs.len, anchor0, &ctxs);
+	// The mount is the constraint's, not the node's, so it is looked up once
+	// here rather than once per resolved node.
+	const ShclVecVCons *fcs = c->inherits.n ? v_frag_get(def, c->inherits) : NULL;
 	for (size_t i = 0; i < ctxs.len; i++) {
 		ShclVCtx *ctx = &ctxs.data[i];
 		if (c->required && ctx->found.len == 0)
@@ -5651,7 +5693,6 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 			size_t n = ctx->found.data[k];
 			v_node(a, lv, d, c, n, out);
 			if (c->inherits.n) {
-				const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
 				if (fcs) {
 					// Two constraints can resolve to the same node and mount the
 					// same fragment there. The second mount would repeat the
@@ -5729,11 +5770,6 @@ static int star_legal(const ShclVecSeg *pats, size_t npats, ShclStr chain) {
 // constraints, row k+1 fragment k - and one that has failed is not walked
 // again: two mounts of the same fragment at the same depth used to be walked
 // both, which is 2^depth on a chain that ends unknown.
-static size_t v_frag_index(const ShclVSchemaDef *def, ShclStr name) {
-	for (size_t i = 0; i < def->frags.len; i++)
-		if (s_eq(def->frags.data[i].name, name)) return i;
-	return SIZE_MAX;
-}
 static int chain_parts_legal(const ShclVecVCons *cons, size_t set, const ShclVSchemaDef *def, ShclStr chain, size_t from, size_t at, size_t nparts, unsigned char *dead) {
 	if (dead[set * (nparts + 1) + at]) return 0;
 	for (size_t ci = 0; ci < cons->len; ci++) {
@@ -5922,8 +5958,10 @@ shcl_validation *shcl_validate(shcl_doc *d, shcl_doc *schema) {
 	free(lvls);
 	levels = NULL;
 	if (def.paths_complete) v_unknown(a, &v->scratch, d, &def, &v->diags);
-	/* This frame is about to go; the arenas outlive it. */
-	arena_guard(&v->arena, NULL);
+	/* This frame is about to go; the arenas outlive it. v->scratch is armed
+	   inside v_unknown, so it is disarmed here with the rest rather than left
+	   pointing at a frame that has returned. */
+	arena_guard(&v->arena, NULL); arena_guard(&v->scratch, NULL);
 	arena_guard(&d->index_arena, NULL); arena_guard(&d->scratch, NULL); arena_guard(&d->reads, NULL);
 	return v;
 }
@@ -6161,6 +6199,22 @@ static const char *shcl_last_sep(const char *target) {
 	return sep;
 }
 
+// At most the first 64 characters of the name, so the temp's own length is
+// fixed. Carrying the whole name put the temp over the filesystem's 255 at a
+// target name in the low 240s - and the exact cut-off moved with the width of
+// the process id, so the same file saved on one machine and failed on another.
+// A truncated name can collide; the exclusive create and the eight attempts
+// already answer that. Counted in codepoints, so the cut never splits one.
+static size_t s_tmp_base(const char *b) {
+	size_t i = 0, n = 0;
+	while (b[i] && n < SHCL_TMP_NAME_CHARS) {
+		i++;
+		while (((unsigned char)b[i] & 0xC0u) == 0x80u) i++;
+		n++;
+	}
+	return i;
+}
+
 #ifdef _WIN32
 // The path a save actually rewrites. A symlink or junction is followed, so a
 // save through a linked-in config replaces the file it points at rather than
@@ -6373,8 +6427,8 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	int fd = -1;
 	for (int attempt = 0; attempt < 8; attempt++) {
-		if (slash) sprintf(tmp, "%.*s.%s.tmp%ld.%d", (int)(slash - target + 1), target, slash + 1, (long)getpid(), attempt);
-		else sprintf(tmp, ".%s.tmp%ld.%d", target, (long)getpid(), attempt);
+		if (slash) sprintf(tmp, "%.*s.%.*s.tmp%ld.%d", (int)(slash - target + 1), target, (int)s_tmp_base(slash + 1), slash + 1, (long)getpid(), attempt);
+		else sprintf(tmp, ".%.*s.tmp%ld.%d", (int)s_tmp_base(target), target, (long)getpid(), attempt);
 #ifdef _WIN32
 		free(wtmp);
 		if (!(wtmp = shcl_widen(tmp))) break;

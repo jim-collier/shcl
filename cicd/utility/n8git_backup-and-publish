@@ -419,11 +419,6 @@ fDoesDirHaveContents(){
 	[[ ! -d "${1}" ]]                                     && return 1
 	[[   -z "$(ls -1A "${1%%/}/" 2>/dev/null || true)" ]] && return 1
 	return 0; }
-fBuildQuotedParams(){
-	local -n varName_1mtkp9p=$1 ; shift || true
-	local -i maxIdx=0
-	for i in {1..32}; do [[ -n "${!i}" ]] && maxIdx=$i; done
-	for i in $(seq 1 $maxIdx); do ((i > 1)) && varName_1mtkp9p="${varName_1mtkp9p}  "; varName_1mtkp9p="${varName_1mtkp9p}\"${!i}\""; done; }
 fMustBeInPath(){
 	##	Unit tests passed on: 20250704.
 	local -r programToCheckForInPath="${1:-}"
@@ -449,7 +444,7 @@ fPromptYN(){
 ## Echo-related
 declare -i _wasLastEchoBlank=0
 function fEcho_ResetBlankCounter() { _wasLastEchoBlank=0; }
-function fEcho_Clean()             { if [[ -n "${1:-}" ]]; then echo -e "$*"; _wasLastEchoBlank=0; elif [[ $_wasLastEchoBlank -eq 0 ]] && echo; then _wasLastEchoBlank=1; fi; }
+function fEcho_Clean()             { if [[ -n "${1:-}" ]]; then echo -e "$*"; _wasLastEchoBlank=0; elif [[ "${_wasLastEchoBlank}" == 0 ]] && echo; then _wasLastEchoBlank=1; fi; }
 function fEcho()                   { if [[ -n "$*" ]]; then fEcho_Clean "[ $* ]"; else fEcho_Clean ""; fi; }
 function fEcho_Force()             { fEcho_ResetBlankCounter; fEcho "$*";       }
 function fEcho_Clean_Force()       { fEcho_ResetBlankCounter; fEcho_Clean "$*"; }

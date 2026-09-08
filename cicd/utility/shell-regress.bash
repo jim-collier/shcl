@@ -114,6 +114,137 @@ for mode in "${compModes[@]}"; do
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
 done
 
+##	20260904 item 39: nothing had ever compared what the two wrappers hand back
+##	against what the binary hands back. They are pass-through front ends, so
+##	every row here is the same assertion - same stdout, same stderr, same exit
+##	code - across four ways of calling them. Item 16 (the script form ending the
+##	caller's shell) lived in that gap for a release.
+{
+	printf 'a: 1\nname: two words\nblk:\n\t~~~txt\n\tbody\n\n\t~~~\n-dash: 5\n' > "${tmpDir}/w.shcl"
+	##	Dot-sourcing through a file, and splatting real argv into the function,
+	##	so bash's quoting never has to survive a PowerShell -Command string.
+	#  shellcheck disable=2016  ## PowerShell's own $variables.
+	{
+		echo ". '${repoDir}/source/powershell/shcl.ps1'"
+		echo 'shcl @args'
+		echo 'exit $LASTEXITCODE'
+	} > "${tmpDir}/wdot.ps1"
+
+	##	id | stdin (printf %b, '-' for none) | the arguments, one per field
+	wrapRows=(
+		'good|-|get|--int|%F%|a'
+		'missing|-|get|--int|%F%|nope'
+		'badtype|-|get|--int|%F%|name'
+		'nofile|-|check|%M%'
+		'usage|-|get|--nope|%F%|a'
+		'stdin-fmt|a: 1\n|fmt|-'
+		'stdin-ops|int\tb\t2\n|set|%F%'
+		'raw-tail|-|get|--raw|%F%|blk'
+		'space-arg|-|get|%F%|name'
+		'dash-arg|-|get|--|%F%|-dash'
+	)
+	fRunWrapper(){  ## fRunWrapper MODE STDIN ARGS...
+		local mode="$1" stdinSpec="$2"; shift 2
+		local rc=0
+		case "${mode}" in
+			binary)   if [[ "${stdinSpec}" == - ]]; then "${cli}" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | "${cli}" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			bash)     if [[ "${stdinSpec}" == - ]]; then bash "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | bash "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			bashsrc)  if [[ "${stdinSpec}" == - ]]; then bash -c 'source "$0"; shcl "$@"' "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | bash -c 'source "$0"; shcl "$@"' "${repoDir}/source/bash/shcl.bash" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			pwsh)     if [[ "${stdinSpec}" == - ]]; then pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+			pwshsrc)  if [[ "${stdinSpec}" == - ]]; then pwsh -NoProfile -File "${tmpDir}/wdot.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" </dev/null || rc=$?
+			          else printf '%b' "${stdinSpec}" | pwsh -NoProfile -File "${tmpDir}/wdot.ps1" "$@" >"${tmpDir}/wo" 2>"${tmpDir}/we" || rc=$?; fi ;;
+		esac
+		printf 'rc=%s\n' "${rc}"
+		printf -- '--out--\n'; cat "${tmpDir}/wo"
+		printf -- '--err--\n'; cat "${tmpDir}/we"
+	}
+
+	wrapModes=(bash bashsrc)
+	fHave pwsh >/dev/null 2>&1 && wrapModes+=(pwsh pwshsrc)
+	export SHCL_BIN="${cli}"
+	for row in "${wrapRows[@]}"; do
+		IFS='|' read -r -a f <<<"${row}"
+		id="${f[0]}"; stdinSpec="${f[1]}"
+		args=("${f[@]:2}")
+		for ((ai = 0; ai < ${#args[@]}; ai++)); do
+			args[ai]="${args[ai]//%F%/${tmpDir}/w.shcl}"
+			args[ai]="${args[ai]//%M%/${tmpDir}/not-there.shcl}"
+		done
+		want="$(fRunWrapper binary "${stdinSpec}" "${args[@]}")"
+		for mode in "${wrapModes[@]}"; do
+			##	The one documented difference: PowerShell eats a bare `--` before
+			##	a dot-sourced function sees it, which the rows above this block
+			##	pin on their own. Every other row goes through unchanged.
+			[[ "${id}" == dash-arg && "${mode}" == pwshsrc ]] && continue
+			got="$(fRunWrapper "${mode}" "${stdinSpec}" "${args[@]}")"
+			[[ "${got}" == "${want}" ]] || fBad "wrapper ${mode} differs from the binary on ${id}: ${got@Q} against ${want@Q}"
+		done
+	done
+	unset SHCL_BIN
+}
+
+##	20260904 item 35: the zsh completion had never been run by anything - only
+##	its option table was diffed - and it did not parse at all. An apostrophe
+##	inside a single-quoted description left a quote open for the rest of the
+##	file, so every zsh user got a parse error instead of a completion. Driven
+##	here with the completion helpers stubbed, so the answers are assertable.
+if fHave zsh; then
+	## Stubs record what each helper was offered rather than completing it.
+	#  shellcheck disable=2016  ## zsh's own $variables, quoted so bash leaves them alone.
+	cat > "${tmpDir}/zdrv.zsh" <<'ZEOF'
+emulate -L zsh
+typeset -ga OFFERED=()
+_describe() { local -a a; eval "a=(\"\${${4:-cmds}[@]}\")"; local e; for e in "${a[@]}"; do OFFERED+=("${e%%:*}"); done }
+_values()   { shift; OFFERED+=("$@") }
+_files()    { OFFERED+=("<files>") }
+compadd()   { local a; for a in "$@"; do [[ "$a" == -- ]] && continue; OFFERED+=("$a"); done }
+compset()   { [[ "${words[CURRENT]}" == "${2}"* ]] }
+typeset -ga words=(${=1})
+[[ "$1" == *" " ]] && words+=("")
+typeset -gi CURRENT=${#words}
+source "${ZDRV_FILE}"
+print -r -- "${(o)OFFERED[@]}"
+ZEOF
+	fZComplete(){ ZDRV_FILE="${repoDir}/source/completions/_shcl" zsh -f "${tmpDir}/zdrv.zsh" "$1" 2>&1 || true ;}
+
+	##	It has to parse before any of the answers below mean anything.
+	if ! out="$(zsh -n "${repoDir}/source/completions/_shcl" 2>&1)"; then
+		fBad "the zsh completion does not parse: ${out@Q}"
+	else
+		out="$(fZComplete "shcl ")"
+		[[ " ${out} " == *" get "* && " ${out} " == *" --donate "* ]] || fBad "zsh completion word 2: ${out@Q}"
+		out="$(fZComplete "shcl check --strictness ")"
+		[[ "${out}" == "1 2 3 loose standard strict" ]] || fBad "zsh completion on --strictness: ${out@Q}"
+		out="$(fZComplete "shcl get --on-bad=")"
+		[[ "${out}" == "default error flag" ]] || fBad "zsh completion on --on-bad=: ${out@Q}"
+		out="$(fZComplete "shcl check --schema ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion on --schema: ${out@Q}"
+		out="$(fZComplete "shcl check ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion lost the FILE slot: ${out@Q}"
+		out="$(fZComplete "shcl fmt --set x=1 ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion gave the FILE slot to a --set value: ${out@Q}"
+		out="$(fZComplete "shcl check a.shcl ")"
+		[[ -z "${out}" ]] || fBad "zsh completion offered files where a PATH goes: ${out@Q}"
+		##	`-w` is the only short option the CLI takes on a subcommand, and the
+		##	comment in both completions says so. Offered where --write is and
+		##	nowhere else; -h is informational and rides along everywhere.
+		out="$(fZComplete "shcl fmt -")"
+		[[ " ${out} " == *" -w "* ]] || fBad "zsh completion did not offer -w on fmt: ${out@Q}"
+		for sub in get check init count instances children paths; do
+			out="$(fZComplete "shcl ${sub} -")"
+			[[ " ${out} " != *" -w "* ]] || fBad "zsh completion offered -w on ${sub}, which takes no --write"
+			bad="$(tr ' ' '\n' <<<"${out}" | { grep -xE -- '-[A-Za-z]' || true ;} | { grep -vx -- '-h' || true ;})"
+			[[ -z "${bad}" ]] || fBad "zsh completion offers a short option other than -w on ${sub}: ${bad@Q}"
+		done
+	fi
+else
+	echo "shell-regress: zsh not installed - zsh completion rows skipped"
+fi
+
 if fHave pwsh; then
 	##	20260904 item 16: PowerShell reads a bare `--` as its own token and drops
 	##	it before a dot-sourced function sees its arguments; the quoted spelling
@@ -208,6 +339,7 @@ done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/u
 ##	is what privilege buys: a directory the calling shell cannot read and the
 ##	command it runs can.
 eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	udir="${tmpDir}/uninst"
 	mkdir -p "${udir}/code" "${udir}/scripts" "${udir}/man" "${udir}/completions"
@@ -233,12 +365,13 @@ eval "$(sed -n '/^fRemoveLaidDown()/,/^}/p' "${repoDir}/install.bash")"
 		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
 	done
 	rmdir "${udir}" 2>/dev/null || fBad "install.bash uninstall did not empty the install directory"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 36: only a real file at the bin path was refused, so a
 ##	symlink to a cargo-built or hand-built copy was replaced with nothing said.
 eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	odir="${tmpDir}/owner"; mkdir -p "${odir}/dest" "${odir}/bin" "${odir}/other"
 	printf 'x\n' > "${odir}/dest/shcl"; printf 'x\n' > "${odir}/other/shcl"
@@ -253,13 +386,14 @@ eval "$(sed -n '/^fLinkOwner()/,/^}/p' "${repoDir}/install.bash")"
 	rm -f "${odir}/bin/shcl"; printf 'x\n' > "${odir}/bin/shcl"
 	[[ "$(fLinkOwner "${odir}/bin/shcl" "${odir}/dest")" == "file" ]] \
 		|| fBad "install.bash would replace a real file at the bin path"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 37: the receipt ran the link the installer had just written,
 ##	so another shcl earlier on PATH was invisible and the next one the user
 ##	typed was someone else's.
 eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	sdir="${tmpDir}/shadow"; mkdir -p "${sdir}/ours" "${sdir}/theirs"
 	printf '#!/bin/sh\necho ours\n' > "${sdir}/ours/shcl"; chmod 755 "${sdir}/ours/shcl"
@@ -271,7 +405,7 @@ eval "$(sed -n '/^fShadowedBy()/,/^}/p' "${repoDir}/install.bash")"
 		|| fBad "install.bash did not see the copy shadowing it: ${out@Q}"
 	PATH="${sdir}/nowhere:/nonexistent" fShadowedBy "${sdir}/ours/shcl" >/dev/null \
 		&& fBad "install.bash reported a shadow where there is no shcl at all"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
 	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
@@ -280,6 +414,7 @@ grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1
 ##	failed on a raw mkdir error. The destinations are probed first, and the
 ##	probe has to walk up to whatever exists.
 eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
+nBadBefore="${nBad}"
 (
 	wdir="${tmpDir}/writable"; mkdir -p "${wdir}/home"
 	[[ "$(fNearestExisting "${wdir}/home/.local/share/shcl")" == "${wdir}/home" ]] \
@@ -290,7 +425,7 @@ eval "$(sed -n '/^fNearestExisting()/,/^}/p' "${repoDir}/install.bash")"
 	near="$(fNearestExisting "${wdir}/home/.local/share/shcl")"
 	[[ -w "${near}" ]] && fBad "install.bash would have downloaded into a read-only home"
 	chmod 700 "${wdir}/home"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 # shellcheck disable=SC2016  ## install.bash's own $variable, matched literally
 downloadLine="$( { grep -n 'downloading \${asset}' "${repoDir}/install.bash" || true; } | head -n1 | cut -d: -f1)"
@@ -303,6 +438,7 @@ fi
 ##	to branch from dev. The lifted function decides; an existing checkout or an
 ##	edited tree is left where it is.
 eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
+nBadBefore="${nBad}"
 (
 	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
 	git -C "${gdir}/origin" init -q --initial-branch=main
@@ -325,7 +461,7 @@ eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
 	fStartOnDev "${gdir}/c"
 	[[ "$(git -C "${gdir}/c" branch --show-current)" == "main" ]] \
 		|| fBad "install-dev.bash moved a clone of a repo with no dev branch"
-	exit "${nBad}"
+	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
 ##	20260901b item 41: an unauthenticated 403 is the API's rate limit and both
@@ -368,7 +504,7 @@ eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 ##	version, or its entries against the files. A throwaway key stands in for
 ##	the wrong one, and every refusal must leave no .sig.
 if fHave openssl; then
-	sver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${repoDir}/source/rust/Cargo.toml" | head -1)"
+	sver="$(sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${repoDir}/source/rust/Cargo.toml")"
 	openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${tmpDir}/wrong.pem" 2>/dev/null
 	fSignRun(){   ## fSignRun DIR: run the signer on DIR with the throwaway key; stderr in signOut
 		signOut="$(bash "${repoDir}/cicd/utility/sign-release.bash" --key "${tmpDir}/wrong.pem" --dir "$1" --no-tag-check 2>&1 || true)"
@@ -685,7 +821,7 @@ grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
-for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash; do
+for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash cli-regress.bash; do
 	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
 done
 

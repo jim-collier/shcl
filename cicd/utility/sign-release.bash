@@ -99,7 +99,7 @@ command -v openssl >/dev/null || fDie "need openssl"
 ## sums file whose entries no download URL can reach, so refuse unless HEAD
 ## carries exactly v<version>. `git tag --points-at` rather than `describe`:
 ## the cut puts two tags on the commit (v2.0.0 and source/go/v2.0.0).
-ver="$(sed -n 's/^version *= *"\(.*\)".*/\1/p' "${root}/source/rust/Cargo.toml" | head -1)"
+ver="$(sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${root}/source/rust/Cargo.toml")"
 [[ -n "${ver}" ]] || fDie "cannot read the version from source/rust/Cargo.toml"
 if (( tagCheck )); then
 	headTags="$(git -C "${root}" tag --points-at HEAD 2>/dev/null || true)"
