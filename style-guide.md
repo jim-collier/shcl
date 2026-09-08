@@ -45,6 +45,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - The tokenizer is the one place the lexical rules live. Every reading of a line's parts - the parser's dispatch, the path scanner, the comment and comma splits, the element cap, the quote check, `SetLiteral`, the CLI's `--set` split - goes through it and reads spans. No second quote state machine, in any binding: a rule that has to be read somewhere new is read through the tokenizer, or the tokenizer grows.
 
+- A setter writes only what reads back. It builds its text through the emitter, hands that to the tokenizer, and refuses unless what comes back is the value it was given, so a write that would come back different never touches the document. No setter carries its own trim, carriage-return, `#` or quote rule, in any binding; a new setter adds no rule of its own. The typed setters keep their render-and-parse-back on top of it, since a float or a datetime has to read back as that type and not merely as the same text.
+
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
@@ -102,6 +104,8 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 - Deliberate deviation: the emit, overlay and clone walks are iterative where the reference recurses. CPython's own recursion limit sits far below the 512-level depth cap the spec allows, so a document the reference formats without complaint raised RecursionError here; raising the interpreter's limit would have moved the failure to a stack overflow with no traceback. The walks carry their own explicit stacks and visit nodes in the same order, so the output is unchanged.
 
 - The public surface is type-hinted (every public method, function and attribute); private helpers are hinted where it pays, and mypy strict is not a gate.
+
+- Deliberate deviation: the write side's read-back check lets text with no UTF-8 spelling through. Python's string is the only one of the four that can hold a lone surrogate, and the tokenizer scans bytes, so there is nothing to hand it; the save is where a document that cannot be encoded fails, and always was.
 
 - Deliberate deviation: the tokenizer scans the UTF-8 bytes of the line rather than the str, and `Tokens.src` keeps those bytes so the read-back helpers can slice them. Every offset the four bindings hand out is a byte offset, and the `tokens` output is compared byte for byte, so the str's code-point offsets could not serve. Two hot-path shortcuts ride on that, both exact: a value with no quote and no `#` is cut with `bytes.find` one piece at a time (so the element cap still stops the scan where the byte loop would), and a bare name is matched with a compiled ASCII class.
 
