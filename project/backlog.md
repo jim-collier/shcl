@@ -58,14 +58,19 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- The enhancement half of the round filed under Bugs above. Twenty-one items. Nothing here violates a stated rule; each is a measured cost, a gate that could assert more, or a document that could say more.
 
-	- 🔘 Item 33: C's schema build is quadratic in the fragment count.
+	- ✅ Item 33: C's schema build is quadratic in the fragment count.
 		- Measured `check --schema` on a tiny document against N fragments, rust debug / go / c: 2,000 fragments 0.06 / 0.03 / 0.02 s; 8,000 0.28 / 0.05 / 0.34; 16,000 0.61 / 0.14 / 0.90; 32,000 1.15 / 0.24 / 3.93.
 		- Cause: the C fragment lookup is a linear scan and the duplicate check calls it once per fragment. The reference uses a map. Disabling the duplicate check in a scratch copy drops 32,000 fragments from 4.02 s to 0.20 s. It is paid three times per `check --schema`, once for validation and once for each suppressor.
+		- Fixed: `ShclVSchemaDef` carries a name index (`fmap`), so `v_frag_index` and `v_frag_get` are a hash lookup rather than a scan. 32,000 fragments: 3.31 s to 0.23 s.
+		- Pinned by: the `perf-gate.bash` `frags` workload, 16,000 unused fragments against one failing line, which the scan misses by 903 ms against a 286 ms budget.
 		- Opened: 20260904-173100
+		- Closed: 20260908-130000
 
-	- 🔘 Item 34: C looks the mounted fragment up inside the per-node loop, though the mount is invariant for the constraint.
+	- ✅ Item 34: C looks the mounted fragment up inside the per-node loop, though the mount is invariant for the constraint.
 		- Measured 2,000 fragments over 50,000 mount nodes at 0.53 s; hoisting the lookup in a scratch copy gives byte-identical output in 0.36 s.
+		- Fixed: the mount is looked up once per constraint in `v_check_from`, above the loop over resolved nodes. 2,000 fragments over 50,000 nodes: 0.53 s to 0.18 s, same output.
 		- Opened: 20260904-173200
+		- Closed: 20260908-130000
 
 	- 🔘 Item 35: `check-completions.bash` proves the option table and nothing a user types.
 		- It never sources or runs either completion file. Everything it does not cover is a live defect: the value-option skip list, the `=VALUE` handling, the `--strictness` and `--on-bad` value lists, the file-slot map, the "`-w` is the only short option" claim, and where the informational flags are offered.
@@ -115,9 +120,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the guard is `__MINGW32__ && __x86_64__ && __SEH__`. mingw's own header takes the same unwinding branch on aarch64, so an ARM64 windows build of the C binding keeps the original behavior. `style-guide.md` scopes the deviation to mingw x86_64, so this is a limit to confirm rather than a contradiction - nothing builds C for that target today.
 		- Opened: 20260904-174300
 
-	- 🔘 Item 46: `shcl_validate` leaves one arena guarded on a frame it has returned from.
+	- ✅ Item 46: `shcl_validate` leaves one arena guarded on a frame it has returned from.
 		- The teardown clears the validation arena and the document's three, and not `v->scratch`, which `v_unknown` armed on the same recovery point. Inert today, because that arena is only written inside `v_unknown` and freed afterwards. It becomes a jump into a dead frame the moment anything allocates into it after the call. `do_parse` clears all four of its arenas explicitly, which is what makes the omission read as an oversight.
+		- Fixed: the teardown disarms `v->scratch` with the other four. Nothing changes today; it stops being a jump into a returned frame the moment anything allocates into that arena after the call.
+		- Pinned by: a C runner fixture that runs a validate reaching the unknown-field sweep and asserts every arena the call armed is disarmed on return.
 		- Opened: 20260904-174400
+		- Closed: 20260908-130000
 
 	- 🔘 Item 47: a file whose basename runs past about 241 characters cannot be rewritten, and the cut-off moves with the pid.
 		- Measured with a 7-digit pid: basenames of 240 and 241 characters save, 242 and 243 fail at exit 8 with no temp left behind. All eight attempts use the same length, so they fail together.

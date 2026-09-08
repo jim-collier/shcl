@@ -1537,6 +1537,25 @@ int main(int argc, char **argv) {
 		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
 		shcl_free(pd);
 	}
+	// Every arena a validate arms has to be disarmed before the call returns,
+	// or the guard still names a frame that has gone. The suggestion scratch is
+	// armed down inside the unknown-field sweep, so the sweep has to run: the
+	// document carries a field the schema does not declare.
+	{
+		const char *vt = "port: 1\nprot: 2\n";
+		const char *vs = "field: port\n\ttype: int\n";
+		shcl_doc *vd = shcl_parse(vt, strlen(vt));
+		shcl_doc *vsd = shcl_parse(vs, strlen(vs));
+		shcl_validation *vv = shcl_validate(vd, vsd);
+		if (!vv) fail("guards", "validate returned NULL");
+		else {
+			if (shcl_validation_count(vv) == 0) fail("guards", "the sweep reported nothing, so it did not run");
+			if (vv->arena.panic || vv->scratch.panic) fail("guards", "validation arena still armed after the call");
+			if (vd->index_arena.panic || vd->scratch.panic || vd->reads.panic) fail("guards", "document arena still armed after a validate");
+			shcl_validation_free(vv);
+		}
+		shcl_free(vd); shcl_free(vsd);
+	}
 #ifndef _WIN32
 	// Validation used to put one scratch arena per level of the depth cap on the
 	// stack - 16 KB, which is nothing on a main thread and past the whole stack
