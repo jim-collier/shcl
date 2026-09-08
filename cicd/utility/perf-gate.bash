@@ -133,6 +133,23 @@ fTimeMs(){
 	printf '%s' "${best}"
 }
 
+##	The two checks inside fTimeMs are the gate's own guards: a run that exits
+##	wrong, and a run that prints too little, are failures rather than fast
+##	times. Both went in after a CLI that printed a usage error and exited 1 sat
+##	inside every budget and the gate reported OK. Two bait CLIs keep them
+##	honest, so the next tidy-up cannot delete a check without this saying so.
+##	stderr is dropped: the message they print is the point, not the noise.
+{
+	## It prints its line too, so this bait fails on the exit code alone.
+	printf '#!/bin/sh\necho x\nexit 1\n' > "${tmpDir}/bait-rc"
+	printf '#!/bin/sh\nexit 0\n' > "${tmpDir}/bait-quiet"
+	chmod +x "${tmpDir}/bait-rc" "${tmpDir}/bait-quiet"
+	got="$(fTimeMs "${tmpDir}/bait-rc" "${tmpDir}/base.ops" set 1 2>/dev/null)"
+	[[ "${got}" == "-1" ]] || { echo "perf-gate: self-test: a CLI exiting 1 was timed as ${got} ms, not refused" >&2; exit 1; }
+	got="$(fTimeMs "${tmpDir}/bait-quiet" "${tmpDir}/base.ops" set 1 2>/dev/null)"
+	[[ "${got}" == "-1" ]] || { echo "perf-gate: self-test: a CLI printing nothing was timed as ${got} ms, not refused" >&2; exit 1; }
+}
+
 declare -i nBad=0
 for b in "${bindings[@]}"; do
 	name="${b%%|*}"; cli="${b#*|}"
@@ -185,3 +202,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            mounts itself twice, which doubled the chain walk per level.
 ##		2026-09-08  frags workload: a schema of many unused fragments, whose
 ##		            duplicate check scanned every fragment already recorded.
+##		2026-09-08  Self-test over the timer's own two guards, so a tidy-up cannot
+##		            delete one and leave the gate reporting OK on a CLI that failed.
