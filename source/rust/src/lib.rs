@@ -6660,17 +6660,14 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			.any(|s| matches!(s.selector, Some(Selector::Wildcard)))
 	};
 	// `[#N]` needs a pre-existing instance and its `#` would start a comment on
-	// a binding line; a newline inside a selector is left to the trailing note
-	// rather than spelled inline. A path deeper than a document may nest cannot
-	// be generated either: the line would draw E016 on the way back in. A
-	// newline in a NAME is writable: names are stored escape-resolved and the
-	// name escaper spells one `\n`.
+	// a binding line. A path deeper than a document may nest cannot be generated
+	// either: the line would draw E016 on the way back in. A newline in a name
+	// or a by-value selector is writable, since both are spelled escaped.
 	let unwritable = |c: &Constraint| {
 		c.segs.len() > MAX_DEPTH
-			|| c.segs.iter().any(|s| {
-				matches!(s.selector, Some(Selector::ByIndex(_)))
-					|| s.star || matches!(&s.selector, Some(Selector::ByValue { text, .. }) if text.contains('\n'))
-			})
+			|| c.segs
+				.iter()
+				.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
 	};
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of

@@ -1,0 +1,8 @@
+# A newline in a name and in a by-value selector are both spelled escaped.
+field: "srv[\"a\\nb\"].port"
+	type: int
+	required: yes
+	default: 8080
+field: "\"top\\nline\""
+	required: yes
+	default: v
