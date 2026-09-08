@@ -747,7 +747,7 @@ NL = chr(10)
 s = open(repo + "/source/rust/src/main.rs").read()
 arm = TAB * 2 + '"count" | "instances" | "children" | "paths" => &['
 s = s.replace(arm, TAB * 2 + '"ping" => &[],' + NL + arm, 1)
-s = s.replace(TAB + '"paths",' + NL + "];", TAB + '"paths",' + NL + TAB + '"ping",' + NL + "];", 1)
+s = s.replace(TAB + '"tokens",' + NL + "];", TAB + '"tokens",' + NL + TAB + '"ping",' + NL + "];", 1)
 disp = TAB * 2 + '"paths" => do_paths(o),'
 s = s.replace(disp, disp + NL + TAB * 2 + '"ping" => 0,', 1)
 open(fix + "/source/rust/src/main.rs", "w").write(s)
@@ -756,7 +756,7 @@ for name in ("shcl.bash", "_shcl"):
     row = TAB * 2 + "count|instances|children|paths) echo '--strictness"
     c = c.replace(row, TAB * 2 + "ping)            echo '' ;;" + NL + row, 1)
     if name == "shcl.bash":
-        c = c.replace("instances children paths help", "instances children paths ping help", 1)
+        c = c.replace("paths migrate tokens help", "paths migrate tokens ping help", 1)
     else:
         pl = TAB * 2 + "'paths:every field path in the document'"
         c = c.replace(pl, pl + NL + TAB * 2 + "'ping:say nothing'", 1)
