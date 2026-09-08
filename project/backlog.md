@@ -52,12 +52,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 ### Features and enhancements
 
-- 🔘 A `#` right after a control character has no spelling `migrate` can reach.
-	- Reproduced: `my<CR>#sery: 1` binds `my` under 2.x - the `#` cut the line, and the trim then took the carriage return off the end of the name half. Here the name ends at the carriage return, which is then an unexpected character, and no space put before the `#` changes that. `migrate` leaves the line, the load reports `E014`, and the path is gone.
-	- Two ways out, neither obviously right. Drop the trimmed control character, which reproduces the 2.x tree exactly but edits text that was not part of it - against the promise that everything outside the tree comes through as written. Or say the shape is unmigratable and leave it, as the whitespace-`#` fence label already is.
-	- Fuzz-only in practice; nothing a person types looks like this. `check-migrate.bash` skips such a document for now and names the shape.
-	- Opened: 20260908-180000
-
 - 🔘 Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
 
 ### Done
@@ -2322,6 +2316,15 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ A `#` right after a carriage return had no spelling `migrate` could reach.
+	- Reproduced: `my<CR>#sery: 1` binds `my` under 2.x - the `#` cut the line, and the trim then took the carriage return off the end of the name half. Here the name ends at the carriage return, which is then an unexpected character, so `migrate` left the line, the load reported `E014`, and the path was gone at exit 0.
+	- Narrowed first: only a carriage return diverges. Every other control character before a `#` was `E014` under 2.x too, so nothing was bound then either, and those lines are already the recorded "a line 2.x could not read comes through as written" case.
+	- Decided: `migrate` drops the run. The carriage return is a byte 2.x itself discarded before it bound anything, so dropping it loses nothing the old reading kept, and `migrate` already edits outside the tree wherever the two rule sets disagree - it inserts a space before a `#`, re-quotes pieces, and takes the colon out of the selector sugar. Leaving it would have meant a binding disappearing while the text survived, which the exit code cannot report, since a retained line counts nothing lost.
+	- Fixed in all four: `cr_run_to_comment` (`crRunToComment` in Go, `_cr_run_to_comment` in Python) names the run, the 2.x tokenizer steps over one that runs into a `#`, and the comment fixup replaces the whole run with a single space instead of only inserting one. A line whose leading run is such a run is the comment 2.x read it as. The value half already migrated correctly and is unchanged.
+	- Pinned by corpus case `115-cr-before-comment`, which carries the shape after a name, after a selector, in a value, and as a whole line. `check-migrate.bash` no longer skips the shape, and fails on four documents without the fix.
+	- Opened: 20260908-180000
+	- Closed: 20260908-223000
 
 - ✅ The generator will not spell a selector holding a line break, on a reason that no longer holds.
 	- `unwritable` sends such a path to the trailing "not generated" block, because the value emitter used to have nothing to escape a break with. It has since the tokenizer cut, and `gen_selector_text` already spells one; the setters take the same path now. So the exclusion is probably stale, and `V097` validates whatever the generator emits, which would catch it if it were not.

@@ -141,16 +141,6 @@ fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 ##	time the corpus grows.
 fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*[[:space:]]#' "$1"; }
 
-##	A `#` right after a control character has no spelling either. 2.x cut the
-##	line at the `#` and then trimmed the control character off the end of the
-##	name half, so `my<CR>#x: 1` bound `my`; here the name ends at the control
-##	character, which is then unexpected, and no space put before the `#` moves
-##	it. Keeping the byte and keeping the reading cannot both be done, so
-##	`migrate` leaves the line and the load names it. Filed as its own item.
-##	Tab is a control character and is also whitespace, so it is out of the class:
-##	a tab before a `#` opens a comment here just as it did in 2.x.
-fCtrlBeforeHash(){ LC_ALL=C grep -qE "$(printf '[\001-\010\013-\037\177]#')" "$1"; }
-
 declare -i nCompared=0 nSkipped=0 nBad=0 nExpected=0
 exceptions='068-info-hash-spellings'
 for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
@@ -163,7 +153,6 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 		if [[ " ${exceptions} " == *" ${name} "* ]]; then nExpected+=1; fi
 		continue
 	fi
-	if fCtrlBeforeHash "${f}"; then nSkipped+=1; continue; fi
 	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
 	want="$(fReadTree "${oldCli}" "${f}" | fAge2xReads)"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"
