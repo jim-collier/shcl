@@ -77,17 +77,26 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: driving `_shcl` with a fixed `COMP_WORDS`/`COMP_CWORD`, and the zsh function with stubbed `_describe`/`_values`/`_files`/`compadd`/`compset`, is about fifteen lines each. Items 10 and 11 both came out of exactly that.
 		- Opened: 20260904-173300
 
-	- 🔘 Item 36: give `perf-gate.bash` a self-test.
+	- ✅ Item 36: give `perf-gate.bash` a self-test.
 		- Two bait CLIs, one exiting 1 instantly and one printing nothing, and two assertions, in the shape `shell-regress.bash`'s own scan self-test already uses. That closes item 26's first bullet properly rather than leaving the checks to be deleted by the next person tidying the script.
+		- Fixed: two bait CLIs at the top of the run, one exiting 1 and one printing nothing, each asserted to be refused rather than timed.
+		- Note: the first draft passed with the exit-code check deleted, because a bait that exits 1 also prints nothing and the line-count check caught it instead. The rc bait prints its line now, so each guard is the only thing standing between its bait and a pass.
 		- Opened: 20260904-173400
+		- Closed: 20260908-153000
 
-	- 🔘 Item 37: gate main's installers against dev's.
+	- ✅ Item 37: gate main's installers against dev's.
 		- One `git diff --quiet origin/main origin/dev -- install.bash install.ps1 install-dev.bash` in `check-docs.bash` turns the docs-only-exception decision into something enforced. It currently rests on remembering, and it is the only drift in the tree that reaches users the moment it happens.
+		- Fixed: `check-docs.bash` compares the three installers across `origin/main` and `origin/dev` and names each one that differs. Where either ref is absent - a shallow CI clone, a fork - it says it is skipping rather than failing, since a missing ref is not drift.
+		- Pinned by: both paths were run - a clone whose `origin/main` points at an older installer reports all three, and one with no `origin/main` skips out loud.
 		- Opened: 20260904-173500
+		- Closed: 20260908-152000
 
-	- 🔘 Item 38: assert the spec sentences recent rounds added.
+	- ✅ Item 38: assert the spec sentences recent rounds added.
 		- `check-docs.bash` already greps the spec for a dozen phrases. The datetime tolerance paragraph, the five merge behaviors and the two remaining merge facts are three more greps. Where a round's whole deliverable is prose, a grep is what makes it a fix rather than a note.
+		- Already done, by the 20260905 round the day after this one was filed: `check-docs.bash` carries all eight phrases - the datetime tolerance paragraph, the five merge behaviors and the two merge facts. Checked by editing the spec and watching the gate fail.
+		- This is the cadence item in miniature: a review filed against a tree the next round was already fixing.
 		- Opened: 20260904-173600
+		- Closed: 20260908-151000
 
 	- 🔘 Item 39: nothing gates the two wrappers past `SHCL_BIN`.
 		- `shell-regress.bash` covers `SHCL_BIN` resolution, the caller-scope hygiene, the symlink resolution and the pre-.NET-6 guard, and caps the header comment width. Nothing covers argument pass-through, exit-code pass-through, stdin and stdout fidelity, or whether the two wrappers agree - which is why item 16 was never seen. The whole matrix run this round is about forty rows.
