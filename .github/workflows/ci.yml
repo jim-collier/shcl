@@ -61,11 +61,12 @@ jobs:
       ## Install the pinned version ahead of the image's copy on PATH.
       - run: |
           ## The prerelease packaging row in shell-regress needs a NSIS
-          ## compiler; without one it used to skip, which under the gate is now
-          ## a failure. Unpinned on purpose: it only has to compile the setup
-          ## script, and the version the image serves is what a contributor
-          ## building a setup would get.
-          sudo apt-get update -qq && sudo apt-get install -y -qq nsis
+          ## compiler, and the completion rows need zsh; without either the
+          ## rows used to skip, which under the gate is now a failure. Both
+          ## unpinned on purpose: NSIS only has to compile the setup script,
+          ## and the zsh rows run the shipped completion, so the version a
+          ## user's own shell would be is the right one to answer.
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser'
