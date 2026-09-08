@@ -6,7 +6,7 @@
 //! no panic at any strictness, and the canonical formatter is a fixpoint.
 //! Iteration count scales via SHCL_FUZZ_ITERS (cicd raises it; default is quick).
 
-use shcl::{Document, Strictness};
+use shcl::{Document, Severity, Strictness};
 
 /// Small deterministic PRNG (xorshift64*); no external crates, stable across runs.
 struct Rng(u64);
@@ -287,6 +287,75 @@ fn comments_behind_selectors_stay_comments() {
 		seen > iters / 4,
 		"the soup carried only {} commented lines",
 		seen
+	);
+}
+
+/// The lost count follows from the diagnostics alone: each code has one
+/// outcome (the table in design.md), and lost is the number of dropped or
+/// value-dropped lines, so it is zero exactly when no diagnostic says a line
+/// was dropped. Nine review items were an arm that counted without saying so
+/// or said so without counting; both show here. The retained half is checked
+/// by content: a retained line's text comes back in the canonical output.
+#[test]
+fn lost_count_follows_the_outcome_table() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	let mut rng = Rng(0x5EED_57A7_1C00_0004);
+	let (mut lost_seen, mut kept_seen) = (0usize, 0usize);
+	for i in 0..iters {
+		let text = structural(&mut rng);
+		let doc = Document::parse(&text);
+		// The parser strips a file-start BOM before it sees line 1; the
+		// exception is for a BOM the strip does not reach.
+		let lines: Vec<&str> = text
+			.strip_prefix('\u{feff}')
+			.unwrap_or(&text)
+			.lines()
+			.collect();
+		let canon = doc.to_canonical();
+		let mut want = 0usize;
+		for d in doc.diagnostics() {
+			let src = lines.get(d.line.wrapping_sub(1)).copied().unwrap_or("");
+			match d.code {
+				"E002" | "E003" | "E004" | "E006" | "E007" | "E008" | "E009" | "E010" | "E011"
+				| "E012" | "E016" | "E018" | "E021" => want += 1,
+				"E019" if d.severity == Severity::Error => want += 1,
+				"E014" if src.trim_start_matches([' ', '\t']).starts_with('\u{feff}') => want += 1,
+				"E013" | "E014" => {
+					kept_seen += 1;
+					let kept = src.trim_matches([' ', '\t']);
+					assert!(
+						canon.lines().any(|l| l.trim_matches([' ', '\t']) == kept),
+						"retained line {} not written back at iteration {}: {:?}\n{}",
+						d.line,
+						i,
+						kept,
+						text
+					);
+				}
+				_ => {}
+			}
+		}
+		assert_eq!(
+			doc.lost_count(),
+			want,
+			"lost count disagrees with the diagnostics at iteration {}:\n{}",
+			i,
+			text
+		);
+		lost_seen += want;
+	}
+	assert!(
+		lost_seen > iters,
+		"the soup dropped only {} lines",
+		lost_seen
+	);
+	assert!(
+		kept_seen > iters / 8,
+		"the soup retained only {} lines",
+		kept_seen
 	);
 }
 

@@ -22,6 +22,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
+	- [Load outcomes](#load-outcomes)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
@@ -375,6 +376,51 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 - **The write target is resolved on Windows too.** Rust and Go get it from their standard libraries; the C binding used the path as given, so a save through a linked-in config replaced the link with a regular file - the one thing resolving the target exists to prevent. It now asks Windows for the final path, which follows a symlink or junction and comes back long-path-prefixed. The prefix stays only when the name plus the temp file's suffix would otherwise be too long, so an ordinary save writes the plain name it always did and a path past the old limit works at all.
 
 - **A symlink cycle at the write target is an error.** Resolving the target is what makes a linked-in config written through rather than replaced, and a cycle used to fall out of the resolver as "no target", which quietly replaced the link with a regular file. A loop is reported as what it is - too many levels of symbolic links - and nothing is written.
+
+### Load outcomes
+
+Every load-time code has one outcome, and the parser derives the lost count and the held indent level from that outcome alone. Each diagnosing arm names its code and its outcome and does nothing else; one function records the diagnostic, counts, and holds the level. Before this, every arm counted and pushed by hand, and nine review items over five weeks were an arm that skipped one or the other. A line has one of four outcomes:
+
+- **Bound**. The line binds as written. The diagnostic describes something about it, and nothing is counted or held.
+
+- **Retained**. Content-malformed at any position, so kept verbatim as trivia and written back in place, where it re-diagnoses identically and can never read as a binding. Counts nothing. Holds its indent level, so what is written deeper is `E018`.
+
+- **Dropped**. Read but not applicable where it sits; re-emitted it could bind somewhere else, so it is gone. Counts one lost. Holds its indent level the same way.
+
+- **Value dropped**. The line binds, but a value it carried had nowhere to go. Counts one lost; the level is the bound node's.
+
+The table is the rule. If a code's behavior ever disagrees with its row, the code is wrong.
+
+| Code | Severity | Outcome |
+|------|----------|---------|
+| `E001` | error | bound |
+| `E002` | error | value dropped |
+| `E003` | error | dropped |
+| `E004` | error | dropped |
+| `E005` | error | bound |
+| `E006` | error | dropped |
+| `E007` | error | dropped |
+| `E008` | error | dropped |
+| `E009` | error | dropped |
+| `E010` | error | dropped |
+| `E011` | error | dropped |
+| `E012` | error | dropped |
+| `E013` | error | retained |
+| `E014` | error | retained; dropped when the line begins with a BOM, which the file-start strip would rewrite into something that can bind |
+| `E015` | error | bound |
+| `E016` | error | dropped |
+| `E017` | error | bound |
+| `E018` | error | dropped |
+| `E019` | error or hint | value dropped when the brackets hold an unquoted comma (error); bound otherwise (hint) |
+| `E020` | error | the parse stopped: every later non-blank line is dropped, and no level is held |
+| `E021` | error | dropped |
+| `E022` | error or hint | bound (about the list, not a line) |
+| `H001` | hint | bound |
+| `H002` | hint | bound |
+
+- The one thing the table changed when it was written: a raw fence with no parent field (`E006`) never held its level, so a line written deeper than it bound to the root. It holds it now, like every other dropped line.
+
+- An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.
 
 ### Testing
 
