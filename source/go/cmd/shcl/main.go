@@ -87,6 +87,11 @@ Usage:
                                          out)
   shcl paths [options] FILE              every field path in the document, one
                                          per line
+  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
+                                         rules (print it, or rewrite FILE in
+                                         place with --write)
+  shcl tokens FILE                       each line's lexical spans, for seeing
+                                         why the parser read a line as it did
   shcl help | version                    this help, or the version (also
                                          -h/--help, -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
@@ -126,10 +131,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          wildcard slot)
   --no-banner                            (init) leave out the footer naming the
                                          format and pointing at its spec
-  --lossy                                (fmt/set) with --write, rewrite even
-                                         when the load dropped lines this write
-                                         would delete; without it the write
-                                         refuses and nothing is changed
+  --lossy                                (fmt/set/migrate) with --write, rewrite
+                                         even when the load dropped lines this
+                                         write would delete; without it the
+                                         write refuses and nothing is changed
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -403,53 +408,17 @@ func askedFor(argv []string) string {
 }
 
 // splitSet: PATH=VALUE at the first `=` outside quotes and brackets, so a
-// selector holding one (`x[a=b].c=1`) still addresses its instance. A quote
-// opens only where the path scanner opens one - a segment's or a selector
-// body's first char - so `srv[O'Brien].port=8080` splits at its `=`, and a
-// bare selector body runs to the first `]`.
+// selector holding one (`x[a=b].c=1`) still addresses its instance. The
+// tokenizer reads the path half with `=` as its separator, so quotes and
+// brackets mean here exactly what they mean in a file; an argument whose
+// path half is not a path at all has no `=` to split at.
 func splitSet(arg string) (string, string, bool) {
-	var inQuote byte
-	inSel := false
-	atStart := true
-	for i := 0; i < len(arg); i++ {
-		b := arg[i]
-		if inQuote != 0 {
-			if b == '\\' {
-				i++
-			} else if b == inQuote {
-				inQuote = 0
-			}
-			continue
-		}
-		if b == ' ' || b == '\t' {
-			continue
-		}
-		if inSel {
-			if b == ']' {
-				inSel = false
-			} else if atStart && (b == '"' || b == '\'') {
-				inQuote = b
-			}
-		} else {
-			switch b {
-			case '"', '\'':
-				if atStart {
-					inQuote = b
-				}
-			case '[':
-				inSel = true
-				atStart = true
-				continue
-			case '.':
-				atStart = true
-				continue
-			case '=':
-				return arg[:i], arg[i+1:], true
-			}
-		}
-		atStart = false
+	var tok shcl.Tokens
+	shcl.Tokenize(arg, '=', true, shcl.RulesCurrent, &tok)
+	if tok.Sep < 0 {
+		return "", "", false
 	}
-	return "", "", false
+	return arg[:tok.Sep], arg[tok.Sep+1:], true
 }
 
 // asciiLower folds A-Z only, mirroring the library helper the strictness option
@@ -642,6 +611,10 @@ func checkOpts(cmd string, o *opts) int {
 		allowed = []string{"--strictness", "--schema"}
 	case "init":
 		allowed = []string{"--schema", "--no-banner"}
+	case "migrate":
+		allowed = []string{"--write", "--lossy"}
+	case "tokens":
+		allowed = []string{}
 	case "count", "instances", "children", "paths":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
 			"--set-literal-default", "--remove"}
@@ -1156,6 +1129,153 @@ func doFmt(o *opts) int {
 		return writeBack(doc, file, o)
 	}
 	outs(doc.ToCanonical())
+	return 0
+}
+
+// doMigrate: a 2.x file rewritten for the current rules. The rewrite is text
+// to text; the load after it is for the diagnostics and the save gate, the
+// same gate `fmt --write` goes through.
+func doMigrate(o *opts) int {
+	if len(o.args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: shcl migrate [--write|-w] FILE (see --help)")
+		return 1
+	}
+	file := o.args[0]
+	if o.write && file == "-" {
+		fmt.Fprintln(os.Stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE")
+		return 1
+	}
+	text, err := readInput(file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitIO
+	}
+	migrated := shcl.Migrate(text)
+	doc, code := loadDocFrom("", migrated, o.strictness)
+	if doc == nil {
+		return code
+	}
+	sayDiagnosticsFrom("", doc.Diagnostics())
+	if o.write {
+		if doc.LostCount() != 0 && !o.lossy {
+			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the migrated text drops %d line(s)/value(s) "+
+				"on load (--lossy overrides)\n", file, doc.LostCount())
+			return 7
+		}
+		if err := shcl.WriteFileAtomic(file, migrated); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitIO
+		}
+		return 0
+	}
+	outs(migrated)
+	return 0
+}
+
+// doTokens prints every line's spans, one line of output per input line: the
+// indent length, then each token as kind=start-end with a mark for how it
+// was quoted (', ", or ? for a quote that never closed), offsets counted
+// from the first character after the indent. A blank line and a comment
+// line say so; every other line is tokenized on its own, raw bodies
+// included, since this is the lexical view and not the parse.
+func doTokens(o *opts) int {
+	if len(o.args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: shcl tokens FILE (see --help)")
+		return 1
+	}
+	text, err := readInput(o.args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return exitIO
+	}
+	text = strings.TrimPrefix(text, "\ufeff")
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	span := func(p *shcl.Piece) string {
+		mark := ""
+		switch p.Quote {
+		case shcl.QuoteSingle:
+			mark = "'"
+		case shcl.QuoteDouble:
+			mark = "\""
+		case shcl.QuoteOpen:
+			mark = "?"
+		}
+		return fmt.Sprintf("%d-%d%s", p.Start, p.End, mark)
+	}
+	var tok shcl.Tokens
+	var out strings.Builder
+	for i, line := range lines {
+		ilen := 0
+		for ilen < len(line) && (line[ilen] == ' ' || line[ilen] == '\t') {
+			ilen++
+		}
+		rest := strings.TrimRight(line[ilen:], " \t\r")
+		fmt.Fprintf(&out, "%d:%d", i+1, ilen)
+		if rest == "" {
+			out.WriteString(" blank\n")
+			continue
+		}
+		if strings.HasPrefix(rest, "#") {
+			out.WriteString(" comment\n")
+			continue
+		}
+		// A stacked element and a fence line are value halves on their own.
+		star := strings.HasPrefix(rest, "*") && len(rest) > 1 && (rest[1] == ' ' || rest[1] == '\t')
+		fence := strings.HasPrefix(rest, "```") || strings.HasPrefix(rest, "~~~")
+		if star || fence {
+			from := 0
+			if star {
+				from = 1
+			}
+			shcl.TokenizeValue(rest, from, shcl.RulesCurrent, &tok)
+			if star {
+				out.WriteString(" star")
+			} else {
+				out.WriteString(" fence")
+			}
+			fmt.Fprintf(&out, " value=%d-%d", tok.Value[0], tok.Value[1])
+			for k := range tok.Elements {
+				fmt.Fprintf(&out, " elem=%s", span(&tok.Elements[k]))
+			}
+			if tok.Comment >= 0 {
+				fmt.Fprintf(&out, " comment=%d", tok.Comment)
+			}
+			out.WriteByte('\n')
+			continue
+		}
+		shcl.Tokenize(rest, ':', false, shcl.RulesCurrent, &tok)
+		for k := range tok.Segments {
+			seg := &tok.Segments[k]
+			kind := "name"
+			if seg.Star {
+				kind = "star"
+			}
+			fmt.Fprintf(&out, " %s=%s", kind, span(&seg.Name))
+			if seg.Selector != nil {
+				fmt.Fprintf(&out, " sel=%s", span(seg.Selector))
+			}
+		}
+		if tok.Sep >= 0 {
+			fmt.Fprintf(&out, " sep=%d value=%d-%d", tok.Sep, tok.Value[0], tok.Value[1])
+			for k := range tok.Elements {
+				fmt.Fprintf(&out, " elem=%s", span(&tok.Elements[k]))
+			}
+		}
+		if tok.Comment >= 0 {
+			fmt.Fprintf(&out, " comment=%d", tok.Comment)
+		}
+		if tok.Fault >= 0 {
+			fmt.Fprintf(&out, " fault=%d:%s", tok.Fault, tok.FaultReason)
+		}
+		out.WriteByte('\n')
+	}
+	outs(out.String())
 	return 0
 }
 
@@ -1801,7 +1921,7 @@ func doPaths(o *opts) int {
 	return 0
 }
 
-var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths"}
+var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens"}
 
 func run() int {
 	argv := os.Args[1:]
@@ -1886,6 +2006,10 @@ func run() int {
 		return doChildren(o)
 	case "paths":
 		return doPaths(o)
+	case "migrate":
+		return doMigrate(o)
+	case "tokens":
+		return doTokens(o)
 	default:
 		fmt.Fprintf(os.Stderr, "%s: no dispatch arm (see --help)\n", argv[0])
 		return 1

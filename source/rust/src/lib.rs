@@ -1296,77 +1296,30 @@ fn merge_eq(name_a: &str, va: &Value, name_b: &str, vb: &Value) -> bool {
 	}
 }
 
-/// apply_escapes as a streaming feed into the hash - the same state machine,
-/// one char at a time, no intermediate string.
-struct EscHash {
-	h: Fnv,
-	pending: bool,
-}
-
-impl EscHash {
-	fn emit(&mut self, c: char) {
-		let mut b = [0u8; 4];
-		self.h.bytes(c.encode_utf8(&mut b).as_bytes());
-	}
-	fn push(&mut self, c: char) {
-		if self.pending {
-			self.pending = false;
-			match c {
-				't' => self.emit('\t'),
-				'n' => self.emit('\n'),
-				'\\' => self.emit('\\'),
-				'"' => self.emit('"'),
-				'\'' => self.emit('\''),
-				other => {
-					self.emit('\\');
-					self.emit(other);
-				}
-			}
-		} else if c == '\\' {
-			self.pending = true;
-		} else {
-			self.emit(c);
-		}
-	}
-	fn finish(mut self) -> u64 {
-		if self.pending {
-			self.emit('\\');
-		}
-		self.h.0
-	}
-}
-
-/// Hash of the (name, display-with-escapes-applied) pair a `[value]` selector
-/// matches with - what disp_key would spell, streamed instead of built.
+/// Hash of the (name, display) pair a `[value]` selector matches with - what
+/// disp_key would spell, streamed instead of built. Elements hold the logical
+/// string, so the bytes feed straight in.
 fn disp_hash(name: &str, v: &Value) -> u64 {
 	let mut h = Fnv::new();
 	h.bytes(name.as_bytes());
 	h.byte(0xFF);
-	let mut esc = EscHash { h, pending: false };
 	match v {
 		Value::Empty => {}
 		Value::Cell(els) => {
 			for (i, e) in els.iter().enumerate() {
 				if i > 0 {
-					esc.push(',');
-					esc.push(' ');
+					h.bytes(b", ");
 				}
-				for c in e.text.chars() {
-					esc.push(c);
-				}
+				h.bytes(e.text.as_bytes());
 			}
 		}
-		Value::Raw(r) => {
-			for c in r.content.chars() {
-				esc.push(c);
-			}
-		}
+		Value::Raw(r) => h.bytes(r.content.as_bytes()),
 	}
-	esc.finish()
+	h.0
 }
 
-/// The query-side twin of disp_hash: the selector's text already has its
-/// escapes applied, so its bytes feed straight in.
+/// The query-side twin of disp_hash: the selector's logical text, the same
+/// bytes the display would spell.
 fn disp_hash_text(name: &str, want: &str) -> u64 {
 	let mut h = Fnv::new();
 	h.bytes(name.as_bytes());

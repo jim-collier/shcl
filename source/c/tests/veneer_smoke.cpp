@@ -164,6 +164,9 @@ int main() {
 	// The default run appends the format footer; --no-banner is the same bytes
 	// without it.
 	auto gschema = shcl::Document::parse("field: port\n\ttype: int\n\trequired: yes\n\tdefault: 8080\n");
+	// The 2.x rewrite comes back as an owned string: the selector sugar loses
+	// its colon and a bare backslash escape is double-quoted.
+	CHECK(shcl::Document::migrate("base:[Boston]\n\tlat: 42\nnote: a\\tb\n") == "base: Boston\n\tlat: 42\nnote: \"a\\tb\"\n");
 	auto [bare, bareOk] = gschema.generate(true);
 	CHECK(bareOk && bare == "# int, required\nport: 8080\n");
 	auto [starter, starterOk] = gschema.generate();
