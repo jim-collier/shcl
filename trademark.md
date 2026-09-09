@@ -12,7 +12,7 @@ We would rather say yes than no. New implementations in new languages are the be
 
 ## 1. Marks covered
 
-"SHCL", the SHCL logo, and any stylized variants (the "Marks") are trademarks of Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞). We claim these Marks under common law and use them in commerce as SHCL™.
+"SHCL", the SHCL logo, and any stylized variants (the "Marks") are trademarks of Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. We claim these Marks under common law and use them in commerce as SHCL™.
 
 ## 2. Relationship to the software license
 
