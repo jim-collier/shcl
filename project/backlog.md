@@ -50,7 +50,361 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 ### Bugs
 
+- Code review 20260909:
+
+	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check cannot see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
+
+	- Twenty-one of the defects are shapes all four bindings share. Six are gates that still report OK with the defect they exist for present. Nine reach the filesystem or an irreversible step.
+
+	- The round's diagnosis, and the reason it is worth reading before picking up any item: every one of the worst findings is a rule applied at one call site and not at its sibling. The tokenizer computes the unterminated-quote flag and the value half reads it while the selector half drops it (item 1). `w_place` resets the C scratch arena and the value refusals do not (item 22). The generator's self-check reads the validation diagnostics and not the parse diagnostics (item 5). The sugar rewrite in `migrate` writes its discriminator directly instead of through `emit_element` (item 3). `SetLiteral` applies the line-start comment rule to a value half (item 7). The 20260906 churn analysis called the old shape "one rule in many copies"; the tokenizer cut collapsed the copies and the same disease moved one level up, into who reads the shared answer.
+
+	- The 3.0 migration story does not hold as it stands, and that is the round's headline. `migrate` is the only safety net for the breaking change. It corrupts a file that was already correct (item 4), it can write a file that no longer loads (item 3), it exits 0 in both cases, and its gate passes with four of its six rules deleted (item 25). Meanwhile the thing it exists to protect against is not detected at all: a 2.x file whose values change meaning under the new comment rule loads clean in both versions, `check` says ok, and the first in-place write makes the new reading permanent (item 2). Both of a user's realistic paths lose data.
+
+	- 🔘 Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
+		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
+		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
+		- Note: the spec promises this in four places - `spec.md:109`, `:139`, the `E017` row at `:440`, and `grammar.abnf:71-73` ("a value element **or a selector body**"). Nothing emits it.
+		- Note: it is a regression across the cut. The pinned 2.x build reports `E014` at exit 6 and retains the line verbatim; `migrate` passes the line through unchanged at exit 0, so the migration path does not warn either. A user goes from a loud refusal to a silent wrong binding.
+		- Note: corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed, and expects zero diagnostics. It has no unclosed case, so the suite is blind to this.
+		- Sites: the `path_of` call site in each - `lib.rs:2870`, `shcl.go:2826`, `shcl.py:2326`, `shcl.h:3125`; the selector arms are `lib.rs:1733` and `:1793`, `shcl.go:1882` and `:1938`, `shcl.py:1597` and `:1642`, `shcl.h:1824` and `:1861`.
+		- Opened: 20260909-100000
+
+	- 🔘 Item 2: a 2.x file whose values change meaning under the new comment rule is not detected by anything, and the first in-place write makes the new reading permanent.
+		- Reproduced against the pinned 2.x build and the current one. `url: http://x/y#frag` reads `http://x/y` under 2.x and `http://x/y#frag` now. Both report `ok (0 diagnostic(s))` at exit 0, both have a lost count of 0, and `fmt --write` writes `url: "http://x/y#frag"`, after which even 2.x reads it the new way. `note: hello#world` and `port: 8080#comment` do the same.
+		- Cause: the load has nothing that compares the two readings, so no diagnostic exists for the case. The save gate reads the lost count, which is correctly 0 - nothing was lost, the line simply means something else.
+		- Note: `README.md:33` says "A save never deletes a line you typed". A comment the author wrote is not a line the load lost; it is a line the load stopped seeing.
+		- Note: the predicate that would catch it already exists in every binding. A load whose text differs from `migrate`'s output of that text is a load whose reading changed, and that is one call.
+		- Note: 21 of 49 ordinary config lines tried change meaning with both sides reading clean. The table is in `details.md`.
+		- Opened: 20260909-100100
+
+	- 🔘 Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
+		- Reproduced in all four. `k:[~~~x]` followed by `after: 1` migrates to `k: ~~~x`, which opens a raw block; `after: 1` is swallowed into it, `paths` reports only `k`, and `check` on the result exits 6 with `E005 unterminated raw block`. `migrate --write` prints the diagnostic and exits 0, so a scripted `shcl migrate --write *.shcl && deploy` succeeds on a destroyed file. A discriminator beginning with `[` loses its own field instead.
+		- Cause: the `name:[disc]` rewrite writes the discriminator text straight into the line rather than through `emit_element`, so nothing quotes a discriminator that opens a fence, a comment or a bracket.
+		- Sites: `lib.rs:1641`, `shcl.go:1779`, `shcl.py:1509`, `shcl.h:1689`.
+		- Opened: 20260909-100200
+
+	- 🔘 Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
+		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
+		- Cause: the single-quoted-name re-spelling runs on text it has already migrated, since nothing marks a document as done and nothing tests whether the 2.x and 3.0 readings already agree.
+		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
+		- Opened: 20260909-100300
+
+	- 🔘 Item 5: `shcl init` emits a starter config that fails its own `check` at exit 6.
+		- Reproduced in all four. A schema field whose path ends in a by-value selector with a default (`field: a[b]` with `type: string`, `required: yes`, `default: hello`) generates `a[b]: hello`. That is `E002 value after selector`, so `check` on the generated file exits 6, `fmt` rewrites the line to `a: b`, and `get 'a[b]'` answers `b`. The default is gone. 528 of 3,648 enumerated shapes hit it.
+		- Cause: the `V097` self-check parses its own output and reads only the validation diagnostics. The parse diagnostics are never read, so half of the promise ("loads with no error diagnostics and validates clean") is unchecked.
+		- Note: `init` is the first command a new user runs, and its whole point is a file that works.
+		- Opened: 20260909-100400
+
+	- 🔘 Item 6: the create path replaces a file that appears between the existence check and the write, at exit 0.
+		- Reproduced with the reference. `set --write FILE` reading its ops from stdin checks whether FILE exists, then waits for the ops, then writes. A file created during the wait is replaced by the info block plus the edits, and the run exits 0. The window is the whole time the command waits on stdin, so this is not a microsecond race.
+		- Note: it also breaks the round's own recorded decision that a file which already exists is never given an info block.
+		- Note: the same window exists in `init` and in any create path that decides "new file" before it writes.
+		- Opened: 20260909-100500
+
+	- 🔘 Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
+		- Reproduced in all four. `set --set-literal='color=#ff0000'` writes `color:` and exits 0, with the whole value gone. The same text in a file, `color:#ff0000`, reads `#ff0000`.
+		- Cause: `literal_value` hands the text to `tokenize_value` with `from=0`, which applies the line-start comment rule to what is actually a value half.
+		- Note: `spec.md:87` says `a:#x` is the value `#x`, and `spec.md:95` says a `#` with no whitespace before it is content. Hex colors, URL fragments and CSS ids all take this shape, and no refusal channel fires.
+		- Sites: `lib.rs:4309`, `shcl.go:4341`, `shcl.py:430`, `shcl.h:4006`.
+		- Opened: 20260909-100600
+
+	- 🔘 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
+		- Reproduced. a value `x`, then a carriage return, then two spaces and `# c` reads `x` with the CR gone, and `fmt --write` writes `a: x  # c` at exit 0 with no diagnostic and a lost count of 0, so the save gate does not refuse.
+		- Cause: the value-end trim takes the CR along with the blanks.
+		- Note: three documents say the opposite. `spec.md:279` ("A carriage return inside a line is content and is preserved"), `design.md:106` ("a CR is special nowhere else"), and `changelog.md:382`.
+		- Note: the code comment gives the reason as a fence line's bare info string. That is right for a fence label and is not forced for a plain value - the emitter already quotes an element with whitespace at its edges, so `x` with a trailing carriage return would have round-tripped.
+		- Sites: `lib.rs:999`, `shcl.go:1004`, `shcl.py:1093`, `shcl.h:1284`.
+		- Opened: 20260909-100700
+
+	- 🔘 Item 9: `migrate` turns a quoted value's own quotes into content when a carriage return sits before its comment.
+		- Reproduced against the pinned 2.x build. a quoted value followed by a carriage return and then `#c` reads `secret` under 2.x and `'secret'` after migration.
+		- Note: the document is clean under 2.x, so this shape is inside `check-migrate.bash`'s own comparison set. The gate never generated it.
+		- Opened: 20260909-100800
+
+	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
+		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
+		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration cannot tell the difference between "migrated" and "gave up".
+		- Opened: 20260909-100900
+
+	- 🔘 Item 11: the element cap turns a fence line into a malformed line, and the raw block's body then parses as live bindings with nothing counted lost.
+		- Reproduced in the reference and Python, and read in Go and C. Under `parse_limited` with `max_elements=3`, a fence whose info string is `a,b,c,d` is no longer recognized as a fence. `secrets.password` inside the block flips from NotFound to a live `Good` value, the line after the block is swallowed into a new block, and the lost count stays 0, so `save_file`'s gate passes and `fmt --write` writes it.
+		- Cause: `scan_value` zeroes the value on the cap, and the child-indent fence arm reads that value without checking the capped flag.
+		- Note: `parse_limited` is the documented entry point for input the consumer does not control, so this is the one path where a hostile document is expected.
+		- Sites: `lib.rs:977-981` and `:2746-2750`, `shcl.go:2728`, `shcl.py:2246`, `shcl.h:3069`.
+		- Opened: 20260909-101000
+
+	- 🔘 Item 12: `_GNU_SOURCE` makes `shcl.h` impossible to compile.
+		- Reproduced. A translation unit that defines `_GNU_SOURCE` and includes the header fails with "conflicting types for 'splice'": the header's own `static ShclStr splice(...)` collides with glibc's `splice()`, which `<fcntl.h>` declares under that macro. The header includes `<fcntl.h>` itself, so no include order helps.
+		- Cause: the name arrived with the tokenizer round's C port, for `shcl_migrate`.
+		- Note: this breaks the drop-in promise for any Linux C consumer whose build defines `_GNU_SOURCE`, which is most of them - `asprintf`, `memmem` and `strcasestr` all need it. `SHCL_NO_FILE_IO` avoids it and g++ is unaffected.
+		- Note: a sweep of all 273 `static` names in the header found `splice` and nothing else.
+		- Site: `source/c/shcl.h:1592`.
+		- Opened: 20260909-101100
+
+	- 🔘 Item 13: a writer-built element reports `quoted=false`, so a value reads differently before and after a save.
+		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
+		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
+		- Opened: 20260909-101200
+
+	- 🔘 Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
+		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.
+		- Cause: `set_raw` normalizes the info string with the space-and-tab trim, while the load's line-end trim also takes the trailing CR run.
+		- Note: `spec.md:453` and `:454` and `design.md:440` all say the setter normalizes what the load normalizes, and the refusal list does not include this.
+		- Sites: `lib.rs:4719`, `shcl.go:4786`, `shcl.py:3331`, `shcl.h:4030`.
+		- Opened: 20260909-101300
+
+	- 🔘 Item 15: the `Set<T>Default` forms report success for a value that has no spelling, whenever the path already resolves.
+		- Reproduced in all four. `--set-literal-default 'a=[1, 2]'` exits 1 on an absent path and 0 on a present one, writing nothing either way. 45 asymmetric verdicts over a 670-value corpus.
+		- Cause: the verdict is `write_reason(path)`, which by spec names only path faults, so the value is never looked at.
+		- Note: same shape as 20260904 item 6, whose fix covered the wildcard half only.
+		- Opened: 20260909-101400
+
+	- 🔘 Item 16: the 64-character temp-name cap is counted in codepoints, so a filename well inside the byte limit still cannot be rewritten.
+		- Reproduced in all four. A basename of 60 emoji plus `.shcl` is 245 bytes, under `NAME_MAX`, and `fmt --write` on it exits 8 with "File name too long". The temp name's byte length ranges 69 to 261 where the header says the cut makes it fixed.
+		- Note: the pinning row `cli-regress.bash:227` uses an ASCII name, so the cap has never been exercised where it fails.
+		- Site: `shcl.h:6239-6244` and the same cut in the other three.
+		- Opened: 20260909-101500
+
+	- 🔘 Item 17: `migrate`'s 2.x emulation shields a backslash inside a selector body; 2.x did not.
+		- Reproduced against the pinned 2.x build. Any bare selector ending in a backslash makes `migrate` bail, and with the sugar spelling the whole line's bindings disappear instead.
+		- Opened: 20260909-101600
+
+	- 🔘 Item 18: a field name holding a newline splits one diagnostic across two stderr lines.
+		- Reproduced in all four. `V001`, its did-you-mean suffix and `H001` embed a field name verbatim, so a machine reading stderr sees two diagnostics where there is one.
+		- Cause: `one_line` exists for this and is applied to every `V004` value and to neither of these.
+		- Note: a second facet - the path is joined with `.` from raw names, so a field named `a.b` prints indistinguishably from `a` nesting `b`.
+		- Opened: 20260909-101700
+
+	- 🔘 Item 19: Python's `tokenize_value` fast path is not exact when `from_` is not a character boundary.
+		- Reproduced at library level. `tokenize_value('e-acute,', 1, ...)` gives Python `[(1,2),(3,3)]` where the other three give `[(1,3)]`: the byte-find shortcut splits on a comma the byte loop strides over.
+		- Note: `style-guide.md:110` sanctions the deviation and says both shortcuts are exact. No in-tree caller reaches it, but `tokenize_value` is public in all four, so a consumer gets a different answer from Python.
+		- Site: `shcl.py:1041-1063`.
+		- Opened: 20260909-101800
+
+	- 🔘 Item 20: `install-dev.bash` rewrites an unrelated repository's git config and switches its branch.
+		- Reproduced. `--dir` naming an existing git repository that is not shcl announces that it will clone, silently does not, then runs `git checkout dev` on that repository and overwrites its `core.hooksPath` and `core.sshCommand`. The victim repository's own hooks stop running with no sign of it.
+		- Cause: the clone is guarded by `[[ -e "${clone_dir}/.git" ]]`, which is true of any repository, and nothing afterwards checks that the directory is this project.
+		- Note: this is the recorded past defect on the path its fix did not reach. `check-install-dev.bash` passes `--hooks-only` on all seven of its invocations, so the default path has no gate at all.
+		- Sites: `install-dev.bash:264`, `:267`, `:295`.
+		- Opened: 20260909-101900
+
+	- 🔘 Item 21: a failed pull strands uncommitted work in a stash, and the next run reports success.
+		- Reproduced twice in `n8git_backup-and-publish`. With a dirty tree and a divergent upstream the script stashes, `git pull --ff-only` fails, and the error trap exits with the stash pushed and the tree now clean. The next run finds a clean tree, so it never pops, commits the merge, pushes, and prints "Done." at rc 0 with the work still in `stash@{0}`. A second failure adds `stash@{1}` and only the newest would ever be popped.
+		- Note: both trigger conditions are the normal case on this box. dev moves under you mid-task because the publish stage pushes, and in-flight working-tree edits are routine.
+		- Note: the fix belongs in the canonical copy under the synced tree as well, patched in place rather than by overwriting, since other projects' copies carry their own customizations.
+		- Opened: 20260909-102000
+
+	- 🔘 Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
+		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
+		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
+		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
+		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` cannot see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
+		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
+		- Opened: 20260909-102100
+
+	- 🔘 Item 23: `lint-report.bash` reports a failed run as CLEAN.
+		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
+		- Cause: the scan matches `warning`, `rustsec-`, `vulnerab`, `unmaintained`, `yanked` and `error[`. Only rustc's bracketed error-code form is an error spelling; a gcc error, a shellcheck finding, a failed test and the pipeline's own abort line all pass through.
+		- Note: this is one of the two session-startup gates, so it is the thing that would tell someone a broken build is fine.
+		- Site: `cicd/utility/lint-report.bash:91`.
+		- Opened: 20260909-102200
+
+	- 🔘 Item 24: both startup gates are silenced permanently by a marker timestamp ahead of every artifact.
+		- Reproduced. `--check --file` writes the named log's timestamp into the shared marker, so pointing either gate at an old or arbitrary log once leaves the marker ahead of everything and both gates report SEEN from then on.
+		- Note: `flame-report.py`'s drop-share caveat is missing in the live repo right now, for a related reason - gfs rotation retagged the frequent svg to `_latest` and left its `.samples` sidecar behind, so every percentage currently reads as a share of all CPU rather than of the survivors.
+		- Opened: 20260909-102300
+
+	- 🔘 Item 25: `check-migrate.bash` passes with four of `migrate`'s six rules deleted.
+		- Reproduced. The sugar rewrite in both halves, the single-quoted-name re-spelling and the whole-line carriage-return rule can each be removed from `migrate` and the gate still reports OK at its real settings.
+		- Cause: three separate holes. The only sugar corpus case is skipped because 2.x hints `E019` on it; the gate compares reads only, never diagnostics, exit code or lost count; and the skip predicate is unanchored and whole-file, so one plain comment line skips a whole document - 422 of 615 documents are skipped per run, and in one configuration 114 of 115.
+		- Note: the `--min 100` coverage floor is met by the fuzz dump alone, so the corpus half can vanish without the gate saying anything.
+		- Note: item 9 above is a shape inside the gate's own comparison set that it never generated.
+		- Opened: 20260909-102400
+
+	- 🔘 Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
+		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
+		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
+		- Opened: 20260909-102500
+
+	- 🔘 Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
+		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
+		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
+		- Opened: 20260909-102600
+
+	- 🔘 Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
+		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half cannot fail at all, and it never checks that the harness it built adopted the locale.
+		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
+		- Opened: 20260909-102700
+
+	- 🔘 Item 29: an environment variable reaches an arithmetic context in the copied rotation script and executes a command.
+		- Reproduced. `GFS_KEEP_FREQUENT='x[$(touch FILE)]' gfs_rotate DIR log txt` runs the substitution. Bash expands a command substitution inside an array subscript in arithmetic evaluation, which is the recorded `[[ VAR -eq 1 ]]` trap in a different spelling.
+		- Note: all six `GFS_KEEP_*` variables reach `((...))` the same way. The script is copied into every project, so the fix belongs in the canonical copy too.
+		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
+		- Opened: 20260909-102800
+
+	- 🔘 Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
+		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
+		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
+		- Note: everything under `## Unreleased` becomes the 3.0.0 release notes, so all three ship. This is the third occurrence of the same pattern - a later round amended an entry by appending a second one instead of editing the first - and 20260905 item 5 closed the previous one by fixing that one entry rather than looking for siblings.
+		- Opened: 20260909-102900
+
+	- 🔘 Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
+		- Reproduced. Printed help line 93 says an unquoted `#` ends a `--set-literal` value. It does not: `literal k a#b` stores `a#b` in all four.
+		- Note: the same stale sentence is in `shcl.1:346-348` and `:464-468`, in the public C header above `shcl_set_literal` at `shcl.h:495`, in all four library doc comments, in `changelog.md:264`, in `conformance/README.md:22` and `:146`, and in `design.md:337` - which contradicts `design.md:438` in the same file.
+		- Note: item 7 is the code half of the same confusion, and the two disagree in opposite directions, so fixing either alone leaves a lie.
+		- Opened: 20260909-103000
+
+	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
+		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
+		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that cannot express shipped behavior costs more than a typo.
+		- Opened: 20260909-103100
+
+	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
+		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
+		- Opened: 20260909-103200
+
+	- 🔘 Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
+		- Reproduced. `README.md:501` and `:505` quote `unexpected '4' after field` where the code now says `unexpected character after the path`. The offending character's position is still computed in all four and thrown away before the message is built; `shcl tokens` prints it as `fault=8:...`.
+		- Sites: `lib.rs:1765`, `shcl.go:1908`, `shcl.py:1625`, `shcl.h:1847`.
+		- Opened: 20260909-103300
+
+	- 🔘 Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
+		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
+		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
+		- Opened: 20260909-103400
+
+	- 🔘 Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
+		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.
+		- Note: `design.md:98` says it "prints the same help text but as a usage error" and names it as one of the two deliberately unpadded outputs.
+		- Opened: 20260909-103500
+
+	- 🔘 Item 37: the reason given for refusing `[#N]` in a generated path stopped being true at the 3.0 cut.
+		- Reproduced. `spec.md:644` and all four generators justify the refusal partly on the `#` starting a comment. It does not any more: `a[#0].c: 2` loads clean and `tokens` reads `#0` as a selector.
+		- Opened: 20260909-103600
+
+	- 🔘 Item 38: four installer and packaging defects, each reproduced.
+		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that cannot be nonzero.
+		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
+		- `--uninstall` deletes every file in `code/` and `scripts/` (bash) or the whole subtrees (ps1), then prints that it removed what the installer laid down. `README.md:382` says "and nothing else".
+		- An interrupted install leaves `.shcl.new` or `.shcl.exe.new`; neither uninstall removes it, and both then tell the user the directory holds files the installer did not put there.
+		- Note: the rpm does not own `/usr/share/doc/shcl` where the deb does, against the rule stated at `nfpm.yaml:39-41`.
+		- Opened: 20260909-103700
+
+	- 🔘 Item 39: three copied or generated tools do the wrong thing and say it worked.
+		- `n8runshcl.ps1` deletes the copy it just staged and is about to launch, is squatted by any `shcl-*` file in its build directory on POSIX, and reports a failed delete as a success.
+		- `git-auto-msg.bash` produces commit messages git rejects.
+		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
+		- Opened: 20260909-103800
+
+	- 🔘 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
+		- Reproduced in all four. A fence label holding a whitespace-`#` reads `sql #note` under 2.x and `sql` now, and `check` says `ok (0 diagnostic(s))`. Corpus `068`'s own `expected-diags.txt` pins that silence.
+		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
+		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
+		- Opened: 20260909-103900
+
 ### Features and enhancements
+
+- Code review 20260909:
+
+	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
+
+	- 🔘 Item 41: there is no way to ask whether a file or a tree needs migrating, and `migrate --write` reports nothing either way.
+		- A user upgrading has a directory of files and no command that answers "which of these change meaning". `migrate FILE` prints the migrated text, so telling migrated from unchanged means diffing it yourself, and `migrate --write` prints nothing on success and nothing on a file it left alone.
+		- A `--check` mode that exits nonzero when the two readings differ, and names the lines, is the missing piece. The comparison already exists inside `migrate`.
+		- Related: bug items 2, 4 and 10 are all consequences of the same gap.
+		- Opened: 20260909-104000
+
+	- 🔘 Item 42: no `shcl explain CODE`, and a diagnostic says nothing about where to look a code up.
+		- `E019 bracket array syntax; an array is comma-separated, without brackets` is a good message, but a user who wants the rule has to know that `project/spec.md` has a table and that it lives on GitHub.
+		- The spec's own table is the text an `explain` subcommand would print, so this is mostly plumbing.
+		- Opened: 20260909-104100
+
+	- 🔘 Item 43: no did-you-mean on an unknown command or option, though the suggester is already in the library.
+		- `shcl frmt FILE` and `shcl --stricness=strict` both print a bare usage error. `edit_distance` and `v_suggest` are right there and the README advertises the same feature for schema fields.
+		- Opened: 20260909-104200
+
+	- 🔘 Item 44: no per-subcommand help.
+		- `shcl help get` prints all 130 lines and ignores the argument. Every CLI a user compares this to narrows.
+		- Opened: 20260909-104300
+
+	- 🔘 Item 45: creating instances one at a time is quadratic in the instance count.
+		- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.
+		- Cause: `children_named` materializes the whole same-name chain in `probe_write` and `collapse_dup`.
+		- Note: not caused by the setter round. The emit-and-tokenize it added is linear on every axis measured - value length, element count, depth and document size - and 40,000 flat writes cost 35 ms.
+		- Opened: 20260909-104400
+
+	- 🔘 Item 46: `shcl.h` has no compile-time guard for the include-order trap it documents in a comment.
+		- A consumer who includes a system header first gets "implicit declaration of function 'readlink'", which says nothing about include order. A one-block sentinel on a glibc internal define catches it and can say so.
+		- Related: bug item 12 is the other half of the header's build story.
+		- Opened: 20260909-104500
+
+	- 🔘 Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
+		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
+		- Opened: 20260909-104600
+
+	- 🔘 Item 48: `V005` and `V006` name neither the bound nor the offending value.
+		- A range failure says which field, not what it was or what it should have been, so a user reading a long report has to open the schema for each one.
+		- Opened: 20260909-104700
+
+	- 🔘 Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
+		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
+		- Related: bug item 37 is the stale reason given for the refusal.
+		- Opened: 20260909-104800
+
+	- 🔘 Item 50: Python's `Diagnostic` and `Read` print as object addresses where the other three print readably.
+		- `print(d.diagnostics()[0])` gives `<shcl.Diagnostic object at 0x...>`. A `__repr__` on each is the whole change, and Python is the binding where printing a value is how people debug.
+		- Opened: 20260909-104900
+
+	- 🔘 Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
+		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
+		- Note: the recorded rule is that a transient arena armed on a recovery point has to be reachable from it, or the unwind skips its frame.
+		- Opened: 20260909-105000
+
+	- 🔘 Item 52: the C sanitizer gate never runs the commands the last three rounds added.
+		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
+		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
+		- Opened: 20260909-105100
+
+	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
+		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
+		- Site: `shell-regress.bash:824`.
+		- Opened: 20260909-105200
+
+	- 🔘 Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
+		- Corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed and expects zero diagnostics. Adding the unclosed case is what would have caught bug item 1.
+		- Opened: 20260909-105300
+
+	- 🔘 Item 55: the spec says nothing about `migrate`.
+		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
+		- Opened: 20260909-105400
+
+	- 🔘 Item 56: the info block a created file gets has no blank line above it, where `init`'s has one.
+		- Cosmetic, but the two paths emit the same block and should agree.
+		- Opened: 20260909-105500
+
+	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
+		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
+		- Opened: 20260909-105600
+
+	- 🔘 Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
+		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
+		- Opened: 20260909-105700
+
+	- 🔘 Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
+		- Both are cases where the CLI knows more than it says.
+		- Opened: 20260909-105800
+
+	- 🔘 Item 60: three refusal messages name neither the half of the operation that failed nor the cause.
+		- The `raw` op's message conflates four causes. `emit_element`'s justifying comment is wrong in all four and contradicts the comment on `is_wsp` in the same file, though the clause it justifies is still needed for the carriage-return reason it omits.
+		- Opened: 20260909-105900
+
+	- 🔘 Item 61: two measurement tools report numbers that are wrong in a knowable direction.
+		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
+		- Opened: 20260909-110000
+
+	- 🔘 Item 62: three documentation gaps found on the way, none of them a contradiction.
+		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
+		- Opened: 20260909-110100
 
 ### Done
 
