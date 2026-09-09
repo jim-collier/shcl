@@ -1253,8 +1253,8 @@ fn read_file_at_the_largest_cap() {
 fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	// The body's shared indent survives a reload (the closing fence's indent is
 	// what comes off), the info-string is stored as a fence line reads it
-	// back, and an info with a line break or an unquoted `#` has no spelling
-	// and fails the write. Same fixture in every runner.
+	// back, and an info with a line break, or a `#` behind a blank, has no
+	// spelling and fails the write. Same fixture in every runner.
 	let mut doc = Document::new();
 	assert!(doc.set_raw("q", "  a\n  b", " sql "));
 	let back = Document::parse(&doc.to_canonical());

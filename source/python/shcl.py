@@ -418,17 +418,17 @@ def _raw(content, info, fence_char, fence_len):
 def _literal_value(text):
 	# Read text as the value half of a line, for the setters that take value
 	# syntax rather than data: whatever a file line spells with this text is
-	# what gets stored, so a trailing blank comes off and an unquoted `#` ends
-	# the value exactly as they would in a file. What is refused is what a file
-	# reports as an error, since a setter has no diagnostic to report it with: a
-	# line break, which no file line can hold, an unterminated quote (E017), and
-	# bracket text (E019, the line kept verbatim - writing it as a two-element
-	# array holding `[1` and `2]` would be a different wrong answer).
+	# what gets stored, so a trailing blank comes off and a `#` behind a space
+	# or tab ends the value exactly as they would in a file. What is refused is
+	# what a file reports as an error, since a setter has no diagnostic to
+	# report it with: a line break, which no file line can hold, an unterminated
+	# quote (E017), and bracket text (E019, the line kept verbatim - writing it
+	# as a two-element array holding `[1` and `2]` would be a different wrong
+	# answer).
 	if "\n" in text:
 		return None
 	tok = Tokens()
-	tokenize_value(text, 0, Rules.CURRENT, tok)
-	s = tok.src
+	s = _value_half(text, tok)
 	if any(p.quote is Quote.OPEN for p in tok.elements) or s[tok.value[0]:tok.value[0] + 1] == b"[":
 		return None
 	return _cell_of_tokens(tok, s)
@@ -4732,6 +4732,15 @@ def _emit_fence_line(v):
 	return out
 
 
+def _value_half(text, tok):
+	# Scan text as a line's value half. The tokenizer reads offset 0 as a line
+	# start, where a `#` opens a comment, and a value half is never one, so the
+	# text goes in behind the colon a field line puts there. Returns the line
+	# the token spans index into.
+	tokenize_value(":" + text, 1, Rules.CURRENT, tok)
+	return tok.src
+
+
 def _value_reads_back(v):
 	"""True when a value comes back off the page as itself."""
 	if v.kind == "empty":
@@ -4743,7 +4752,7 @@ def _value_reads_back(v):
 		if not _encodable(text):
 			return True
 		tok = Tokens()
-		tokenize_value(text, 0, Rules.CURRENT, tok)
+		_value_half(text, tok)
 		if tok.comment is not None:
 			return False
 		# Compared against the pieces rather than against a rebuilt value: a

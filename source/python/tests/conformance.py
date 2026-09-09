@@ -1393,8 +1393,8 @@ def main():
 		raise SystemExit("a missing field is ok()")
 	# The body's shared indent survives a reload (the closing fence's indent
 	# is what comes off), the info-string is stored as a fence line reads it
-	# back, and an info with a line break or an unquoted `#` has no spelling
-	# and fails the write. Same fixture in every runner.
+	# back, and an info with a line break, or a `#` behind a blank, has no
+	# spelling and fails the write. Same fixture in every runner.
 	rawdoc = shcl.Document.new()
 	if not rawdoc.set_raw("q", "  a\n  b", " sql "):
 		raise SystemExit("set_raw failed")
@@ -1415,7 +1415,7 @@ def main():
 	if rawback.read_raw_info("q").value != "a\rb":
 		raise SystemExit(f"set_raw mid-string CR info got {rawback.read_raw_info('q').value!r}")
 	if rawdoc.set_raw("q", "x", "a # b"):
-		raise SystemExit("set_raw accepted an info with an unquoted #")
+		raise SystemExit("set_raw accepted an info with a # behind a blank")
 	# An info string has no quoting of its own: quotes are characters in it,
 	# so they hide nothing, and a `#` with no space before it is content.
 	if rawdoc.set_raw("q", "x", '"a # b"'):

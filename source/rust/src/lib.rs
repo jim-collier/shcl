@@ -3934,6 +3934,16 @@ fn emit_fence_line(r: &RawVal) -> String {
 	out
 }
 
+/// Scan text as a line's value half. The tokenizer reads offset 0 as a line
+/// start, where a `#` opens a comment, and a value half is never one, so the
+/// text goes in behind the colon a field line puts there. Returns the line the
+/// token spans index into.
+fn value_half(text: &str, out: &mut Tokens) -> String {
+	let line = format!(":{}", text);
+	tokenize_value(&line, 1, Rules::Current, out);
+	line
+}
+
 /// True when a value comes back off the page as itself.
 fn value_reads_back(v: &Value) -> bool {
 	match v {
@@ -3944,7 +3954,7 @@ fn value_reads_back(v: &Value) -> bool {
 				return false;
 			}
 			let mut tok = Tokens::default();
-			tokenize_value(&text, 0, Rules::Current, &mut tok);
+			let line = value_half(&text, &mut tok);
 			if tok.comment.is_some() {
 				return false;
 			}
@@ -3955,7 +3965,7 @@ fn value_reads_back(v: &Value) -> bool {
 				.iter()
 				.filter(|p| p.quote != Quote::None || p.end > p.start);
 			els.iter()
-				.all(|e| back.next().is_some_and(|p| piece_is(p, &text, &e.text)))
+				.all(|e| back.next().is_some_and(|p| piece_is(p, &line, &e.text)))
 				&& back.next().is_none()
 		}
 		Value::Raw(r) => {
@@ -4295,22 +4305,22 @@ impl Document {
 
 /// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data: whatever a file line spells with this text is
-/// what gets stored, so a trailing blank comes off and an unquoted `#` ends
-/// the value exactly as they would in a file. What is refused is what a file
-/// reports as an error, since a setter has no diagnostic to report it with: a
-/// line break, which no file line can hold, an unterminated quote (E017), and
-/// bracket text (E019, the line kept verbatim - writing it as a two-element
-/// array holding `[1` and `2]` would be a different wrong answer).
+/// what gets stored, so a trailing blank comes off and a `#` behind a space or
+/// tab ends the value exactly as they would in a file. What is refused is what
+/// a file reports as an error, since a setter has no diagnostic to report it
+/// with: a line break, which no file line can hold, an unterminated quote
+/// (E017), and bracket text (E019, the line kept verbatim - writing it as a
+/// two-element array holding `[1` and `2]` would be a different wrong answer).
 fn literal_value(text: &str) -> Option<Value> {
 	if text.contains('\n') {
 		return None;
 	}
 	let mut tok = Tokens::default();
-	tokenize_value(text, 0, Rules::Current, &mut tok);
-	if tok.elements.iter().any(|p| p.quote == Quote::Open) || text[tok.value.0..].starts_with('[') {
+	let line = value_half(text, &mut tok);
+	if tok.elements.iter().any(|p| p.quote == Quote::Open) || line[tok.value.0..].starts_with('[') {
 		return None;
 	}
-	Some(cell_of_tokens(&tok, text))
+	Some(cell_of_tokens(&tok, &line))
 }
 
 fn cell_of(text: String) -> Value {
