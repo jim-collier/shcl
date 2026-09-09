@@ -554,7 +554,7 @@ workers: 4
 ## "Simple Hierarchical Config Language"
 ##    Home     https://github.com/jim-collier/shcl
 ##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ```
 
@@ -958,7 +958,7 @@ If SHCL helps but code and issue reports aren't your thing, a star or a mention 
 
 ## Legal stuff
 
-> Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)<br />
+> Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]<br />
 > Licensed under the [MIT License](https://mit-license.org/)<br />
 > SPDX-License-Identifier: `MIT`<br />
 > No warranty.<br />
