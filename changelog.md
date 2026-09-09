@@ -40,6 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `init` writes its own prose as `##` and a commented-out setting as `# `. A starter config is mostly comment, and one `#` for both left the reader sorting prose from settings by eye. Nothing keys on the difference: to the language both are ordinary comments, and a config author may write one with any number of `#` and any spacing.
+
+- `set --write` creating a file gives it the same info block `init` writes at the bottom, so a new config says what format it is. The edits go above it, `--no-banner` leaves it out, and a file that already exists is never given one. The block is a public constant in every binding (`GEN_BANNER`, `GenBanner` in Go, `SHCL_GEN_BANNER` in C) for a program writing its own config file.
+
 - The lexical rules are smaller, and one tokenizer per binding is the only place they live. Seven scanners used to carry their own copy of when a quote opens, what a backslash shields and where a selector ends, and every scanner defect since July was two of them disagreeing. What a 2.x file reads differently, and `migrate` rewrites:
 	- Escapes are processed inside double quotes only. Single quotes are literal, and a backslash in bare text is a character, so `path: C:\dir\new` reads as written. `\,` and `\#` no longer shield a comma or a `#` in bare text; quote the value instead.
 	- `#` opens a comment only when first on the line or after a space or tab, YAML's rule. `url: http://h/#frag` is a bare value, `a[#2]` is an index selector reachable from a file, `c#` is a fence label, and `a:#x` is the value `#x`. A fence line takes a trailing ` # note` as a comment again, in both spellings, and the info string is bare text.

@@ -168,7 +168,7 @@ int main() {
 	// its colon and a bare backslash escape is double-quoted.
 	CHECK(shcl::Document::migrate("base:[Boston]\n\tlat: 42\nnote: a\\tb\n") == "base: Boston\n\tlat: 42\nnote: \"a\\tb\"\n");
 	auto [bare, bareOk] = gschema.generate(true);
-	CHECK(bareOk && bare == "# int, required\nport: 8080\n");
+	CHECK(bareOk && bare == "## int, required\nport: 8080\n");
 	auto [starter, starterOk] = gschema.generate();
 	CHECK(starterOk && starter.rfind(bare, 0) == 0);
 	CHECK(starter.find("This config file format is SHCL.", bare.size()) != std::string::npos);

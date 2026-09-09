@@ -6672,7 +6672,9 @@ fn v007_sanctioned(message: &str) -> bool {
 /// Emit a commented, typed starter config from a schema (`shcl init --schema`).
 /// Paths that must exist (required, or a repeat lower bound of 1+) are live
 /// (their `default`, or an empty value); optional paths are commented out so
-/// the file is valid and minimal as-is. A must-exist wildcard path whose
+/// the file is valid and minimal as-is. Prose the generator writes is `##`
+/// and a commented-out setting is `# `, so the two read apart; both are
+/// ordinary comments to the language, and nothing reads them back. A must-exist wildcard path whose
 /// parent gets materialized by another live line is generated too, in dotted
 /// form - otherwise the file would fail the very schema that produced it -
 /// and remaining wildcard or `[#N]` paths (which cannot be materialized) are
@@ -6829,17 +6831,17 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		let mut block = String::new();
 		if let Some(d) = &c.desc {
 			for line in d.split('\n') {
-				block.push_str("# ");
+				block.push_str(if line.is_empty() { "##" } else { "## " });
 				block.push_str(line);
 				block.push('\n');
 			}
 		}
-		block.push_str("# ");
+		block.push_str("## ");
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
 		block.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
 		block.push('\n');
-		let prefix = if must_exist(c) { "" } else { "#" };
+		let prefix = if must_exist(c) { "" } else { "# " };
 		match &c.default_text {
 			Some(v) => block.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
 			None => block.push_str(&format!("{}{}:\n", prefix, path)),
@@ -6883,9 +6885,9 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		if !blocks.is_empty() {
 			out.push('\n');
 		}
-		out.push_str("# Paths needing an instance name (not generated):\n");
+		out.push_str("## Paths needing an instance name (not generated):\n");
 		for (p, t) in &wild {
-			out.push_str(&format!("#   {}   {}\n", p, t));
+			out.push_str(&format!("##   {}   {}\n", p, t));
 		}
 	}
 	if !no_banner {
@@ -6933,15 +6935,17 @@ const GEN_MAX_FIELDS: usize = 10_000;
 /// Footer telling whoever opens the generated file what the format is and
 /// where its spec lives. It is output, so every binding emits these bytes
 /// exactly; the Legal line names SHCL as its subject so it cannot be read as
-/// a claim over the config it sits in.
-const GEN_BANNER: &str = "\
-#
-# This config file format is SHCL.
-# \"Simple Hierarchical Config Language\"
-#    Home     https://github.com/jim-collier/shcl
-#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
-#
+/// a claim over the config it sits in. Public because a program that creates
+/// a config file of its own writes the same block, and a second copy of a
+/// byte-for-byte contract drifts.
+pub const GEN_BANNER: &str = "\
+##
+## This config file format is SHCL.
+## \"Simple Hierarchical Config Language\"
+##    Home     https://github.com/jim-collier/shcl
+##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##
 ";
 
 /// Render parsed segments back as a dotted path, dropping wildcard selectors

@@ -122,7 +122,9 @@ printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 longName="$(printf 'l%.0s' $(seq 245)).shcl"
 printf 'k: 1\n' > "${tmpDir}/${longName}"
 
-##	Rows: id | argv | stdin | rc | stdout | stderr-regex
+##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
+##	The last field is optional: when given, %C% must hold exactly that text
+##	after the run, which is how a write that prints nothing gets asserted.
 ##	argv placeholders: %F% the good file, %B% the two-error file, %B2% a second
 ##	damaged file for a layered load, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
@@ -135,6 +137,7 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
 ##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file,
+##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
@@ -187,7 +190,7 @@ rows=(
 	## comma produced no comment, and V096/V097 named a schema line space they
 	## are not in.
 	'init-raw-default|init --schema=%S8%|-|6||schema line 3: Error: V092'
-	'init-comma-desc|init --no-banner --schema=%S9%|-|0|# one, two\n# any, required\na:\n|-'
+	'init-comma-desc|init --no-banner --schema=%S9%|-|0|## one, two\n## any, required\na:\n|-'
 	'init-genfault-line-space|init --schema=%S4%|-|6||^line 0: Error: V097'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
@@ -300,12 +303,17 @@ rows=(
 	## silent about FILE - the one file the caller actually named.
 	'layer-base-diags|fmt --layer=%F% %B%|-|0|-|E015 missing colon'
 	'layer-base-diags-set|set --set=q=1 --layer=%F% %B%|-|0|-|E015 missing colon'
+	## A created file says what format it is. The block goes at the bottom, the
+	## edits above it, and --no-banner leaves it out. A file that is already
+	## there is never given one.
+	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier. License: MIT. No warranty.\n##\n'
+	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
 )
 
 declare -i nRun=0 nBad=0
 
 for row in "${rows[@]}"; do
-	IFS='|' read -r id argv stdinSpec wantRc wantOut wantErr <<<"${row}"
+	IFS='|' read -r id argv stdinSpec wantRc wantOut wantErr wantFile <<<"${row}"
 	argv="${argv//%F%/${tmpDir}/ok.shcl}"
 	argv="${argv//%B2%/${tmpDir}/bad2.shcl}"
 	argv="${argv//%B%/${tmpDir}/bad.shcl}"
@@ -333,6 +341,11 @@ for row in "${rows[@]}"; do
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1
 		argv="${argv//%W%/${tmpDir}/w.shcl}"
+	fi
+	freshCreate=0
+	if [[ "${argv}" == *%C%* ]]; then
+		freshCreate=1
+		argv="${argv//%C%/${tmpDir}/created.shcl}"
 	fi
 	freshLong=0
 	if [[ "${argv}" == *%L%* ]]; then
@@ -369,6 +382,7 @@ for row in "${rows[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
 		((freshLong)) && printf 'k: 1\n' > "${tmpDir}/${longName}"
+		((freshCreate)) && rm -f "${tmpDir}/created.shcl"
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;
@@ -387,6 +401,13 @@ for row in "${rows[@]}"; do
 			expOut="$(printf '%b' "${wantOut}")"
 			if [[ "${gotOut}" != "${expOut}" ]]; then
 				echo "cli-regress: ${id} [${name}]: stdout ${gotOut@Q}, expected ${expOut@Q}" >&2; nBad+=1; continue
+			fi
+		fi
+		if [[ -n "${wantFile}" && "${wantFile}" != "-" ]]; then
+			gotFile="$(cat "${tmpDir}/created.shcl" 2>/dev/null || true)"
+			expFile="$(printf '%b' "${wantFile}")"
+			if [[ "${gotFile}" != "${expFile}" ]]; then
+				echo "cli-regress: ${id} [${name}]: created file ${gotFile@Q}, expected ${expFile@Q}" >&2; nBad+=1; continue
 			fi
 		fi
 		if [[ "${wantErr}" != "-" ]]; then

@@ -64,7 +64,8 @@ Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
-                                         place with --write)
+                                         place with --write, which creates
+                                         FILE when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -122,8 +123,9 @@ Options (the subcommands each belongs to are in parentheses):
   --slots                                (get) prefix each line with its slot
                                          status and a tab (per element, or per
                                          wildcard slot)
-  --no-banner                            (init) leave out the footer naming the
-                                         format and pointing at its spec
+  --no-banner                            (init, and set --write when it creates
+                                         FILE) leave out the info block naming
+                                         the format and pointing at its spec
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -530,7 +532,7 @@ def check_opts(cmd, o):
 	if cmd == "get":
 		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "set":
-		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy")
+		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", "--no-banner")
 	elif cmd == "fmt":
 		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "check":
@@ -1130,10 +1132,17 @@ def do_set(o):
 	# and only when nothing is at the path at all: without --write there is
 	# nothing to create, and a file that exists but cannot be read is still an
 	# error rather than something to quietly write over.
+	# A created file starts out as the info block, so a new config says what
+	# format it is. Comments in an otherwise empty document are the document's
+	# trailing trivia, so the edits land above it and the write still goes
+	# through the library's save gate.
 	creating = o.write and file != "-" and not os.path.exists(file)
 	try:
 		layer_texts = [read_input(lf) for lf in o.layers]
-		base = "" if creating or (file == "-" and not o.sets) else read_input(file)
+		if creating:
+			base = "" if o.no_banner else shcl.GEN_BANNER
+		else:
+			base = "" if file == "-" and not o.sets else read_input(file)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO

@@ -71,7 +71,8 @@ Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
-                                         place with --write)
+                                         place with --write, which creates
+                                         FILE when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -129,8 +130,9 @@ Options (the subcommands each belongs to are in parentheses):
   --slots                                (get) prefix each line with its slot
                                          status and a tab (per element, or per
                                          wildcard slot)
-  --no-banner                            (init) leave out the footer naming the
-                                         format and pointing at its spec
+  --no-banner                            (init, and set --write when it creates
+                                         FILE) leave out the info block naming
+                                         the format and pointing at its spec
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -603,7 +605,7 @@ func checkOpts(cmd string, o *opts) int {
 			"--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"}
 	case "set":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
-			"--set-literal-default", "--remove", "--write", "--lossy"}
+			"--set-literal-default", "--remove", "--write", "--lossy", "--no-banner"}
 	case "fmt":
 		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal",
 			"--set-default", "--set-literal-default", "--remove"}
@@ -1668,6 +1670,10 @@ func doSet(o *opts) int {
 	// and only when nothing is at the path at all: without --write there is
 	// nothing to create, and a file that exists but cannot be read is still an
 	// error rather than something to quietly write over.
+	// A created file starts out as the info block, so a new config says what
+	// format it is. Comments in an otherwise empty document are the document's
+	// trailing trivia, so the edits land above it and the write still goes
+	// through the library's save gate.
 	creating := false
 	if o.write && file != "-" {
 		if _, serr := os.Stat(file); serr != nil {
@@ -1675,6 +1681,9 @@ func doSet(o *opts) int {
 		}
 	}
 	base := ""
+	if creating && !o.noBanner {
+		base = shcl.GenBanner
+	}
 	if !creating && (file != "-" || len(o.sets) > 0) {
 		t, err := readInput(file)
 		if err != nil {

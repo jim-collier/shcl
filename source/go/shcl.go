@@ -6867,7 +6867,10 @@ func genDefaultText(v string) string {
 // Generate emits a commented, typed starter config from a schema (`shcl init
 // --schema`). Paths that must exist (required, or a repeat lower bound of 1+)
 // are live (their `default`, or an empty value); optional paths are commented
-// out so the file is valid and minimal as-is. A must-exist wildcard path whose
+// out so the file is valid and minimal as-is. Prose the generator writes is
+// `##` and a commented-out setting is `# `, so the two read apart; both are
+// ordinary comments to the language, and nothing reads them back.
+// A must-exist wildcard path whose
 // parent gets materialized by another live line is generated too, in dotted
 // form - otherwise the file would fail the very schema that produced it - and
 // remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
@@ -7059,17 +7062,21 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		var block strings.Builder
 		if c.desc != nil {
 			for _, line := range strings.Split(*c.desc, "\n") {
-				block.WriteString("# ")
+				if line == "" {
+					block.WriteString("##")
+				} else {
+					block.WriteString("## ")
+				}
 				block.WriteString(line)
 				block.WriteByte('\n')
 			}
 		}
-		block.WriteString("# ")
+		block.WriteString("## ")
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
 		block.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
 		block.WriteByte('\n')
-		prefix := "#"
+		prefix := "# "
 		if mustExist(c) {
 			prefix = ""
 		}
@@ -7129,16 +7136,16 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		if len(blocks) > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString("# Paths needing an instance name (not generated):\n")
+		b.WriteString("## Paths needing an instance name (not generated):\n")
 		for _, w := range wild {
-			fmt.Fprintf(&b, "#   %s   %s\n", w[0], w[1])
+			fmt.Fprintf(&b, "##   %s   %s\n", w[0], w[1])
 		}
 	}
 	if !noBanner {
 		if b.Len() > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(genBanner)
+		b.WriteString(GenBanner)
 	}
 	// The output promises to validate clean against the schema that produced
 	// it, so check that here rather than trusting each branch above. A
@@ -7173,17 +7180,19 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 // something breaks.
 const genMaxFields = 10000
 
-// genBanner is the footer telling whoever opens the generated file what the
+// GenBanner is the footer telling whoever opens the generated file what the
 // format is and where its spec lives. It is output, so every binding emits
 // these bytes exactly; the Legal line names SHCL as its subject so it cannot
-// be read as a claim over the config it sits in.
-const genBanner = "#\n" +
-	"# This config file format is SHCL.\n" +
-	"# \"Simple Hierarchical Config Language\"\n" +
-	"#    Home     https://github.com/jim-collier/shcl\n" +
-	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" +
-	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" +
-	"#\n"
+// be read as a claim over the config it sits in. Exported because a program
+// that creates a config file of its own writes the same block, and a second
+// copy of a byte-for-byte contract drifts.
+const GenBanner = "##\n" +
+	"## This config file format is SHCL.\n" +
+	"## \"Simple Hierarchical Config Language\"\n" +
+	"##    Home     https://github.com/jim-collier/shcl\n" +
+	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" +
+	"##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" +
+	"##\n"
 
 // v007Sanctioned reports whether a V007 from the self-check is the sanctioned
 // kind: its message ends `: N not in LO..HI`, and LO is 2 or more.
