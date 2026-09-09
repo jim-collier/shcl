@@ -83,7 +83,8 @@ Usage:
                                          per line
   shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
-                                         place with --write)
+                                         place with --write); nothing else
+                                         detects what 2.x read differently
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -823,6 +824,9 @@ def do_migrate(o):
 	if o.write and file == "-":
 		sys.stderr.write("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	# Nothing else can warn: both readings of a changed line load clean.
+	sys.stderr.write("shcl: migrate rewrites what the 2.x and current rules read differently; read the "
+		"result before keeping it. The one shape it cannot carry is a raw block's info string holding a space and '#'.\n")
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:

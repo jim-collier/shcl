@@ -96,6 +96,8 @@ A few nouns from the wider surface:
 
 - Comments are never discarded: the parser carries each one as trivia attached to the tree, and the canonical formatter re-emits them (see Canonical formatter). They play no part in merging, reads, or diagnostics.
 
+- The space-or-tab before a `#` is new in 3.0, and it is the one lexical change a 2.x file can absorb with no diagnostic on either side (see Migrating from 2.x).
+
 ### Whitespace, quoting, and reserved characters
 
 - Whitespace around dots, colons, brackets, commas, and values is insignificant and trimmed. `a . b : "x"` == `a.b:"x"`.
@@ -688,6 +690,26 @@ Notes:
 - **Strict** is the "fail loudly" mode: any `error` diagnostic aborts the load (the never-bail philosophy above describes Loose and Standard). Reads are unchanged except the boolean set. `hint` diagnostics never fail a load at any level - repeated leaves are legal instances, and failing legal input would break the data model.
 
 - Every level is corpus-pinned: conformance reads carry an optional level column, so a binding cannot drift on any bundle row.
+
+## Migrating from 2.x
+
+The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read differently under them. `migrate FILE` rewrites such a file so the current parser reads the tree 2.x read. It touches only the spellings the two rule sets disagree on, and comments, blank lines, raw bodies and layout come through as written. `--write` puts the result back in place through the same save gate `fmt --write` uses.
+
+Most of the change is loud. A quote that never closes is `E017`, bracket text after a colon is `E019`, and a line the current rules cannot read at all is a malformed line. A file carrying one of those says so the first time it is loaded, so it is hard to miss.
+
+The comment rule is the exception, and it is stated here because nothing on the load path can catch it:
+
+- `#` now opens a comment only when it is first on the line or preceded by a space or tab. 2.x needed no space, so `url: http://h/#frag` was the value `http://h/` then and is the whole `http://h/#frag` now.
+
+- Both readings are ordinary legal text. Both load with no diagnostic, and the save gate has nothing to refuse, so `check` reports the same `ok` before the upgrade and after it.
+
+- `migrate` is the only thing that can tell the two apart, because it is the only thing holding both rule sets. No other command sees it, and the file does not look wrong either.
+
+- A first in-place write settles it the wrong way. The formatter quotes the value it read, and after that even a 2.x parser reads it the new way.
+
+So the upgrade is a step, not a no-op. Run `migrate` once over every file written for 2.x, and do not read a clean `check` as evidence that a file did not need it. The cost is paid once and buys a rule set small enough to keep one tokenizer honest, where the old rules lived in seven separate scanners per binding and a parser defect was two of those copies disagreeing.
+
+One shape cannot be carried across at all. A 2.x info-string holding a space and a `#` ends at that `#` now, and what follows becomes the line's comment. `migrate` leaves such a line as written, and nothing reports it, because the migrated line is legal text that means something narrower. Rename the label, or move the note to the line above.
 
 ## Cross-language parity and conformance
 
