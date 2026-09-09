@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+// Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
 
 //! SHCL reference implementation: parser, accessor, writer/formatter.
 //! Single file on purpose - the drop-in story is "copy this file into your tree".
@@ -6944,7 +6944,7 @@ pub const GEN_BANNER: &str = "\
 ## \"Simple Hierarchical Config Language\"
 ##    Home     https://github.com/jim-collier/shcl
 ##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ";
 

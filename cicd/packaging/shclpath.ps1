@@ -7,7 +7,7 @@
 ## suppress the append), the value is read unexpanded so %VAR% references
 ## survive, and it is written back REG_EXPAND_SZ so the type does not downgrade.
 ##
-## Copyright (c) 2026 Jim Collier. MIT License.
+## Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. MIT License.
 param([string]$Dir, [switch]$Remove)
 $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
 $cur = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
