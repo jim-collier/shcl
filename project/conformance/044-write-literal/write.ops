@@ -3,6 +3,9 @@ literal	one	7
 literal	quoted	"a, b", c
 literal	trimmed	   x, y   
 literal	commented	v # not part of the value
+literal	hexcolor	#ff0000
+literal	midhash	a#b
+literal	tailhash	x#
 literal	empty	
 literal-default	kept	replaced
 literal-default	fresh	1, 2

@@ -19,7 +19,7 @@ Each case is a directory `NNN-short-name/` containing:
 	- `<T><TAB>PATH<TAB>VALUE` - set a scalar. `datetime` VALUE is any accepted spelling and is stored canonically.
 	- `<T>-array<TAB>PATH<TAB>V1<TAB>V2...` - set an inline array (no elements = an empty value).
 	- `<T>[-array]-default<TAB>...` - set only if the path does not already resolve.
-	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, an unquoted `#` ends it, and text carrying a line break, an unclosed quote or a leading `[` is rejected.
+	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, a `#` behind a blank ends it, and text carrying a line break, an unclosed quote or a leading `[` is rejected.
 	- `raw<TAB>PATH<TAB>INFO<TAB>CONTENT` (and `raw-default`) - set a raw block; `INFO` may be empty.
 	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `remove<TAB>PATH`.
 	- `string`, `comment` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. The setters re-encode for storage, so a value read back equals the logical value it was set from.
@@ -143,7 +143,7 @@ Case `080` pins float spelling on the values where shortest-round-trip formatter
 
 Case `045` pins comment depth under childless headers: a header whose children are all commented keeps them indented under it (top-level, nested, and at end of file), while a commented line trailing a live child keeps the existing trails-the-binding placement.
 
-Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, an unquoted `#` ending the value, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.
+Case `044` pins the value-syntax setter: an array, a single element, a quoted element keeping its internal comma, trimming, a `#` behind a blank ending the value, a `#` anywhere else staying in it, an empty value, and the only-if-absent form both skipping an existing path and creating a new one. Its `write-bad.ops` pins the two rejections - a value opening a quote it never closes (the same text the parser reports `E017` for) and a wildcard path.
 
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 

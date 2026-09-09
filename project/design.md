@@ -335,7 +335,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - Strip and pad mirror each other exactly, so no special case is left: a body's shared extra indent survives as content, and a whitespace-only body keeps its spacing for the same reason as any other line - a raw block promising verbatim content should not be the place that quietly rewrites it.
 
-**`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or an unquoted `#` - the fence line would read the `#` as opening a trailing comment, so the block came back with a different info-string than the one written. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
+**`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or a `#` behind a blank - the fence line would read that `#` as opening a trailing comment, so the block came back with a different info-string than the one written. A `#` anywhere else in the label is content and is kept. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
 
 **A raw block in a higher layer fills a same-named empty binding below.** Merge matched instances by `(name, value)` only, so a bare `blk:` in the base and a `blk:` carrying a block in the overlay both survived a merge, where parsing the two run together folds them.
 
@@ -442,7 +442,7 @@ The mirror of the load outcomes, on the write side. A setter builds its line tex
 
 - The typed setters keep their render-and-parse-back on top of the round trip. It answers a different question: the round trip asks whether the same text comes back, and a float or a datetime has to come back as that type. `inf` reads back as the text `inf` and as no float at all.
 
-- `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off, a `#` after a blank ends the value. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
+- `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off, a `#` behind a blank ends the value and one anywhere else is content. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
 
 - A path may carry a line break in either half. A name emits through the name escaper and a selector value through the value emitter, and both spell one `\n` and read it back. The selector was refused until the tokenizer cut, while elements were still stored in their source spelling and the value emitter had nothing to escape with.
 
