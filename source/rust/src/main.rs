@@ -82,7 +82,8 @@ Usage:
                                          per line
   shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
-                                         place with --write)
+                                         place with --write); nothing else
+                                         detects what 2.x read differently
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -1113,6 +1114,12 @@ fn do_migrate(o: &Opts) -> u8 {
 		errln!("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
+	// Nothing else can warn: both readings of a changed line load clean.
+	errln!(
+		"shcl: migrate rewrites what the 2.x and current rules read differently; read the \
+		 result before keeping it. The one shape it cannot carry is a raw block's info \
+		 string holding a space and '#'."
+	);
 	let text = match read_input(file) {
 		Ok(t) => t,
 		Err(e) => {

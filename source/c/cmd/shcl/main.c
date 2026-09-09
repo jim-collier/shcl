@@ -66,7 +66,8 @@ static const char *HELP =
 	"                                         per line\n"
 	"  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current\n"
 	"                                         rules (print it, or rewrite FILE in\n"
-	"                                         place with --write)\n"
+	"                                         place with --write); nothing else\n"
+	"                                         detects what 2.x read differently\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
 	"                                         why the parser read a line as it did\n"
 	"  shcl help | version                    this help, or the version (also\n"
@@ -687,6 +688,9 @@ static int do_migrate(const Opts *o) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	// Nothing else can warn: both readings of a changed line load clean.
+	fprintf(stderr, "shcl: migrate rewrites what the 2.x and current rules read differently; read the "
+		"result before keeping it. The one shape it cannot carry is a raw block's info string holding a space and '#'.\n");
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return EXIT_IO;
 	size_t mlen; char *migrated = shcl_migrate(text, len, &mlen);

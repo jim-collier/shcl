@@ -221,7 +221,9 @@ rows=(
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
 	'sugar-check-strict|check --strictness=strict %W%|-|6|-|-'
 	'sugar-write-refused|fmt --write %W%|-|7|-|dropped 1 line'
-	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|-'
+	## The caveat goes to stderr, so the exact stdout above is the other half
+	## of this row: a notice on stdout would corrupt a redirected migration.
+	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|cannot carry is a raw block'
 	'sugar-migrate-write|migrate --write %W%|-|0||-'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
