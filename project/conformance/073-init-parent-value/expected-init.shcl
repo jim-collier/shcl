@@ -1,37 +1,37 @@
-# string, required
+## string, required
 srv: web
 
-# int, repeat 1
+## int, repeat 1
 srv[web].port:
 
-# string, required
+## string, required
 srv[web].host: "a b"
 
-# string, required
+## string, required
 srv[web].host["a b"].zone:
 
-# string
-#opt: x
+## string
+# opt: x
 
-# int, required
+## int, required
 opt.child:
 
-# string, required
+## string, required
 odd: "a]b"
 
-# int, required
+## int, required
 odd["a]b"].under:
 
-# string, required
+## string, required
 bare:
 
-# int, required
+## int, required
 bare.leaf:
 
-#
-# This config file format is SHCL.
-# "Simple Hierarchical Config Language"
-#    Home     https://github.com/jim-collier/shcl
-#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
-#
+##
+## This config file format is SHCL.
+## "Simple Hierarchical Config Language"
+##    Home     https://github.com/jim-collier/shcl
+##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##

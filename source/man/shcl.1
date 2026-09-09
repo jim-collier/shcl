@@ -102,7 +102,10 @@ in place with
 .BR \-\-write ,
 which creates
 .I FILE
-when nothing is there yet.
+when nothing is there yet, giving it the same info block
+.B init
+writes unless
+.BR \-\-no\-banner .
 Simple values go in as repeatable
 .B \-\-set
 or
@@ -132,7 +135,9 @@ file. Exits 6 when anything was found at error severity.
 .TP
 .B init
 Print a commented starter config generated from a schema: required fields live,
-optional ones commented out, wildcard paths noted. The footer naming the format
+optional ones commented out, wildcard paths noted. Prose it writes is prefixed
+with two hashes and a commented-out setting with one; that is a convention, not
+a rule. The info block naming the format
 and pointing at its spec is left out by
 .BR \-\-no\-banner .
 .TP
@@ -256,8 +261,8 @@ Prefix each output line with its slot status and a tab \- per element for an
 array, per matched instance for a wildcard.
 .TP
 .B \-\-no\-banner
-.RB ( init )
-Leave out the footer naming the format and pointing at its spec.
+.RB ( init ", " "set \-\-write" " creating " FILE )
+Leave out the info block naming the format and pointing at its spec.
 .TP
 .BR \-\-write ", " \-w
 .RB ( fmt ", " set )

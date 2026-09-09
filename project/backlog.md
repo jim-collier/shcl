@@ -52,8 +52,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 ### Features and enhancements
 
-- 🔘 Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
-
 ### Done
 
 #### Done - Bugs
@@ -2316,6 +2314,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
+	- Note: `init` already wrote the block at the bottom under `--no-banner`. The other way a new config file comes into being is `set --write` naming a file that is not there, which created it bare.
+	- Decided: the block goes on a created file too, and nowhere else. Adding it inside the library's save would have written bytes the document does not hold, which breaks the fixpoint promise; a file that already exists is left alone.
+	- Fixed in all four CLIs: the `creating` branch of `do_set` (`doSet` in Go, `do_set` in Python and C) seeds the new document's text with the block instead of the empty string, so comments in an otherwise empty document become its trailing trivia, the edits land above them, and the write still runs through the library's save gate. `--no-banner` is valid on `set` now.
+	- Fixed in all four generators: `generate` writes its own prose as `##` (`desc` lines, the annotation line, the not-generated block and the block itself) and a commented-out setting as `# `. Convention only - both are ordinary comments, and a config author may write one however they like.
+	- The block is a public constant now (`GEN_BANNER`, `GenBanner` in Go, `SHCL_GEN_BANNER` in C), since the CLI writes the same bytes and a second copy of a byte-for-byte contract drifts.
+	- Pinned by `cli-regress.bash` rows `create-info-block` and `create-no-banner`, which assert the created file's text; the rows take a new optional seventh field, since a write that prints nothing had nothing to match on before. Both were watched to fail under an injection, one per arm. The eight `expected-init.shcl` goldens carry the new prefixes, and `073`'s input follows since it is a copy of one.
+	- Opened: 20260908-024440
+	- Closed: 20260908-193729
 
 - ✅ A `#` right after a carriage return had no spelling `migrate` could reach.
 	- Reproduced: `my<CR>#sery: 1` binds `my` under 2.x - the `#` cut the line, and the trim then took the carriage return off the end of the name half. Here the name ends at the carriage return, which is then an unexpected character, so `migrate` left the line, the load reported `E014`, and the path was gone at exit 0.
