@@ -5,8 +5,8 @@
 //! so the exit codes and flags below are a stable surface, not conveniences.
 
 use shcl::{
-	Diagnostic, Document, Piece, Quote, Rules, SaveError, Severity, Status, Strictness, Tokens,
-	format_f64, generate, migrate, parse_datetime, suppress_declared_reopens,
+	Diagnostic, Document, GEN_BANNER, Piece, Quote, Rules, SaveError, Severity, Status, Strictness,
+	Tokens, format_f64, generate, migrate, parse_datetime, suppress_declared_reopens,
 	suppress_declared_repeats, tokenize, write_file_atomic,
 };
 use std::process::ExitCode;
@@ -63,7 +63,8 @@ Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
                                          print canonical (or rewrite FILE in
-                                         place with --write)
+                                         place with --write, which creates
+                                         FILE when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -121,8 +122,9 @@ Options (the subcommands each belongs to are in parentheses):
   --slots                                (get) prefix each line with its slot
                                          status and a tab (per element, or per
                                          wildcard slot)
-  --no-banner                            (init) leave out the footer naming the
-                                         format and pointing at its spec
+  --no-banner                            (init, and set --write when it creates
+                                         FILE) leave out the info block naming
+                                         the format and pointing at its spec
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -573,6 +575,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			"--remove",
 			"--write",
 			"--lossy",
+			"--no-banner",
 		],
 		"fmt" => &[
 			"--write",
@@ -1437,8 +1440,18 @@ fn do_set(o: &Opts) -> u8 {
 	// and only when nothing is at the path at all: without --write there is
 	// nothing to create, and a file that exists but cannot be read is still an
 	// error rather than something to quietly write over.
+	// A created file starts out as the info block, so a new config says what
+	// format it is. Comments in an otherwise empty document are the
+	// document's trailing trivia, so the edits land above it and the write
+	// still goes through the library's save gate.
 	let creating = o.write && file != "-" && !std::path::Path::new(file).exists();
-	let base_text = if creating || (file == "-" && o.sets.is_empty()) {
+	let base_text = if creating {
+		if o.no_banner {
+			String::new()
+		} else {
+			GEN_BANNER.to_string()
+		}
+	} else if file == "-" && o.sets.is_empty() {
 		String::new()
 	} else {
 		match read_input(file) {

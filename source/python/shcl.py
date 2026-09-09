@@ -5717,7 +5717,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	"""Emit a commented, typed starter config from a schema (`shcl init
 	--schema`). Paths that must exist (required, or a repeat lower bound of 1+)
 	are live (their `default`, or an empty value); optional paths are commented
-	out so the file is valid and minimal as-is. A must-exist wildcard path
+	out so the file is valid and minimal as-is. Prose the generator writes is
+	`##` and a commented-out setting is `# `, so the two read apart; both are
+	ordinary comments to the language, and nothing reads them back. A
+	must-exist wildcard path
 	whose parent gets materialized by another live line is generated too, in
 	dotted form - otherwise the file would fail the very schema that produced
 	it - and remaining wildcard or `[#N]` paths (which cannot be materialized)
@@ -5835,11 +5838,11 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		block = []
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
-				block.append("# " + line + "\n")
+				block.append(("## " if line else "##") + line + "\n")
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
-		block.append("# " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
-		prefix = "" if must_exist(c) else "#"
+		block.append("## " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		prefix = "" if must_exist(c) else "# "
 		if c.default_text is not None:
 			block.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
 		else:
@@ -5868,14 +5871,14 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	if wild:
 		if blocks:
 			out.append("\n")
-		out.append("# Paths needing an instance name (not generated):\n")
+		out.append("## Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
-			out.append(f"#   {path}   {tyname}\n")
+			out.append(f"##   {path}   {tyname}\n")
 	text = "".join(out)
 	if not no_banner:
 		if text:
 			text += "\n"
-		text += _GEN_BANNER
+		text += GEN_BANNER
 	# The output promises to validate clean against the schema that produced it,
 	# so check that here rather than trusting each branch above. A `default`
 	# outside its own field's constraints is the schema's fault, and the author
@@ -5903,15 +5906,17 @@ _GEN_MAX_FIELDS = 10000
 # Footer telling whoever opens the generated file what the format is and where
 # its spec lives. It is output, so every binding emits these bytes exactly; the
 # Legal line names SHCL as its subject so it cannot be read as a claim over the
-# config it sits in.
-_GEN_BANNER = (
-	"#\n"
-	'# This config file format is SHCL.\n'
-	'# "Simple Hierarchical Config Language"\n'
-	"#    Home     https://github.com/jim-collier/shcl\n"
-	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n"
-	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n"
-	"#\n"
+# config it sits in. Public because a program that creates a config file of its
+# own writes the same block, and a second copy of a byte-for-byte contract
+# drifts.
+GEN_BANNER = (
+	"##\n"
+	'## This config file format is SHCL.\n'
+	'## "Simple Hierarchical Config Language"\n'
+	"##    Home     https://github.com/jim-collier/shcl\n"
+	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n"
+	"##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n"
+	"##\n"
 )
 
 

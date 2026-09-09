@@ -263,9 +263,11 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
 // config from a schema document. Required paths are live (their `default`, or an
 // empty value); optional paths are commented out; wildcard paths are listed in a
-// trailing comment block. The output validates clean against the schema that
-// produced it, checked against the finished text, so a schema whose own
-// `default` breaks its field's constraints is a fault (V097) instead of a
+// trailing comment block. Prose the generator writes is `##` and a commented-out
+// setting is `# `, so the two read apart; both are ordinary comments to the
+// language, and nothing reads them back. The output validates clean against the
+// schema that produced it, checked against the finished text, so a schema whose
+// own `default` breaks its field's constraints is a fault (V097) instead of a
 // starter config that fails the first time it is checked; the faults land on
 // the schema document's diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
@@ -275,6 +277,18 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // faults from an earlier call on the same schema are dropped first, so the list
 // describes this call.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
+
+// The info block shcl_generate writes at the bottom unless no_banner. Public
+// because a program that creates a config file of its own writes the same
+// block, and a second copy of a byte-for-byte contract drifts.
+#define SHCL_GEN_BANNER \
+	"##\n" \
+	"## This config file format is SHCL.\n" \
+	"## \"Simple Hierarchical Config Language\"\n" \
+	"##    Home     https://github.com/jim-collier/shcl\n" \
+	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" \
+	"##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" \
+	"##\n"
 
 // Canonical form (block layout, tabs, insertion order, minimal quoting). The
 // returned bytes live in the document's read arena; valid until shcl_free, or
@@ -6743,19 +6757,6 @@ static ShclStr g_default_text(ShclArena *a, ShclStr v) {
 // reports a schema fault rather than running until something breaks.
 #define GEN_MAX_FIELDS ((size_t)10000)
 
-// Footer telling whoever opens the generated file what the format is and where
-// its spec lives. It is output, so every binding emits these bytes exactly; the
-// Legal line names SHCL as its subject so it cannot be read as a claim over the
-// config it sits in.
-#define GEN_BANNER \
-	"#\n" \
-	"# This config file format is SHCL.\n" \
-	"# \"Simple Hierarchical Config Language\"\n" \
-	"#    Home     https://github.com/jim-collier/shcl\n" \
-	"#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" \
-	"#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.\n" \
-	"#\n"
-
 /* Whether a V007 from the self-check is the sanctioned kind: its message ends
    `: N not in LO..HI`, and LO is 2 or more. */
 static int v007_sanctioned(ShclStr message) {
@@ -7035,15 +7036,15 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			size_t start = 0;
 			for (size_t k = 0; k <= c->desc.n; k++) {
 				if (k == c->desc.n || c->desc.p[k] == '\n') {
-					sb_puts(a, &blk, "# ");
+					sb_puts(a, &blk, k == start ? "##" : "## ");
 					ShclStr ln; ln.p = c->desc.p + start; ln.n = k - start; sb_putS(a, &blk, ln);
 					sb_putc(a, &blk, '\n');
 					start = k + 1;
 				}
 			}
 		}
-		sb_puts(a, &blk, "# "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
-		if (!g_must_exist(c)) sb_putc(a, &blk, '#');
+		sb_puts(a, &blk, "## "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
+		if (!g_must_exist(c)) sb_puts(a, &blk, "# ");
 		sb_putS(a, &blk, path);
 		if (c->has_default) { sb_puts(a, &blk, ": "); sb_putS(a, &blk, g_default_text(a, c->default_text)); }
 		else sb_putc(a, &blk, ':');
@@ -7113,15 +7114,15 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	}
 	if (wild_path.len) {
 		if (nblk) sb_putc(a, &out, '\n');
-		sb_puts(a, &out, "# Paths needing an instance name (not generated):\n");
+		sb_puts(a, &out, "## Paths needing an instance name (not generated):\n");
 		for (size_t i = 0; i < wild_path.len; i++) {
-			sb_puts(a, &out, "#   "); sb_putS(a, &out, wild_path.data[i]);
+			sb_puts(a, &out, "##   "); sb_putS(a, &out, wild_path.data[i]);
 			sb_puts(a, &out, "   "); sb_putS(a, &out, wild_type.data[i]); sb_putc(a, &out, '\n');
 		}
 	}
 	if (!no_banner) {
 		if (out.len) sb_putc(a, &out, '\n');
-		sb_puts(a, &out, GEN_BANNER);
+		sb_puts(a, &out, SHCL_GEN_BANNER);
 	}
 	ShclStr s = sb_S(&out);
 	/* The output promises to validate clean against the schema that produced
@@ -7177,7 +7178,6 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 #undef DEAD
 #undef UNOPENED
 #undef GEN_MAX_FIELDS
-#undef GEN_BANNER
 
 #endif // SHCL_IMPLEMENTATION
 #endif // SHCL_H

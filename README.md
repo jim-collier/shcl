@@ -541,24 +541,24 @@ The same schema, pointed the other way, writes a starting file for your own user
 
 ```console
 $ shcl init --schema=app-schema.shcl
-# Worker threads.
-# int, 1-256, required
+## Worker threads.
+## int, 1-256, required
 workers: 4
 
-# How chatty the log is.
-# string, one of: debug, info, warn, error
-#log-level: warn
+## How chatty the log is.
+## string, one of: debug, info, warn, error
+# log-level: warn
 
-#
-# This config file format is SHCL.
-# "Simple Hierarchical Config Language"
-#    Home     https://github.com/jim-collier/shcl
-#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
-#
+##
+## This config file format is SHCL.
+## "Simple Hierarchical Config Language"
+##    Home     https://github.com/jim-collier/shcl
+##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##
 ```
 
-The footer tells whoever opens that file later what it is and where the syntax is written down; `--no-banner` leaves it out. Rounding out the verbs, `fmt` normalizes a file and `set` edits one, both in place with `--write`:
+Two hashes is what shcl writes its own prose with, one is a setting left commented out - a convention, not a rule, so your users can comment however they like. The block at the bottom tells whoever opens that file later what it is and where the syntax is written down; `--no-banner` leaves it out. `set --write` writes the same block when it creates a file that was not there. Rounding out the verbs, `fmt` normalizes a file and `set` edits one, both in place with `--write`:
 
 ```sh
 shcl fmt --write server.shcl
