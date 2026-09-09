@@ -480,6 +480,48 @@ outright, at exit 7, when the load dropped content the rewrite would delete
 \- a typo does not cost the line above it.
 .B \-\-lossy
 is how to say it was meant.
+.SH MIGRATING FROM 2.X
+The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can
+read differently under them.
+.B migrate
+rewrites such a file so the current parser reads the tree 2.x read.
+.PP
+Most of the change is loud: a quote that never closes is
+.BR E017 ,
+bracket text after a colon is
+.BR E019 ,
+and a line the current rules cannot read at all is a malformed line. A file
+carrying one of those says so the first time it loads.
+.PP
+The comment rule is the exception, and it is why
+.B migrate
+is a step in an upgrade rather than a convenience. A
+.B #
+opens a comment only when it is first on the line or preceded by a space or
+tab, where 2.x needed no space, so
+.B url:\~http://h/#frag
+was the value
+.B http://h/
+then and is the whole thing now. Both readings are legal text, both load with
+no diagnostic, and
+.B check
+reports the same
+.B ok
+before the upgrade and after it. The first in-place write then makes the new
+reading permanent. Run
+.B migrate
+once over every file written for 2.x, and do not read a clean
+.B check
+as evidence that a file did not need it.
+.PP
+One shape cannot be carried across at all: a 2.x info-string holding a space
+and a
+.BR # ,
+which now ends the label and opens a comment.
+.B migrate
+leaves such a line as written and nothing reports it, because what it leaves is
+legal text that means something narrower. Rename the label, or move the note to
+the line above.
 .SH EXIT STATUS
 .TP
 .B 0
