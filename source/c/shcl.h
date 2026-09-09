@@ -492,7 +492,8 @@ int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const sh
 // quoted. For a caller holding value text - a config line, a user's --set
 // argument - that has to be written without knowing its shape first. Returns 0
 // for text that could not be one line's value (a line break, or a quote that
-// never closes); an unquoted # ends the value as it would in a file.
+// never closes); a # behind a space or tab ends the value as it would in a
+// file.
 int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
@@ -3678,6 +3679,7 @@ static int dt_reads_back(ShclArena *scratch, const shcl_datetime *dt) {
 
 
 /* Defined with the emitter: each check is the emitted spelling read back. */
+static ShclStr value_half(ShclArena *a, ShclArena *tmp, ShclStr text, ShclTokens *out);
 static int value_reads_back(ShclArena *a, const ShclValue *v);
 static int name_reads_back(ShclArena *a, ShclStr name);
 static int comment_line(ShclArena *a, ShclStr text, ShclStr *out);
@@ -3991,22 +3993,21 @@ int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, s
 
 /* Read text as the value half of a line, for the setters that take value
    syntax rather than data: whatever a file line spells with this text is what
-   gets stored, so a trailing blank comes off and an unquoted `#` ends the
-   value exactly as they would in a file. What is refused is what a file
-   reports as an error, since a setter has no diagnostic to report it with: a
-   line break, which no file line can hold, an unterminated quote (E017), and
-   bracket text (E019, the line kept verbatim - writing it as a two-element
-   array holding `[1` and `2]` would be a different wrong answer). */
+   gets stored, so a trailing blank comes off and a `#` behind a space or tab
+   ends the value exactly as they would in a file. What is refused is what a
+   file reports as an error, since a setter has no diagnostic to report it
+   with: a line break, which no file line can hold, an unterminated quote
+   (E017), and bracket text (E019, the line kept verbatim - writing it as a
+   two-element array holding `[1` and `2]` would be a different wrong answer). */
 static int literal_value(ShclArena *a, ShclArena *tmp, ShclStr text, ShclValue *out) {
 	for (size_t i = 0; i < text.n; i++) { if (text.p[i] == '\n') return 0; }
 	/* One copy of the value text up front: the elements slice it, and the
 	   caller's buffer need not outlive the call (the setter contract). */
-	ShclStr copy = s_dup(a, text);
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
-	tokenize_value(tmp, copy, 0, SHCL_RULES_CURRENT, &tok);
+	ShclStr line = value_half(a, tmp, text, &tok);
 	for (size_t i = 0; i < tok.nelem; i++) if (tok.elements[i].quote == SHCL_QUOTE_OPEN) return 0;
-	if (tok.value_start < copy.n && copy.p[tok.value_start] == '[') return 0;
-	*out = cell_of_tokens(a, tmp, &tok, copy);
+	if (tok.value_start < line.n && line.p[tok.value_start] == '[') return 0;
+	*out = cell_of_tokens(a, tmp, &tok, line);
 	return 1;
 }
 
@@ -4635,13 +4636,26 @@ static int piece_is(ShclArena *a, const ShclPiece *p, ShclStr text, ShclStr want
 }
 
 /* True when a value comes back off the page as itself. */
+/* Scan text as a line's value half. The tokenizer reads offset 0 as a line
+   start, where a `#` opens a comment, and a value half is never one, so the
+   text goes in behind the colon a field line puts there. `a` holds the line the
+   token spans index into, `tmp` the token bookkeeping. */
+static ShclStr value_half(ShclArena *a, ShclArena *tmp, ShclStr text, ShclTokens *out) {
+	char *m = (char *)arena_alloc(a, text.n + 1);
+	m[0] = ':';
+	if (text.n) memcpy(m + 1, text.p, text.n);
+	ShclStr line; line.p = m; line.n = text.n + 1;
+	tokenize_value(tmp, line, 1, SHCL_RULES_CURRENT, out);
+	return line;
+}
+
 static int value_reads_back(ShclArena *a, const ShclValue *v) {
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	if (v->kind == V_EMPTY) return 1;
 	if (v->kind == V_CELL) {
 		ShclStr text = emit_cell(a, v->els, v->nels);
 		if (text.n && memchr(text.p, '\n', text.n)) return 0;
-		tokenize_value(a, text, 0, SHCL_RULES_CURRENT, &tok);
+		ShclStr line = value_half(a, a, text, &tok);
 		if (tok.has_comment) return 0;
 		/* Compared against the pieces rather than against a rebuilt value: a
 		   bulk write runs this per set, and the text is right there. */
@@ -4649,7 +4663,7 @@ static int value_reads_back(ShclArena *a, const ShclValue *v) {
 		for (size_t i = 0; i < tok.nelem; i++) {
 			const ShclPiece *p = &tok.elements[i];
 			if (p->quote == SHCL_QUOTE_NONE && p->end == p->start) continue;
-			if (k == v->nels || !piece_is(a, p, text, v->els[k].text)) return 0;
+			if (k == v->nels || !piece_is(a, p, line, v->els[k].text)) return 0;
 			k++;
 		}
 		return k == v->nels;

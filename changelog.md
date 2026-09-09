@@ -153,6 +153,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `SetLiteral` stores a value that begins with `#`. `--set-literal='color=#ff0000'` wrote an empty value and exited 0, losing the whole text, while the same line in a file read `#ff0000`. The setter read its argument as if it started a line, where a leading `#` opens a comment; it reads it as the value half of a line now, which is what it always claimed to do. A `#` behind a space or tab still ends the value, and one anywhere else is content.
+
 - `migrate` carries a line whose `#` sits right behind a carriage return. 2.x cut such a line at the `#` and then trimmed the carriage return off the half before it, so `my<CR>#note: 1` bound `my`; the migrated text kept the byte, the name ended at it, and the binding was gone with an `E014` at exit 0. The run goes now, replaced by the single space the `#` needs. Only a carriage return was affected - any other control character in that position was malformed to 2.x as well.
 
 - The zsh completion works. An apostrophe inside a single-quoted description left a quote open for the rest of the file, so zsh answered a parse error instead of completing anything; nothing had ever run the file, only compared the option table inside it.
@@ -169,7 +171,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `SetComment` no longer drops everything after the first line of the text it is given. It kept the first line, reported success, and said nothing about the rest, so a two-line note reached the file as one; text holding a line break is refused now.
 
-- A write refused for its text names the half of the op that had no spelling. A `raw` op whose info string held an unquoted `#` reported the sentence written for `SetLiteral`, which sends the reader to the value.
+- A write refused for its text names the half of the op that had no spelling. A `raw` op whose info string held a `#` behind a blank reported the sentence written for `SetLiteral`, which sends the reader to the value.
 
 - A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said. The same rule now holds in a selector: `srv[O'Brien].port: 8080  # main` used to read the port as the string `8080  # main` with the comment gone on the next write, and `--set="srv[O'Brien].port=8080"` was refused as unbalanced while `get` on that path worked. A quote opens a quoted discriminator only as the selector's first character, and a bare selector runs to the first `]`.
 
@@ -263,7 +265,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - C: the file tier reached Windows through the code-page file calls, so a path with a character outside the active code page could not be opened or, worse, was written under a mojibake name. Every file call is the wide one now, and a path that is not valid UTF-8 fails with `EINVAL` rather than opening something else.
 
-- `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break or an unquoted `#`. Either would read back as something other than what was written.
+- `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break, or a `#` behind a blank. Either would read back as something other than what was written.
 
 - `read_file`'s byte cap saturates instead of overflowing when set near the integer ceiling.
 

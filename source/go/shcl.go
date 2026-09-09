@@ -3885,6 +3885,16 @@ func nextElement(els []Piece, i *int) *Piece {
 	return nil
 }
 
+// valueHalf scans text as a line's value half. The tokenizer reads offset 0 as
+// a line start, where a # opens a comment, and a value half is never one, so
+// the text goes in behind the colon a field line puts there. It returns the
+// line the token spans index into.
+func valueHalf(text string, out *Tokens) string {
+	line := ":" + text
+	TokenizeValue(line, 1, RulesCurrent, out)
+	return line
+}
+
 // valueReadsBack is true when a value comes back off the page as itself.
 func valueReadsBack(v *value) bool {
 	switch v.kind {
@@ -3896,7 +3906,7 @@ func valueReadsBack(v *value) bool {
 			return false
 		}
 		var tok Tokens
-		TokenizeValue(text, 0, RulesCurrent, &tok)
+		line := valueHalf(text, &tok)
 		if tok.Comment >= 0 {
 			return false
 		}
@@ -3905,7 +3915,7 @@ func valueReadsBack(v *value) bool {
 		at := 0
 		for i := range v.els {
 			p := nextElement(tok.Elements, &at)
-			if p == nil || !pieceIs(p, text, v.els[i].text) {
+			if p == nil || !pieceIs(p, line, v.els[i].text) {
 				return false
 			}
 		}
@@ -4327,27 +4337,27 @@ func boolText(v bool) string {
 
 // literalValue reads text as the value half of a line, for the setters that
 // take value syntax rather than data: whatever a file line spells with this
-// text is what gets stored, so a trailing blank comes off and an unquoted #
-// ends the value exactly as they would in a file. What is refused is what a
-// file reports as an error, since a setter has no diagnostic to report it
-// with: a line break, which no file line can hold, an unterminated quote
-// (E017), and bracket text (E019, the line kept verbatim - writing it as a
+// text is what gets stored, so a trailing blank comes off and a # behind a
+// space or tab ends the value exactly as they would in a file. What is refused
+// is what a file reports as an error, since a setter has no diagnostic to
+// report it with: a line break, which no file line can hold, an unterminated
+// quote (E017), and bracket text (E019, the line kept verbatim - writing it as a
 // two-element array holding `[1` and `2]` would be a different wrong answer).
 func literalValue(text string) (value, bool) {
 	if strings.Contains(text, "\n") {
 		return value{}, false
 	}
 	var tok Tokens
-	TokenizeValue(text, 0, RulesCurrent, &tok)
+	line := valueHalf(text, &tok)
 	for i := range tok.Elements {
 		if tok.Elements[i].Quote == QuoteOpen {
 			return value{}, false
 		}
 	}
-	if strings.HasPrefix(text[tok.Value[0]:], "[") {
+	if strings.HasPrefix(line[tok.Value[0]:], "[") {
 		return value{}, false
 	}
-	return cellOfTokens(&tok, text), true
+	return cellOfTokens(&tok, line), true
 }
 
 func cellOf(text string) value {
