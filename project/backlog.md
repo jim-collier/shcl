@@ -104,12 +104,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the same window exists in `init` and in any create path that decides "new file" before it writes.
 		- Opened: 20260909-100500
 
-	- 🔘 Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
+	- ✅ Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
 		- Reproduced in all four. `set --set-literal='color=#ff0000'` writes `color:` and exits 0, with the whole value gone. The same text in a file, `color:#ff0000`, reads `#ff0000`.
 		- Cause: `literal_value` hands the text to `tokenize_value` with `from=0`, which applies the line-start comment rule to what is actually a value half.
 		- Note: `spec.md:87` says `a:#x` is the value `#x`, and `spec.md:95` says a `#` with no whitespace before it is content. Hex colors, URL fragments and CSS ids all take this shape, and no refusal channel fires.
 		- Sites: `lib.rs:4309`, `shcl.go:4341`, `shcl.py:430`, `shcl.h:4006`.
+		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule cannot reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
+		- Pinned by: corpus `044-write-literal` gains a leading `#`, a `#` mid-value and a trailing one, and a `cli-regress` row takes the same value through `--set-literal`. All four fail the case with the fix backed out.
+		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they cannot place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
 		- Opened: 20260909-100600
+		- Closed: 20260909-151500
 
 	- 🔘 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
 		- Reproduced. a value `x`, then a carriage return, then two spaces and `# c` reads `x` with the CR gone, and `fmt --write` writes `a: x  # c` at exit 0 with no diagnostic and a lost count of 0, so the save gate does not refuse.
@@ -251,11 +255,15 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: everything under `## Unreleased` becomes the 3.0.0 release notes, so all three ship. This is the third occurrence of the same pattern - a later round amended an entry by appending a second one instead of editing the first - and 20260905 item 5 closed the previous one by fixing that one entry rather than looking for siblings.
 		- Opened: 20260909-102900
 
-	- 🔘 Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
+	- ✅ Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
 		- Reproduced. Printed help line 93 says an unquoted `#` ends a `--set-literal` value. It does not: `literal k a#b` stores `a#b` in all four.
 		- Note: the same stale sentence is in `shcl.1:346-348` and `:464-468`, in the public C header above `shcl_set_literal` at `shcl.h:495`, in all four library doc comments, in `changelog.md:264`, in `conformance/README.md:22` and `:146`, and in `design.md:337` - which contradicts `design.md:438` in the same file.
 		- Note: item 7 is the code half of the same confusion, and the two disagree in opposite directions, so fixing either alone leaves a lie.
+		- Fixed with item 7, in the same pass, so neither half stood alone. The rule is the 3.0 comment rule everywhere it is stated: a `#` behind a space or tab ends the value, one anywhere else is content. The same sentence had gone stale for `set_raw`'s info string, which has refused only a `#` behind a blank since the setter round, so that family went with it - `changelog.md`, `design.md`, the four runner fixtures and the man page.
+		- Note: the released `changelog.md` entry for `SetLiteral` at 1.1.0 keeps its wording. It was true of 1.1.0. The Fixed entry under Unreleased is what says the rule changed.
+		- Left alone: the four `migrate` doc comments say "any unquoted `#` is a comment", which is what 2.x did and is the whole point of the flag they describe.
 		- Opened: 20260909-103000
+		- Closed: 20260909-151500
 
 	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
 		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.

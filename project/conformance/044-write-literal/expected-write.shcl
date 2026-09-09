@@ -11,6 +11,12 @@ trimmed: x, y
 
 commented: v
 
+hexcolor: "#ff0000"
+
+midhash: "a#b"
+
+tailhash: "x#"
+
 empty:
 
 fresh: 1, 2

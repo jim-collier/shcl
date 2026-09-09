@@ -1179,8 +1179,8 @@ int main(int argc, char **argv) {
 	}
 	// set_raw: the body's shared indent survives a reload (the closing fence's
 	// indent is what comes off), the info-string is stored as a fence line
-	// reads it back, and an info with a line break or an unquoted `#` has no
-	// spelling and fails the write. Same fixture in every runner.
+	// reads it back, and an info with a line break, or a `#` behind a blank,
+	// has no spelling and fails the write. Same fixture in every runner.
 	{
 		shcl_doc *sd = shcl_new();
 		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, " sql ", 5)) fail("set_raw", "set_raw failed");
@@ -1202,7 +1202,7 @@ int main(int argc, char **argv) {
 		back = shcl_parse(sc.p, sc.n);
 		bi = shcl_read_raw_info(back, "q", 1);
 		if (bi.status != SHCL_GOOD || bi.value.n != 3 || memcmp(bi.value.p, "a\rb", 3) != 0) fail("set_raw", "mid-string CR info did not round-trip");
-		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with an unquoted # accepted");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with a # behind a blank accepted");
 		// An info string has no quoting of its own: quotes are characters in
 		// it, so they hide nothing, and a `#` with no space before it is content.
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "\"a # b\"", 7)) fail("set_raw", "quoted # info accepted");

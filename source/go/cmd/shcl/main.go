@@ -157,8 +157,9 @@ Options (the subcommands each belongs to are in parentheses):
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
-                                         array. An unquoted # ends the value;
-                                         text spanning lines is rejected
+                                         array. A # behind a space or tab ends
+                                         the value; text spanning lines is
+                                         rejected
   --set-default=PATH=VALUE               (same) as --set, but only when nothing
   --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
                                          defaults half of the writer

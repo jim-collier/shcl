@@ -343,9 +343,9 @@ except
 .I TEXT
 goes in as value syntax the way a file spells it \- so
 .B ports=80, 443
-writes a two-element array. An unquoted
+writes a two-element array. A
 .B #
-ends the value, and text spanning lines is rejected.
+behind a space or tab ends the value, and text spanning lines is rejected.
 .TP
 .BI \-\-set\-default= PATH = VALUE
 .TQ
@@ -463,9 +463,9 @@ and a line starting with
 .B #
 is a script comment. A
 .B raw
-op's INFO may not hold a line break or an unquoted
-.BR # ,
-which would read back as a comment on the fence line.
+op's INFO may not hold a line break, nor a
+.B #
+behind a space or tab, which would read back as a comment on the fence line.
 .PP
 .I FILE
 given as
