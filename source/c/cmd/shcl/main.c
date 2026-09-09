@@ -47,7 +47,8 @@ static const char *HELP =
 	"  shcl get [type] [options] FILE PATH    read one value (or array) at a path\n"
 	"  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);\n"
 	"                                         print canonical (or rewrite FILE in\n"
-	"                                         place with --write)\n"
+	"                                         place with --write, which creates\n"
+	"                                         FILE when it is not there yet)\n"
 	"  shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite\n"
 	"                                         FILE in place with --write)\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
@@ -105,8 +106,9 @@ static const char *HELP =
 	"  --slots                                (get) prefix each line with its slot\n"
 	"                                         status and a tab (per element, or per\n"
 	"                                         wildcard slot)\n"
-	"  --no-banner                            (init) leave out the footer naming the\n"
-	"                                         format and pointing at its spec\n"
+	"  --no-banner                            (init, and set --write when it creates\n"
+	"                                         FILE) leave out the info block naming\n"
+	"                                         the format and pointing at its spec\n"
 	"  --lossy                                (fmt/set/migrate) with --write, rewrite\n"
 	"                                         even when the load dropped lines this\n"
 	"                                         write would delete; without it the\n"
@@ -993,9 +995,18 @@ static int do_set(Opts *o) {
 	// error rather than something to quietly write over. Checked before the
 	// read, not after: read_input prints its own diagnostic, and a create has
 	// nothing to report.
+	// A created file starts out as the info block, so a new config says what
+	// format it is. Comments in an otherwise empty document are the document's
+	// trailing trivia, so the edits land above it and the write still goes
+	// through the library's save gate.
 	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
 	char *text; size_t len;
-	if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
+	if (creating && !o->no_banner) {
+		len = strlen(SHCL_GEN_BANNER);
+		text = (char *)xrealloc(NULL, len + 1);
+		memcpy(text, SHCL_GEN_BANNER, len + 1);
+	}
+	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
 	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
 	layered_push_text(&L, text);
 	L.names[L.nnames++] = file;
@@ -1322,7 +1333,7 @@ static int do_paths(Opts *o) {
 
 static int check_opts(const char *cmd, const Opts *o) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
-	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", NULL };
+	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", "--no-banner", NULL };
 	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };

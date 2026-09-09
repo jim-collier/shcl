@@ -1,36 +1,36 @@
-# Port the server listens on.
-# int, 1-65535, required
+## Port the server listens on.
+## int, 1-65535, required
 server.port: 8080
 
-# Request timeout in seconds.
-# float, >= 0.5
-#server.timeout:
+## Request timeout in seconds.
+## float, >= 0.5
+# server.timeout:
 
-# Hostname per server.
-# string, required
+## Hostname per server.
+## string, required
 server.host:
 
-# Log verbosity.
-# string, one of: debug, info, warn
-#log.level: info
+## Log verbosity.
+## string, one of: debug, info, warn
+# log.level: info
 
-# Enabled feature flags.
-# string-array
-#features:
+## Enabled feature flags.
+## string-array
+# features:
 
-# int, repeat 1-5
+## int, repeat 1-5
 replicas:
 
-# float, 811212085039910.2-1125899906842624.2
-#ratio:
+## float, 811212085039910.2-1125899906842624.2
+# ratio:
 
-# float, one of: 811212085039910.2, 1125899906842624.2
-#scale:
+## float, one of: 811212085039910.2, 1125899906842624.2
+# scale:
 
-#
-# This config file format is SHCL.
-# "Simple Hierarchical Config Language"
-#    Home     https://github.com/jim-collier/shcl
-#    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
-#    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
-#
+##
+## This config file format is SHCL.
+## "Simple Hierarchical Config Language"
+##    Home     https://github.com/jim-collier/shcl
+##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+##    Legal    SHCL is Copyright © 2026 Jim Collier. License: MIT. No warranty.
+##
