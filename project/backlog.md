@@ -60,6 +60,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- The 3.0 migration story does not hold as it stands, and that is the round's headline. `migrate` is the only safety net for the breaking change. It corrupts a file that was already correct (item 4), it can write a file that no longer loads (item 3), it exits 0 in both cases, and its gate passes with four of its six rules deleted (item 25). Meanwhile the thing it exists to protect against is not detected at all: a 2.x file whose values change meaning under the new comment rule loads clean in both versions, `check` says ok, and the first in-place write makes the new reading permanent (item 2). Both of a user's realistic paths lose data.
 
+	- Weight for the fix round: there are no 2.x files in anyone else's hands, so the cost of every migration item here is a wrong tool rather than lost data, and the release is not gated on them. What is gated is the wrongness itself. A rewrite that damages a correct file and exits 0 is worse than no rewrite. The caveats are written down as of 2026-09-09, which buys the time to fix these properly rather than around them.
+
 	- 🔘 Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
 		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
@@ -75,6 +77,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: `README.md:33` says "A save never deletes a line you typed". A comment the author wrote is not a line the load lost; it is a line the load stopped seeing.
 		- Note: the predicate that would catch it already exists in every binding. A load whose text differs from `migrate`'s output of that text is a load whose reading changed, and that is one call.
 		- Note: 21 of 49 ordinary config lines tried change meaning with both sides reading clean. The table is in `details.md`.
+		- Note: the compromise is stated now, in `spec.md`, the changelog, the README, the man page and `migrate`'s own stderr, and `check-docs` keeps it there. That is a warning, not a fix; the detection this item asks for is still open.
 		- Opened: 20260909-100100
 
 	- 🔘 Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
