@@ -23,6 +23,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
 	- [Load outcomes](#load-outcomes)
+	- [Lexical edges](#lexical-edges)
 	- [Write outcomes](#write-outcomes)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
@@ -97,16 +98,11 @@ Other points
 
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
-- The lexical rules shrink at 3.0. Decided 2026-09-06, built 2026-09-08; `spec.md` has the wording and `migrate` carries a 2.x file across.
+- The lexical rules are few, and a byte's position decides what it means. The rule table is under Lexical edges below; `spec.md` carries the normative wording.
 	- Why: the same lexical rule lived in seven scanners per binding, and every scanner defect since July was two of them disagreeing. A fix reached the copies that were reproduced. One tokenizer per binding replaces them, and fewer rules leave it less to get wrong.
-	- A `[` right after a name is a selector; a `[` after the colon starts the value. The `field:[disc]` sugar is gone, and bracket text after a colon is refused whole and kept verbatim, like a pasted YAML list.
-	- A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece. Anywhere else a quote is a character, in a name, a selector, a value, an element, a setter argument, a `--set` path and a schema path alike. A piece that opens a quote it never closes that way is read bare, quotes and all, and reported; the comma or comment after it still ends it, so a typo costs one element rather than the rest of the line.
-	- Escapes are processed inside double quotes only. Single quotes are literal and bare text never processes a backslash, which is TOML's and YAML's rule. Elements are stored as the logical string they spell, so a read hands the text back as is and the emitter picks the spelling: single quotes for text holding a double quote or a backslash, double quotes with escapes for a line break, a tab, or both quote kinds.
-	- `#` opens a comment only when first on the line or preceded by a space or tab, YAML's rule. A fence line carries a trailing comment again in both spellings, and the info string is bare text: `c#` is a label.
-	- The trailing carriage-return run comes off every line at load, raw bodies included, and a CR is special nowhere else.
-	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning. A `migrate` command rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
-	- The part of the cost that is not loud, and the reason `migrate` is a step in the upgrade rather than a convenience: the comment rule change cannot be detected on the load path. Both readings of `url: http://h/#frag` are legal text, both load with no diagnostic, and the save gate has nothing to refuse, so a careless upgrade changes values and the first in-place write makes the new reading permanent. `migrate` is the only thing holding both rule sets, so it is the only thing that can see it. This was accepted rather than keeping the seven scanners, and it is written down in `spec.md`, the changelog, the README, the man page and the command's own output rather than left for a user to find out the hard way.
-	- One shape has no spelling after the cut: a fence label holding a whitespace-`#`, which now ends the label and opens a comment. `migrate` leaves such a line as written and nothing reports it, because what it leaves is legal text that means something narrower. There is no diagnostic to add: the load cannot know the author meant 2.x.
+	- What changed at 3.0, and what `migrate` rewrites a 2.x file for: escapes are processed inside double quotes only, single quotes are literal, and bare text never processes a backslash, which is TOML's and YAML's rule. A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece; anywhere else a quote is a character. The `field:[disc]` sugar is gone, so a `[` right after a name is a selector and a `[` first after the colon is bracket text.
+	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning, and a bracket array 2.x folded into one string binds nothing. `migrate` rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
+	- What did not change: the comment rule is 2.x's. A 2.x file's comments and values read the same before and after, so there is nothing about a comment for `migrate` to rewrite or for a load to detect.
 
 - One tokenizer per binding is the only reader of a line's parts. It takes text and a separator and hands back spans: per segment a name and an optional selector body, each with how it was quoted; the separator; the value and its elements; the comment; or the fault that makes the line malformed. Nothing is copied. The parser's line dispatch, the path scanner behind every lookup and setter, `SetLiteral`, `SetRaw`'s info check and the CLI's `--set` split all read those spans, and the seven scanners they replaced are deleted rather than wrapped. A 2.x flag on the same tokenizer is what `migrate` reads with, so the old rules live in one place too.
 	- Pinned by a `tokens` subcommand on every CLI, compared four ways over the corpus and the fuzz soup, and by a generator in the reference that builds lines from the grammar with their spans known and asserts the tokenizer returns exactly those.
@@ -335,7 +331,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - Strip and pad mirror each other exactly, so no special case is left: a body's shared extra indent survives as content, and a whitespace-only body keeps its spacing for the same reason as any other line - a raw block promising verbatim content should not be the place that quietly rewrites it.
 
-**`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or a `#` behind a blank - the fence line would read that `#` as opening a trailing comment, so the block came back with a different info-string than the one written. A `#` anywhere else in the label is content and is kept. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
+**`SetRaw` refuses an info-string an emitted fence line cannot carry.** A line break, or a `#`: the fence line would read the `#` as opening a comment, so the block would come back with a different info-string than the one written. The info-string is also trimmed the way a fence line reads it back, and the op script's `raw` op shares the gate.
 
 **A raw block in a higher layer fills a same-named empty binding below.** Merge matched instances by `(name, value)` only, so a bare `blk:` in the base and a `blk:` carrying a block in the overlay both survived a merge, where parsing the two run together folds them.
 
@@ -373,7 +369,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **`set --write` creates a FILE that is not there yet.** `--write` names the file the command produces, so reporting it missing was an obstacle rather than a safeguard - the workaround was to `touch` it first, which is the same act with an extra step. `fmt --write` deliberately does not, having nothing to format. A file that exists but cannot be read stays an error in both, since the alternative is writing over something unread.
 
-- **Bracket text after the colon is retained, never read.** `ports: [80, 443]` used to be read through the selector scanner, which folded two elements into the one string `80, 443`; the first cut of `E019` counted that as lost, then only when the brackets held an unquoted comma, because the selector sugar `base:[Boston]` was spelled the same way. At 3.0 the sugar is gone, so a `[` after the colon has one meaning: the JSON habit. The line is kept verbatim like any other malformed line, binds nothing, and counts nothing lost, the way a pasted YAML `- item` line already was. An error rather than a hint, because the value is not there to read.
+- **Bracket text after the colon is retained, never read.** A `[` first after the colon has one meaning: the JSON habit. The line is kept verbatim like any other malformed line, binds nothing, and counts nothing lost, the way a pasted YAML `- item` line already was. An error rather than a hint, because the value is not there to read.
 
 - **A refused in-place write exits 7, its own code.** It shared 1 with usage and I/O errors, so a script could not tell "pass `--lossy` or fix the file" apart from "the command line is wrong" - and the refusal is the one failure whose remedy is a decision rather than a correction.
 
@@ -432,17 +428,43 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.
 
+### Lexical edges
+
+Where a byte sits decides whether it is content or trivia, and this table is the rule. The tokenizer, the emitter and every setter follow it; if any of them disagrees with a row, that code is wrong. Three positions cover everything: bare text (a name, a selector body, a value or element, a fence label, a comment - anything outside quotes), inside matching quotes (a piece that opens with a quote and closes with the same quote as its last character), and a raw body (the lines between fences).
+
+| Byte | Bare text | Inside matching quotes | Raw body |
+|------|-----------|------------------------|----------|
+| `#` | opens a comment, whatever sits before it | content | content |
+| space, tab, carriage return | trimmed at a piece's edge, content in the middle | content | content; only the trailing carriage-return run comes off each line |
+| `"` or `'` | content, unless first in the piece, where it opens a quoted piece | ends the piece when it is the matching quote and the last thing in the piece; content otherwise | content |
+| `\` | content | starts an escape inside double quotes; content inside single quotes | content |
+| `,` | ends an element | content | content |
+| `[` | after a name opens a selector; first after the colon is bracket text (`E019`); content anywhere else | content | content |
+| line break | ends the line | none; a setter spells one as `\n` in a name or a selector | ends the body line |
+
+What follows from the table:
+
+- A `#` is a comment anywhere outside quotes and outside a raw body, whether or not whitespace precedes it. `color: "#ff0000"` and `url: "http://x/y#frag"` are the spellings for a value holding one. `a[#0]` in a file is a selector cut off by a comment, so the `[#N]` index selector is a path spelling for the API and the CLI; a file addresses an instance by value. A fence line's info string ends where a comment starts, so ```` ```c# ```` labels the block `c`.
+
+- `##` for prose and `# ` for a disabled setting are conventions. To the language both are comments, and a config author may spell one with any number of `#` and any spacing.
+
+- A carriage return is a blank outside a raw body, and does whatever a blank does where it sits: it is trimmed at the end of a line, a name, a selector body, a value, an element, a comment or a fence label, and it is content in the middle of one. Inside a raw body the trailing run comes off each line and a carriage return mid-line is content.
+
+- Bracket text after the colon (`ports: [80, 443]`) is one thing: the JSON habit. The line is `E019`, kept as written, binds nothing and counts nothing lost, so `check` reports it and an in-place write goes through unchanged, the way a pasted YAML `- item` line already does. `x:[y]` is never a selector.
+
+- The writer spells what the table lets it spell and refuses the rest. A value holding a `#`, a comma, a leading quote or a leading `[` is quoted; a line break in a name or a selector is escaped. What has no spelling is refused whole: a fence label holding a `#` or a line break, a comment holding a line break, a raw body line ending in a carriage return. Nothing on the write side trims or quotes its way around a byte the table calls content.
+
 ### Write outcomes
 
-The mirror of the load outcomes, on the write side. A setter builds its line text through the emitter, hands it to the tokenizer, and refuses unless what comes back is the value it was given. Nothing else on the write side decides what a quote, a `#`, a comma or a carriage return means, so a setter added later carries no rule of its own and cannot disagree with the parser. Twelve review items over three months were one setter's private trim, carriage-return or `#` check drifting from the parser's.
+The mirror of the load outcomes, on the write side. A setter builds its line text through the emitter, hands it to the tokenizer, and refuses unless what comes back is the value it was given. Nothing else on the write side decides what a quote, a `#`, a comma or a carriage return means, so a setter added later carries no rule of its own and cannot disagree with the parser. The table under Lexical edges is what both sides read.
 
-- The refusals follow from the lexical rules rather than from a list. A raw block's info string may not hold a line break or a `#` behind a blank, because the fence line would read that `#` as opening a comment. A raw body line may not end in a carriage return, because the load takes the trailing run off every line. A comment may not hold a line break, because a comment is one line and keeping the first would drop the rest with nothing to say so.
+- The refusals follow from the lexical rules rather than from a list. A raw block's info string may not hold a line break or a `#`, because the fence line would read the `#` as opening a comment. A raw body line may not end in a carriage return, because the load takes the trailing run off every line. A comment may not hold a line break, because a comment is one line and keeping the first would drop the rest with nothing to say so.
 
 - What the load normalizes, the setter normalizes too, and stores the normalized form: a comment line and a fence label are trimmed at the end the way the load trims every line. A raw body line is payload, so it is refused rather than trimmed - stripping a carriage return from each line of a block would quietly convert a CRLF payload to LF.
 
 - The typed setters keep their render-and-parse-back on top of the round trip. It answers a different question: the round trip asks whether the same text comes back, and a float or a datetime has to come back as that type. `inf` reads back as the text `inf` and as no float at all.
 
-- `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off, a `#` behind a blank ends the value and one anywhere else is content. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
+- `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off and a `#` outside quotes ends the value. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
 
 - A path may carry a line break in either half. A name emits through the name escaper and a selector value through the value emitter, and both spell one `\n` and read it back. The selector was refused until the tokenizer cut, while elements were still stored in their source spelling and the value emitter had nothing to escape with.
 
