@@ -64,6 +64,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- The lexical rules are settled as of 2026-09-10, in `design.md` under Lexical edges: a `#` outside quotes opens a comment, as 2.x read it, and a carriage return is a blank. Items 2, 8, 9, 37 and 40 turned on the other reading and are canceled. `migrate` still carries a 2.x file across the backslash, quote and sugar changes, so items 3, 4, 10, 17 and 25 stand. The spec, the help text, the man page, the README and the code follow the table next.
 
+	- The code and documents follow the table as of 2026-09-10, in all four bindings. Two edges turned out to read differently from 2.x after all, and `migrate` leaves both: a fence label holding a `#`, which 2.x ran to the end of the line, and a carriage return at a piece's edge in the middle of a line, which 2.x kept. The spec's Migrating section, `design.md` and `check-migrate.bash` name both. A `[#N]` selector is a path spelling again, not a file spelling.
+
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
 		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
@@ -167,13 +169,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
 		- Opened: 20260909-101200
 
-	- 🔘 Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
+	- ✅ Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
 		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.
 		- Cause: `set_raw` normalizes the info string with the space-and-tab trim, while the load's line-end trim also takes the trailing CR run.
 		- Note: `spec.md:453` and `:454` and `design.md:440` all say the setter normalizes what the load normalizes, and the refusal list does not include this.
 		- Sites: `lib.rs:4719`, `shcl.go:4786`, `shcl.py:3331`, `shcl.h:4030`.
-		- Note: follows from the carriage-return rule in `design.md` under Lexical edges. A trailing carriage return on a fence label is a blank and comes off, so the setter trims it. Still open.
+		- Note: follows from the carriage-return rule in `design.md` under Lexical edges. A trailing carriage return on a fence label is a blank and comes off, so the setter trims it.
+		- Fixed: the blank set carries the carriage return in all four, so the setter's info-string trim takes a trailing one the way the load does. One mid-label is still content.
+		- Pinned by: the `set_raw` fixture in all four runners, where `ab` followed by a carriage return is accepted and reads back as `ab`.
 		- Opened: 20260909-101300
+		- Closed: 20260910-095333
 
 	- 🔘 Item 15: the `Set<T>Default` forms report success for a value that has no spelling, whenever the path already resolves.
 		- Reproduced in all four. `--set-literal-default 'a=[1, 2]'` exits 1 on an absent path and 0 on a present one, writing nothing either way. 45 asymmetric verdicts over a 670-value corpus.
@@ -287,6 +292,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
 		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that cannot express shipped behavior costs more than a typo.
 		- Note: under `design.md` -> Lexical edges the `info-string` production is right to exclude `#`; the example beside it is what is wrong. The `%xEOF` half stands.
+		- Note: the example half is fixed with the rules code; the note now says ```` ```c# ```` labels the block `c`. The `%xEOF` half is still open.
 		- Opened: 20260909-103100
 
 	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
@@ -333,6 +339,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
 		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
 		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so there is no such shape.
+		- Note: a narrower form of the shape does exist. The pinned 2.x build ran a fence label to the end of the line, so any `#` in one reads differently now, spaced or not. It has no spelling, so the load still cannot name it; the spec's Migrating section and `design.md` say so, and `check-migrate.bash` skips it by name with corpus `068` asserted.
 		- Opened: 20260909-103900
 		- Closed: 20260910-081017
 

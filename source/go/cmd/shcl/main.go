@@ -90,8 +90,7 @@ Usage:
                                          per line
   shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
-                                         place with --write); nothing else
-                                         detects what 2.x read differently
+                                         place with --write)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -157,9 +156,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
-                                         array. A # behind a space or tab ends
-                                         the value; text spanning lines is
-                                         rejected
+                                         array. A # outside quotes ends the
+                                         value; text spanning lines is rejected
   --set-default=PATH=VALUE               (same) as --set, but only when nothing
   --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
                                          defaults half of the writer
@@ -1151,9 +1149,6 @@ func doMigrate(o *opts) int {
 		fmt.Fprintln(os.Stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	// Nothing else can warn: both readings of a changed line load clean.
-	fmt.Fprintln(os.Stderr, "shcl: migrate rewrites what the 2.x and current rules read differently; read the "+
-		"result before keeping it. The one shape it cannot carry is a raw block's info string holding a space and '#'.")
 	text, err := readInput(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1230,17 +1225,20 @@ func doTokens(o *opts) int {
 			out.WriteString(" blank\n")
 			continue
 		}
-		if strings.HasPrefix(rest, "#") {
+		// The parser takes a leading carriage return off with the indent's blanks.
+		body := strings.TrimLeft(rest, " \t\r")
+		lead := len(rest) - len(body)
+		if strings.HasPrefix(body, "#") {
 			out.WriteString(" comment\n")
 			continue
 		}
 		// A stacked element and a fence line are value halves on their own.
-		star := strings.HasPrefix(rest, "*") && len(rest) > 1 && (rest[1] == ' ' || rest[1] == '\t')
-		fence := strings.HasPrefix(rest, "```") || strings.HasPrefix(rest, "~~~")
+		star := strings.HasPrefix(body, "*") && len(body) > 1 && (body[1] == ' ' || body[1] == '\t' || body[1] == '\r')
+		fence := strings.HasPrefix(body, "```") || strings.HasPrefix(body, "~~~")
 		if star || fence {
-			from := 0
+			from := lead
 			if star {
-				from = 1
+				from = lead + 1
 			}
 			shcl.TokenizeValue(rest, from, shcl.RulesCurrent, &tok)
 			if star {

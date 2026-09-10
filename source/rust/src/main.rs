@@ -82,8 +82,7 @@ Usage:
                                          per line
   shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
-                                         place with --write); nothing else
-                                         detects what 2.x read differently
+                                         place with --write)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -149,9 +148,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
-                                         array. A # behind a space or tab ends
-                                         the value; text spanning lines is
-                                         rejected
+                                         array. A # outside quotes ends the
+                                         value; text spanning lines is rejected
   --set-default=PATH=VALUE               (same) as --set, but only when nothing
   --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
                                          defaults half of the writer
@@ -1115,12 +1113,6 @@ fn do_migrate(o: &Opts) -> u8 {
 		errln!("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	// Nothing else can warn: both readings of a changed line load clean.
-	errln!(
-		"shcl: migrate rewrites what the 2.x and current rules read differently; read the \
-		 result before keeping it. The one shape it cannot carry is a raw block's info \
-		 string holding a space and '#'."
-	);
 	let text = match read_input(file) {
 		Ok(t) => t,
 		Err(e) => {
@@ -1192,7 +1184,10 @@ fn do_tokens(o: &Opts) -> u8 {
 			out.push_str(" blank\n");
 			continue;
 		}
-		if rest.starts_with('#') {
+		// The parser takes a leading carriage return off with the indent's blanks.
+		let body = rest.trim_start_matches([' ', '\t', '\r']);
+		let lead = rest.len() - body.len();
+		if body.starts_with('#') {
 			out.push_str(" comment\n");
 			continue;
 		}
@@ -1206,10 +1201,10 @@ fn do_tokens(o: &Opts) -> u8 {
 			format!("{}-{}{}", p.start, p.end, mark)
 		};
 		// A stacked element and a fence line are value halves on their own.
-		let star = rest.starts_with('*') && rest[1..].starts_with([' ', '\t']);
-		let fence = rest.starts_with("```") || rest.starts_with("~~~");
+		let star = body.starts_with('*') && body[1..].starts_with([' ', '\t', '\r']);
+		let fence = body.starts_with("```") || body.starts_with("~~~");
 		if star || fence {
-			shcl::tokenize_value(rest, usize::from(star), Rules::Current, &mut tok);
+			shcl::tokenize_value(rest, lead + usize::from(star), Rules::Current, &mut tok);
 			out.push_str(if star { " star" } else { " fence" });
 			out.push_str(&format!(" value={}-{}", tok.value.0, tok.value.1));
 			for p in &tok.elements {

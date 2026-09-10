@@ -1179,8 +1179,8 @@ int main(int argc, char **argv) {
 	}
 	// set_raw: the body's shared indent survives a reload (the closing fence's
 	// indent is what comes off), the info-string is stored as a fence line
-	// reads it back, and an info with a line break, or a `#` behind a blank,
-	// has no spelling and fails the write. Same fixture in every runner.
+	// reads it back, and an info with a line break or a `#` has no spelling and
+	// fails the write. Same fixture in every runner.
 	{
 		shcl_doc *sd = shcl_new();
 		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, " sql ", 5)) fail("set_raw", "set_raw failed");
@@ -1193,27 +1193,26 @@ int main(int argc, char **argv) {
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "a\nb", 3)) fail("set_raw", "info with a newline accepted");
 		br = shcl_read_raw(sd, "q", 1);
 		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "refused write changed the document");
-		// A CR the load would take off the line end has no spelling; one
-		// mid-info is content, the same rule a body line follows.
-		if (shcl_set_raw(sd, "q", 1, "x", 1, "ab\r", 3)) fail("set_raw", "info ending in a CR accepted");
+		// A trailing CR is a blank and comes off, as the load takes it; one
+		// mid-info is content.
+		if (!shcl_set_raw(sd, "q", 1, "x", 1, "ab\r", 3)) fail("set_raw", "info ending in a CR refused");
+		shcl_free(back);
+		sc = shcl_to_canonical(sd);
+		back = shcl_parse(sc.p, sc.n);
+		bi = shcl_read_raw_info(back, "q", 1);
+		if (bi.status != SHCL_GOOD || bi.value.n != 2 || memcmp(bi.value.p, "ab", 2) != 0) fail("set_raw", "trailing CR on an info not trimmed");
 		if (!shcl_set_raw(sd, "q", 1, "x", 1, "a\rb", 3)) fail("set_raw", "info with a mid-string CR refused");
 		shcl_free(back);
 		sc = shcl_to_canonical(sd);
 		back = shcl_parse(sc.p, sc.n);
 		bi = shcl_read_raw_info(back, "q", 1);
 		if (bi.status != SHCL_GOOD || bi.value.n != 3 || memcmp(bi.value.p, "a\rb", 3) != 0) fail("set_raw", "mid-string CR info did not round-trip");
-		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with a # behind a blank accepted");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "a # b", 5)) fail("set_raw", "info with a # accepted");
 		// An info string has no quoting of its own: quotes are characters in
-		// it, so they hide nothing, and a `#` with no space before it is content.
+		// it, so they hide nothing, and a `#` glued to the label opens a
+		// comment too.
 		if (shcl_set_raw(sd, "q", 1, "x", 1, "\"a # b\"", 7)) fail("set_raw", "quoted # info accepted");
-		if (!shcl_set_raw(sd, "q", 1, "  a\n  b", 7, "c#", 2)) fail("set_raw", "hash-led info refused");
-		shcl_free(back);
-		sc = shcl_to_canonical(sd);
-		back = shcl_parse(sc.p, sc.n);
-		br = shcl_read_raw(back, "q", 1);
-		if (br.status != SHCL_GOOD || br.value.n != 7 || memcmp(br.value.p, "  a\n  b", 7) != 0) fail("set_raw", "content did not survive the reload");
-		bi = shcl_read_raw_info(back, "q", 1);
-		if (bi.status != SHCL_GOOD || bi.value.n != 2 || memcmp(bi.value.p, "c#", 2) != 0) fail("set_raw", "hash-led info did not round-trip");
+		if (shcl_set_raw(sd, "q", 1, "x", 1, "c#", 2)) fail("set_raw", "glued # info accepted");
 		shcl_free(back);
 		// A body line ending in CR has no fence spelling: the load takes the
 		// whole trailing CR run off every line, so it is refused rather than
