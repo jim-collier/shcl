@@ -62,6 +62,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A setter writes only what reads back. Every one builds its line text through the emitter and reads it with the tokenizer before the document is touched, so text that would come back different is refused and nothing changes; the write side used to carry a trim, a carriage-return check and a `#` check per setter, and twelve defects were one of them disagreeing with the parser. Two spellings change with it: `SetRaw` trims a fence label the way the load trims a line, so a no-break space in one survives where a full-width trim dropped it, and it takes a label carrying a carriage return mid-text, which reads back; `SetLiteral` takes one too, since a file line holds one.
 
+- A carriage return is a blank outside a raw block, wherever a space or tab would be one. It comes off the edge of a name, a selector body, an element, a comment or a fence label, not only off the end of a line, and it stays content in the middle of a piece. `list: a\r, b` used to read the first element as `a` followed by a carriage return. `SetRaw` trims one off the end of a label for the same reason, where it used to refuse the label.
+
 - A `comment` op in a write-ops script decodes `\n`, `\t` and `\\`, the way the `string` and `raw` ops do.
 
 - A comment trailing a top-level field is the document's, not the field's. Both spellings emit at column zero, so the distinction had nothing to come back to on a reload - and it made merging a layer differ from merging that same layer after formatting it. A comment written deeper than its field still belongs to it.

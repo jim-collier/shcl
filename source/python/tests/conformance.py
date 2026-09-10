@@ -1393,8 +1393,8 @@ def main():
 		raise SystemExit("a missing field is ok()")
 	# The body's shared indent survives a reload (the closing fence's indent
 	# is what comes off), the info-string is stored as a fence line reads it
-	# back, and an info with a line break, or a `#` behind a blank, has no
-	# spelling and fails the write. Same fixture in every runner.
+	# back, and an info with a line break or a `#` has no spelling and fails
+	# the write. Same fixture in every runner.
 	rawdoc = shcl.Document.new()
 	if not rawdoc.set_raw("q", "  a\n  b", " sql "):
 		raise SystemExit("set_raw failed")
@@ -1405,28 +1405,25 @@ def main():
 		raise SystemExit("set_raw info not trimmed")
 	if rawdoc.set_raw("q", "x", "a\nb"):
 		raise SystemExit("set_raw accepted an info with a line break")
-	# A CR the load would take off the line end has no spelling; one mid-info is
-	# content, the same rule a body line follows.
-	if rawdoc.set_raw("q", "x", "ab\r"):
-		raise SystemExit("set_raw accepted an info ending in CR")
+	# A trailing CR is a blank and comes off, as the load takes it; one
+	# mid-info is content.
+	if not rawdoc.set_raw("q", "x", "ab\r"):
+		raise SystemExit("set_raw refused an info ending in CR")
+	if shcl.Document.parse(rawdoc.to_canonical()).read_raw_info("q").value != "ab":
+		raise SystemExit("set_raw trailing CR info not trimmed")
 	if not rawdoc.set_raw("q", "x", "a\rb"):
 		raise SystemExit("set_raw refused an info with a mid-string CR")
 	rawback = shcl.Document.parse(rawdoc.to_canonical())
 	if rawback.read_raw_info("q").value != "a\rb":
 		raise SystemExit(f"set_raw mid-string CR info got {rawback.read_raw_info('q').value!r}")
 	if rawdoc.set_raw("q", "x", "a # b"):
-		raise SystemExit("set_raw accepted an info with a # behind a blank")
+		raise SystemExit("set_raw accepted an info with a #")
 	# An info string has no quoting of its own: quotes are characters in it,
-	# so they hide nothing, and a `#` with no space before it is content.
+	# so they hide nothing, and a `#` glued to the label opens a comment too.
 	if rawdoc.set_raw("q", "x", '"a # b"'):
 		raise SystemExit("set_raw accepted a quoted #")
-	if not rawdoc.set_raw("q", "  a\n  b", "c#"):
-		raise SystemExit("set_raw refused a # with no space before it")
-	rawback = shcl.Document.parse(rawdoc.to_canonical())
-	if rawback.get_raw("q") != "  a\n  b":
-		raise SystemExit("refused set_raw changed the document")
-	if rawback.read_raw_info("q").value != "c#":
-		raise SystemExit(f"set_raw hash info got {rawback.read_raw_info('q').value!r}")
+	if rawdoc.set_raw("q", "x", "c#"):
+		raise SystemExit("set_raw accepted a # glued to the label")
 	# A body line ending in CR has no fence spelling: the load takes the whole
 	# trailing CR run off every line, so it is refused rather than lost. A CR
 	# mid-line is content and still round-trips.

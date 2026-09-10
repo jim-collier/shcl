@@ -8,7 +8,7 @@ note: v#c
 # a whole-line comment behind a carriage return
 stack:
 	*one
-	* two
+	* two
 raw: ```sql  # label
 body
 ```

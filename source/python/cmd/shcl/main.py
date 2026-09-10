@@ -83,8 +83,7 @@ Usage:
                                          per line
   shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
-                                         place with --write); nothing else
-                                         detects what 2.x read differently
+                                         place with --write)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -150,9 +149,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
                                          'ports=80, 443' writes a two-element
-                                         array. A # behind a space or tab ends
-                                         the value; text spanning lines is
-                                         rejected
+                                         array. A # outside quotes ends the
+                                         value; text spanning lines is rejected
   --set-default=PATH=VALUE               (same) as --set, but only when nothing
   --set-literal-default=PATH=TEXT        is at the path yet - the write-out-
                                          defaults half of the writer
@@ -825,9 +823,6 @@ def do_migrate(o):
 	if o.write and file == "-":
 		sys.stderr.write("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
-	# Nothing else can warn: both readings of a changed line load clean.
-	sys.stderr.write("shcl: migrate rewrites what the 2.x and current rules read differently; read the "
-		"result before keeping it. The one shape it cannot carry is a raw block's info string holding a space and '#'.\n")
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:
@@ -886,14 +881,17 @@ def do_tokens(o):
 		if not rest:
 			out.append(" blank\n")
 			continue
-		if rest.startswith("#"):
+		# The parser takes a leading carriage return off with the indent's blanks.
+		body = rest.lstrip(" \t\r")
+		lead = len(rest) - len(body)
+		if body.startswith("#"):
 			out.append(" comment\n")
 			continue
 		# A stacked element and a fence line are value halves on their own.
-		star = rest.startswith("*") and rest[1:2] in (" ", "\t")
-		fence = rest.startswith("```") or rest.startswith("~~~")
+		star = body.startswith("*") and body[1:2] in (" ", "\t", "\r")
+		fence = body.startswith("```") or body.startswith("~~~")
 		if star or fence:
-			shcl.tokenize_value(rest, int(star), shcl.RULES_CURRENT, tok)
+			shcl.tokenize_value(rest, lead + int(star), shcl.RULES_CURRENT, tok)
 			out.append(" star" if star else " fence")
 			out.append(f" value={tok.value[0]}-{tok.value[1]}")
 			for p in tok.elements:

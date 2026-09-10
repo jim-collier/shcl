@@ -66,8 +66,7 @@ static const char *HELP =
 	"                                         per line\n"
 	"  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current\n"
 	"                                         rules (print it, or rewrite FILE in\n"
-	"                                         place with --write); nothing else\n"
-	"                                         detects what 2.x read differently\n"
+	"                                         place with --write)\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
 	"                                         why the parser read a line as it did\n"
 	"  shcl help | version                    this help, or the version (also\n"
@@ -133,9 +132,8 @@ static const char *HELP =
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
 	"                                         'ports=80, 443' writes a two-element\n"
-	"                                         array. A # behind a space or tab ends\n"
-	"                                         the value; text spanning lines is\n"
-	"                                         rejected\n"
+	"                                         array. A # outside quotes ends the\n"
+	"                                         value; text spanning lines is rejected\n"
 	"  --set-default=PATH=VALUE               (same) as --set, but only when nothing\n"
 	"  --set-literal-default=PATH=TEXT        is at the path yet - the write-out-\n"
 	"                                         defaults half of the writer\n"
@@ -689,9 +687,6 @@ static int do_migrate(const Opts *o) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
-	// Nothing else can warn: both readings of a changed line load clean.
-	fprintf(stderr, "shcl: migrate rewrites what the 2.x and current rules read differently; read the "
-		"result before keeping it. The one shape it cannot carry is a raw block's info string holding a space and '#'.\n");
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return EXIT_IO;
 	size_t mlen; char *migrated = shcl_migrate(text, len, &mlen);
@@ -749,12 +744,15 @@ static int do_tokens(const Opts *o) {
 		ShclStr rest = trim_wsp_end(s_slice(line, ilen, line.n));
 		printf("%zu:%zu", lineno, ilen);
 		if (rest.n == 0) { printf(" blank\n"); continue; }
-		if (rest.p[0] == '#') { printf(" comment\n"); continue; }
+		// The parser takes a leading carriage return off with the indent's blanks.
+		ShclStr body = trim_wsp_start(rest);
+		size_t lead = rest.n - body.n;
+		if (body.n && body.p[0] == '#') { printf(" comment\n"); continue; }
 		// A stacked element and a fence line are value halves on their own.
-		int star = rest.p[0] == '*' && rest.n > 1 && (rest.p[1] == ' ' || rest.p[1] == '\t');
-		int fence = s_starts(rest, "```") || s_starts(rest, "~~~");
+		int star = body.n > 1 && body.p[0] == '*' && (body.p[1] == ' ' || body.p[1] == '\t' || body.p[1] == '\r');
+		int fence = s_starts(body, "```") || s_starts(body, "~~~");
 		if (star || fence) {
-			tokenize_value(&a, rest, star ? 1 : 0, SHCL_RULES_CURRENT, &tok);
+			tokenize_value(&a, rest, lead + (star ? 1 : 0), SHCL_RULES_CURRENT, &tok);
 			printf(star ? " star" : " fence");
 			printf(" value=%zu-%zu", tok.value_start, tok.value_end);
 			for (size_t k = 0; k < tok.nelem; k++) { printf(" elem="); say_span(&tok.elements[k]); }
