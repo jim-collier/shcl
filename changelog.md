@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- `shcl migrate FILE [--write]`, and `migrate(text)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, a `#` with no space before it, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`.
+- `shcl migrate FILE [--write]`, and `migrate(text)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`.
 
 - `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer.
 
@@ -22,7 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `V097`: `init` checks its own output against the schema that produced it before returning it. A field typed `int` with `min: 1`, `max: 10` and `default: 99` used to generate the comment `# int, 1-10, required` and then `server.port: 99` on the next line, so the starter config failed the schema it came from. The schema is faulted now, naming the field.
 
-- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The load counts it as lost content now, so an in-place rewrite refuses unless `--lossy` is passed. That holds where the brackets hold an unquoted comma, which is where elements fold into one string. A single bracketed value (`tags: [prod]`) reads the same as `tags: prod`, and `base:[Boston]` is the documented selector sugar, so those are a hint under the same code and nothing is counted lost: `check` exits 0, a strict load passes, and the rewrite goes through.
+- `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The line is kept as written now, binds nothing and loses nothing, so `check` reports it at exit 6 and an in-place rewrite writes the line back unchanged. Every bracket spelling is the same case, `tags: [prod]` included; the `base:[Boston]` selector sugar that shared the spelling is gone.
 
 - `E018`: a line indented under a line that was skipped is now skipped with it, with its own diagnostic, instead of re-parenting one level up. A skipped header used to hand its children to its parent, so the document gained structure the author never wrote.
 
@@ -46,12 +46,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The lexical rules are smaller, and one tokenizer per binding is the only place they live. Seven scanners used to carry their own copy of when a quote opens, what a backslash shields and where a selector ends, and every scanner defect since July was two of them disagreeing. What a 2.x file reads differently, and `migrate` rewrites:
 	- Escapes are processed inside double quotes only. Single quotes are literal, and a backslash in bare text is a character, so `path: C:\dir\new` reads as written. `\,` and `\#` no longer shield a comma or a `#` in bare text; quote the value instead.
-	- `#` opens a comment only when first on the line or after a space or tab, YAML's rule. `url: http://h/#frag` is a bare value, `a[#2]` is an index selector reachable from a file, `c#` is a fence label, and `a:#x` is the value `#x`. A fence line takes a trailing ` # note` as a comment again, in both spellings, and the info string is bare text.
-	- A `[` right after a name is a selector and a `[` after the colon starts the value. The `field:[disc]` sugar is gone; `field[disc]` is the one spelling. `E019` is one outcome now: bracket text after the colon is kept verbatim and binds nothing, like a pasted YAML list, so nothing is counted lost and the rewrite goes through unchanged. `SetLiteral` refuses any text beginning with `[`.
+	- A `[` right after a name is a selector and a `[` after the colon starts the value. The `field:[disc]` sugar is gone; `field[disc]` is the one spelling. Bracket text after the colon is `E019`, above. `SetLiteral` refuses any text beginning with `[`.
 	- A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece; anywhere else a quote is a character. A piece that opens a quote it never closes that way is read bare, quotes and all, and reported (`E017`); the comma or comment after it still ends it, where it used to swallow the rest of the line. The same rule reads a selector body, which used to throw the whole line away.
 	- Elements are stored as the logical string they spell. A read hands the text back as is, and the emitter picks the spelling: single quotes for text holding a double quote or a backslash, double quotes with escapes for a line break, a tab, or both quote kinds. Canonical output of `a: "q\"uote"` is `a: 'q"uote'`.
-	- The comment rule is the one change of these that is silent, which is what makes `migrate` a step in the upgrade rather than a convenience. Both readings of `url: http://h/#frag` are legal text, both load with no diagnostic, and `check` says `ok` before and after, so a file that needed migrating looks exactly like one that did not. The first in-place write then makes the new reading permanent. Run `migrate` over every file written for 2.x rather than reading a clean `check` as evidence that one did not need it.
-	- One shape has no spelling at all after the cut: a 2.x info-string holding a space and a `#`, which now ends the label. `migrate` leaves such a line as written and nothing reports it, since what it leaves is legal text that means something narrower.
 
 - A raw-block fence with no parent field (`E006`) holds its indent level like every other skipped line, so a line written deeper than it is skipped with it (`E018`) instead of binding to the root. It was the one skipped line that did not.
 
@@ -145,7 +142,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The stderr voice is tidier: messages dropped their `shcl:` prefix, a usage error answers with a `usage: shcl ...` line, a strict-load failure lists the diagnostics above its `strict load failed: N error diagnostic(s)` summary, and a schema-fault line carries its `V` code the way load diagnostics carry theirs. stdout and the exit codes are untouched, so nothing scripted against the contract moves.
 
-- A raw block's info-string runs to the end of the line in both spellings. On the same-line form (`db: ```c#`) a `#` used to open a trailing comment, so the label came back as `c` and the rest moved onto the field line, while the same text under a child indent stayed whole. An info-string is never interpreted, which is what the grammar and the spec both already said. A comment about a same-line block goes on the line above.
+- A `#` on a raw block's fence line opens a comment in both spellings, so the info-string ends there and ```` ```c# ```` labels the block `c`. The child-indent spelling used to take the whole line as the label, so the two spellings of one block read different labels.
 
 - Reading a float as an int at loose strictness refuses anything at or past 2^63, rather than saturating to the integer maximum. `9223372036854775808.0` used to read as `9223372036854775807` while the same number spelled without the `.0` correctly refused. No double holds the integer maximum, so `9223372036854775807.0` is refused too; the plain decimal spelling still reads exactly.
 
@@ -154,10 +151,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - An unterminated quote in a selector body is reported. `srv["prod].host: example.com` loaded with no diagnostic at all and bound an instance of `srv` valued `"prod`, so a one-character typo silently pointed a whole block at a path nothing else uses, and the next `fmt --write` wrote the typo out as canonical text. The tokenizer had recorded the open quote all along; only the value half was reading it. The body is still kept as text, quotes and all, which is what the spec says a piece that opens a quote and never closes it does.
-
-- `SetLiteral` stores a value that begins with `#`. `--set-literal='color=#ff0000'` wrote an empty value and exited 0, losing the whole text, while the same line in a file read `#ff0000`. The setter read its argument as if it started a line, where a leading `#` opens a comment; it reads it as the value half of a line now, which is what it always claimed to do. A `#` behind a space or tab still ends the value, and one anywhere else is content.
-
-- `migrate` carries a line whose `#` sits right behind a carriage return. 2.x cut such a line at the `#` and then trimmed the carriage return off the half before it, so `my<CR>#note: 1` bound `my`; the migrated text kept the byte, the name ended at it, and the binding was gone with an `E014` at exit 0. The run goes now, replaced by the single space the `#` needs. Only a carriage return was affected - any other control character in that position was malformed to 2.x as well.
 
 - The zsh completion works. An apostrophe inside a single-quoted description left a quote open for the rest of the file, so zsh answered a parse error instead of completing anything; nothing had ever run the file, only compared the option table inside it.
 
@@ -173,7 +166,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `SetComment` no longer drops everything after the first line of the text it is given. It kept the first line, reported success, and said nothing about the rest, so a two-line note reached the file as one; text holding a line break is refused now.
 
-- A write refused for its text names the half of the op that had no spelling. A `raw` op whose info string held a `#` behind a blank reported the sentence written for `SetLiteral`, which sends the reader to the value.
+- A write refused for its text names the half of the op that had no spelling. A `raw` op whose info string held a `#` reported the sentence written for `SetLiteral`, which sends the reader to the value.
 
 - A quote in the middle of a bare value no longer swallows the rest of the line. `note: don't panic  # keep this` used to load as the string `don't panic  # keep this` with no diagnostic, and the next `fmt --write` baked that in at exit 0, comment gone for good; `b: it's fine, ok` read as one element where the same words without the apostrophe read as two. A piece is quoted only when it begins with a quote, which is what the spec and the grammar always said. The same rule now holds in a selector: `srv[O'Brien].port: 8080  # main` used to read the port as the string `8080  # main` with the comment gone on the next write, and `--set="srv[O'Brien].port=8080"` was refused as unbalanced while `get` on that path worked. A quote opens a quoted discriminator only as the selector's first character, and a bare selector runs to the first `]`.
 
@@ -187,7 +180,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The bash completion completes the `--option=value` spelling, which it used to answer with nothing, and no longer loses the FILE slot after one. Both completions know that `--remove`, `--set-default` and `--set-literal-default` take a value.
 
-- A no-break space, a line separator, a vertical tab or a form feed at the end of a bare value is content and survives a load. Only a space or a tab is trimmed off a line now, as the grammar has always said; every binding used its language's Unicode whitespace set and deleted the character with no diagnostic, so `fmt --write` dropped it at exit 0. An element that is one such character is an element, not an empty slot, and `SetComment` keeps one at the end of its text.
+- A no-break space, a line separator, a vertical tab or a form feed at the end of a bare value is content and survives a load. Only a space, a tab or a carriage return is trimmed off a line now; every binding used its language's Unicode whitespace set and deleted the character with no diagnostic, so `fmt --write` dropped it at exit 0. An element that is one such character is an element, not an empty slot, and `SetComment` keeps one at the end of its text.
 
 - An unterminated raw block at the end of a newline-terminated file no longer gains an empty last line. The same lines with and without the file's final newline are one document, as the grammar says.
 
@@ -209,7 +202,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Merging a layer over a leaf no longer deletes a malformed line the parser had retained above or under that leaf. The line stays in the merged document, where a save writes it back out, instead of vanishing with the base leaf's comments and a lost count of zero.
 
-- A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, and the save gate refuses like it does for the plain spelling.
+- A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, like the plain spelling.
 
 - An allocation failure inside a C parse or validate crashed the process on Windows instead of returning NULL, on any binary built with mingw at `-O1`, `-O2` or `-Os`. The recovery unwinds through SEH there, and it was reading off the top of the stack on the way. The whole point of the recovery is that a config problem does not take the application down with it, so on Windows it had been doing the opposite of what it promised. An embedder whose `SHCL_OOM()` hook longjmps out is exposed to the same thing, since the unwind crosses these frames too, so the header now carries `SHCL_SETJMP(buf)` for arming that recovery point.
 
@@ -247,7 +240,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `init` wrote a child under a valued parent as a dotted line - `srv: web` and then `srv.port:` - which is two `srv` instances to the parser, so the child never landed where the schema looks. With a repeat lower bound of 1 on the child the self-check waved it through, and the starter config failed the schema that produced it at the very next `check --schema`. A line under a valued live parent now selects that instance by its value (`srv[web].port:`), and the self-check lets through only the one documented shortfall, a repeat lower bound of 2 or more. The C CLI reported a schema that does not build with the faults an empty document would owe it added on; it reports the build faults alone now, like the other three.
 
-- `SetLiteral` (and `--set-literal`) took bracket-array text and wrote a two-element array holding `[80` and `443]`, with nothing said, where the same text in a file is `E019` and the line is refused. It refuses the text now, the way it already refused a quote that never closes.
+- `SetLiteral` (and `--set-literal`) took bracket-array text and wrote a two-element array holding `[80` and `443]`, with nothing said, where the same text in a file is `E019` and the line binds nothing. It refuses the text now, the way it already refused a quote that never closes.
 
 - `shcl_paths` in the C binding grew the document by about 11 KB on every call, and `shcl_reads_release` could not give it back, so a process polling a document's key list climbed for the document's lifetime. It was the one read that took no path and so missed the scratch reset the path lookup does; it resets on entry now.
 
@@ -267,7 +260,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - C: the file tier reached Windows through the code-page file calls, so a path with a character outside the active code page could not be opened or, worse, was written under a mojibake name. Every file call is the wide one now, and a path that is not valid UTF-8 fails with `EINVAL` rather than opening something else.
 
-- `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break, or a `#` behind a blank. Either would read back as something other than what was written.
+- `set_raw` (and the `raw` op) trims the info-string the way a fence line reads it back, and refuses one holding a line break, or a `#`. Either would read back as something other than what was written.
 
 - `read_file`'s byte cap saturates instead of overflowing when set near the integer ceiling.
 
