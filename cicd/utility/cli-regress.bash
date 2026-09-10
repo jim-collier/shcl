@@ -430,7 +430,7 @@ done
 ## The help text is a column-aligned table sitting at exactly 80 wide, and it is
 ## hand-duplicated in four CLIs, so one added word wraps it in every terminal at
 ## once and nothing else here would notice. Only help is checked: about and
-## donate carry the copyright symbol and the CryptogID by design, so a byte
+## donate carry the copyright symbol and the author ID by design, so a byte
 ## count is not a column count there, and neither is aligned anyway.
 maxCols=80
 for b in "${bindings[@]}"; do
