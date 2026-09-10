@@ -1,0 +1,5 @@
+line 2: Error: E017
+line 3: Error: E017
+line 4: Error: E017
+line 4: Error: E017
+failed: 4 diagnostic(s), 4 error(s)

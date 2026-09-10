@@ -1902,6 +1902,18 @@ func selectorOf(p *Piece, text string) selector {
 	return selector{kind: selByValue, value: body}
 }
 
+// selectorOpenQuote reports whether any segment's selector opens a quote it
+// never closes. The tokenizer records it; selectorOf reads the body bare
+// either way, so only the diagnostic depends on this.
+func selectorOpenQuote(tok *Tokens) bool {
+	for i := range tok.Segments {
+		if sel := tok.Segments[i].Selector; sel != nil && sel.Quote == QuoteOpen {
+			return true
+		}
+	}
+	return false
+}
+
 // pathOf is the path the tokens spell. An error is the tokenizer's fault:
 // input that is not a path at all, which the caller skips with a diagnostic.
 func pathOf(tok *Tokens, text string) (pathScan, error) {
@@ -2844,6 +2856,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 			i = next
 			continue
+		}
+		// A selector body takes the same open-quote rule as a value element,
+		// and the same code: the body is read bare, quotes and all, so the
+		// line still binds - somewhere the author did not mean.
+		if selectorOpenQuote(&tok) {
+			p.err(lineno, "E017", "unterminated quote in selector")
 		}
 		// The verbatim value span, kept for reads' Raw (only the plain
 		// scalar/inline-array case has a one-line source spelling).
