@@ -35,15 +35,11 @@ while IFS= read -r op; do
 	grep -qF -- "  ${base}[-default]<TAB>" "${mainRs}" || fBad "write op ${op} is dispatched but the help's op table never spells ${base}[-default]"
 done < <(sed -n '/^fn apply_op/,/^}/p' "${mainRs}" | { grep -oE '"[a-z-]+-default" =>' || true ;} | tr -d '"=> ' | sort -u)
 
-##	The comment rule change at 3.0 reads clean on both sides, so a user's only
-##	warning is what these documents say and what `migrate` prints. Each was
-##	written once, and a doc pass that tidies one of them loses the warning for
-##	good - there is no diagnostic behind it to fall back on.
+##	`migrate` is the one path across the 3.0 lexical change, and it needs a
+##	place in the spec and the man page that says what it rewrites and what it
+##	leaves alone. A doc pass once tidied the section away.
 grep -q '^## Migrating from 2.x$' "${repoDir}/project/spec.md" || fBad "spec.md has no 'Migrating from 2.x' section"
 grep -q '^\.SH MIGRATING FROM 2\.X$' "${repoDir}/source/man/shcl.1" || fBad "the man page has no MIGRATING FROM 2.X section"
-for f in project/spec.md changelog.md README.md source/man/shcl.1; do
-	grep -qF -- 'http://h/#frag' "${repoDir}/${f}" || fBad "${f} does not show what the comment rule change does to a value"
-done
 
 ##	A disclaimer that says the opposite of what it means is worse than none, and
 ##	these documents invite verbatim reuse, so the error travels. One negation in
@@ -344,3 +340,4 @@ echo "check-docs: OK"
 ##		2026-09-05  The crossed-range entry must agree with the spec's table.
 ##		2026-09-08  The tokenizer sentence in the style guide and the reference.
 ##		2026-09-08  The installers on main must match the ones on dev.
+##		2026-09-10  The comment-rule example is no longer required; the rule is 2.x's.
