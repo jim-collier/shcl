@@ -1759,6 +1759,15 @@ fn selector_of(p: &Piece, text: &str) -> Selector {
 	}
 }
 
+/// Whether any segment's selector opens a quote it never closes. The
+/// tokenizer records it; `selector_of` reads the body bare either way, so
+/// only the diagnostic depends on this.
+fn selector_open_quote(tok: &Tokens) -> bool {
+	tok.segments
+		.iter()
+		.any(|s| s.selector.is_some_and(|p| p.quote == Quote::Open))
+}
+
 /// The path the tokens spell. Err(reason) is the tokenizer's fault: input
 /// that is not a path at all, which the caller skips with a diagnostic.
 fn path_of(tok: &Tokens, text: &str) -> Result<PathScan, String> {
@@ -2910,6 +2919,12 @@ impl Parser {
 				);
 				i = next;
 				continue;
+			}
+			// A selector body takes the same open-quote rule as a value
+			// element, and the same code: the body is read bare, quotes and
+			// all, so the line still binds - somewhere the author did not mean.
+			if selector_open_quote(&tok) {
+				self.err(lineno, "E017", "unterminated quote in selector");
 			}
 			// The verbatim value span, kept for reads' `raw` (only the plain
 			// scalar/inline-array case has a one-line source spelling).

@@ -1617,6 +1617,13 @@ def _selector_of(p, s):
 	return ("val", body, False)
 
 
+def _selector_open_quote(tok):
+	"""Whether any segment's selector opens a quote it never closes. The
+	tokenizer records it; `_selector_of` reads the body bare either way, so
+	only the diagnostic depends on this."""
+	return any(seg.selector is not None and seg.selector.quote is Quote.OPEN for seg in tok.segments)
+
+
 def _path_of(tok, s):
 	"""The path the tokens spell: (segments, value_text), value_text None when
 	there was no separator. Raises _PathError with the tokenizer's fault:
@@ -2341,6 +2348,11 @@ class _Parser:
 				self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
 				i = nxt
 				continue
+			# A selector body takes the same open-quote rule as a value
+			# element, and the same code: the body is read bare, quotes and
+			# all, so the line still binds - somewhere the author did not mean.
+			if _selector_open_quote(tok):
+				self._err(lineno, "E017", "unterminated quote in selector")
 			# The verbatim value span, kept for reads' `raw` (only the plain
 			# scalar/inline-array case has a one-line source spelling).
 			src_text = None

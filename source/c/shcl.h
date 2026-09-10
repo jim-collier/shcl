@@ -1841,6 +1841,15 @@ static ShclSelector selector_of(ShclArena *a, const ShclPiece *p, ShclStr text) 
 	sel.tag = SEL_VALUE; sel.value = body; return sel;
 }
 
+/* Whether any segment's selector opens a quote it never closes. The tokenizer
+   records it; selector_of reads the body bare either way, so only the
+   diagnostic depends on this. */
+static int selector_open_quote(const ShclTokens *tok) {
+	for (size_t i = 0; i < tok->nseg; i++)
+		if (tok->segments[i].has_selector && tok->segments[i].selector.quote == SHCL_QUOTE_OPEN) return 1;
+	return 0;
+}
+
 /* The path the tokens spell. ok == 0 with err is the tokenizer's fault: input
    that is not a path at all, which the caller skips with a diagnostic. */
 static ShclPathScan path_of(ShclArena *a, const ShclTokens *tok, ShclStr text) {
@@ -3142,6 +3151,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
 			i = next; continue;
 		}
+		/* A selector body takes the same open-quote rule as a value element,
+		   and the same code: the body is read bare, quotes and all, so the line
+		   still binds - somewhere the author did not mean. */
+		if (selector_open_quote(&tok)) p_err(&P, lineno, "E017", s_lit("unterminated quote in selector"));
 		ShclValue value;
 		if (!scan.has_value) {
 			/* A clean path with no colon is the one defined repair: the obvious
