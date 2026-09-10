@@ -4,4 +4,5 @@ nbsp	string	val 	Good
 lead	string	 val	Good
 tail	string	val	Good
 list	string[]	a |b	Good
+cr	string[]	x|y	Good
 -	lost	0	-

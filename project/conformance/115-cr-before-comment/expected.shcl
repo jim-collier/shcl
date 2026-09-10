@@ -1,8 +1,0 @@
-# 2.x cut a line at any `#` and trimmed the half before it, so a CR
-# running into one was never part of the path or the value. Nothing here
-# binds under the current rules; migrate is what carries these across.
-ok: 1
-my#sery: 2
-srv[web]#port: 3
-val: "keep#note"
-#a whole line 2.x read as a comment

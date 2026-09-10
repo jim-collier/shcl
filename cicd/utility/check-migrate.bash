@@ -18,9 +18,12 @@
 ##		malformed (a line 2.x could not read may read as a binding now, which
 ##		is a gain, not a migration), no bracket array it counted lost (2.x
 ##		itself refused to save that), no dropped line of any kind. Every other
-##		document must come through equal, with one named exception: a fence
-##		label holding a whitespace-`#`, which has no spelling under the new
-##		rules. The exception is asserted, so the list cannot rot.
+##		document must come through equal, with two named exceptions: a fence
+##		label holding a `#`, which 2.x ran to the end of the line and which
+##		ends at the `#` now, with no quoting to spell it; and a carriage return
+##		in the middle of a line, which 2.x kept as content and which is a blank
+##		at a piece's edge now. Each is asserted on a corpus case, so the list
+##		cannot rot.
 ##	Syntax:
 ##		check-migrate.bash [--corpus DIR] [--iters N] [--min N]
 ##		  --corpus DIR  conformance corpus root (default project/conformance)
@@ -134,25 +137,25 @@ fAge2xReads(){ awk '$0 == "rawinfo exit 4" && prev == "" && prev2 == "raw exit 2
 ##	runners pin those.
 fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 
-##	A 2.x fence label carrying a whitespace-`#` has no spelling here at all: the
-##	`#` opens the line's comment now, and nothing quotes a label. So `migrate`
-##	leaves the line as written and the reading differs by design. Matched on the
-##	text rather than by file name, because a fuzz document's number moves every
-##	time the corpus grows.
-fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*[[:space:]]#' "$1"; }
+##	A 2.x fence label carrying a `#` has no spelling here at all: the `#` opens
+##	the line's comment now, and nothing quotes a label. So `migrate` leaves the
+##	line as written and the reading differs by design. Matched on the text
+##	rather than by file name, because a fuzz document's number moves every time
+##	the corpus grows.
+fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*#' "$1"; }
 
-declare -i nCompared=0 nSkipped=0 nBad=0 nExpected=0
-exceptions='068-info-hash-spellings'
+##	A carriage return with more text after it on its line. At a piece's edge it
+##	was content to 2.x and is trimmed now; in the middle of a piece it reads the
+##	same either way, and the corpus pins that, so matching loosely costs little.
+fCrMidLine(){ grep -q $'\r[^\r]' "$1"; }
+
+declare -i nCompared=0 nSkipped=0 nBad=0
 for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	[[ -f "${f}" ]] || continue
 	name="${f%/input.shcl}"; name="${name##*/}"
 	if fHasNul "${f}"; then nSkipped+=1; continue; fi
 	if ! fClean2x "${f}"; then nSkipped+=1; continue; fi
-	if fInfoHashLabel "${f}"; then
-		nSkipped+=1
-		if [[ " ${exceptions} " == *" ${name} "* ]]; then nExpected+=1; fi
-		continue
-	fi
+	if fInfoHashLabel "${f}" || fCrMidLine "${f}"; then nSkipped+=1; continue; fi
 	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
 	want="$(fReadTree "${oldCli}" "${f}" | fAge2xReads)"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"
@@ -164,11 +167,11 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	fi
 done
 
-##	The named case has to keep carrying the shape, or the list is stale.
-for e in ${exceptions}; do
-	[[ -f "${corpus}/${e}/input.shcl" ]] || { echo "check-migrate: exception ${e} names no corpus case" >&2; nBad+=1; }
-done
-((nExpected == 1)) || { echo "check-migrate: expected exactly one named unmigratable case (068), saw ${nExpected}" >&2; nBad+=1; }
+##	Each named case has to keep carrying its shape, or the exception is stale.
+fInfoHashLabel "${corpus}/068-info-hash-spellings/input.shcl" 2>/dev/null \
+	|| { echo "check-migrate: 068-info-hash-spellings no longer carries a fence label holding a #" >&2; nBad+=1; }
+fCrMidLine "${corpus}/094-unicode-space/input.shcl" 2>/dev/null \
+	|| { echo "check-migrate: 094-unicode-space no longer carries a mid-line carriage return" >&2; nBad+=1; }
 if ((nCompared < minCompared)); then
 	echo "check-migrate: only ${nCompared} document(s) compared, need at least ${minCompared} (${nSkipped} skipped)" >&2
 	exit 2

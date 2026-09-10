@@ -682,17 +682,18 @@ const TMP_NAME_CHARS: usize = 64;
 //   is kept literally and reported (`E017`).
 // - Escapes are processed inside double quotes only; bare text and single
 //   quotes never process a backslash.
-// - `#` opens a comment when it is outside quotes and either first in the
-//   text or preceded by a space or tab.
+// - `#` outside quotes opens a comment, wherever it sits.
+// - A space, a tab and a carriage return are blanks: trimmed at a piece's
+//   edge, content in the middle of one.
 // - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
 //   name opens a selector, whose bare body runs to the first `]`; a `[` after
 //   the separator starts the value, which the parser refuses (`E019`).
 // - A value is split on unquoted commas, each piece trimmed.
 //
 // Under `Rules::V2` the tokenizer reads the 2.x spellings instead, for
-// `migrate`: any unquoted `#` is a comment, a backslash shields the next
-// character in bare and single-quoted text, a separator followed by `[` is
-// the selector sugar, and an open quote swallows the rest of the line.
+// `migrate`: a backslash shields the next character in bare and single-quoted
+// text, a separator followed by `[` is the selector sugar, and an open quote
+// swallows the rest of the line.
 
 /// How a piece was quoted. `Open` is a piece that began with a quote and
 /// never closed with the matching quote as its last character: the whole
@@ -778,8 +779,10 @@ pub enum Rules {
 	V2,
 }
 
+/// A blank: space, tab, or a carriage return, which is trimmed wherever a
+/// blank is and content in the middle of a piece.
 fn is_wsp_byte(b: u8) -> bool {
-	b == b' ' || b == b'\t'
+	b == b' ' || b == b'\t' || b == b'\r'
 }
 
 fn is_bare_name_byte(b: u8) -> bool {
@@ -790,21 +793,6 @@ fn skip_wsp(s: &[u8], pos: &mut usize) {
 	while *pos < s.len() && is_wsp_byte(s[*pos]) {
 		*pos += 1;
 	}
-}
-
-/// End of a run of blanks and carriage returns that holds at least one CR and
-/// runs into a `#`. 2.x cut a line at its first `#` and then trimmed blanks and
-/// CR off the end of the half before it, so such a run was never content. A CR
-/// anywhere else was malformed to 2.x as well, which is why only this one
-/// position needs saying.
-fn cr_run_to_comment(s: &[u8], from: usize) -> Option<usize> {
-	let mut k = from;
-	let mut cr = false;
-	while k < s.len() && (is_wsp_byte(s[k]) || s[k] == b'\r') {
-		cr |= s[k] == b'\r';
-		k += 1;
-	}
-	(cr && k < s.len() && s[k] == b'#').then_some(k)
 }
 
 /// Byte length of the UTF-8 character that starts with `b`. The scan only
@@ -838,18 +826,18 @@ fn quote_close(s: &[u8], pos: usize, rules: Rules) -> Option<usize> {
 	None
 }
 
-/// True when the `#` at `i` opens a comment: outside quotes (the caller's
-/// business) and, under the current rules, first in the text or after a
-/// space or tab.
-fn comment_at(s: &[u8], i: usize, rules: Rules) -> bool {
-	s[i] == b'#' && (rules == Rules::V2 || i == 0 || is_wsp_byte(s[i - 1]))
+/// True when the byte at `i` opens a comment. Being outside quotes is the
+/// caller's business.
+fn comment_at(s: &[u8], i: usize) -> bool {
+	s[i] == b'#'
 }
 
 /// One piece from `pos`: a value element up to an unquoted comma or comment,
 /// or a selector body up to an unquoted `]` (`term`). Returns the trimmed
 /// piece and the offset of what ended it: the terminator, a comment's `#`,
-/// or the end of the text.
-fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules) -> (Piece, usize) {
+/// or the end of the text. `comments` is false only for a selector body in a
+/// lookup path, where `[#N]` is the index spelling.
+fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules, comments: bool) -> (Piece, usize) {
 	skip_wsp(s, &mut pos);
 	let start = pos;
 	let mut quote = Quote::None;
@@ -861,7 +849,7 @@ fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules) -> (Piece, usize
 				let mut i = close + 1;
 				skip_wsp(s, &mut i);
 				let ended = if i < s.len() {
-					s[i] == term || (term == b',' && comment_at(s, i, rules))
+					s[i] == term || (term == b',' && comment_at(s, i))
 				} else {
 					term == b','
 				};
@@ -910,7 +898,7 @@ fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules) -> (Piece, usize
 			content_end = pos.min(s.len());
 			continue;
 		}
-		if b == term || comment_at(s, pos, rules) {
+		if b == term || (comments && comment_at(s, pos)) {
 			break;
 		}
 		pos += utf8_len(b);
@@ -956,9 +944,7 @@ fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules) -> (Piece, usize
 }
 
 /// The value half: everything from `from` on, split into pieces, with the
-/// comment found on the way. `from` is where the separator ended, so a `#`
-/// right after it (`a:#x`) is content and one after a space is a comment;
-/// at 0 the text starts a line and a leading `#` is a comment.
+/// comment found on the way.
 pub fn tokenize_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
 	out.clear();
 	scan_value(text, from, rules, out);
@@ -970,7 +956,7 @@ fn scan_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
 	let stop_at;
 	let mut count = 0usize;
 	loop {
-		let (piece, stop) = scan_piece(s, pos, b',', rules);
+		let (piece, stop) = scan_piece(s, pos, b',', rules, true);
 		out.elements.push(piece);
 		if piece.quote != Quote::None || piece.end > piece.start {
 			count += 1;
@@ -992,12 +978,8 @@ fn scan_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
 	}
 	let mut a = from;
 	skip_wsp(s, &mut a);
-	// The value ends where the line's content ends: a carriage return there
-	// comes off with the blanks, since the load strips one from every line
-	// end and an info string or a bare last element written back would
-	// otherwise end in one the next load would take.
 	let mut b = stop_at;
-	while b > a && (is_wsp_byte(s[b - 1]) || s[b - 1] == b'\r') {
+	while b > a && is_wsp_byte(s[b - 1]) {
 		b -= 1;
 	}
 	out.value = (a.min(b), b);
@@ -1009,11 +991,12 @@ fn scan_value(text: &str, from: usize, rules: Rules, out: &mut Tokens) {
 	}
 }
 
-/// Tokenize one line (`sep` = `b':'`) or one lookup path (`stars` admits the
-/// bare `*` name wildcard); the CLI's `--set` passes `b'='`. `out` is
+/// Tokenize one line (`sep` = `b':'`) or one lookup path (`path`: the bare
+/// `*` name wildcard is admitted, and a `#` in a selector body is the `[#N]`
+/// index rather than a comment); the CLI's `--set` passes `b'='`. `out` is
 /// cleared and reused, so a parse allocates once per document rather than
 /// once per line. `text` is the line after its indent, or the path.
-pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens) {
+pub fn tokenize(text: &str, sep: u8, path: bool, rules: Rules, out: &mut Tokens) {
 	out.clear();
 	let s = text.as_bytes();
 	let mut pos = 0usize;
@@ -1041,7 +1024,7 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			};
 			pos = close + 1;
 			piece
-		} else if stars && s[pos] == b'*' {
+		} else if path && s[pos] == b'*' {
 			star = true;
 			pos += 1;
 			Piece {
@@ -1065,11 +1048,6 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			}
 		};
 		skip_wsp(s, &mut pos);
-		if rules == Rules::V2
-			&& let Some(k) = cr_run_to_comment(s, pos)
-		{
-			pos = k;
-		}
 		let mut selector = None;
 		let mut open = (pos < s.len() && s[pos] == b'[').then_some(pos);
 		if open.is_none() && rules == Rules::V2 && pos < s.len() && s[pos] == sep {
@@ -1084,7 +1062,7 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 				out.fault = Some((at, "selector on a name wildcard"));
 				return;
 			}
-			let (piece, stop) = scan_piece(s, at + 1, b']', rules);
+			let (piece, stop) = scan_piece(s, at + 1, b']', rules, !path);
 			if stop >= s.len() || s[stop] != b']' {
 				out.fault = Some((at, "unterminated selector"));
 				return;
@@ -1100,11 +1078,6 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			selector = Some(piece);
 			pos = stop + 1;
 			skip_wsp(s, &mut pos);
-			if rules == Rules::V2
-				&& let Some(k) = cr_run_to_comment(s, pos)
-			{
-				pos = k;
-			}
 		}
 		out.segments.push(SegTok {
 			name,
@@ -1124,7 +1097,7 @@ pub fn tokenize(text: &str, sep: u8, stars: bool, rules: Rules, out: &mut Tokens
 			scan_value(text, pos + 1, rules, out);
 			return;
 		}
-		if comment_at(s, pos, rules) {
+		if comment_at(s, pos) {
 			out.comment = Some(pos);
 			return;
 		}
@@ -1194,23 +1167,19 @@ fn is_bare_name_char(c: char) -> bool {
 	c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// The grammar's `wsp`: a space or a tab. The parser trims with this and
-/// nothing wider - a no-break space or a line separator after a value is
-/// content, and a Unicode trim used to delete it with no diagnostic.
+/// The grammar's `wsp`: a space, a tab or a carriage return. The parser trims
+/// with this and nothing wider - a no-break space or a line separator after a
+/// value is content, and a Unicode trim used to delete it with no diagnostic.
 fn is_wsp(c: char) -> bool {
-	c == ' ' || c == '\t'
+	c == ' ' || c == '\t' || c == '\r'
 }
 
 fn trim_wsp(s: &str) -> &str {
 	s.trim_matches(is_wsp)
 }
 
-/// The end of a line, or of a line's content before its comment: `wsp`, plus
-/// a carriage return, which the load takes off a line end anyway - so a
-/// retained line or a comment written back never ends in one the next load
-/// would strip. A CR followed by content stays content.
 fn trim_wsp_end(s: &str) -> &str {
-	s.trim_end_matches(|c| is_wsp(c) || c == '\r')
+	s.trim_end_matches(is_wsp)
 }
 
 /// Value text for a diagnostic message: line breaks and tabs escaped, so one
@@ -1432,7 +1401,8 @@ fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 // more, so the length test already rules out the empty line that `all` would
 // otherwise accept.
 fn is_fence_close(line: &str, ch: u8, min_len: usize) -> bool {
-	let t = trim_wsp(line);
+	// A raw body keeps its carriage returns, so only a space or tab is trimmed.
+	let t = line.trim_matches([' ', '\t']);
 	t.len() >= min_len && t.bytes().all(|b| b == ch)
 }
 
@@ -1467,14 +1437,12 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 /// same tree. Each line is read with the 2.x tokenizer and re-spelled only
 /// where the two rule sets disagree: a bare or single-quoted piece whose
 /// backslash meant an escape is double-quoted with that escape; a piece
-/// that opened a quote it never closed is quoted whole; a `#` that opened a
-/// comment with no space before it gets one, and a CR run before one goes
-/// with it, since 2.x trimmed that; the `name:[disc]` selector
-/// sugar loses its colon, and on a last segment becomes `name: disc`.
+/// that opened a quote it never closed is quoted whole; the `name:[disc]`
+/// selector sugar loses its colon, and on a last segment becomes `name: disc`.
 /// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 /// could not read - comes through as written. One shape has no spelling
-/// here at all: a fence line whose info string holds a whitespace-`#`,
-/// which now ends the label and opens a comment.
+/// here at all: a fence label holding a `#`, which 2.x ran to the end of the
+/// line and which now ends at the `#`.
 pub fn migrate(text: &str) -> String {
 	let (bom, text) = match text.strip_prefix('\u{feff}') {
 		Some(t) => ("\u{feff}", t),
@@ -1572,10 +1540,6 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 	if rest.is_empty() || rest.starts_with('#') {
 		return rest.to_string();
 	}
-	// A whole line 2.x read as a comment, once its leading CR run went.
-	if let Some(k) = cr_run_to_comment(rest.as_bytes(), 0) {
-		return rest[k..].to_string();
-	}
 	// A child-indent fence: 2.x read the info string to the end of the line.
 	if let Some((ch, len, _)) = fence_open(rest) {
 		*fence = Some((ch, len));
@@ -1669,17 +1633,6 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 				return splice(rest, edits);
 			}
 			value_edits(rest, tok, &mut edits);
-		}
-	}
-	if let Some(c) = tok.comment {
-		let mut a = c;
-		while a > 0 && (is_wsp_byte(s[a - 1]) || s[a - 1] == b'\r') {
-			a -= 1;
-		}
-		if s[a..c].contains(&b'\r') {
-			edits.push((a, c, " ".to_string()));
-		} else if a == c && c > 0 {
-			edits.push((c, c, " ".to_string()));
 		}
 	}
 	splice(rest, edits)
@@ -2725,7 +2678,10 @@ impl Parser {
 				.take_while(|&b| b == b' ' || b == b'\t')
 				.count();
 			let indent = &line[..ilen];
-			let rest = &line[ilen..];
+			// A carriage return is a blank but never indent, so a run of blanks
+			// holding one comes off the front of the rest instead.
+			let rest = line[ilen..].trim_start_matches(is_wsp);
+			let lead = line.len() - ilen - rest.len();
 			if rest.is_empty() {
 				self.saw_blank = true;
 				i += 1;
@@ -2786,9 +2742,12 @@ impl Parser {
 				// A `*` alone after the trim: whether a space followed it
 				// decides between an empty element and a malformed line, and
 				// only the untrimmed line still knows.
-				let spaced = after.starts_with([' ', '\t'])
+				let spaced = after.starts_with(is_wsp)
 					|| (after.is_empty()
-						&& matches!(lines[i].as_bytes().get(ilen + 1), Some(b' ' | b'\t')));
+						&& lines[i]
+							.as_bytes()
+							.get(ilen + lead + 1)
+							.is_some_and(|&b| is_wsp_byte(b)));
 				if spaced {
 					let Some(parent) = self.resolve_parent(indent) else {
 						self.refuse(
@@ -3949,10 +3908,8 @@ fn emit_fence_line(r: &RawVal) -> String {
 	out
 }
 
-/// Scan text as a line's value half. The tokenizer reads offset 0 as a line
-/// start, where a `#` opens a comment, and a value half is never one, so the
-/// text goes in behind the colon a field line puts there. Returns the line the
-/// token spans index into.
+/// Scan text as a line's value half, behind the colon a field line puts
+/// there. Returns the line the token spans index into.
 fn value_half(text: &str, out: &mut Tokens) -> String {
 	let line = format!(":{}", text);
 	tokenize_value(&line, 1, Rules::Current, out);
@@ -4320,8 +4277,8 @@ impl Document {
 
 /// Read text as the value half of a line, for the setters that take value
 /// syntax rather than data: whatever a file line spells with this text is
-/// what gets stored, so a trailing blank comes off and a `#` behind a space or
-/// tab ends the value exactly as they would in a file. What is refused is what
+/// what gets stored, so a trailing blank comes off and a `#` outside quotes
+/// ends the value exactly as they would in a file. What is refused is what
 /// a file reports as an error, since a setter has no diagnostic to report it
 /// with: a line break, which no file line can hold, an unterminated quote
 /// (E017), and bracket text (E019, the line kept verbatim - writing it as a
@@ -4349,7 +4306,7 @@ fn cell_of(text: String) -> Value {
 fn choose_fence(content: &str) -> (u8, usize) {
 	let mut maxrun = 0usize;
 	for line in content.split('\n') {
-		let t = trim_wsp(line);
+		let t = line.trim_matches([' ', '\t']);
 		if !t.is_empty() && t.bytes().all(|b| b == b'`') {
 			maxrun = maxrun.max(t.len());
 		}
@@ -4736,9 +4693,9 @@ impl Document {
 	/// Bind a raw block at a path, picking a fence longer than any content line.
 	/// The info-string is stored as a fence line would read it back (trimmed
 	/// the way the load trims one); one that would not read back whole - it
-	/// holds a line break, or a `#` behind a blank that reads as a comment -
-	/// fails the write, as does a body line ending in CR, since the load takes
-	/// the trailing CR run off every line.
+	/// holds a line break, or a `#`, which reads as a comment - fails the
+	/// write, as does a body line ending in CR, since the load takes the
+	/// trailing CR run off every line.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw(&mut self, path: &str, content: &str, info: &str) -> bool {
 		let info = trim_wsp(info);

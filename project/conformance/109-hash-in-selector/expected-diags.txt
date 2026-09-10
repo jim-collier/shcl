@@ -1,2 +1,3 @@
-line 2: Error: E003
-failed: 1 diagnostic(s), 1 error(s)
+line 1: Error: E014
+line 2: Error: E014
+failed: 2 diagnostic(s), 2 error(s)

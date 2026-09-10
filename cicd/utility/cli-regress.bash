@@ -221,9 +221,7 @@ rows=(
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
 	'sugar-check-strict|check --strictness=strict %W%|-|6|-|-'
 	'sugar-write-refused|fmt --write %W%|-|7|-|dropped 1 line'
-	## The caveat goes to stderr, so the exact stdout above is the other half
-	## of this row: a notice on stdout would corrupt a redirected migration.
-	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|cannot carry is a raw block'
+	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|-'
 	'sugar-migrate-write|migrate --write %W%|-|0||-'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
@@ -310,9 +308,9 @@ rows=(
 	## there is never given one.
 	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
 	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
-	## A value half never starts a line, so a leading # is content. It used
-	## to open a comment and the whole value went out at exit 0.
-	'literal-leading-hash|set --write --no-banner %C% --set-literal=color=#ff0000|-|0|-|-|color: "#ff0000"\n'
+	## Literal text is read the way a file line is, so a # opens a comment
+	## there too and only what comes before it is written.
+	'literal-hash|set --write --no-banner %C% --set-literal=color=red#ff0000|-|0|-|-|color: red\n'
 )
 
 declare -i nRun=0 nBad=0

@@ -116,9 +116,9 @@ fn structural(rng: &mut Rng) -> String {
 				if rng.below(2) == 0 { " " } else { "" },
 				rng.below(3)
 			),
-			// The 3.0 shapes: a glued `#`, an index selector, bare and
-			// single-quoted backslashes, a value right after the colon, a
-			// quote that closes with text after it.
+			// The 3.0 shapes: a `#` glued to a value, an index selector a
+			// comment cuts off, bare and single-quoted backslashes, a comment
+			// right after the colon, a quote that closes with text after it.
 			15 => format!("{indent}{name}: x#y  # k"),
 			16 => format!("{indent}{name}[#{}].{name}: {}", rng.below(2), rng.below(9)),
 			17 => format!("{indent}{name}: C:\\dir, a\\tb, 'it\\'s'"),
@@ -541,8 +541,8 @@ fn writer_roundtrips_and_stays_fixpoint() {
 /// agreeing on `tokens` proves parity, and this is what proves the spans are
 /// the grammar's. Every piece kind the grammar has is drawn here: bare and
 /// quoted names, bare and quoted selector bodies, bare, quoted, empty and
-/// open elements, whitespace wherever the grammar allows it, a glued `#`
-/// and a comment, non-ASCII text.
+/// open elements, blanks wherever the grammar allows them (a carriage
+/// return among them), a comment glued or spaced, non-ASCII text.
 #[test]
 fn tokens_follow_the_grammar() {
 	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
@@ -566,7 +566,8 @@ struct LineGen {
 
 impl LineGen {
 	fn wsp(&mut self, rng: &mut Rng) {
-		self.text.push_str(["", " ", "\t", "  "][rng.below(4)]);
+		self.text
+			.push_str(["", " ", "\t", "  ", "\r", " \r\t"][rng.below(6)]);
 	}
 	fn pick(&mut self, rng: &mut Rng, set: &[&str], n: usize) {
 		for _ in 0..n {
@@ -612,8 +613,7 @@ impl LineGen {
 		}
 	}
 	/// A bare piece for a value or a selector body: no comma, no bracket,
-	/// no leading quote, a `#` only glued to the text before it, no edge
-	/// whitespace. `open` makes it start with a quote it never closes the
+	/// no leading quote, no `#`, no edge blank. `open` makes it start with a quote it never closes the
 	/// quoted way. No `]` at all, and no quote as a bare piece's last
 	/// character: a quote that opens a piece closes at the next matching
 	/// quote when that one sits right before the piece's terminator,
@@ -622,9 +622,7 @@ impl LineGen {
 	/// a defect; the generator just keeps to lines with one reading.
 	fn bare(&mut self, rng: &mut Rng, term: char, open: bool) -> Piece {
 		let start = self.text.len();
-		let mut set: Vec<&str> = vec![
-			"a", "Z", "-", "_", ".", ":", "\\", "\u{e9}", "'", "\"", "[", "#",
-		];
+		let mut set: Vec<&str> = vec!["a", "Z", "-", "_", ".", ":", "\\", "\u{e9}", "'", "\"", "["];
 		set.retain(|c| !c.starts_with(term));
 		if open {
 			// The quote either never closes or closes with text after it;
@@ -639,14 +637,14 @@ impl LineGen {
 				self.text.push_str(" b");
 			}
 		} else {
-			// First character: neither a quote nor a bracket nor `#`.
+			// First character: neither a quote nor a bracket.
 			self.pick(rng, &["a", "Z", "-", "_", ".", ":", "\\", "\u{e9}"], 1);
 			for _ in 0..rng.below(4) {
-				// A space is fine mid-piece, but never right before a `#`.
-				let c = set[rng.below(set.len())];
-				if rng.below(5) == 0 && c != "#" {
-					self.text.push(' ');
+				// A blank is content mid-piece.
+				if rng.below(5) == 0 {
+					self.text.push([' ', '\r'][rng.below(2)]);
 				}
+				let c = set[rng.below(set.len())];
 				self.text.push_str(c);
 			}
 		}
@@ -713,8 +711,8 @@ fn grammar_line(rng: &mut Rng) -> (String, Tokens) {
 	match rng.below(4) {
 		0 => {}
 		1 => {
-			// A comment right after the path: only after whitespace.
-			g.text.push_str(" # c");
+			// A comment right after the path, glued or not.
+			g.text.push_str(["# c", " # c"][rng.below(2)]);
 			g.want.comment = Some(g.text.len() - 3);
 		}
 		_ => {
@@ -754,9 +752,9 @@ fn grammar_line(rng: &mut Rng) -> (String, Tokens) {
 			// The value runs from its first piece (opening quote included) to
 			// after its last non-blank character, comma or closing quote
 			// included; an empty value is a point.
-			let end = g.text.trim_end_matches([' ', '\t']).len();
+			let end = g.text.trim_end_matches([' ', '\t', '\r']).len();
 			if rng.below(2) == 0 {
-				g.text.push_str("  # c");
+				g.text.push_str(["# c", "  # c"][rng.below(2)]);
 				g.want.comment = Some(g.text.len() - 3);
 			}
 			// An empty piece sits where the scan gave up on it: at the comma,
@@ -764,7 +762,7 @@ fn grammar_line(rng: &mut Rng) -> (String, Tokens) {
 			for p in &mut g.want.elements {
 				if p.quote == Quote::None && p.start == p.end {
 					let rest = &g.text[p.start..];
-					p.start += rest.len() - rest.trim_start_matches([' ', '\t']).len();
+					p.start += rest.len() - rest.trim_start_matches([' ', '\t', '\r']).len();
 					p.end = p.start;
 				}
 			}

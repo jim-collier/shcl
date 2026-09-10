@@ -1,7 +1,8 @@
 query	type	expected	status
 -	load	ok	-
-a	string	x#y	Good
-a[x#y].b	int	1	Good
-b.c	string	-	NotFound
+-	load	fail	-	strict
+a	string	-	NotFound
+a[x#y].b	int	-	NotFound
+b[#5].c	string	-	NotFound
 ok	int	2	Good
--	lost	1	-
+-	lost	0	-
