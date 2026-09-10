@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+// Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
 
 // shcl CLI - the C binding's command surface. Flags, output, and exit codes
 // mirror the Rust reference exactly; the cicd cross-binding check compares them
@@ -170,7 +170,7 @@ static const char *HELP =
 // concatenates from the VERSION macro so it cannot drift from `shcl version`.
 static const char *ABOUT =
 	"shcl v" VERSION "\n"
-	"Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).\n"
+	"Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].\n"
 	"Project: https://github.com/jim-collier/shcl\n"
 	"Licensed under the MIT License. Full text at:\n"
 	"  https://spdx.org/licenses/MIT.html\n"

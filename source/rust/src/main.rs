@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞)
+// Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
 
 //! `shcl` CLI - the Tier 1 command binding. POSIX sh and PowerShell wrap this,
 //! so the exit codes and flags below are a stable surface, not conveniences.
@@ -189,7 +189,7 @@ const ABOUT: &str = concat!(
 	"shcl v",
 	env!("CARGO_PKG_VERSION"),
 	"
-Copyright © 2026 Jim Collier (CryptogID: ѳ6ᴚ℈𐀘𐇦ɛ𐊁¥Mﾏb϶Δ𐌞).
+Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
 Project: https://github.com/jim-collier/shcl
 Licensed under the MIT License. Full text at:
   https://spdx.org/licenses/MIT.html
