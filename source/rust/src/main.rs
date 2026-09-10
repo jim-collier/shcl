@@ -1184,7 +1184,10 @@ fn do_tokens(o: &Opts) -> u8 {
 			out.push_str(" blank\n");
 			continue;
 		}
-		if rest.trim_start_matches([' ', '\t', '\r']).starts_with('#') {
+		// The parser takes a leading carriage return off with the indent's blanks.
+		let body = rest.trim_start_matches([' ', '\t', '\r']);
+		let lead = rest.len() - body.len();
+		if body.starts_with('#') {
 			out.push_str(" comment\n");
 			continue;
 		}
@@ -1198,10 +1201,10 @@ fn do_tokens(o: &Opts) -> u8 {
 			format!("{}-{}{}", p.start, p.end, mark)
 		};
 		// A stacked element and a fence line are value halves on their own.
-		let star = rest.starts_with('*') && rest[1..].starts_with([' ', '\t']);
-		let fence = rest.starts_with("```") || rest.starts_with("~~~");
+		let star = body.starts_with('*') && body[1..].starts_with([' ', '\t', '\r']);
+		let fence = body.starts_with("```") || body.starts_with("~~~");
 		if star || fence {
-			shcl::tokenize_value(rest, usize::from(star), Rules::Current, &mut tok);
+			shcl::tokenize_value(rest, lead + usize::from(star), Rules::Current, &mut tok);
 			out.push_str(if star { " star" } else { " fence" });
 			out.push_str(&format!(" value={}-{}", tok.value.0, tok.value.1));
 			for p in &tok.elements {

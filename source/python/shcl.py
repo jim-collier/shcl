@@ -418,9 +418,9 @@ def _raw(content, info, fence_char, fence_len):
 def _literal_value(text):
 	# Read text as the value half of a line, for the setters that take value
 	# syntax rather than data: whatever a file line spells with this text is
-	# what gets stored, so a trailing blank comes off and a `#` behind a space
-	# or tab ends the value exactly as they would in a file. What is refused is
-	# what a file reports as an error, since a setter has no diagnostic to
+	# what gets stored, so a trailing blank comes off and a `#` outside quotes
+	# ends the value exactly as they would in a file. What is refused is what a
+	# file reports as an error, since a setter has no diagnostic to
 	# report it with: a line break, which no file line can hold, an unterminated
 	# quote (E017), and bracket text (E019, the line kept verbatim - writing it
 	# as a two-element array holding `[1` and `2]` would be a different wrong
@@ -499,7 +499,7 @@ def _choose_fence(content):
 	"""Pick a backtick fence long enough that no content line closes it early."""
 	maxrun = 0
 	for line in content.split("\n"):
-		t = _trim_wsp(line)
+		t = line.strip(" \t")
 		if t and all(ch == "`" for ch in t):
 			maxrun = max(maxrun, len(t))
 	return ("`", max(3, maxrun + 1))
@@ -660,17 +660,18 @@ TMP_NAME_CHARS = 64
 #   is kept literally and reported (E017).
 # - Escapes are processed inside double quotes only; bare text and single
 #   quotes never process a backslash.
-# - `#` opens a comment when it is outside quotes and either first in the
-#   text or preceded by a space or tab.
+# - `#` outside quotes opens a comment, wherever it sits.
+# - A space, a tab and a carriage return are blanks: trimmed at a piece's
+#   edge, content in the middle of one.
 # - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
 #   name opens a selector, whose bare body runs to the first `]`; a `[` after
 #   the separator starts the value, which the parser refuses (E019).
 # - A value is split on unquoted commas, each piece trimmed.
 #
 # Under Rules.V2 the tokenizer reads the 2.x spellings instead, for migrate:
-# any unquoted `#` is a comment, a backslash shields the next character in
-# bare and single-quoted text, a separator followed by `[` is the selector
-# sugar, and an open quote swallows the rest of the line.
+# a backslash shields the next character in bare and single-quoted text, a
+# separator followed by `[` is the selector sugar, and an open quote swallows
+# the rest of the line.
 #
 # The scan runs over the UTF-8 bytes of the text, so every offset it records
 # is a byte offset - the offsets the other bindings record, and what the
@@ -704,10 +705,10 @@ def _trim(s):
 	return s.strip(_WS)
 
 
-# The grammar's wsp: a space or a tab. The parser trims with this and nothing
-# wider - a no-break space or a line separator after a value is content, and a
-# Unicode trim used to delete it with no diagnostic.
-_WSP = " \t"
+# The grammar's wsp: a space, a tab or a carriage return. The parser trims with
+# this and nothing wider - a no-break space or a line separator after a value is
+# content, and a Unicode trim used to delete it with no diagnostic.
+_WSP = " \t\r"
 
 
 def _trim_wsp(s):
@@ -715,11 +716,7 @@ def _trim_wsp(s):
 
 
 def _trim_wsp_end(s):
-	# The end of a line, or of a line's content before its comment: wsp, plus a
-	# carriage return, which the load takes off a line end anyway - so a
-	# retained line or a comment written back never ends in one the next load
-	# would strip. A CR followed by content stays content.
-	return s.rstrip(_WSP + "\r")
+	return s.rstrip(_WSP)
 
 
 def _trim_end(s):
@@ -891,35 +888,23 @@ _B_LBRACKET = 0x5B
 _B_BACKSLASH = 0x5C
 _B_RBRACKET = 0x5D
 _B_COMMA_BYTES = b","
-_WSP_BYTES = b" \t"
+_WSP_BYTES = b" \t\r"
 _BARE_NAME_RUN = re.compile(rb"[A-Za-z0-9_-]*")
 # A byte the value fast path cannot take: a quote, or a `#`.
 _VALUE_SLOW = re.compile(rb"[\"'#]")
 
 
 def _is_wsp_byte(b):
-	return b in (_B_SPACE, _B_TAB)
+	"""A blank: space, tab, or a carriage return, which is trimmed wherever a
+	blank is and content in the middle of a piece."""
+	return b in (_B_SPACE, _B_TAB, _B_CR)
 
 
 def _skip_wsp(s, pos):
 	n = len(s)
-	while pos < n and (s[pos] == _B_SPACE or s[pos] == _B_TAB):
+	while pos < n and (s[pos] == _B_SPACE or s[pos] == _B_TAB or s[pos] == _B_CR):
 		pos += 1
 	return pos
-
-
-def _cr_run_to_comment(s, from_):
-	"""End of a run of blanks and carriage returns that holds at least one CR
-	and runs into a `#`, else None. 2.x cut a line at its first `#` and then
-	trimmed blanks and CR off the end of the half before it, so such a run was
-	never content. A CR anywhere else was malformed to 2.x as well, which is why
-	only this one position needs saying."""
-	n = len(s)
-	k, cr = from_, False
-	while k < n and (s[k] == _B_SPACE or s[k] == _B_TAB or s[k] == _B_CR):
-		cr = cr or s[k] == _B_CR
-		k += 1
-	return k if cr and k < n and s[k] == _B_HASH else None
 
 
 def _utf8_len(b):
@@ -952,18 +937,18 @@ def _quote_close(s, pos, rules):
 	return None
 
 
-def _comment_at(s, i, rules):
-	"""True when the `#` at i opens a comment: outside quotes (the caller's
-	business) and, under the current rules, first in the text or after a
-	space or tab."""
-	return s[i] == _B_HASH and (rules is Rules.V2 or i == 0 or s[i - 1] == _B_SPACE or s[i - 1] == _B_TAB)
+def _comment_at(s, i):
+	"""True when the byte at i opens a comment. Being outside quotes is the
+	caller's business."""
+	return s[i] == _B_HASH
 
 
-def _scan_piece(s, pos, term, rules):
+def _scan_piece(s, pos, term, rules, comments):
 	"""One piece from pos: a value element up to an unquoted comma or comment,
 	or a selector body up to an unquoted `]` (term). Returns the trimmed piece
 	and the offset of what ended it: the terminator, a comment's `#`, or the
-	end of the text."""
+	end of the text. comments is False only for a selector body in a lookup
+	path, where `[#N]` is the index spelling."""
 	n = len(s)
 	pos = _skip_wsp(s, pos)
 	start = pos
@@ -975,7 +960,7 @@ def _scan_piece(s, pos, term, rules):
 			# selector body ends at its bracket and nowhere else.
 			i = _skip_wsp(s, close + 1)
 			if i < n:
-				ended = s[i] == term or (term == _B_COMMA and _comment_at(s, i, rules))
+				ended = s[i] == term or (term == _B_COMMA and _comment_at(s, i))
 			else:
 				ended = term == _B_COMMA
 			if ended:
@@ -1006,10 +991,10 @@ def _scan_piece(s, pos, term, rules):
 			pos += 1 + _utf8_len(s[pos + 1])
 			content_end = pos
 			continue
-		if b == term or (b == _B_HASH and _comment_at(s, pos, rules)):
+		if b == term or (comments and b == _B_HASH):
 			break
 		pos += 1 if b < 0x80 else _utf8_len(b)
-		if b != _B_SPACE and b != _B_TAB:
+		if b != _B_SPACE and b != _B_TAB and b != _B_CR:
 			content_end = pos
 	# 2.x judged a piece quoted by its shape after the scan: a quote at both
 	# ends, the last one not escaped, however many closes sat between.
@@ -1027,9 +1012,7 @@ def _scan_piece(s, pos, term, rules):
 
 def tokenize_value(text: str, from_: int, rules: Rules, out: Tokens) -> None:
 	"""The value half: everything from the byte offset from_ on, split into
-	pieces, with the comment found on the way. from_ is where the separator
-	ended, so a `#` right after it (`a:#x`) is content and one after a space
-	is a comment; at 0 the text starts a line and a leading `#` is a comment."""
+	pieces, with the comment found on the way."""
 	out._clear()
 	s = text.encode("utf-8")
 	out.src = s
@@ -1067,7 +1050,7 @@ def _scan_value(s, from_, rules, out):
 	pos = from_
 	count = 0
 	while True:
-		piece, stop = _scan_piece(s, pos, _B_COMMA, rules)
+		piece, stop = _scan_piece(s, pos, _B_COMMA, rules, True)
 		out.elements.append(piece)
 		if piece.quote is not Quote.NONE or piece.end > piece.start:
 			count += 1
@@ -1086,13 +1069,9 @@ def _scan_value(s, from_, rules, out):
 
 
 def _end_value(s: bytes, from_: int, stop_at: int, out: Tokens) -> None:
-	# The value ends where the line's content ends: a carriage return there
-	# comes off with the blanks, since the load strips one from every line
-	# end and an info string or a bare last element written back would
-	# otherwise end in one the next load would take.
 	a = _skip_wsp(s, from_)
 	b = stop_at
-	while b > a and (_is_wsp_byte(s[b - 1]) or s[b - 1] == 0x0D):
+	while b > a and _is_wsp_byte(s[b - 1]):
 		b -= 1
 	out.value = (min(a, b), b)
 	if out.elements:
@@ -1101,11 +1080,12 @@ def _end_value(s: bytes, from_: int, stop_at: int, out: Tokens) -> None:
 			out.elements[-1] = Piece(last.start, max(b, last.start), last.quote)
 
 
-def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> None:
-	"""Tokenize one line (sep = ":") or one lookup path (stars admits the bare
-	`*` name wildcard); the CLI's --set passes "=". out is cleared and reused,
-	so a parse allocates once per document rather than once per line. text is
-	the line after its indent, or the path."""
+def tokenize(text: str, sep: str, path: bool, rules: Rules, out: Tokens) -> None:
+	"""Tokenize one line (sep = ":") or one lookup path (path: the bare `*`
+	name wildcard is admitted, and a `#` in a selector body is the `[#N]` index
+	rather than a comment); the CLI's --set passes "=". out is cleared and
+	reused, so a parse allocates once per document rather than once per line.
+	text is the line after its indent, or the path."""
 	out._clear()
 	s = text.encode("utf-8")
 	out.src = s
@@ -1126,7 +1106,7 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 				return
 			name = Piece(pos + 1, close, Quote.DOUBLE if b == _B_DQUOTE else Quote.SINGLE)
 			pos = close + 1
-		elif stars and b == _B_STAR:
+		elif path and b == _B_STAR:
 			star = True
 			pos += 1
 			name = Piece(pos - 1, pos, Quote.NONE)
@@ -1142,10 +1122,6 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 				return
 			name = Piece(start, pos, Quote.NONE)
 		pos = _skip_wsp(s, pos)
-		if rules is Rules.V2:
-			k = _cr_run_to_comment(s, pos)
-			if k is not None:
-				pos = k
 		selector = None
 		open_at = pos if pos < n and s[pos] == _B_LBRACKET else None
 		if open_at is None and rules is Rules.V2 and pos < n and s[pos] == sep_b:
@@ -1156,7 +1132,7 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 			if star:
 				out.fault = (open_at, "selector on a name wildcard")
 				return
-			piece, stop = _scan_piece(s, open_at + 1, _B_RBRACKET, rules)
+			piece, stop = _scan_piece(s, open_at + 1, _B_RBRACKET, rules, not path)
 			if stop >= n or s[stop] != _B_RBRACKET:
 				out.fault = (open_at, "unterminated selector")
 				return
@@ -1168,10 +1144,6 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 				return
 			selector = piece
 			pos = _skip_wsp(s, stop + 1)
-			if rules is Rules.V2:
-				k = _cr_run_to_comment(s, pos)
-				if k is not None:
-					pos = k
 		out.segments.append(SegTok(name, selector, star))
 		if pos >= n:
 			return
@@ -1183,7 +1155,7 @@ def tokenize(text: str, sep: str, stars: bool, rules: Rules, out: Tokens) -> Non
 			out.sep = pos
 			_scan_value(s, pos + 1, rules, out)
 			return
-		if _comment_at(s, pos, rules):
+		if _comment_at(s, pos):
 			out.comment = pos
 			return
 		out.fault = (pos, "unexpected character after the path")
@@ -1331,7 +1303,8 @@ def _is_fence_close(line, ch, min_len):
 	# min_len is the opening fence's length, which the grammar puts at three or
 	# more, so the length test already rules out the empty line all() would
 	# otherwise accept.
-	t = _trim_wsp(line)
+	# A raw body keeps its carriage returns, so only a space or tab is trimmed.
+	t = line.strip(" \t")
 	return len(t) >= min_len and all(c == ch for c in t)
 
 
@@ -1360,14 +1333,12 @@ def migrate(text: str) -> str:
 	same tree. Each line is read with the 2.x tokenizer and re-spelled only
 	where the two rule sets disagree: a bare or single-quoted piece whose
 	backslash meant an escape is double-quoted with that escape; a piece that
-	opened a quote it never closed is quoted whole; a `#` that opened a
-	comment with no space before it gets one, and a CR run before one goes
-	with it, since 2.x trimmed that; the `name:[disc]` selector sugar loses
-	its colon, and on a last segment becomes `name: disc`.
+	opened a quote it never closed is quoted whole; the `name:[disc]` selector
+	sugar loses its colon, and on a last segment becomes `name: disc`.
 	Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 	could not read - comes through as written. One shape has no spelling
-	here at all: a fence line whose info string holds a whitespace-`#`, which
-	now ends the label and opens a comment."""
+	here at all: a fence label holding a `#`, which 2.x ran to the end of the
+	line and which now ends at the `#`."""
 	bom = ""
 	if text.startswith("\ufeff"):
 		bom = "\ufeff"
@@ -1453,10 +1424,6 @@ def _migrate_line(rest, tok, fence):
 	the fence a raw block it opened is closed by (None when it opened none)."""
 	if not rest or rest.startswith("#"):
 		return rest, fence
-	# A whole line 2.x read as a comment, once its leading CR run went.
-	k = _cr_run_to_comment(rest.encode("utf-8"), 0)
-	if k is not None:
-		return rest[k:], fence
 	# A child-indent fence: 2.x read the info string to the end of the line.
 	fo = _fence_open(rest)
 	if fo is not None:
@@ -1529,15 +1496,6 @@ def _migrate_line(rest, tok, fence):
 			if fo is not None:
 				return _splice(s, edits).decode("utf-8"), (fo[0], fo[1])
 			_value_edits(s, tok, edits)
-	c = tok.comment
-	if c is not None:
-		a = c
-		while a > 0 and (_is_wsp_byte(s[a - 1]) or s[a - 1] == _B_CR):
-			a -= 1
-		if _B_CR in s[a:c]:
-			edits.append((a, c, b" "))
-		elif a == c and c > 0:
-			edits.append((c, c, b" "))
 	return _splice(s, edits).decode("utf-8"), fence
 
 
@@ -2227,6 +2185,10 @@ class _Parser:
 			line = _trim_wsp_end(lines[i])
 			rest = line.lstrip(" \t")
 			indent = line[:len(line) - len(rest)]
+			# A carriage return is a blank but never indent, so a run of blanks
+			# holding one comes off the front of the rest instead.
+			rest = rest.lstrip(_WSP)
+			lead = len(line) - len(indent) - len(rest)
 			if not rest:
 				self.saw_blank = True
 				i += 1
@@ -2276,9 +2238,10 @@ class _Parser:
 				# A `*` alone after the trim: whether a space followed it
 				# decides between an empty element and a malformed line, and
 				# only the untrimmed line still knows.
-				spaced = after.startswith(" ") or after.startswith("\t")
+				spaced = after.startswith((" ", "\t", "\r"))
 				if not after:
-					spaced = lines[i][len(indent) + 1:len(indent) + 2] in (" ", "\t")
+					at = len(indent) + lead + 1
+					spaced = lines[i][at:at + 1] in (" ", "\t", "\r")
 				if spaced:
 					parent = self._resolve_parent(indent)
 					if parent is None:
@@ -3335,9 +3298,9 @@ class Document:
 		"""Bind a raw block at a path, picking a fence longer than any content
 		line. The info-string is stored as a fence line would read it back
 		(trimmed the way the load trims one); one that would not read back whole
-		- it holds a line break, or a `#` behind a blank that reads as a comment
-		- fails the write, as does a body line ending in CR, since the load takes
-		the trailing CR run off every line."""
+		- it holds a line break, or a `#`, which reads as a comment - fails the
+		write, as does a body line ending in CR, since the load takes the
+		trailing CR run off every line."""
 		_want("set_raw", content, "str")
 		_want("set_raw", info, "str")
 		info = _trim_wsp(info)
@@ -4745,10 +4708,8 @@ def _emit_fence_line(v):
 
 
 def _value_half(text, tok):
-	# Scan text as a line's value half. The tokenizer reads offset 0 as a line
-	# start, where a `#` opens a comment, and a value half is never one, so the
-	# text goes in behind the colon a field line puts there. Returns the line
-	# the token spans index into.
+	# Scan text as a line's value half, behind the colon a field line puts
+	# there. Returns the line the token spans index into.
 	tokenize_value(":" + text, 1, Rules.CURRENT, tok)
 	return tok.src
 

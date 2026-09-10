@@ -1058,8 +1058,8 @@ func TestReadFileAtTheLargestCap(t *testing.T) {
 func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	// The body's shared indent survives a reload (the closing fence's indent is
 	// what comes off), the info-string is stored as a fence line reads it
-	// back, and an info with a line break, or a `#` behind a blank, has no
-	// spelling and fails the write. Same fixture in every runner.
+	// back, and an info with a line break or a `#` has no spelling and fails
+	// the write. Same fixture in every runner.
 	doc := New()
 	if !doc.SetRaw("q", "  a\n  b", " sql ") {
 		t.Fatal("SetRaw failed")
@@ -1074,10 +1074,13 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 	if doc.SetRaw("q", "x", "a\nb") {
 		t.Error("info with a newline was accepted")
 	}
-	// A CR the load would take off the line end has no spelling; one mid-info
-	// is content, the same rule a body line follows.
-	if doc.SetRaw("q", "x", "ab\r") {
-		t.Error("info ending in a carriage return was accepted")
+	// A trailing CR is a blank and comes off, as the load takes it; one
+	// mid-info is content.
+	if !doc.SetRaw("q", "x", "ab\r") {
+		t.Fatal("info ending in a carriage return was refused")
+	}
+	if info := Parse(doc.ToCanonical()).ReadRawInfo("q").Value; info != "ab" {
+		t.Errorf("trailing CR info: got %q, want ab", info)
 	}
 	if !doc.SetRaw("q", "x", "a\rb") {
 		t.Fatal("info with a mid-string carriage return was refused")
@@ -1086,22 +1089,15 @@ func TestSetRawKeepsASharedIndentAndTrimsTheInfo(t *testing.T) {
 		t.Errorf("mid-string CR info: got %q", info)
 	}
 	if doc.SetRaw("q", "x", "a # b") {
-		t.Error("info with a # behind a blank was accepted")
+		t.Error("info with a spaced # was accepted")
 	}
 	// An info string has no quoting of its own: quotes are characters in it,
-	// so they hide nothing, and a `#` with no space before it is content.
+	// so they hide nothing, and a `#` glued to the label opens a comment too.
 	if doc.SetRaw("q", "x", "\"a # b\"") {
 		t.Error("info with a quoted # was accepted")
 	}
-	if !doc.SetRaw("q", "  a\n  b", "c#") {
-		t.Fatal("SetRaw with a # in the info failed")
-	}
-	back = Parse(doc.ToCanonical())
-	if v, st := back.GetRaw("q"); st != Good || v != "  a\n  b" {
-		t.Errorf("after the refusals: got %q %v", v, st)
-	}
-	if info := back.ReadRawInfo("q").Value; info != "c#" {
-		t.Errorf("info with a #: got %q", info)
+	if doc.SetRaw("q", "x", "c#") {
+		t.Error("info with a glued # was accepted")
 	}
 	// A body line ending in CR has no fence spelling: the load takes the whole
 	// trailing CR run off every line, so it is refused rather than lost. A CR
