@@ -437,9 +437,10 @@ typedef struct {
 // Which spelling the tokenizer reads: the current rules, or the 2.x rules for
 // shcl_migrate only.
 typedef enum { SHCL_RULES_CURRENT, SHCL_RULES_V2 } shcl_rules;
-// Tokenize one line (sep ':') or one lookup path (stars admits the bare `*`
-// name wildcard); text is the line after its indent, or the path.
-void shcl_tokenize(shcl_doc *d, const char *text, size_t len, char sep, int stars, shcl_rules rules, shcl_tokens *out);
+// Tokenize one line (sep ':') or one lookup path (path: the bare `*` name
+// wildcard is admitted, and a `#` in a selector body is the `[#N]` index
+// rather than a comment); text is the line after its indent, or the path.
+void shcl_tokenize(shcl_doc *d, const char *text, size_t len, char sep, int path, shcl_rules rules, shcl_tokens *out);
 // The value half alone: everything from `from` on, split into pieces, with
 // the comment found on the way.
 void shcl_tokenize_value(shcl_doc *d, const char *text, size_t len, size_t from, shcl_rules rules, shcl_tokens *out);
@@ -492,8 +493,7 @@ int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const sh
 // quoted. For a caller holding value text - a config line, a user's --set
 // argument - that has to be written without knowing its shape first. Returns 0
 // for text that could not be one line's value (a line break, or a quote that
-// never closes); a # behind a space or tab ends the value as it would in a
-// file.
+// never closes); a # outside quotes ends the value as it would in a file.
 int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
@@ -836,29 +836,26 @@ static ShclStr trim_end(ShclStr s) {
 }
 static ShclStr s_trim(ShclStr s) { return trim_end(trim_start(s)); }
 
-/* The grammar's wsp: a space or a tab. The parser trims with this and nothing
-   wider - a no-break space or a line separator after a value is content, and
-   a Unicode trim used to delete it with no diagnostic. */
-static int is_wsp(uint32_t c) { return c == ' ' || c == '\t'; }
+/* The grammar's wsp: a space, a tab or a carriage return. The parser trims
+   with this and nothing wider - a no-break space or a line separator after a
+   value is content, and a Unicode trim used to delete it with no diagnostic. */
+static int is_wsp(uint32_t c) { return c == ' ' || c == '\t' || c == '\r'; }
 static ShclStr trim_wsp_start(ShclStr s) {
 	size_t i = 0;
 	while (i < s.n && is_wsp((unsigned char)s.p[i])) i++;
 	return s_slice(s, i, s.n);
 }
-/* The end of a line, or of a line's content before its comment: wsp, plus a
-   carriage return, which the load takes off a line end anyway - so a retained
-   line or a comment written back never ends in one the next load would strip.
-   A CR followed by content stays content. */
 static ShclStr trim_wsp_end(ShclStr s) {
-	while (s.n && (is_wsp((unsigned char)s.p[s.n - 1]) || s.p[s.n - 1] == '\r')) s.n--;
-	return s;
-}
-/* Both ends, wsp only: a value or element keeps a carriage return, which is
-   content anywhere but at a line end. */
-static ShclStr s_trim_wsp(ShclStr s) {
-	s = trim_wsp_start(s);
 	while (s.n && is_wsp((unsigned char)s.p[s.n - 1])) s.n--;
 	return s;
+}
+static ShclStr s_trim_wsp(ShclStr s) { return trim_wsp_end(trim_wsp_start(s)); }
+/* Spaces and tabs only, at both ends: a raw body keeps its carriage returns. */
+static ShclStr s_trim_sp_tab(ShclStr s) {
+	size_t i = 0;
+	while (i < s.n && (s.p[i] == ' ' || s.p[i] == '\t')) i++;
+	while (s.n > i && (s.p[s.n - 1] == ' ' || s.p[s.n - 1] == '\t')) s.n--;
+	return s_slice(s, i, s.n);
 }
 
 static int is_adigit(uint32_t c) { return c >= '0' && c <= '9'; }
@@ -1111,17 +1108,18 @@ static ShclStr value_display(ShclArena *a, const ShclValue *v) {
 //   is kept literally and reported (E017).
 // - Escapes are processed inside double quotes only; bare text and single
 //   quotes never process a backslash.
-// - `#` opens a comment when it is outside quotes and either first in the
-//   text or preceded by a space or tab.
+// - `#` outside quotes opens a comment, wherever it sits.
+// - A space, a tab and a carriage return are blanks: trimmed at a piece's
+//   edge, content in the middle of one.
 // - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
 //   name opens a selector, whose bare body runs to the first `]`; a `[` after
 //   the separator starts the value, which the parser refuses (E019).
 // - A value is split on unquoted commas, each piece trimmed.
 //
 // Under SHCL_RULES_V2 the tokenizer reads the 2.x spellings instead, for
-// shcl_migrate: any unquoted `#` is a comment, a backslash shields the next
-// character in bare and single-quoted text, a separator followed by `[` is
-// the selector sugar, and an open quote swallows the rest of the line.
+// shcl_migrate: a backslash shields the next character in bare and
+// single-quoted text, a separator followed by `[` is the selector sugar, and
+// an open quote swallows the rest of the line.
 //
 // The two span vectors grow in whatever arena the caller hands over - the
 // parser's scratch for a parse, the read arena for the public entry points -
@@ -1156,17 +1154,6 @@ size_t shcl_tokens_element_count(const shcl_tokens *t) {
 
 static void skip_wsp(ShclStr s, size_t *pos) { while (*pos < s.n && is_wsp((unsigned char)s.p[*pos])) (*pos)++; }
 
-/* End of a run of blanks and carriage returns that holds at least one CR and
-   runs into a `#`, or s.n when there is none. 2.x cut a line at its first `#`
-   and then trimmed blanks and CR off the end of the half before it, so such a
-   run was never content. A CR anywhere else was malformed to 2.x as well, which
-   is why only this one position needs saying. */
-static size_t cr_run_to_comment(ShclStr s, size_t from) {
-	size_t k = from; int cr = 0;
-	while (k < s.n && (is_wsp((unsigned char)s.p[k]) || s.p[k] == '\r')) { cr |= s.p[k] == '\r'; k++; }
-	return (cr && k < s.n && s.p[k] == '#') ? k : s.n;
-}
-
 /* Byte length of the UTF-8 character that starts with b. The scan only ever
    compares against ASCII structure characters, which UTF-8 guarantees cannot
    appear inside a multibyte sequence, so it advances by whole characters and
@@ -1191,18 +1178,18 @@ static int quote_close(ShclStr s, size_t pos, ShclRules rules, size_t *close) {
 	return 0;
 }
 
-/* True when the `#` at i opens a comment: outside quotes (the caller's
-   business) and, under the current rules, first in the text or after a space
-   or tab. */
-static int comment_at(ShclStr s, size_t i, ShclRules rules) {
-	return s.p[i] == '#' && (rules == SHCL_RULES_V2 || i == 0 || is_wsp((unsigned char)s.p[i - 1]));
+/* True when the byte at i opens a comment. Being outside quotes is the
+   caller's business. */
+static int comment_at(ShclStr s, size_t i) {
+	return s.p[i] == '#';
 }
 
 /* One piece from pos: a value element up to an unquoted comma or comment, or
    a selector body up to an unquoted `]` (term). Fills the trimmed piece and
    returns the offset of what ended it: the terminator, a comment's `#`, or
-   the end of the text. */
-static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, ShclPiece *out) {
+   the end of the text. comments is 0 only for a selector body in a lookup
+   path, where `[#N]` is the index spelling. */
+static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, int comments, ShclPiece *out) {
 	skip_wsp(s, &pos);
 	size_t start = pos;
 	ShclQuote quote = SHCL_QUOTE_NONE;
@@ -1213,7 +1200,7 @@ static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, Shcl
 			   selector body ends at its bracket and nowhere else. */
 			size_t i = close + 1;
 			skip_wsp(s, &i);
-			int ended = i < s.n ? (s.p[i] == term || (term == ',' && comment_at(s, i, rules))) : term == ',';
+			int ended = i < s.n ? (s.p[i] == term || (term == ',' && comment_at(s, i))) : term == ',';
 			if (ended) {
 				out->start = pos + 1; out->end = close;
 				out->quote = s.p[pos] == '"' ? SHCL_QUOTE_DOUBLE : SHCL_QUOTE_SINGLE;
@@ -1240,7 +1227,7 @@ static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, Shcl
 	while (pos < s.n) {
 		unsigned char b = (unsigned char)s.p[pos];
 		if (shield && b == '\\' && pos + 1 < s.n) { pos += 1 + utf8_len((unsigned char)s.p[pos + 1]); content_end = min_sz(pos, s.n); continue; }
-		if (b == (unsigned char)term || comment_at(s, pos, rules)) break;
+		if (b == (unsigned char)term || (comments && comment_at(s, pos))) break;
 		pos += utf8_len(b);
 		if (!is_wsp(b)) content_end = min_sz(pos, s.n);
 	}
@@ -1260,13 +1247,11 @@ static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, Shcl
 }
 
 /* The value half: everything from `from` on, split into pieces, with the
-   comment found on the way. `from` is where the separator ended, so a `#`
-   right after it (a:#x) is content and one after a space is a comment; at 0
-   the text starts a line and a leading `#` is a comment. */
+   comment found on the way. */
 static void scan_value(ShclArena *a, ShclStr text, size_t from, ShclRules rules, ShclTokens *out) {
 	size_t pos = from, stop_at, count = 0;
 	for (;;) {
-		ShclPiece piece; size_t stop = scan_piece(text, pos, ',', rules, &piece);
+		ShclPiece piece; size_t stop = scan_piece(text, pos, ',', rules, 1, &piece);
 		tok_push_elem(a, out, piece);
 		if (piece.quote != SHCL_QUOTE_NONE || piece.end > piece.start) {
 			count++;
@@ -1278,12 +1263,8 @@ static void scan_value(ShclArena *a, ShclStr text, size_t from, ShclRules rules,
 		break;
 	}
 	size_t va = from; skip_wsp(text, &va);
-	/* The value ends where the line's content ends: a carriage return there
-	   comes off with the blanks, since the load strips one from every line
-	   end and an info string or a bare last element written back would
-	   otherwise end in one the next load would take. */
 	size_t vb = stop_at;
-	while (vb > va && (is_wsp((unsigned char)text.p[vb - 1]) || text.p[vb - 1] == '\r')) vb--;
+	while (vb > va && is_wsp((unsigned char)text.p[vb - 1])) vb--;
 	out->value_start = min_sz(va, vb); out->value_end = vb;
 	if (out->nelem) {
 		ShclPiece *last = &out->elements[out->nelem - 1];
@@ -1296,11 +1277,12 @@ static void tokenize_value(ShclArena *a, ShclStr text, size_t from, ShclRules ru
 	scan_value(a, text, from, rules, out);
 }
 
-/* Tokenize one line (sep = ':') or one lookup path (stars admits the bare
-   `*` name wildcard); the CLI's --set passes '='. out is cleared and reused,
-   so a parse allocates once per document rather than once per line. text is
-   the line after its indent, or the path. */
-static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules rules, ShclTokens *out) {
+/* Tokenize one line (sep = ':') or one lookup path (path: the bare `*` name
+   wildcard is admitted, and a `#` in a selector body is the `[#N]` index
+   rather than a comment); the CLI's --set passes '='. out is cleared and
+   reused, so a parse allocates once per document rather than once per line.
+   text is the line after its indent, or the path. */
+static void tokenize(ShclArena *a, ShclStr text, char sep, int path, ShclRules rules, ShclTokens *out) {
 	tok_clear(out);
 	ShclStr s = text;
 	size_t pos = 0;
@@ -1314,7 +1296,7 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules 
 			seg.name.start = pos + 1; seg.name.end = close;
 			seg.name.quote = s.p[pos] == '"' ? SHCL_QUOTE_DOUBLE : SHCL_QUOTE_SINGLE;
 			pos = close + 1;
-		} else if (stars && s.p[pos] == '*') {
+		} else if (path && s.p[pos] == '*') {
 			seg.star = 1; pos++;
 			seg.name.start = pos - 1; seg.name.end = pos; seg.name.quote = SHCL_QUOTE_NONE;
 		} else {
@@ -1324,7 +1306,6 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules 
 			seg.name.start = start; seg.name.end = pos; seg.name.quote = SHCL_QUOTE_NONE;
 		}
 		skip_wsp(s, &pos);
-		if (rules == SHCL_RULES_V2) { size_t k = cr_run_to_comment(s, pos); if (k < s.n) pos = k; }
 		int have_open = 0; size_t open = 0;
 		if (pos < s.n && s.p[pos] == '[') { have_open = 1; open = pos; }
 		if (!have_open && rules == SHCL_RULES_V2 && pos < s.n && s.p[pos] == sep) {
@@ -1333,29 +1314,28 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int stars, ShclRules 
 		}
 		if (have_open) {
 			if (seg.star) { tok_fault(out, open, "selector on a name wildcard"); return; }
-			ShclPiece piece; size_t stop = scan_piece(s, open + 1, ']', rules, &piece);
+			ShclPiece piece; size_t stop = scan_piece(s, open + 1, ']', rules, !path, &piece);
 			if (stop >= s.n || s.p[stop] != ']') { tok_fault(out, open, "unterminated selector"); return; }
 			if (piece.end == piece.start && piece.quote == SHCL_QUOTE_NONE) { tok_fault(out, open, "empty selector"); return; }
 			if (piece.quote == SHCL_QUOTE_OPEN && rules == SHCL_RULES_V2) { tok_fault(out, open, "unterminated quote in a selector"); return; }
 			seg.selector = piece; seg.has_selector = 1;
 			pos = stop + 1;
 			skip_wsp(s, &pos);
-			if (rules == SHCL_RULES_V2) { size_t k = cr_run_to_comment(s, pos); if (k < s.n) pos = k; }
 		}
 		tok_push_seg(a, out, seg);
 		if (pos >= s.n) return;
 		char b = s.p[pos];
 		if (b == '.') { pos++; continue; }
 		if (b == sep) { out->has_sep = 1; out->sep = pos; scan_value(a, text, pos + 1, rules, out); return; }
-		if (comment_at(s, pos, rules)) { out->has_comment = 1; out->comment = pos; return; }
+		if (comment_at(s, pos)) { out->has_comment = 1; out->comment = pos; return; }
 		tok_fault(out, pos, "unexpected character after the path");
 		return;
 	}
 }
 
-void shcl_tokenize(shcl_doc *d, const char *text, size_t len, char sep, int stars, shcl_rules rules, shcl_tokens *out) {
+void shcl_tokenize(shcl_doc *d, const char *text, size_t len, char sep, int path, shcl_rules rules, shcl_tokens *out) {
 	ShclStr s; s.p = text ? text : ""; s.n = len;
-	tokenize(&d->reads, s, sep, stars, rules, out);
+	tokenize(&d->reads, s, sep, path, rules, out);
 }
 void shcl_tokenize_value(shcl_doc *d, const char *text, size_t len, size_t from, shcl_rules rules, shcl_tokens *out) {
 	ShclStr s; s.p = text ? text : ""; s.n = len;
@@ -1554,7 +1534,7 @@ static ShclFence fence_open(ShclStr rest) {
    more, so the length test already rules out the empty line the loop below
    would otherwise accept. */
 static int is_fence_close(ShclStr line, unsigned char ch, size_t min_len) {
-	ShclStr t = s_trim_wsp(line);
+	ShclStr t = s_trim_sp_tab(line);
 	if (t.n < min_len) return 0;
 	for (size_t i = 0; i < t.n; i++) if ((unsigned char)t.p[i] != ch) return 0;
 	return 1;
@@ -1645,9 +1625,6 @@ static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclV
    the caller copies through until its close. */
 static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclTokens *tok, int *fence_on, unsigned char *fence_ch, size_t *fence_len) {
 	if (rest.n == 0 || rest.p[0] == '#') return rest;
-	/* A whole line 2.x read as a comment, once its leading CR run went. */
-	size_t lead = cr_run_to_comment(rest, 0);
-	if (lead < rest.n) return s_slice(rest, lead, rest.n);
 	/* A child-indent fence: 2.x read the info string to the end of the line. */
 	ShclFence f = fence_open(rest);
 	if (f.ok) { *fence_on = 1; *fence_ch = f.ch; *fence_len = f.len; return rest; }
@@ -1710,14 +1687,6 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 			value_edits(a, rest, tok, &edits);
 		}
 	}
-	if (tok->has_comment) {
-		size_t c = tok->comment, at = c;
-		while (at > 0 && (is_wsp((unsigned char)rest.p[at - 1]) || rest.p[at - 1] == '\r')) at--;
-		int cr = 0;
-		for (size_t k = at; k < c; k++) cr |= rest.p[k] == '\r';
-		if (cr) edit_push(a, &edits, at, c, s_lit(" "));
-		else if (at == c && c > 0) edit_push(a, &edits, c, c, s_lit(" "));
-	}
 	return splice(a, rest, &edits);
 }
 
@@ -1725,14 +1694,12 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    same tree. Each line is read with the 2.x tokenizer and re-spelled only
    where the two rule sets disagree: a bare or single-quoted piece whose
    backslash meant an escape is double-quoted with that escape; a piece that
-   opened a quote it never closed is quoted whole; a `#` that opened a comment
-   with no space before it gets one, and a CR run before one goes with it,
-   since 2.x trimmed that; the name:[disc] selector sugar loses its colon, and
-   on a last segment becomes `name: disc`. Everything else -
-   comments, blank lines, raw bodies, layout, a line 2.x could not read -
-   comes through as written. One shape has no spelling here at all: a fence
-   line whose info string holds a whitespace-`#`, which now ends the label and
-   opens a comment.
+   opened a quote it never closed is quoted whole; the name:[disc] selector
+   sugar loses its colon, and on a last segment becomes `name: disc`.
+   Everything else - comments, blank lines, raw bodies, layout, a line 2.x
+   could not read - comes through as written. One shape has no spelling here
+   at all: a fence label holding a `#`, which 2.x ran to the end of the line
+   and which now ends at the `#`.
    The output and the reused tokens live in `a`; the per-line temporaries go
    to `sc`, reset per line, so a large document costs its own size and not
    every line's scratch on top. */
@@ -3055,7 +3022,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		ShclStr line = trim_wsp_end(lines.data[i]);
 		size_t ind = 0; while (ind < line.n && (line.p[ind] == ' ' || line.p[ind] == '\t')) ind++;
 		ShclStr indent = s_slice(line, 0, ind);
-		ShclStr rest = s_slice(line, ind, line.n);
+		/* A carriage return is a blank but never indent, so a run of blanks
+		   holding one comes off the front of the rest instead. */
+		ShclStr rest = trim_wsp_start(s_slice(line, ind, line.n));
+		size_t lead = line.n - ind - rest.n;
 		if (rest.n == 0) { P.saw_blank = 1; i++; continue; }
 		/* Whole-line comment: hold it for the next line that binds a node. It
 		   consumes a pending blank into its own flag, so a blank between
@@ -3099,8 +3069,8 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			/* A `*` alone after the trim: whether a space followed it decides
 			   between an empty element and a malformed line, and only the
 			   untrimmed line still knows. */
-			int spaced = after.n >= 1 && (after.p[0] == ' ' || after.p[0] == '\t');
-			if (after.n == 0 && lines.data[i].n > indent.n + 1) spaced = lines.data[i].p[indent.n + 1] == ' ' || lines.data[i].p[indent.n + 1] == '\t';
+			int spaced = after.n >= 1 && is_wsp((unsigned char)after.p[0]);
+			if (after.n == 0 && lines.data[i].n > indent.n + lead + 1) spaced = is_wsp((unsigned char)lines.data[i].p[indent.n + lead + 1]);
 			if (spaced) {
 				size_t parent;
 				if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
@@ -3702,7 +3672,7 @@ static void w_choose_fence(ShclStr content, unsigned char *fc, size_t *fl) {
 	size_t maxrun = 0, start = 0;
 	for (size_t i = 0;; i++) {
 		if (i == content.n || content.p[i] == '\n') {
-			ShclStr t = s_trim_wsp(s_slice(content, start, i));
+			ShclStr t = s_trim_sp_tab(s_slice(content, start, i));
 			if (t.n > 0) {
 				int all = 1;
 				for (size_t k = 0; k < t.n; k++) if (t.p[k] != '`') { all = 0; break; }
@@ -4006,8 +3976,8 @@ int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, s
 
 /* Read text as the value half of a line, for the setters that take value
    syntax rather than data: whatever a file line spells with this text is what
-   gets stored, so a trailing blank comes off and a `#` behind a space or tab
-   ends the value exactly as they would in a file. What is refused is what a
+   gets stored, so a trailing blank comes off and a `#` outside quotes ends
+   the value exactly as they would in a file. What is refused is what a
    file reports as an error, since a setter has no diagnostic to report it
    with: a line break, which no file line can hold, an unterminated quote
    (E017), and bracket text (E019, the line kept verbatim - writing it as a
@@ -4035,9 +4005,9 @@ int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_dat
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed the
 // way the load trims one); one that would not read back whole - it holds a
-// line break, or a `#` behind a blank that reads as a comment - fails the
-// write, as does a body line ending in CR, since the load takes the trailing
-// CR run off every line.
+// line break, or a `#`, which reads as a comment - fails the write, as does a
+// body line ending in CR, since the load takes the trailing CR run off every
+// line.
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen;
 	ShclStr it; it.p = info ? info : ""; it.n = ilen;
@@ -4649,10 +4619,9 @@ static int piece_is(ShclArena *a, const ShclPiece *p, ShclStr text, ShclStr want
 }
 
 /* True when a value comes back off the page as itself. */
-/* Scan text as a line's value half. The tokenizer reads offset 0 as a line
-   start, where a `#` opens a comment, and a value half is never one, so the
-   text goes in behind the colon a field line puts there. `a` holds the line the
-   token spans index into, `tmp` the token bookkeeping. */
+/* Scan text as a line's value half, behind the colon a field line puts there.
+   `a` holds the line the token spans index into, `tmp` the token
+   bookkeeping. */
 static ShclStr value_half(ShclArena *a, ShclArena *tmp, ShclStr text, ShclTokens *out) {
 	char *m = (char *)arena_alloc(a, text.n + 1);
 	m[0] = ':';

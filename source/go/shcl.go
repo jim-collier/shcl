@@ -699,17 +699,18 @@ const tmpNameChars = 64
 //     is kept literally and reported (E017).
 //   - Escapes are processed inside double quotes only; bare text and single
 //     quotes never process a backslash.
-//   - `#` opens a comment when it is outside quotes and either first in the
-//     text or preceded by a space or tab.
+//   - `#` outside quotes opens a comment, wherever it sits.
+//   - A space, a tab and a carriage return are blanks: trimmed at a piece's
+//     edge, content in the middle of one.
 //   - A bare name is ASCII letters, digits, `-` and `_`; a `[` right after a
 //     name opens a selector, whose bare body runs to the first `]`; a `[` after
 //     the separator starts the value, which the parser refuses (E019).
 //   - A value is split on unquoted commas, each piece trimmed.
 //
-// Under RulesV2 the tokenizer reads the 2.x spellings instead, for Migrate:
-// any unquoted `#` is a comment, a backslash shields the next character in
-// bare and single-quoted text, a separator followed by `[` is the selector
-// sugar, and an open quote swallows the rest of the line.
+// Under RulesV2 the tokenizer reads the 2.x spellings instead, for Migrate: a
+// backslash shields the next character in bare and single-quoted text, a
+// separator followed by `[` is the selector sugar, and an open quote swallows
+// the rest of the line.
 
 // Quote is how a piece was quoted. QuoteOpen is a piece that began with a
 // quote and never closed with the matching quote as its last character: the
@@ -802,8 +803,10 @@ const (
 	RulesV2
 )
 
+// isWspByte is a blank: space, tab, or a carriage return, which is trimmed
+// wherever a blank is and content in the middle of a piece.
 func isWspByte(b byte) bool {
-	return b == ' ' || b == '\t'
+	return b == ' ' || b == '\t' || b == '\r'
 }
 
 func isBareNameByte(b byte) bool {
@@ -815,23 +818,6 @@ func skipWsp(s string, pos int) int {
 		pos++
 	}
 	return pos
-}
-
-// crRunToComment is the end of a run of blanks and carriage returns that holds
-// at least one CR and runs into a `#`, or -1. 2.x cut a line at its first `#`
-// and then trimmed blanks and CR off the end of the half before it, so such a
-// run was never content. A CR anywhere else was malformed to 2.x as well, which
-// is why only this one position needs saying.
-func crRunToComment(s string, from int) int {
-	k, cr := from, false
-	for k < len(s) && (isWspByte(s[k]) || s[k] == '\r') {
-		cr = cr || s[k] == '\r'
-		k++
-	}
-	if cr && k < len(s) && s[k] == '#' {
-		return k
-	}
-	return -1
 }
 
 // utf8Len is the byte length of the UTF-8 character that starts with b. The
@@ -868,18 +854,18 @@ func quoteClose(s string, pos int, rules Rules) int {
 	return -1
 }
 
-// commentAt is true when the `#` at i opens a comment: outside quotes (the
-// caller's business) and, under the current rules, first in the text or
-// after a space or tab.
-func commentAt(s string, i int, rules Rules) bool {
-	return s[i] == '#' && (rules == RulesV2 || i == 0 || isWspByte(s[i-1]))
+// commentAt is true when the byte at i opens a comment. Being outside quotes
+// is the caller's business.
+func commentAt(s string, i int) bool {
+	return s[i] == '#'
 }
 
 // scanPiece reads one piece from pos: a value element up to an unquoted comma
 // or comment, or a selector body up to an unquoted `]` (term). Returns the
 // trimmed piece and the offset of what ended it: the terminator, a comment's
-// `#`, or the end of the text.
-func scanPiece(s string, pos int, term byte, rules Rules) (Piece, int) {
+// `#`, or the end of the text. comments is false only for a selector body in
+// a lookup path, where `[#N]` is the index spelling.
+func scanPiece(s string, pos int, term byte, rules Rules, comments bool) (Piece, int) {
 	clamp := func(i int) int {
 		if i > len(s) {
 			return len(s)
@@ -896,7 +882,7 @@ func scanPiece(s string, pos int, term byte, rules Rules) (Piece, int) {
 			i := skipWsp(s, close+1)
 			var ended bool
 			if i < len(s) {
-				ended = s[i] == term || (term == ',' && commentAt(s, i, rules))
+				ended = s[i] == term || (term == ',' && commentAt(s, i))
 			} else {
 				ended = term == ','
 			}
@@ -935,7 +921,7 @@ func scanPiece(s string, pos int, term byte, rules Rules) (Piece, int) {
 			contentEnd = clamp(pos)
 			continue
 		}
-		if b == term || commentAt(s, pos, rules) {
+		if b == term || (comments && commentAt(s, pos)) {
 			break
 		}
 		pos += utf8Len(b)
@@ -962,9 +948,7 @@ func scanPiece(s string, pos int, term byte, rules Rules) (Piece, int) {
 }
 
 // TokenizeValue reads the value half: everything from `from` on, split into
-// pieces, with the comment found on the way. `from` is where the separator
-// ended, so a `#` right after it (`a:#x`) is content and one after a space is
-// a comment; at 0 the text starts a line and a leading `#` is a comment.
+// pieces, with the comment found on the way.
 func TokenizeValue(text string, from int, rules Rules, out *Tokens) {
 	out.clear()
 	scanValue(text, from, rules, out)
@@ -976,7 +960,7 @@ func scanValue(text string, from int, rules Rules, out *Tokens) {
 	var stopAt int
 	count := 0
 	for {
-		piece, stop := scanPiece(s, pos, ',', rules)
+		piece, stop := scanPiece(s, pos, ',', rules, true)
 		out.Elements = append(out.Elements, piece)
 		if piece.Quote != QuoteNone || piece.End > piece.Start {
 			count++
@@ -997,12 +981,8 @@ func scanValue(text string, from int, rules Rules, out *Tokens) {
 		break
 	}
 	a := skipWsp(s, from)
-	// The value ends where the line's content ends: a carriage return there
-	// comes off with the blanks, since the load strips one from every line
-	// end and an info string or a bare last element written back would
-	// otherwise end in one the next load would take.
 	b := stopAt
-	for b > a && (isWspByte(s[b-1]) || s[b-1] == '\r') {
+	for b > a && isWspByte(s[b-1]) {
 		b--
 	}
 	if a > b {
@@ -1020,11 +1000,12 @@ func scanValue(text string, from int, rules Rules, out *Tokens) {
 	}
 }
 
-// Tokenize reads one line (sep = ':') or one lookup path (stars admits the
-// bare `*` name wildcard); the CLI's --set passes '='. out is cleared and
+// Tokenize reads one line (sep = ':') or one lookup path (path: the bare `*`
+// name wildcard is admitted, and a `#` in a selector body is the `[#N]` index
+// rather than a comment); the CLI's --set passes '='. out is cleared and
 // reused, so a parse allocates once per document rather than once per line.
 // text is the line after its indent, or the path.
-func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
+func Tokenize(text string, sep byte, path bool, rules Rules, out *Tokens) {
 	out.clear()
 	s := text
 	pos := 0
@@ -1048,7 +1029,7 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			}
 			name = Piece{Start: pos + 1, End: close, Quote: q}
 			pos = close + 1
-		} else if stars && s[pos] == '*' {
+		} else if path && s[pos] == '*' {
 			star = true
 			pos++
 			name = Piece{Start: pos - 1, End: pos, Quote: QuoteNone}
@@ -1064,11 +1045,6 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			name = Piece{Start: start, End: pos, Quote: QuoteNone}
 		}
 		pos = skipWsp(s, pos)
-		if rules == RulesV2 {
-			if k := crRunToComment(s, pos); k >= 0 {
-				pos = k
-			}
-		}
 		var selector *Piece
 		open := -1
 		if pos < len(s) && s[pos] == '[' {
@@ -1085,7 +1061,7 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 				out.Fault, out.FaultReason = open, "selector on a name wildcard"
 				return
 			}
-			piece, stop := scanPiece(s, open+1, ']', rules)
+			piece, stop := scanPiece(s, open+1, ']', rules, !path)
 			if stop >= len(s) || s[stop] != ']' {
 				out.Fault, out.FaultReason = open, "unterminated selector"
 				return
@@ -1100,11 +1076,6 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			}
 			selector = &piece
 			pos = skipWsp(s, stop+1)
-			if rules == RulesV2 {
-				if k := crRunToComment(s, pos); k >= 0 {
-					pos = k
-				}
-			}
 		}
 		out.Segments = append(out.Segments, SegTok{Name: name, Selector: selector, Star: star})
 		if pos >= len(s) {
@@ -1120,7 +1091,7 @@ func Tokenize(text string, sep byte, stars bool, rules Rules, out *Tokens) {
 			scanValue(text, pos+1, rules, out)
 			return
 		}
-		if commentAt(s, pos, rules) {
+		if commentAt(s, pos) {
 			out.Comment = pos
 			return
 		}
@@ -1229,19 +1200,16 @@ func stripSign(s string) string {
 	return s
 }
 
-// trimEndWS trims the end of a line, or of a line's content before its
-// comment: wsp, plus a carriage return, which the load takes off a line end
-// anyway - so a retained line or a comment written back never ends in one the
-// next load would strip. A CR followed by content stays content.
 func trimEndWS(s string) string {
-	return strings.TrimRightFunc(s, func(c rune) bool { return isWsp(c) || c == '\r' })
+	return strings.TrimRightFunc(s, isWsp)
 }
 
 // leadingWS is the leading space/tab run of a line (the indent).
-// isWsp is the grammar's wsp: a space or a tab. The parser trims with this and
-// nothing wider - a no-break space or a line separator after a value is
-// content, and a Unicode trim used to delete it with no diagnostic.
-func isWsp(c rune) bool { return c == ' ' || c == '\t' }
+// isWsp is the grammar's wsp: a space, a tab or a carriage return. The parser
+// trims with this and nothing wider - a no-break space or a line separator
+// after a value is content, and a Unicode trim used to delete it with no
+// diagnostic.
+func isWsp(c rune) bool { return c == ' ' || c == '\t' || c == '\r' }
 
 func trimWsp(s string) string { return strings.TrimFunc(s, isWsp) }
 
@@ -1554,7 +1522,8 @@ func fenceOpen(rest string) (ch byte, length int, info string, ok bool) {
 // more, so the length test already rules out the empty line the loop below
 // would otherwise accept.
 func isFenceClose(line string, ch byte, minLen int) bool {
-	t := trimWsp(line)
+	// A raw body keeps its carriage returns, so only a space or tab is trimmed.
+	t := strings.Trim(line, " \t")
 	if len(t) < minLen {
 		return false
 	}
@@ -1593,14 +1562,12 @@ type openFence struct {
 // reads the same tree. Each line is read with the 2.x tokenizer and
 // re-spelled only where the two rule sets disagree: a bare or single-quoted
 // piece whose backslash meant an escape is double-quoted with that escape; a
-// piece that opened a quote it never closed is quoted whole; a `#` that
-// opened a comment with no space before it gets one, and a CR run before
-// one goes with it, since 2.x trimmed that; the `name:[disc]` selector sugar
-// loses its colon, and on a last segment becomes `name: disc`.
-// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
-// could not read - comes through as written. One shape has no spelling here
-// at all: a fence line whose info string holds a whitespace-`#`, which now
-// ends the label and opens a comment.
+// piece that opened a quote it never closed is quoted whole; the
+// `name:[disc]` selector sugar loses its colon, and on a last segment becomes
+// `name: disc`. Everything else - comments, blank lines, raw bodies, layout,
+// a line 2.x could not read - comes through as written. One shape has no
+// spelling here at all: a fence label holding a `#`, which 2.x ran to the end
+// of the line and which now ends at the `#`.
 func Migrate(text string) string {
 	bom := ""
 	if strings.HasPrefix(text, "\ufeff") {
@@ -1705,10 +1672,6 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 	if rest == "" || strings.HasPrefix(rest, "#") {
 		return rest
 	}
-	// A whole line 2.x read as a comment, once its leading CR run went.
-	if k := crRunToComment(rest, 0); k >= 0 {
-		return rest[k:]
-	}
 	// A child-indent fence: 2.x read the info string to the end of the line.
 	if ch, length, _, ok := fenceOpen(rest); ok {
 		*fence = openFence{ch: ch, length: length, open: true}
@@ -1809,17 +1772,6 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 				return splice(rest, edits)
 			}
 			valueEdits(rest, tok, &edits)
-		}
-	}
-	if c := tok.Comment; c >= 0 {
-		a := c
-		for a > 0 && (isWspByte(s[a-1]) || s[a-1] == '\r') {
-			a--
-		}
-		if strings.ContainsRune(s[a:c], '\r') {
-			edits = append(edits, edit{start: a, end: c, with: " "})
-		} else if a == c && c > 0 {
-			edits = append(edits, edit{start: c, end: c, with: " "})
 		}
 	}
 	return splice(rest, edits)
@@ -2712,7 +2664,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		lineno := i + 1
 		line := trimEndWS(lines[i])
 		indent := leadingWS(line)
-		rest := line[len(indent):]
+		// A carriage return is a blank but never indent, so a run of blanks
+		// holding one comes off the front of the rest instead.
+		rest := strings.TrimLeftFunc(line[len(indent):], isWsp)
+		lead := len(line) - len(indent) - len(rest)
 		if rest == "" {
 			p.sawBlank = true
 			i++
@@ -2767,9 +2722,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			// A `*` alone after the trim: whether a space followed it decides
 			// between an empty element and a malformed line, and only the
 			// untrimmed line still knows.
-			spaced := strings.HasPrefix(after, " ") || strings.HasPrefix(after, "\t")
-			if after == "" && len(lines[i]) > len(indent)+1 {
-				spaced = lines[i][len(indent)+1] == ' ' || lines[i][len(indent)+1] == '\t'
+			spaced := after != "" && isWspByte(after[0])
+			if after == "" && len(lines[i]) > len(indent)+lead+1 {
+				spaced = isWspByte(lines[i][len(indent)+lead+1])
 			}
 			if spaced {
 				parent, okp := p.resolveParent(indent)
@@ -3903,10 +3858,8 @@ func nextElement(els []Piece, i *int) *Piece {
 	return nil
 }
 
-// valueHalf scans text as a line's value half. The tokenizer reads offset 0 as
-// a line start, where a # opens a comment, and a value half is never one, so
-// the text goes in behind the colon a field line puts there. It returns the
-// line the token spans index into.
+// valueHalf scans text as a line's value half, behind the colon a field line
+// puts there. It returns the line the token spans index into.
 func valueHalf(text string, out *Tokens) string {
 	line := ":" + text
 	TokenizeValue(line, 1, RulesCurrent, out)
@@ -4355,11 +4308,11 @@ func boolText(v bool) string {
 
 // literalValue reads text as the value half of a line, for the setters that
 // take value syntax rather than data: whatever a file line spells with this
-// text is what gets stored, so a trailing blank comes off and a # behind a
-// space or tab ends the value exactly as they would in a file. What is refused
-// is what a file reports as an error, since a setter has no diagnostic to
-// report it with: a line break, which no file line can hold, an unterminated
-// quote (E017), and bracket text (E019, the line kept verbatim - writing it as a
+// text is what gets stored, so a trailing blank comes off and a # outside
+// quotes ends the value exactly as they would in a file. What is refused is
+// what a file reports as an error, since a setter has no diagnostic to report
+// it with: a line break, which no file line can hold, an unterminated quote
+// (E017), and bracket text (E019, the line kept verbatim - writing it as a
 // two-element array holding `[1` and `2]` would be a different wrong answer).
 func literalValue(text string) (value, bool) {
 	if strings.Contains(text, "\n") {
@@ -4386,7 +4339,7 @@ func cellOf(text string) value {
 func chooseFence(content string) (byte, int) {
 	maxrun := 0
 	for _, line := range strings.Split(content, "\n") {
-		t := trimWsp(line)
+		t := strings.Trim(line, " \t")
 		if t != "" && strings.Trim(t, "`") == "" && len(t) > maxrun {
 			maxrun = len(t)
 		}
@@ -4807,9 +4760,8 @@ func (d *Document) SetEmpty(path string) bool {
 // SetRaw binds a raw block at path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed the way
 // the load trims one); one that would not read back whole - it holds a line
-// break, or a `#` behind a blank that reads as a comment - fails the write, as
-// does a body line ending in CR, since the load takes the trailing CR run off
-// every line.
+// break, or a `#`, which reads as a comment - fails the write, as does a body
+// line ending in CR, since the load takes the trailing CR run off every line.
 func (d *Document) SetRaw(path, content, info string) bool {
 	info = trimWsp(info)
 	fc, fl := chooseFence(content)

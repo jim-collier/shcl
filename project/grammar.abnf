@@ -17,9 +17,9 @@ line            = ( blank-line / comment-line / field-line / array-elem-line / f
 
 blank-line      = *wsp [ comment ]
 comment-line    = *wsp comment
-comment         = "#" *non-newline           ; to end of line; only outside quotes, and only
-                                              ; first on the line or after a wsp - a "#" glued
-                                              ; to the text before it is content (c#, x#y, [#2])
+comment         = "#" *non-newline           ; to end of line; any "#" outside quotes and
+                                              ; outside a raw body opens one, wherever it
+                                              ; sits (x#y is x and a comment)
 
 ;-----------------------------------------------------------------------------
 ; Field lines
@@ -54,7 +54,8 @@ segment         = field-name *wsp [ selector ]
                 ; query syntax, so a file line and a Get() read identically.
 selector        = "[" *wsp sel-body *wsp "]"
 sel-body        = index-sel / value-sel
-index-sel       = "#" [ "+" ] 1*DIGIT         ; explicit index
+index-sel       = "#" [ "+" ] 1*DIGIT         ; explicit index; a query spelling only, since
+                                              ; on a file line the "#" opens a comment
                 / [ "+" ] 1*DIGIT              ; bare integer = index
                 ; a leading "+" is accepted either way (list[+1] = list[1]);
                 ; "-" is not an index sign - [-1] is a value selector.
@@ -64,9 +65,8 @@ sel-char        = %x00-09 / %x0B-5C / %x5E-10FFFF
                 ; any char but "]" - a bare selector's scan runs to the first
                 ; "]", so ".", ":", "\", quotes mid-text (base[O'Brien]) and
                 ; non-ASCII all pass through verbatim (base[St.Paul].p
-                ; resolves). A "#" after a wsp opens a comment here as anywhere,
-                ; which leaves the selector unterminated (E014); glued to the
-                ; text it is content (a[x#y], the [#N] index). A quote is a
+                ; resolves). A "#" opens a comment here as anywhere, which
+                ; leaves the selector unterminated (E014). A quote is a
                 ; quote only as the body's first char, closing at the next
                 ; matching one, which must be last before the "]"; a body that
                 ; opens one and never closes it that way is kept as text and
@@ -109,7 +109,7 @@ bareword        = 1*bare-char
                 ; is quoted only when it BEGINS with a quote char. So a bare
                 ; piece may carry mid-text spaces, ":", "'", "]", even '"',
                 ; verbatim ("q: needs no quotes" loads clean). Bare, only a
-                ; "#" after wsp (comment), "," (element split), a leading
+                ; "#" (comment), "," (element split), a leading
                 ; quote, and a leading "[" (bracket-array spelling, refused)
                 ; keep their meaning. A "\" in bare text is a character.
 bare-char       = bare-plain
@@ -157,9 +157,9 @@ fence-open      = fence-run [ info-string ]
 fence-run       = 3*"`" / 3*"~"                 ; run length N captured for close-match
 info-string     = *wsp 1*bare-plain *( *wsp 1*bare-plain )
                                                ; optional label (e.g. a language), read
-                                               ; as bare text: a "#" glued to it is part
-                                               ; of it (c#), one after a wsp opens the
-                                               ; line's comment, in either spelling
+                                               ; as bare text: a "#" ends it and opens
+                                               ; the line's comment, in either spelling,
+                                               ; so ```c# labels the block c
 raw-content-line= *non-newline                 ; verbatim; only while a fence is open
 ; fence-close (context): indent (N*"`" / N*"~") *wsp   where char matches opener
 ;                        and length >= opener length.
@@ -168,7 +168,9 @@ raw-content-line= *non-newline                 ; verbatim; only while a fence is
 ; Terminals
 ;-----------------------------------------------------------------------------
 
-wsp             = SP / HTAB
+wsp             = SP / HTAB / CR               ; a carriage return is a blank outside a raw
+                                               ; body: trimmed at an edge, content mid-piece,
+                                               ; never indent
 non-newline     = %x00-09 / %x0B-10FFFF        ; any char except LF
 newline         = *CR LF / %xEOF               ; LF or CRLF; a line's whole trailing CR run
                                                ; is removed; last line may lack newline
