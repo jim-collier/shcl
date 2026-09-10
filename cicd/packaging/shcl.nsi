@@ -42,7 +42,7 @@ VIAddVersionKey "FileDescription" "SHCL installer"
 VIAddVersionKey "FileVersion"     "${VERSION}"
 VIAddVersionKey "ProductVersion"  "${VERSION}"
 VIAddVersionKey "CompanyName"     "Jim Collier"
-VIAddVersionKey "LegalCopyright"  "Copyright (C) 2026 Jim Collier. MIT License."
+VIAddVersionKey "LegalCopyright"  "Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. MIT License."
 
 !include "WinMessages.nsh"
 

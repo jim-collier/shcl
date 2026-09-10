@@ -22,7 +22,7 @@ Anything not installed is reported as unavailable rather than failing the run;
 the orchestrator lists what it skipped.
 """
 
-##	Copyright © 2026 Bubbles (ID: XଌฅრX۳ᛟԃლፀƅꓩหδლც)
+##	Copyright (c) 2026 Bubbles
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
