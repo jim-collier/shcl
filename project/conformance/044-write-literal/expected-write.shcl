@@ -11,11 +11,11 @@ trimmed: x, y
 
 commented: v
 
-hexcolor: "#ff0000"
+hexcolor:
 
-midhash: "a#b"
+midhash: a
 
-tailhash: "x#"
+tailhash: x
 
 empty:
 

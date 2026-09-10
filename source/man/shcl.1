@@ -176,10 +176,7 @@ in place with
 through the same gate as
 .BR fmt ).
 Only what the two rule sets read differently is touched: a backslash 2.x read
-as an escape outside double quotes, a quote that never closed, a
-.B #
-with no space before it (and any carriage-return run behind it, which 2.x
-trimmed), and the
+as an escape outside double quotes, a quote that never closed, and the
 .B name:[disc]
 selector sugar. Comments, blank lines, raw bodies and layout come through as
 written. The migrated text's diagnostics are printed, so a line the new rules
@@ -345,7 +342,7 @@ goes in as value syntax the way a file spells it \- so
 .B ports=80, 443
 writes a two-element array. A
 .B #
-behind a space or tab ends the value, and text spanning lines is rejected.
+outside quotes ends the value, and text spanning lines is rejected.
 .TP
 .BI \-\-set\-default= PATH = VALUE
 .TQ
@@ -463,9 +460,9 @@ and a line starting with
 .B #
 is a script comment. A
 .B raw
-op's INFO may not hold a line break, nor a
-.B #
-behind a space or tab, which would read back as a comment on the fence line.
+op's INFO may not hold a line break or a
+.BR # ,
+which would read back as a comment on the fence line.
 .PP
 .I FILE
 given as
@@ -493,35 +490,19 @@ bracket text after a colon is
 and a line the current rules cannot read at all is a malformed line. A file
 carrying one of those says so the first time it loads.
 .PP
-The comment rule is the exception, and it is why
-.B migrate
-is a step in an upgrade rather than a convenience. A
+The comment rule did not change: a
 .B #
-opens a comment only when it is first on the line or preceded by a space or
-tab, where 2.x needed no space, so
-.B url:\~http://h/#frag
-was the value
-.B http://h/
-then and is the whole thing now. Both readings are legal text, both load with
-no diagnostic, and
-.B check
-reports the same
-.B ok
-before the upgrade and after it. The first in-place write then makes the new
-reading permanent. Run
-.B migrate
-once over every file written for 2.x, and do not read a clean
-.B check
-as evidence that a file did not need it.
+outside quotes opened a comment in 2.x and still does.
 .PP
-One shape cannot be carried across at all: a 2.x info-string holding a space
-and a
-.BR # ,
-which now ends the label and opens a comment.
+Two edges read differently, and
 .B migrate
-leaves such a line as written and nothing reports it, because what it leaves is
-legal text that means something narrower. Rename the label, or move the note to
-the line above.
+leaves both as written. A fence label holding a
+.B #
+ran to the end of the line in 2.x and ends at the
+.B #
+now, with the rest as the line's comment; a label has no quoting, so rename it.
+And a carriage return in the middle of a line, at the edge of a piece, was
+content in 2.x and is trimmed now.
 .SH EXIT STATUS
 .TP
 .B 0

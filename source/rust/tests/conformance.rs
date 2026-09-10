@@ -1253,17 +1253,23 @@ fn read_file_at_the_largest_cap() {
 fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	// The body's shared indent survives a reload (the closing fence's indent is
 	// what comes off), the info-string is stored as a fence line reads it
-	// back, and an info with a line break, or a `#` behind a blank, has no
-	// spelling and fails the write. Same fixture in every runner.
+	// back, and an info with a line break or a `#` has no spelling and fails
+	// the write. Same fixture in every runner.
 	let mut doc = Document::new();
 	assert!(doc.set_raw("q", "  a\n  b", " sql "));
 	let back = Document::parse(&doc.to_canonical());
 	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
 	assert_eq!(back.read_raw_info("q").value, "sql");
 	assert!(!doc.set_raw("q", "x", "a\nb"));
-	// A CR the load would take off the line end has no spelling; one mid-info
-	// is content, the same rule a body line follows.
-	assert!(!doc.set_raw("q", "x", "ab\r"));
+	// A trailing CR is a blank and comes off, as the load takes it; one
+	// mid-info is content.
+	assert!(doc.set_raw("q", "x", "ab\r"));
+	assert_eq!(
+		Document::parse(&doc.to_canonical())
+			.read_raw_info("q")
+			.value,
+		"ab"
+	);
 	assert!(doc.set_raw("q", "x", "a\rb"));
 	assert_eq!(
 		Document::parse(&doc.to_canonical())
@@ -1273,12 +1279,9 @@ fn set_raw_keeps_a_shared_indent_and_trims_the_info() {
 	);
 	assert!(!doc.set_raw("q", "x", "a # b"));
 	// An info string has no quoting of its own: quotes are characters in it,
-	// so they hide nothing, and a `#` with no space before it is content.
+	// so they hide nothing, and a `#` glued to the label opens a comment too.
 	assert!(!doc.set_raw("q", "x", "\"a # b\""));
-	assert!(doc.set_raw("q", "  a\n  b", "c#"));
-	let back = Document::parse(&doc.to_canonical());
-	assert_eq!(back.get_raw("q"), Ok("  a\n  b".to_string()));
-	assert_eq!(back.read_raw_info("q").value, "c#");
+	assert!(!doc.set_raw("q", "x", "c#"));
 	// A body line ending in CR has no fence spelling: the load takes the whole
 	// trailing CR run off every line, so it is refused rather than lost. A CR
 	// mid-line is content and still round-trips.
