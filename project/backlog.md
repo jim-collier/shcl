@@ -62,6 +62,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- Weight for the fix round: there are no 2.x files in anyone else's hands, so the cost of every migration item here is a wrong tool rather than lost data, and the release is not gated on them. What is gated is the wrongness itself. A rewrite that damages a correct file and exits 0 is worse than no rewrite. The caveats are written down as of 2026-09-09, which buys the time to fix these properly rather than around them.
 
+	- The lexical rules are settled as of 2026-09-10, in `design.md` under Lexical edges: a `#` outside quotes opens a comment, as 2.x read it, and a carriage return is a blank. Items 2, 8, 9, 37 and 40 turned on the other reading and are canceled. `migrate` still carries a 2.x file across the backslash, quote and sugar changes, so items 3, 4, 10, 17 and 25 stand. The spec, the help text, the man page, the README and the code follow the table next.
+
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
 		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
@@ -75,14 +77,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-100000
 		- Closed: 20260909-174000
 
-	- 🔘 Item 2: a 2.x file whose values change meaning under the new comment rule is not detected by anything, and the first in-place write makes the new reading permanent.
+	- 🚫 Item 2: a 2.x file whose values change meaning under the new comment rule is not detected by anything, and the first in-place write makes the new reading permanent.
 		- Reproduced against the pinned 2.x build and the current one. `url: http://x/y#frag` reads `http://x/y` under 2.x and `http://x/y#frag` now. Both report `ok (0 diagnostic(s))` at exit 0, both have a lost count of 0, and `fmt --write` writes `url: "http://x/y#frag"`, after which even 2.x reads it the new way. `note: hello#world` and `port: 8080#comment` do the same.
 		- Cause: the load has nothing that compares the two readings, so no diagnostic exists for the case. The save gate reads the lost count, which is correctly 0 - nothing was lost, the line simply means something else.
 		- Note: `README.md:33` says "A save never deletes a line you typed". A comment the author wrote is not a line the load lost; it is a line the load stopped seeing.
 		- Note: the predicate that would catch it already exists in every binding. A load whose text differs from `migrate`'s output of that text is a load whose reading changed, and that is one call.
 		- Note: 21 of 49 ordinary config lines tried change meaning with both sides reading clean. The table is in `details.md`.
 		- Note: the compromise is stated now, in `spec.md`, the changelog, the README, the man page and `migrate`'s own stderr, and `check-docs` keeps it there. That is a warning, not a fix; the detection this item asks for is still open.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so no value changes meaning across the cut and there is nothing to detect.
 		- Opened: 20260909-100100
+		- Closed: 20260910-081017
 
 	- 🔘 Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
 		- Reproduced in all four. `k:[~~~x]` followed by `after: 1` migrates to `k: ~~~x`, which opens a raw block; `after: 1` is swallowed into it, `paths` reports only `k`, and `check` on the result exits 6 with `E005 unterminated raw block`. `migrate --write` prints the diagnostic and exits 0, so a scripted `shcl migrate --write *.shcl && deploy` succeeds on a destroyed file. A discriminator beginning with `[` loses its own field instead.
@@ -116,25 +120,31 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule cannot reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
 		- Pinned by: corpus `044-write-literal` gains a leading `#`, a `#` mid-value and a trailing one, and a `cli-regress` row takes the same value through `--set-literal`. All four fail the case with the fix backed out.
 		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they cannot place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-100600
 		- Closed: 20260909-151500
 
-	- 🔘 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
+	- 🚫 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
 		- Reproduced. a value `x`, then a carriage return, then two spaces and `# c` reads `x` with the CR gone, and `fmt --write` writes `a: x  # c` at exit 0 with no diagnostic and a lost count of 0, so the save gate does not refuse.
 		- Cause: the value-end trim takes the CR along with the blanks.
 		- Note: three documents say the opposite. `spec.md:279` ("A carriage return inside a line is content and is preserved"), `design.md:106` ("a CR is special nowhere else"), and `changelog.md:382`.
 		- Note: the code comment gives the reason as a fence line's bare info string. That is right for a fence label and is not forced for a plain value - the emitter already quotes an element with whitespace at its edges, so `x` with a trailing carriage return would have round-tripped.
 		- Sites: `lib.rs:999`, `shcl.go:1004`, `shcl.py:1093`, `shcl.h:1284`.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank, and a blank before a comment is trimmed.
 		- Opened: 20260909-100700
+		- Closed: 20260910-081017
 
-	- 🔘 Item 9: `migrate` turns a quoted value's own quotes into content when a carriage return sits before its comment.
+	- 🚫 Item 9: `migrate` turns a quoted value's own quotes into content when a carriage return sits before its comment.
 		- Reproduced against the pinned 2.x build. a quoted value followed by a carriage return and then `#c` reads `secret` under 2.x and `'secret'` after migration.
 		- Note: the document is clean under 2.x, so this shape is inside `check-migrate.bash`'s own comparison set. The gate never generated it.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank and a `#` opens a comment under both rule sets, so `migrate` has nothing to rewrite here.
 		- Opened: 20260909-100800
+		- Closed: 20260910-081017
 
 	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
 		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
 		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration cannot tell the difference between "migrated" and "gave up".
+		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
 	- 🔘 Item 11: the element cap turns a fence line into a malformed line, and the raw block's body then parses as live bindings with nothing counted lost.
@@ -162,6 +172,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: `set_raw` normalizes the info string with the space-and-tab trim, while the load's line-end trim also takes the trailing CR run.
 		- Note: `spec.md:453` and `:454` and `design.md:440` all say the setter normalizes what the load normalizes, and the refusal list does not include this.
 		- Sites: `lib.rs:4719`, `shcl.go:4786`, `shcl.py:3331`, `shcl.h:4030`.
+		- Note: follows from the carriage-return rule in `design.md` under Lexical edges. A trailing carriage return on a fence label is a blank and comes off, so the setter trims it. Still open.
 		- Opened: 20260909-101300
 
 	- 🔘 Item 15: the `Set<T>Default` forms report success for a value that has no spelling, whenever the path already resolves.
@@ -253,11 +264,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
 		- Opened: 20260909-102800
 
-	- 🔘 Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
+	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
 		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
 		- Note: everything under `## Unreleased` becomes the 3.0.0 release notes, so all three ship. This is the third occurrence of the same pattern - a later round amended an entry by appending a second one instead of editing the first - and 20260905 item 5 closed the previous one by fixing that one entry rather than looking for siblings.
+		- Fixed: one `E019` entry under Unreleased, under Added, saying what ships; the other two are gone. The comment-rule and carriage-return entries were cut to the rules in `design.md` under Lexical edges in the same pass.
 		- Opened: 20260909-102900
+		- Closed: 20260910-081017
 
 	- ✅ Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
 		- Reproduced. Printed help line 93 says an unquoted `#` ends a `--set-literal` value. It does not: `literal k a#b` stores `a#b` in all four.
@@ -266,12 +279,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Fixed with item 7, in the same pass, so neither half stood alone. The rule is the 3.0 comment rule everywhere it is stated: a `#` behind a space or tab ends the value, one anywhere else is content. The same sentence had gone stale for `set_raw`'s info string, which has refused only a `#` behind a blank since the setter round, so that family went with it - `changelog.md`, `design.md`, the four runner fixtures and the man page.
 		- Note: the released `changelog.md` entry for `SetLiteral` at 1.1.0 keeps its wording. It was true of 1.1.0. The Fixed entry under Unreleased is what says the rule changed.
 		- Left alone: the four `migrate` doc comments say "any unquoted `#` is a comment", which is what 2.x did and is the whole point of the flag they describe.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-103000
 		- Closed: 20260909-151500
 
 	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
 		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
 		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that cannot express shipped behavior costs more than a typo.
+		- Note: under `design.md` -> Lexical edges the `info-string` production is right to exclude `#`; the example beside it is what is wrong. The `%xEOF` half stands.
 		- Opened: 20260909-103100
 
 	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
@@ -293,9 +308,11 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: `design.md:98` says it "prints the same help text but as a usage error" and names it as one of the two deliberately unpadded outputs.
 		- Opened: 20260909-103500
 
-	- 🔘 Item 37: the reason given for refusing `[#N]` in a generated path stopped being true at the 3.0 cut.
+	- 🚫 Item 37: the reason given for refusing `[#N]` in a generated path stopped being true at the 3.0 cut.
 		- Reproduced. `spec.md:644` and all four generators justify the refusal partly on the `#` starting a comment. It does not any more: `a[#0].c: 2` loads clean and `tokens` reads `#0` as a selector.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a `#` outside quotes opens a comment, so the reason holds again and `[#N]` is a path spelling for the API and the CLI.
 		- Opened: 20260909-103600
+		- Closed: 20260910-081017
 
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that cannot be nonzero.
@@ -311,11 +328,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
 		- Opened: 20260909-103800
 
-	- 🔘 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
+	- 🚫 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
 		- Reproduced in all four. A fence label holding a whitespace-`#` reads `sql #note` under 2.x and `sql` now, and `check` says `ok (0 diagnostic(s))`. Corpus `068`'s own `expected-diags.txt` pins that silence.
 		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
 		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so there is no such shape.
 		- Opened: 20260909-103900
+		- Closed: 20260910-081017
 
 ### Features and enhancements
 
@@ -588,6 +607,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Decided: the comma decides. `E019` is an error that counts lost when the brackets hold an unquoted comma, since that is where two elements fold into one string; otherwise it is a hint under the same code (the `E022` precedent) and counts nothing, so `check` exits 0, a strict load passes and the rewrite goes through. Recorded in `design.md` under Saving a file, and on the `E019` row of the spec.
 		- Fixed: the bracket-array site in all four bindings splits the bracket body on unquoted commas and picks the level by the count.
 		- Pinned by: corpus `106-bracket-sugar` (four sugar shapes, a strict load, the reads, lost 0) and five `cli-regress` rows: a bracket array at `check` exit 6 and `fmt --write` exit 7, the sugar file at `check` exit 0 in both strictnesses and `fmt --write` exit 0 on a fresh copy per binding. Corpus `089` is unchanged, since every line there carries a comma. The case and the three sugar rows fail on the old code in every binding.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260905-141600
 		- Closed: 20260905-192521
 
@@ -663,6 +683,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the spec says of `E019` that it "counts as lost content and an in-place rewrite refuses (`--lossy` overrides) rather than baking the changed value in". That promise is exactly what fails here. The `E015` diagnostic is also wrong on its own terms.
 		- Fixed: the check finds the field's own colon with the same name-half scan the comment split uses, so a quoted name or a selector holding one no longer stands in for it.
 		- Pinned by: corpus `089-bracket-behind-colon`, four bracket arrays behind a quoted name, a value selector, nothing, and selector sugar, all `E019` with a lost count of four. The old code reports `E015` and counts nothing lost on lines 2 and 3.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260904-170200
 		- Closed: 20260905-091206
 
@@ -810,6 +831,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Decided: the spec sentence is the half to fix. Refusing a fence opener now would change a released API for no gain, so the "only" list should say what the code does.
 		- Fixed: the spec sentence now says what the call refuses - a line break or a carriage return, a piece that opens a quote it never closes, bracket-array text - and that text a file line would not read as a value at all, a fence opener or a lone `[`, is stored as the string it spells, since the call reads a value half rather than a line.
 		- Pinned by: corpus `099-literal-text`: a fence opener and a lone `[` stored as quoted strings, an unclosed quote refused in both the first and a later piece.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260904-171800
 		- Closed: 20260905-100356
 
@@ -1412,6 +1434,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- All four bindings agree. Refusing the shape, the way `SetLiteral` already refuses a quote that never closes, is the consistent answer.
 		- Fixed: `SetLiteral` and `SetLiteralDefault` refuse a value that, after the comment is split off and the ends trimmed, starts with `[` and ends with `]` - the parser's own test for `E019`. The refusal returns false and binds nothing. Spec: the `SetLiteral` sentence names it beside the other two refusals.
 		- Pinned by corpus `065-bracket-array`, which gained a `write-bad.ops` (four bracket spellings, one through the default form, one with a trailing comment) and a `write.ops` for the two neighbours that stay accepted: a quoted `"[80, 443]"`, which is a string, and an unclosed `[80, 443`, which the parser also reads as two elements. Fails on the old code in all four runners.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260901-140500
 		- Closed: 20260901-183000
 
@@ -1441,6 +1464,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- The wrong-answer-at-exit-0 half is closed by item 18: once the read subcommands print load diagnostics, a `get` on this file says so too.
 		- A pasted YAML list is untouched and stays `E014`. Its text is kept verbatim as trivia, so nothing is lost and the save gate has nothing to refuse.
 		- Pinned by corpus case `065-bracket-array`, which reports `E015` on all four bindings without the change.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260830-140346
 		- Closed: 20260830-171500
 
@@ -1586,6 +1610,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Behavior change: a trailing comment on a same-line fence is no longer a comment. It goes on the line above.
 		- Note: `set_raw` still refuses an unquoted `#` in an info string. That refusal is now conservative rather than necessary, since both spellings round-trip one. Relaxing it is a separate change and is not a bug.
 		- Pinned by corpus case `068-info-hash-spellings`, which reads the same label through both spellings.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260830-140346
 		- Closed: 20260830-215127
 
@@ -1663,6 +1688,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 9: `set_raw` accepts an info string with an unquoted `#`, and the same-line spelling loses it on reload with no diagnostic.
 		- Reproduced: an empty `k:` followed by a raw `k[#1]` with info `a # b` saves as `k: ```a # b`; reading it back gives info `a` and `check` says ok.
 		- Only reachable when an empty same-named sibling precedes the raw node. Refuse it in `set_raw`, as the line-break check does. All four bindings.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
@@ -2700,6 +2726,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Decided: `migrate` drops the run. The carriage return is a byte 2.x itself discarded before it bound anything, so dropping it loses nothing the old reading kept, and `migrate` already edits outside the tree wherever the two rule sets disagree - it inserts a space before a `#`, re-quotes pieces, and takes the colon out of the selector sugar. Leaving it would have meant a binding disappearing while the text survived, which the exit code cannot report, since a retained line counts nothing lost.
 	- Fixed in all four: `cr_run_to_comment` (`crRunToComment` in Go, `_cr_run_to_comment` in Python) names the run, the 2.x tokenizer steps over one that runs into a `#`, and the comment fixup replaces the whole run with a single space instead of only inserting one. A line whose leading run is such a run is the comment 2.x read it as. The value half already migrated correctly and is unchanged.
 	- Pinned by corpus case `115-cr-before-comment`, which carries the shape after a name, after a selector, in a value, and as a whole line. `check-migrate.bash` no longer skips the shape, and fails on four documents without the fix.
+	- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 	- Opened: 20260908-180000
 	- Closed: 20260908-223000
 
@@ -2752,6 +2779,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Fixed: spec, grammar, design and changelog carry the rules; the corpus moved where the rules say (001 rewritten without the sugar, 031, 033, 065, 068, 084, 089, 105, 106, 108, 109 regenerated, 016 and 033 write goldens, the `[80` literal ops). `migrate` is a library function plus a CLI command in every binding; `--write` goes through the save gate. The 2.x side of the migration gate builds the last pre-cut dev commit into its own gitignored target.
 	- Decided: an unterminated quote is a character, so the comma or comment after it still ends the piece; 2.x swallowed the rest of the line, and `migrate` quotes such a piece whole so the tree stays. And `migrate` leaves a line 2.x could not read, a bracket array 2.x counted lost, and a fence label holding a whitespace-`#` as written; the load names each of them.
 	- Note: the module path and the two per-binding README constraints move at the cut, per the release recipe, not here.
+	- Note: the comment-rule and carriage-return sub-bullets above are superseded; the rules are in `design.md` under Lexical edges. Churn on a subtle design interpretation.
 	- Opened: 20260906-090943
 	- Closed: 20260908-000000
 
@@ -3303,6 +3331,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: nothing keys on the exact number today - the save gate only asks whether it is nonzero - so this is a number worth correcting rather than a behavior to change.
 		- Fixed: by item 1's rule. A bracket body with no unquoted comma is a hint that counts nothing, so `a: [80]` and `a: [*]` are counted once each, by `E003` and `E004`.
 		- Pinned by: corpus `108-bracket-index-lost` - the two lines, the hint and error each reports, and a lost count of 2. The count read 4 before this round.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260905-142100
 		- Closed: 20260905-193735
 
@@ -3318,6 +3347,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- A value keeps the piece literally and says `E017`, so `a: 'open` loads and reads back as `'open`. A selector body throws the whole line away with `E014 empty selector`, so `a['open]: 1` binds nothing. `grammar.abnf` reads a bare selector as "any char but `]`", which would make `'open` an ordinary discriminator.
 		- Note: a call to make rather than a rule broken. The value side's answer is the more forgiving one and matches the never-bail philosophy.
 		- Declined: nothing is lost either way. The `E014` line is kept verbatim as trivia, `fmt --write` writes it back unchanged at exit 0 and the lost count stays 0, so the only difference from the value side is that no node is bound for a line no legal document has. Keeping the quote as text would need a second scan rule in the path scanner, the name-half scan and the CLI's split, in every binding, which is the shape that has cost this project two regressions this week. The grammar's `bare-sel` is read with `quoted` tried first, as the rule order says.
+		- Note: superseded by 20260909 item 1, which reports `E017` in a selector body the way the value half does. The decline was churn on a subtle design interpretation; the quote rule is settled in `design.md` under Lexical edges.
 		- Opened: 20260905-142300
 		- Closed: 20260905-193849
 
