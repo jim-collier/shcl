@@ -1,4 +1,4 @@
-## shclpath.ps1 - the setup's machine-PATH edit, packed into the installer and
+﻿## shclpath.ps1 - the setup's machine-PATH edit, packed into the installer and
 ## run at install and uninstall. It goes straight at the registry, never through
 ## NSIS variables: NSIS strings are capped at NSIS_MAX_STRLEN (1024), so a
 ## longer PATH came back truncated - or empty, which no length guard can tell
