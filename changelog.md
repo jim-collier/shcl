@@ -153,6 +153,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- An unterminated quote in a selector body is reported. `srv["prod].host: example.com` loaded with no diagnostic at all and bound an instance of `srv` valued `"prod`, so a one-character typo silently pointed a whole block at a path nothing else uses, and the next `fmt --write` wrote the typo out as canonical text. The tokenizer had recorded the open quote all along; only the value half was reading it. The body is still kept as text, quotes and all, which is what the spec says a piece that opens a quote and never closes it does.
+
 - `SetLiteral` stores a value that begins with `#`. `--set-literal='color=#ff0000'` wrote an empty value and exited 0, losing the whole text, while the same line in a file read `#ff0000`. The setter read its argument as if it started a line, where a leading `#` opens a comment; it reads it as the value half of a line now, which is what it always claimed to do. A `#` behind a space or tab still ends the value, and one anywhere else is content.
 
 - `migrate` carries a line whose `#` sits right behind a carriage return. 2.x cut such a line at the `#` and then trimmed the carriage return off the half before it, so `my<CR>#note: 1` bound `my`; the migrated text kept the byte, the name ended at it, and the binding was gone with an `E014` at exit 0. The run goes now, replaced by the single space the `#` needs. Only a carriage return was affected - any other control character in that position was malformed to 2.x as well.
