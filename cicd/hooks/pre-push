@@ -18,8 +18,13 @@
 ##	  longer existed, and the checkout's debug binary was overwritten by the
 ##	  pushed commit's build.
 ##	- If git cannot create a worktree, the gate runs in place with a warning.
-##	- The large-document stage is left out here (minutes, and the hosted workflow
-##	  runs the full gate anyway); this is the fast correctness half.
+##	- A commit whose tree a gate already passed goes out without running it
+##	  again. cicd.bash records each tree it passes (utility/green-tree.bash),
+##	  the run this hook starts included, so a full run's own publish push, a
+##	  --no-ff merge of a branch that passed, and a retry after a dropped
+##	  connection all go straight through. SHCL_GATE_RERUN=1 runs it anyway.
+##	- The large-document stage is left out here (minutes; a full local run and
+##	  the hosted workflow on main carry it); this is the fast correctness half.
 ##	- Escape hatch: `git push --no-verify`, or SHCL_SKIP_HOOK=1.
 ##	- Installed by pointing git at this directory:
 ##		git config core.hooksPath cicd/hooks
@@ -76,6 +81,14 @@ trap fCleanup EXIT
 
 for i in "${!gatedShas[@]}"; do
 	sha="${gatedShas[i]}"
+	## A failed lookup, or a checkout with no helper, reads as not passed.
+	tree="$(git -C "${root}" rev-parse -q --verify "${sha}^{tree}" || true)"
+	if [[ -n "${tree}" && -z "${SHCL_GATE_RERUN:-}" ]] && "${root}/cicd/utility/green-tree.bash" passed "${root}" "${tree}"; then
+		echo
+		echo "[ pre-push: ${sha:0:12} has the same files as a run that passed the gate; not running it again ]"
+		echo
+		continue
+	fi
 	echo
 	echo "[ pre-push: running the correctness gate on ${sha:0:12} before ${gatedRefs[i]} ]"
 	echo

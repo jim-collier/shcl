@@ -1,12 +1,19 @@
 ## Correctness gate only. Everything else (cross-compile, publish, artifacts)
 ## stays in the local pipeline: cicd/cicd.bash. One definition of "passing" -
 ## this just runs the engine's --ci mode.
+##
+## Not on dev pushes. Everything bound for dev is gated locally already: a full
+## run records the trees it passes, and the pre-push hook runs the gate on any
+## other, so a hosted run per dev push was the same gate a third time at half an
+## hour each. main still gets one, pull requests do, and
+## `gh workflow run ci --ref dev` starts one by hand.
 name: ci
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

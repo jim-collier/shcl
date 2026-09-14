@@ -36,16 +36,18 @@ done
 ## exists for (gcc 12 and 13 against 14 and 15 over -Wclobbered) cannot show
 ## with one compiler, and a runner that lost one would otherwise report OK for
 ## good. Locally, what is installed is what is checked, and the summary says
-## which.
-if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
-	declare -i nGcc=0
-	for c in "${compilers[@]}"; do
-		if [[ "${c}" == gcc-* ]]; then nGcc+=1; fi
-	done
-	if ((nGcc < 2)) || [[ " ${compilers[*]} " != *" clang "* ]]; then
+## which. A thin sweep is noted in SHCL_GATE_SKIPS, so the run is not taken for
+## a full gate.
+declare -i nGcc=0
+for c in "${compilers[@]}"; do
+	if [[ "${c}" == gcc-* ]]; then nGcc+=1; fi
+done
+if ((nGcc < 2)) || [[ " ${compilers[*]} " != *" clang "* ]]; then
+	if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
 		echo "check-c-compilers: the gate needs two versioned gccs and clang; found: ${compilers[*]}" >&2
 		exit 1
 	fi
+	echo check-c-compilers >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 
 fBuild(){  ## fBuild CC OPT SRC

@@ -132,7 +132,9 @@ There is also a `pre-push` hook that runs the gate for you, but only when the pu
 git config core.hooksPath cicd/hooks
 ```
 
-`git push --no-verify` gets past it when you need to.
+It skips the gate for a commit whose files a run already passed. Every `cicd.bash` run that gets through the tests stage without `--quick`, `--no-fmt`, `--no-lint` or a skipped tool records the tree it tested. So the push at the end of a full run goes straight out, and so does a `--no-ff` merge of a branch that passed onto a `dev` that has not moved since. `SHCL_GATE_RERUN=1` runs the gate anyway, and `git push --no-verify` or `SHCL_SKIP_HOOK=1` gets past it when you need to.
+
+GitHub CI runs on pushes to `main`, on pull requests, and by hand from the Actions tab. Pushes to `dev` do not start it, since the hook has gated them already.
 
 ### Toolchains
 

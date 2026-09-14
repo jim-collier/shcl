@@ -50,6 +50,10 @@
 ##	   -h, --help          show this help
 ##	- If neither -q/-y nor -m is given, the run prompts once for a commit message
 ##	  (blank = git editor; Ctrl+C aborts the whole run), then finishes unattended.
+##	- A run that passes the tests stage records the tree it tested
+##	  (utility/green-tree.bash), and the pre-push hook lets a commit with that
+##	  tree through without running the gate again. --quick, --no-fmt, --no-lint
+##	  and a skipped tool each keep a run from recording.
 ##	- Reuse: copy the cicd/ directory into another project and edit config.bash.
 
 ##	History: At bottom of script.
@@ -92,15 +96,15 @@ cd "${root}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 
 ## Parse options.
-assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""; sync_enable=1
+assume_yes=0; quiet=0; ci_mode=0; quick=0; cli_message=""; sync_enable=1; gate_partial=0
 while (($#)); do case "$1" in
 	--ci)                     ci_mode=1; assume_yes=1; shift ;;
 	--quick)                  quick=1; shift ;;
 	-q|--quiet)               quiet=1; assume_yes=1; QUIET_FLAG="-q"; export CARGO_TERM_QUIET=true; shift ;;
 	-y|--yes)                 assume_yes=1; shift ;;
 	--no-sync)                sync_enable=0; shift ;;
-	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); shift ;;
-	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); shift ;;
+	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); gate_partial=1; shift ;;
+	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); gate_partial=1; shift ;;
 	--no-cross)               CROSS_TARGETS=(); shift ;;
 	--no-package)             PACKAGE_ENABLE=0; shift ;;
 	--no-largedoc)            LARGEDOC_MIB=0; shift ;;
@@ -141,6 +145,15 @@ if ((quick)); then
 	GIF_ENABLE=0
 	((${#TEST_QUICK_CMD[@]})) && TEST_CMD=("${TEST_QUICK_CMD[@]}")
 fi
+
+## A run at least as thorough as the pre-push hook's records the tree it tested
+## once the tests pass, and the hook lets a commit with that tree through. A gate
+## that skips a missing tool locally notes it in SHCL_GATE_SKIPS. Under --ci the
+## same skip is a failure, so a run with anything noted there records nothing.
+record_green=1
+if ((quick || gate_partial)); then record_green=0; fi
+export SHCL_GATE_SKIPS="$(mktemp)"
+trap 'rm -f "${SHCL_GATE_SKIPS}"' EXIT
 
 ## Publish commit message: -m wins, then config, then a default when unattended.
 publish_msg=""
@@ -305,6 +318,9 @@ elif ((${#FMT_CMD[@]})); then
 else
 	fEcho_Clean "format skipped"
 fi
+## Taken after the formatter, since locally it rewrites what gets tested.
+green_tree=""
+if ((record_green)); then green_tree="$("${here}/utility/green-tree.bash" tree "${root}" || true)"; fi
 
 ## Stage 2: debug build (fast compile sanity; the tests run against this).
 fSection "2/9  Build (debug)"
@@ -335,6 +351,7 @@ if ((${#SHELLCHECK_TARGETS[@]})); then
 		fDie "shellcheck required under --ci but not found"
 	else
 		fEcho "WARNING: shellcheck not installed; skipped"
+		echo shellcheck >> "${SHCL_GATE_SKIPS}"
 	fi
 fi
 
@@ -363,6 +380,13 @@ if ((${#BINDING_CLIS[@]})); then
 	"${here}/utility/crosscheck.bash" --corpus "${root}/project/conformance" "${xcheck_extra[@]}" "${BINDING_CLIS[@]}"
 	if ((LARGEDOC_MIB)); then
 		"${here}/utility/largedoc.bash" --mib "${LARGEDOC_MIB}" "${BINDING_CLIS[@]}"
+	fi
+fi
+if [[ -n "${green_tree}" ]]; then
+	if [[ -s "${SHCL_GATE_SKIPS}" ]]; then
+		fEcho_Clean "tree not recorded for the pre-push hook, since this run skipped: $(sort -u "${SHCL_GATE_SKIPS}" | paste -sd ' ')"
+	elif "${here}/utility/green-tree.bash" record "${root}" "${green_tree}"; then
+		fEcho "OK: tree ${green_tree:0:12} recorded; a push of it skips the pre-push gate"
 	fi
 fi
 
@@ -601,3 +625,4 @@ fEcho_Clean
 ##		- 2026-07-22 JC: Installer packages in stage 6 (utility/package.bash: nfpm .deb/.rpm + NSIS setup), before the sums write; --no-package, off under --ci/--quick.
 ##		- 2026-08-19 JC: Stage 0 remote sync ahead of the format stage: fast-forwards when only behind (stash-wrapped), stops on a diverged branch, warns and continues when offline or untracked; --no-sync, off under --ci.
 ##		- 2026-08-26 JC: Dogfood extended to the cross builds via per-os-arch dest lists; the atomic install and dest pick are helpers now.
+##		- 2026-09-14 JC: A run that passes the tests stage records its tree for the pre-push hook; local tool skips are noted in SHCL_GATE_SKIPS and hold it back.
