@@ -90,6 +90,15 @@ def load_cases():
 		if os.path.exists(isch):
 			case["init_schema"] = _read(isch)
 			case["expected_init"] = _read(os.path.join(d, "expected-init.shcl"))
+		case["expected_migrate"] = None
+		case["expected_migrate_diags"] = None
+		emig = os.path.join(d, "expected-migrate.shcl")
+		emigd = os.path.join(d, "expected-migrate-diags.txt")
+		if os.path.exists(emig) != os.path.exists(emigd):
+			raise SystemExit(f"{name}: expected-migrate.shcl and expected-migrate-diags.txt must come as a pair")
+		if os.path.exists(emig):
+			case["expected_migrate"] = _read(emig)
+			case["expected_migrate_diags"] = _read(emigd)
 		cases.append(case)
 	if not cases:
 		raise SystemExit(f"no corpus cases found under {CORPUS}")
@@ -99,6 +108,23 @@ def load_cases():
 def _read(path):
 	with open(path, "rb") as f:
 		return f.read().decode("utf-8")
+
+
+def _diag_text(text):
+	"""The load diagnostics of `text` at Standard, spelled the way `check`
+	prints them: one line per diagnostic, then the summary."""
+	diags = shcl.Document.parse(text).diagnostics()
+	got = ""
+	errors = 0
+	for d in diags:
+		got += f"line {d.line}: {d.severity.name}: {d.code}\n"
+		if d.severity == shcl.Severity.Error:
+			errors += 1
+	if errors > 0:
+		got += f"failed: {len(diags)} diagnostic(s), {errors} error(s)\n"
+	else:
+		got += f"ok ({len(diags)} diagnostic(s))\n"
+	return got
 
 
 def scalar_read(doc, kind, query):
@@ -512,21 +538,23 @@ def main():
 		if any(d.severity == shcl.Severity.Error for d in gdoc.validate(sdoc)):
 			fails.append(f"{case['name']}: generated starter fails its own schema")
 
+	# Migration dimension: migrate on the input must reproduce the golden byte
+	# for byte, and the golden's load diagnostics are pinned beside it, so a
+	# rewrite that no longer loads cannot pass. No fixpoint is required:
+	# migrate keeps the author's layout.
+	for case in cases:
+		if case["expected_migrate"] is None:
+			continue
+		got = shcl.migrate(case["input"])
+		if got != case["expected_migrate"]:
+			fails.append(f"{case['name']}: migrate output differs from expected-migrate.shcl")
+		if _diag_text(got) != case["expected_migrate_diags"]:
+			fails.append(f"{case['name']}: migrated text's diagnostics differ from expected-migrate-diags.txt")
+
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).
 	for case in cases:
-		diags = shcl.Document.parse(case["input"]).diagnostics()
-		got = ""
-		errors = 0
-		for d in diags:
-			got += f"line {d.line}: {d.severity.name}: {d.code}\n"
-			if d.severity == shcl.Severity.Error:
-				errors += 1
-		if errors > 0:
-			got += f"failed: {len(diags)} diagnostic(s), {errors} error(s)\n"
-		else:
-			got += f"ok ({len(diags)} diagnostic(s))\n"
-		if got != case["expected_diags"]:
+		if _diag_text(case["input"]) != case["expected_diags"]:
 			fails.append(f"{case['name']}: diagnostics differ from expected-diags.txt")
 
 	# Schema dimension: golden = the exact `check --schema` stdout at Standard

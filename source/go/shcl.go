@@ -1564,10 +1564,11 @@ type openFence struct {
 // piece whose backslash meant an escape is double-quoted with that escape; a
 // piece that opened a quote it never closed is quoted whole; the
 // `name:[disc]` selector sugar loses its colon, and on a last segment becomes
-// `name: disc`. Everything else - comments, blank lines, raw bodies, layout,
-// a line 2.x could not read - comes through as written. One shape has no
-// spelling here at all: a fence label holding a `#`, which 2.x ran to the end
-// of the line and which now ends at the `#`.
+// `name: disc`, with `disc` spelled the way the formatter spells a value.
+// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
+// could not read - comes through as written. One shape has no spelling here
+// at all: a fence label holding a `#`, which 2.x ran to the end of the line
+// and which now ends at the `#`.
 func Migrate(text string) string {
 	bom := ""
 	if strings.HasPrefix(text, "\ufeff") {
@@ -1733,15 +1734,19 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 					// `name:[disc]` with nothing after it: 2.x read it as
 					// `name: disc`. A bare comma in there was refused as a
 					// bracket array, and an index or the wildcard was refused
-					// as a selector, so those stay as written.
+					// as a selector, so those stay as written. A bare body
+					// moves into a value, where a fence run opens a raw block
+					// and a leading `[` is bracket text, so the emitter spells it.
 					if !quoted && (strings.Contains(body, ",") || indexShape(body) || body == "*") {
 						return rest
 					}
 					var spelling string
-					if logical == body {
+					if logical != body {
+						spelling = quoteText(logical)
+					} else if quoted {
 						spelling = trimWsp(rest[open+1 : close])
 					} else {
-						spelling = quoteText(logical)
+						spelling = emitElement(&element{text: logical})
 					}
 					edits = append(edits, edit{start: colon, end: close + 1, with: ": " + spelling})
 					continue

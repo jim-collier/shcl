@@ -5,7 +5,7 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, generate, parse_datetime, quote_segment};
+use shcl::{Document, Strictness, generate, migrate, parse_datetime, quote_segment};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -49,6 +49,10 @@ struct Case {
 	// Generation dimension (optional): a schema and the golden `init` output.
 	init_schema: Option<String>,
 	expected_init: Option<String>,
+	// Migration dimension (optional): the golden `migrate` output of the input
+	// and the load diagnostics of that output.
+	expected_migrate: Option<String>,
+	expected_migrate_diags: Option<String>,
 }
 
 /// Decode an ops value: \n \t \\ only, others verbatim (mirrors the CLI).
@@ -195,6 +199,8 @@ fn load_cases() -> Vec<Case> {
 			expected_merged: read_opt("expected-merged.shcl"),
 			init_schema: read_opt("init-schema.shcl"),
 			expected_init: read_opt("expected-init.shcl"),
+			expected_migrate: read_opt("expected-migrate.shcl"),
+			expected_migrate_diags: read_opt("expected-migrate-diags.txt"),
 		});
 	}
 	cases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -230,30 +236,37 @@ fn canonical_format_matches_expected() {
 	}
 }
 
+/// The load diagnostics of `text` at Standard, spelled the way `check` prints
+/// them: one line per diagnostic, then the summary.
+fn diag_text(text: &str) -> String {
+	let doc = Document::parse(text);
+	let diags = doc.diagnostics();
+	let mut got = String::new();
+	for d in diags {
+		got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
+	}
+	let errors = diags
+		.iter()
+		.filter(|d| d.severity == shcl::Severity::Error)
+		.count();
+	if errors > 0 {
+		got.push_str(&format!(
+			"failed: {} diagnostic(s), {} error(s)\n",
+			diags.len(),
+			errors
+		));
+	} else {
+		got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
+	}
+	got
+}
+
 #[test]
 fn diagnostics_match_expected() {
 	// Pins count, line, severity, and stable code per case - the same shape
 	// `check` prints to stdout at Standard (its cross-binding contract).
 	for case in load_cases() {
-		let doc = Document::parse(&case.input);
-		let diags = doc.diagnostics();
-		let mut got = String::new();
-		for d in diags {
-			got.push_str(&format!("line {}: {:?}: {}\n", d.line, d.severity, d.code));
-		}
-		let errors = diags
-			.iter()
-			.filter(|d| d.severity == shcl::Severity::Error)
-			.count();
-		if errors > 0 {
-			got.push_str(&format!(
-				"failed: {} diagnostic(s), {} error(s)\n",
-				diags.len(),
-				errors
-			));
-		} else {
-			got.push_str(&format!("ok ({} diagnostic(s))\n", diags.len()));
-		}
+		let got = diag_text(&case.input);
 		assert_eq!(
 			got, case.expected_diags,
 			"{}: diagnostics differ from expected-diags.txt",
@@ -651,6 +664,36 @@ fn layered_merge_matches_expected() {
 		assert_eq!(
 			again, got,
 			"{}: merged output is not a fmt fixpoint",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn migrate_matches_expected() {
+	// Migration dimension: `migrate` on the input must reproduce the golden
+	// byte for byte, and the golden's load diagnostics are pinned beside it,
+	// so a rewrite that no longer loads cannot pass. No fixpoint is required:
+	// migrate keeps the author's layout.
+	for case in load_cases() {
+		let (want, want_diags) = match (&case.expected_migrate, &case.expected_migrate_diags) {
+			(Some(w), Some(d)) => (w, d),
+			(None, None) => continue,
+			_ => panic!(
+				"{}: expected-migrate.shcl and expected-migrate-diags.txt must come as a pair",
+				case.name
+			),
+		};
+		let got = migrate(&case.input);
+		assert_eq!(
+			&got, want,
+			"{}: migrate output differs from expected-migrate.shcl",
+			case.name
+		);
+		assert_eq!(
+			&diag_text(&got),
+			want_diags,
+			"{}: migrated text's diagnostics differ from expected-migrate-diags.txt",
 			case.name
 		);
 	}

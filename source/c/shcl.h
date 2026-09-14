@@ -1662,9 +1662,14 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 					/* name:[disc] with nothing after it: 2.x read it as
 					   `name: disc`. A bare comma in there was refused as a
 					   bracket array, and an index or the wildcard was refused
-					   as a selector, so those stay as written. */
+					   as a selector, so those stay as written. A bare body
+					   moves into a value, where a fence run opens a raw block
+					   and a leading `[` is bracket text, so the emitter spells it. */
 					if (!quoted && (memchr(body.p, ',', body.n) || index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
-					ShclStr spelling = s_eq(logical, body) ? s_trim_wsp(s_slice(rest, open + 1, close)) : quote_text(a, logical);
+					ShclStr spelling;
+					if (!s_eq(logical, body)) spelling = quote_text(a, logical);
+					else if (quoted) spelling = s_trim_wsp(s_slice(rest, open + 1, close));
+					else { ShclElement e; e.text = logical; e.quoted = 0; spelling = emit_element(a, &e); }
 					ShclSB sb = {0}; sb_puts(a, &sb, ": "); sb_putS(a, &sb, spelling);
 					edit_push(a, &edits, colon, close + 1, sb_S(&sb));
 					continue;
@@ -1695,7 +1700,8 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    where the two rule sets disagree: a bare or single-quoted piece whose
    backslash meant an escape is double-quoted with that escape; a piece that
    opened a quote it never closed is quoted whole; the name:[disc] selector
-   sugar loses its colon, and on a last segment becomes `name: disc`.
+   sugar loses its colon, and on a last segment becomes `name: disc`, with
+   `disc` spelled the way the formatter spells a value.
    Everything else - comments, blank lines, raw bodies, layout, a line 2.x
    could not read - comes through as written. One shape has no spelling here
    at all: a fence label holding a `#`, which 2.x ran to the end of the line
