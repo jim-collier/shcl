@@ -374,6 +374,7 @@ for row in "${rows[@]}"; do
 			echo "cli-regress: ${id}: no /dev/full here and the gate requires it" >&2; nBad+=1; continue
 		fi
 		echo "cli-regress: skipping ${id} (no /dev/full here)"
+		echo "cli-regress ${id}" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 		continue
 	fi
 	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${id}" == write-names-the-phase ) ]]; then
