@@ -346,6 +346,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-103900
 		- Closed: 20260910-081017
 
+- 🔘 `migrate` leaves a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding is gone and `migrate --write` exits 0.
+	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` writes the line back unchanged, which is `E019` now, so `k` binds nothing, and `migrate --write` exits 0. The value spelling `k: a\,b` migrates to `k: 'a\,b'`, and `srv:[a\,b].name: 1` migrates to a selector that reads the same, so only the last-segment arm drops it.
+	- Cause: that arm bails when the raw body holds any comma. 2.x refused only a bare one, and a comma behind a backslash never made the brackets an array.
+	- Note: `migrateLine`, `_migrate_line` and `migrate_line` test the raw body the same way. Read, not run.
+	- Note: same arm as 20260909 item 3, and near item 17. Whatever item 17 settles about a backslash in a selector body, the pinned 2.x build bound this line.
+	- Opened: 20260914-150934
+
 ### Features and enhancements
 
 - Code review 20260909:
@@ -449,6 +456,10 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- 🔘 Item 62: three documentation gaps found on the way, none of them a contradiction.
 		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
 		- Opened: 20260909-110100
+
+- 🔘 No UI and UX style guide for the CLI, and README.md points at none.
+	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
+	- Opened: 20260914-145320
 
 ### Done
 
