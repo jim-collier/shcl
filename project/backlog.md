@@ -30,10 +30,15 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 In each section, items are listed approximately from newest to oldest. Inside Done and Canceled, loose items come first and code-review rounds after, each run newest first. "Approximately" is meant: items closed in the same week are often grouped by topic instead, which reads better than exact date order and is not worth unpicking. (Tip: use a clipboard or macro manager to make using these emojis easier.)
 
 - 🔘 Not started
+
 - 🛠️ Started, and/or partially complete
+
 - 🔬 Testing not started or finished
+
 - ✋ Defer
+
 - ✅ Complete
+
 - 🚫 Canceled
 
 Sub-bullets under an item lead with what they are, so an item can be read by skimming the prefixes. The vocabulary: `Reproduced:` what was actually seen, `Cause:` why, `Decided:` a call that had to be made before code, `Fixed:` what changed, `Pinned by:` what now fails if it comes back, `Left alone:` what was looked at and deliberately not touched, `Measured:` one headline number, `Note:` anything else. Finding text written when the item was filed keeps whatever shape it was filed in.
@@ -2714,6 +2719,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ A push to dev ran the whole gate again, then half an hour of hosted CI, even right after a full local run had passed the same files.
+	- Decided: the pre-push hook skips a commit whose tree a run already passed. Hosted CI runs on pushes to `main`, on pull requests, and by hand, and no longer on `dev`.
+	- Fixed: `cicd.bash` records the tree it tested once the tests stage passes, and the hook lets a commit with that tree through. A run with `--quick`, `--no-fmt`, `--no-lint` or a skipped tool records nothing. `SHCL_GATE_RERUN=1` runs the gate anyway.
+	- Pinned by: `check-push-gate.bash`, and `shell-regress.bash` rows for the skip notes. Both were watched to fail.
+	- Opened: 20260914-130413
+	- Closed: 20260914-140600
 
 - ✅ Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
 	- Note: `init` already wrote the block at the bottom under `--no-banner`. The other way a new config file comes into being is `set --write` naming a file that is not there, which created it bare.

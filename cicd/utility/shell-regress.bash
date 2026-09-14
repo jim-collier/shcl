@@ -42,10 +42,12 @@ fBad(){ echo "shell-regress: $1" >&2; nBad+=1 ;}
 
 ##	Is tool $1 here? Under the gate a missing one is a failure rather than a
 ##	skipped block: a runner that loses a tool would otherwise report OK forever.
-##	Locally it stays a skip, since a working copy need not carry every tool.
+##	Locally it stays a skip, since a working copy need not carry every tool, and
+##	is noted in SHCL_GATE_SKIPS so the run is not taken for a full gate.
 fHave(){
 	command -v "$1" > /dev/null 2>&1 && return 0
 	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$1 is missing and the gate requires it"
+	echo "$1" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 	return 1
 }
 
@@ -824,6 +826,14 @@ grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "ci
 for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash cli-regress.bash; do
 	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
 done
+##	The same skips outside the gate have to be noted, or a local run that
+##	skipped one records its tree as though it ran everything. This file is not
+##	in the list, since the grep below would find its own pattern; the fHave
+##	self-test further down covers it.
+for g in check-c-compilers.bash check-locale.bash cli-regress.bash; do
+	grep -qF 'SHCL_GATE_SKIPS:-/dev/null' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer notes a local skip in SHCL_GATE_SKIPS"
+done
+grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
 
 ##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
 ##	its own case arms; a type with no arm is an error there now, but a corpus
@@ -1010,12 +1020,22 @@ fScanUnguardedGrep(){
 ##	The strict switch itself: under the gate a missing tool has to be a failure,
 ##	or a runner that loses one reports OK forever. Locally it stays a skip.
 {
+	## The tool is missing on purpose, so neither probe may note it in the list
+	## of the run this is part of: that would hold back the run's own record.
+	runSkips="${SHCL_GATE_SKIPS:-}"
 	strictBad=0
-	( SHCL_GATE_STRICT=1; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
+	( SHCL_GATE_STRICT=1; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
 	((strictBad == 7)) || fBad "fHave did not fail on a missing tool under the gate"
 	laxBad=0
-	( unset SHCL_GATE_STRICT; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
+	( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
 	((laxBad == 1)) || fBad "fHave did not skip a missing tool outside the gate (exit ${laxBad})"
+	## A skip nobody notes lets the run record its tree, and the pre-push hook
+	## then waves through a commit whose gate never ran that row.
+	: > "${tmpDir}/skips"
+	( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS="${tmpDir}/skips"; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || true
+	grep -qx definitely-not-a-tool "${tmpDir}/skips" || fBad "fHave skipped a missing tool without noting it in SHCL_GATE_SKIPS"
+	[[ -z "${runSkips}" ]] || ! grep -qx definitely-not-a-tool "${runSkips}" \
+		|| fBad "the fHave self-test noted its made-up tool in the run's own skip list"
 }
 
 ##	The escape is assembled rather than written, so the bait for the second scan

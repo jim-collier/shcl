@@ -557,7 +557,12 @@ What it found, at 64 MiB per shape (rerun after the 2.0 memory work):
 
 The responsibility is split rather than duplicate the pipeline:
 
-- The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on push/PR. Minimal permissions, cancels superseded runs, times out.
+- The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on pushes to `main`, on pull requests, and by hand. Minimal permissions, cancels superseded runs, times out.
+
+- `dev` is gated locally, not by the hosted workflow. The pre-push hook runs `cicd.bash --ci` on a commit bound for `main` or `dev`, and skips one whose tree a run already passed. Each run that gets through the tests stage records the tree it tested, unless it ran `--quick`, `--no-fmt` or `--no-lint`, or skipped a missing tool. Before this, one change to `dev` went through a full local run, then the same gate again in the hook, then about half an hour of hosted CI.
+	- A tree hash, not a commit hash. The publish stage commits after the tests run, and a `--no-ff` merge makes a new commit holding the same files.
+	- Making the hook opt-in was rejected, since nothing would then gate a commit that never went through a run. So was keeping hosted runs on `dev` behind a `[skip ci]` marker, which would have to be typed on nearly every push.
+	- The cost: a failure only the runner shows, such as a tool its image lacks or a Windows-only defect, now waits for the next push to `main`. `gh workflow run ci --ref dev` gets a hosted run sooner.
 
 - Everything else (cross-compile, packaging, publish) stays in the local pipeline, `cicd/cicd.bash`, config-driven via `cicd/config.bash`.
 
