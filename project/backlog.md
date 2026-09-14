@@ -29,14 +29,12 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 
 In each section, items are listed approximately from newest to oldest. Inside Done and Canceled, loose items come first and code-review rounds after, each run newest first. "Approximately" is meant: items closed in the same week are often grouped by topic instead, which reads better than exact date order and is not worth unpicking. (Tip: use a clipboard or macro manager to make using these emojis easier.)
 
-| Icon | Status
-| :--: | :--
-| 🔘   | Not started
-| 🛠️   | Started, and/or partially complete
-| 🔬   | Testing not started or finished
-| ✋   | Defer
-| ✅   | Complete
-| 🚫   | Canceled
+- 🔘 Not started
+- 🛠️ Started, and/or partially complete
+- 🔬 Testing not started or finished
+- ✋ Defer
+- ✅ Complete
+- 🚫 Canceled
 
 Sub-bullets under an item lead with what they are, so an item can be read by skimming the prefixes. The vocabulary: `Reproduced:` what was actually seen, `Cause:` why, `Decided:` a call that had to be made before code, `Fixed:` what changed, `Pinned by:` what now fails if it comes back, `Left alone:` what was looked at and deliberately not touched, `Measured:` one headline number, `Note:` anything else. Finding text written when the item was filed keeps whatever shape it was filed in.
 
