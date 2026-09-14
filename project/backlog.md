@@ -450,6 +450,10 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
 		- Opened: 20260909-110100
 
+- 🔘 No UI and UX style guide for the CLI, and README.md points at none.
+	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
+	- Opened: 20260914-145320
+
 ### Done
 
 #### Done - Bugs
