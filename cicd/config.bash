@@ -147,6 +147,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-locale.bash
 	cicd/utility/check-migrate.bash
 	cicd/utility/check-pins.bash
+	cicd/utility/check-push-gate.bash
 	cicd/utility/check-readme.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/cli-regress.bash
@@ -211,6 +212,10 @@ TEST_EXTRA=(
 	## clone - the one piece of that script the toolchain installs used to wall
 	## off from any gate.
 	'cicd/utility/check-install-dev.bash'
+	## The pre-push hook's skip for a tree a run already passed. One that fires
+	## when it should not sends a commit to dev untested, and nothing after it
+	## would say so.
+	'cicd/utility/check-push-gate.bash'
 	## Every C compiler on the box, not just the default one: the hosted runner's
 	## gcc is a different version, and the two disagree about what -Werror
 	## rejects. A round went out green here and red there over exactly that.

@@ -38,6 +38,7 @@ if ! command -v localedef >/dev/null 2>&1 || [[ ! -e /usr/share/i18n/locales/POS
 		exit 1
 	fi
 	echo "check-locale: SKIPPED - localedef or the POSIX locale source is missing"
+	echo check-locale >> "${SHCL_GATE_SKIPS:-/dev/null}"
 	exit 0
 fi
 
