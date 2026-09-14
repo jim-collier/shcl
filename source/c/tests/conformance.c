@@ -329,6 +329,27 @@ static void apply_op_c(shcl_doc *d, char *line) {
 
 static int cmp_str(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
 
+// The load diagnostics of a document at Standard, spelled the way `check`
+// prints them: one line per diagnostic, then the summary. malloc'd; *len gets
+// the length.
+static char *diag_text(shcl_doc *d, size_t *len) {
+	size_t ndiag = shcl_diag_count(d), nerr = 0;
+	char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
+	for (size_t i = 0; i < ndiag; i++) {
+		if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
+		char ln[128]; int w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
+		if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; dj = xrealloc(dj, jc); }
+		memcpy(dj + jl, ln, (size_t)w); jl += (size_t)w;
+	}
+	char sum[96]; int sw;
+	if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", ndiag, nerr);
+	else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", ndiag);
+	if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; dj = xrealloc(dj, jc); }
+	memcpy(dj + jl, sum, (size_t)sw); jl += (size_t)sw;
+	*len = jl;
+	return dj;
+}
+
 // Splits raw TSV/text buffer into an array of NUL-terminated lines (in place).
 static size_t split_lines(char *buf, size_t n, char ***out) {
 	size_t cap = 16, cnt = 0; char **lines = xrealloc(NULL, cap * sizeof *lines);
@@ -401,19 +422,7 @@ int main(int argc, char **argv) {
 		snprintf(path, sizeof path, "%s/%s/expected-diags.txt", corpus, names[ci]); size_t dlen; char *ediags = read_file(path, &dlen);
 		if (!ediags) fail(names[ci], "missing expected-diags.txt");
 		else {
-			size_t ndiag = shcl_diag_count(d), nerr = 0;
-			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
-			for (size_t i = 0; i < ndiag; i++) {
-				if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) nerr++;
-				char ln[128]; int w = snprintf(ln, sizeof ln, "line %zu: %s: %s\n", shcl_diag_line(d, i), shcl_diag_severity(d, i) == SHCL_SEV_ERROR ? "Error" : "Hint", shcl_diag_code(d, i));
-				if (jl + (size_t)w + 1 > jc) { jc = (jl + (size_t)w + 1) * 2; dj = xrealloc(dj, jc); }
-				memcpy(dj + jl, ln, (size_t)w); jl += (size_t)w;
-			}
-			char sum[96]; int sw;
-			if (nerr) sw = snprintf(sum, sizeof sum, "failed: %zu diagnostic(s), %zu error(s)\n", ndiag, nerr);
-			else sw = snprintf(sum, sizeof sum, "ok (%zu diagnostic(s))\n", ndiag);
-			if (jl + (size_t)sw + 1 > jc) { jc = jl + (size_t)sw + 1; dj = xrealloc(dj, jc); }
-			memcpy(dj + jl, sum, (size_t)sw); jl += (size_t)sw;
+			size_t jl; char *dj = diag_text(d, &jl);
 			if (jl != dlen || (dlen && memcmp(dj, ediags, dlen) != 0)) fail(names[ci], "diagnostics differ from expected-diags.txt");
 			free(dj); free(ediags);
 		}
@@ -721,6 +730,23 @@ int main(int argc, char **argv) {
 				shcl_free(isd); free(isch); free(ei);
 			}
 		}
+
+		// Migration dimension (optional): migrate on the input must reproduce the
+		// golden byte for byte, and the golden's load diagnostics are pinned
+		// beside it, so a rewrite that no longer loads cannot pass. No fixpoint
+		// is required: migrate keeps the author's layout.
+		snprintf(path, sizeof path, "%s/%s/expected-migrate.shcl", corpus, names[ci]); size_t mglen; char *emig = read_file(path, &mglen);
+		snprintf(path, sizeof path, "%s/%s/expected-migrate-diags.txt", corpus, names[ci]); size_t mgdlen; char *emigd = read_file(path, &mgdlen);
+		if (!emig != !emigd) fail(names[ci], "expected-migrate.shcl and expected-migrate-diags.txt must come as a pair");
+		else if (emig) {
+			size_t mn = 0; char *mt = shcl_migrate(input, ilen, &mn);
+			if (mn != mglen || (mglen && memcmp(mt, emig, mglen) != 0)) fail(names[ci], "migrate output differs from expected-migrate.shcl");
+			shcl_doc *md = shcl_parse(mt, mn);
+			size_t mjl; char *mj = diag_text(md, &mjl);
+			if (mjl != mgdlen || (mgdlen && memcmp(mj, emigd, mgdlen) != 0)) fail(names[ci], "migrated text's diagnostics differ from expected-migrate-diags.txt");
+			free(mj); shcl_free(md); free(mt);
+		}
+		free(emig); free(emigd);
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
