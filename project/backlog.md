@@ -93,11 +93,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-100100
 		- Closed: 20260910-081017
 
-	- 🔘 Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
+	- ✅ Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
 		- Reproduced in all four. `k:[~~~x]` followed by `after: 1` migrates to `k: ~~~x`, which opens a raw block; `after: 1` is swallowed into it, `paths` reports only `k`, and `check` on the result exits 6 with `E005 unterminated raw block`. `migrate --write` prints the diagnostic and exits 0, so a scripted `shcl migrate --write *.shcl && deploy` succeeds on a destroyed file. A discriminator beginning with `[` loses its own field instead.
 		- Cause: the `name:[disc]` rewrite writes the discriminator text straight into the line rather than through `emit_element`, so nothing quotes a discriminator that opens a fence, a comment or a bracket.
 		- Sites: `lib.rs:1641`, `shcl.go:1779`, `shcl.py:1509`, `shcl.h:1689`.
+		- Fixed: a bare discriminator in the last-segment sugar arm is spelled by the emitter, the way `fmt` spells a value, in `migrate_line` (Rust and C), `migrateLine` (Go) and `_migrate_line` (Python). A quoted or escaped one keeps the spelling it had.
+		- Pinned by: corpus `117-migrate-sugar-spelling`, through an `expected-migrate.shcl` pair that all four conformance runners now check. All four fail the case with the fix backed out. Its migrated text reads the same as 2.x read the input, and migrating it again changes nothing.
+		- Note: not run on Windows.
+		- Note: a discriminator holding a backslash before a comma still loses its binding. It is filed as its own bug, below.
 		- Opened: 20260909-100200
+		- Closed: 20260914-162507
 
 	- 🔘 Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
 		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
