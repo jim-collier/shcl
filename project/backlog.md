@@ -348,10 +348,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 ### Features and enhancements
 
-- 🛠️ A push to dev ran the whole gate again, then half an hour of hosted CI, even right after a full local run had passed the same files.
-	- Decided: the pre-push hook skips a commit whose tree a run already passed. Hosted CI runs on pushes to `main`, on pull requests, and by hand, and no longer on `dev`.
-	- Opened: 20260914-130413
-
 - Code review 20260909:
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
@@ -2723,6 +2719,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ A push to dev ran the whole gate again, then half an hour of hosted CI, even right after a full local run had passed the same files.
+	- Decided: the pre-push hook skips a commit whose tree a run already passed. Hosted CI runs on pushes to `main`, on pull requests, and by hand, and no longer on `dev`.
+	- Fixed: `cicd.bash` records the tree it tested once the tests stage passes, and the hook lets a commit with that tree through. A run with `--quick`, `--no-fmt`, `--no-lint` or a skipped tool records nothing. `SHCL_GATE_RERUN=1` runs the gate anyway.
+	- Pinned by: `check-push-gate.bash`, and `shell-regress.bash` rows for the skip notes. Both were watched to fail.
+	- Opened: 20260914-130413
+	- Closed: 20260914-140600
 
 - ✅ Make sure new config files get written with the SHCL info block at the bottom, unless opted out of. Make sure that comments (including the SHCL info block) are preceeded by '##', whereas disabled settings are just '#'.
 	- Note: `init` already wrote the block at the bottom under `--no-banner`. The other way a new config file comes into being is `set --write` naming a file that is not there, which created it bare.
