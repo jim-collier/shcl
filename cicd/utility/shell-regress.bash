@@ -1020,17 +1020,22 @@ fScanUnguardedGrep(){
 ##	The strict switch itself: under the gate a missing tool has to be a failure,
 ##	or a runner that loses one reports OK forever. Locally it stays a skip.
 {
+	## The tool is missing on purpose, so neither probe may note it in the list
+	## of the run this is part of: that would hold back the run's own record.
+	runSkips="${SHCL_GATE_SKIPS:-}"
 	strictBad=0
-	( SHCL_GATE_STRICT=1; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
+	( SHCL_GATE_STRICT=1; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || strictBad=$?
 	((strictBad == 7)) || fBad "fHave did not fail on a missing tool under the gate"
 	laxBad=0
-	( unset SHCL_GATE_STRICT; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
+	( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || laxBad=$?
 	((laxBad == 1)) || fBad "fHave did not skip a missing tool outside the gate (exit ${laxBad})"
 	## A skip nobody notes lets the run record its tree, and the pre-push hook
 	## then waves through a commit whose gate never ran that row.
 	: > "${tmpDir}/skips"
 	( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS="${tmpDir}/skips"; fBad(){ exit 7 ;}; fHave definitely-not-a-tool ) 2>/dev/null || true
 	grep -qx definitely-not-a-tool "${tmpDir}/skips" || fBad "fHave skipped a missing tool without noting it in SHCL_GATE_SKIPS"
+	[[ -z "${runSkips}" ]] || ! grep -qx definitely-not-a-tool "${runSkips}" \
+		|| fBad "the fHave self-test noted its made-up tool in the run's own skip list"
 }
 
 ##	The escape is assembled rather than written, so the bait for the second scan
