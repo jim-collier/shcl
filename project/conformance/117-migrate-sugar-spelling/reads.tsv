@@ -1,0 +1,4 @@
+query	type	expected	status
+-	lost	1	-
+tilde	string	-	NotFound
+after-tilde	int	1	Good

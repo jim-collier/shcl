@@ -73,6 +73,11 @@ type corpusCase struct {
 	initSchema   string
 	expectedInit string
 	hasInit      bool
+	// Migration dimension (optional): the golden `migrate` output of the input
+	// and the load diagnostics of that output.
+	expectedMigrate      string
+	expectedMigrateDiags string
+	hasMigrate           bool
 }
 
 func loadCases(t *testing.T) []corpusCase {
@@ -159,6 +164,14 @@ func loadCases(t *testing.T) []corpusCase {
 				t.Fatalf("%s: init-schema.shcl without expected-init.shcl", entry.Name())
 			}
 			cc.initSchema, cc.expectedInit, cc.hasInit = string(is), string(ei), true
+		}
+		em, emErr := os.ReadFile(filepath.Join(caseDir, "expected-migrate.shcl"))
+		emd, emdErr := os.ReadFile(filepath.Join(caseDir, "expected-migrate-diags.txt"))
+		if (emErr == nil) != (emdErr == nil) {
+			t.Fatalf("%s: expected-migrate.shcl and expected-migrate-diags.txt must come as a pair", entry.Name())
+		}
+		if emErr == nil {
+			cc.expectedMigrate, cc.expectedMigrateDiags, cc.hasMigrate = string(em), string(emd), true
 		}
 		cases = append(cases, cc)
 	}
@@ -518,26 +531,52 @@ func applyOpTest(t *testing.T, doc *Document, line, at string) {
 	}
 }
 
+// diagText is the load diagnostics of text at Standard, spelled the way
+// `check` prints them: one line per diagnostic, then the summary.
+func diagText(text string) string {
+	diags := Parse(text).Diagnostics()
+	var got strings.Builder
+	errors := 0
+	for _, d := range diags {
+		fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
+		if d.Severity == SeverityError {
+			errors++
+		}
+	}
+	if errors > 0 {
+		fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
+	} else {
+		fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+	}
+	return got.String()
+}
+
 func TestDiagnosticsMatchExpected(t *testing.T) {
 	// Pins count, line, severity, and stable code per case - the same shape
 	// `check` prints to stdout at Standard (its cross-binding contract).
 	for _, c := range loadCases(t) {
-		diags := Parse(c.input).Diagnostics()
-		var got strings.Builder
-		errors := 0
-		for _, d := range diags {
-			fmt.Fprintf(&got, "line %d: %s: %s\n", d.Line, d.Severity, d.Code)
-			if d.Severity == SeverityError {
-				errors++
-			}
+		got := diagText(c.input)
+		if got != c.expectedDiags {
+			t.Errorf("%s: diagnostics differ from expected-diags.txt\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedDiags)
 		}
-		if errors > 0 {
-			fmt.Fprintf(&got, "failed: %d diagnostic(s), %d error(s)\n", len(diags), errors)
-		} else {
-			fmt.Fprintf(&got, "ok (%d diagnostic(s))\n", len(diags))
+	}
+}
+
+func TestMigrateMatchesExpected(t *testing.T) {
+	// Migration dimension: Migrate on the input must reproduce the golden byte
+	// for byte, and the golden's load diagnostics are pinned beside it, so a
+	// rewrite that no longer loads cannot pass. No fixpoint is required:
+	// migrate keeps the author's layout.
+	for _, c := range loadCases(t) {
+		if !c.hasMigrate {
+			continue
 		}
-		if got.String() != c.expectedDiags {
-			t.Errorf("%s: diagnostics differ from expected-diags.txt\ngot:\n%s\nwant:\n%s", c.name, got.String(), c.expectedDiags)
+		got := Migrate(c.input)
+		if got != c.expectedMigrate {
+			t.Errorf("%s: migrate output differs from expected-migrate.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMigrate)
+		}
+		if d := diagText(got); d != c.expectedMigrateDiags {
+			t.Errorf("%s: migrated text's diagnostics differ from expected-migrate-diags.txt\ngot:\n%s\nwant:\n%s", c.name, d, c.expectedMigrateDiags)
 		}
 	}
 }

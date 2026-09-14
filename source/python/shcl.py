@@ -1334,7 +1334,8 @@ def migrate(text: str) -> str:
 	where the two rule sets disagree: a bare or single-quoted piece whose
 	backslash meant an escape is double-quoted with that escape; a piece that
 	opened a quote it never closed is quoted whole; the `name:[disc]` selector
-	sugar loses its colon, and on a last segment becomes `name: disc`.
+	sugar loses its colon, and on a last segment becomes `name: disc`, with
+	`disc` spelled the way the formatter spells a value.
 	Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 	could not read - comes through as written. One shape has no spelling
 	here at all: a fence label holding a `#`, which 2.x ran to the end of the
@@ -1469,13 +1470,17 @@ def _migrate_line(rest, tok, fence):
 					# `name:[disc]` with nothing after it: 2.x read it as
 					# `name: disc`. A bare comma in there was refused as a
 					# bracket array, and an index or the wildcard was refused
-					# as a selector, so those stay as written.
+					# as a selector, so those stay as written. A bare body
+					# moves into a value, where a fence run opens a raw block
+					# and a leading `[` is bracket text, so the emitter spells it.
 					if not quoted and ("," in body or _index_shape(body) or body == "*"):
 						return rest, fence
-					if logical == body:
+					if logical != body:
+						spelling = _quote_text(logical)
+					elif quoted:
 						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8"))
 					else:
-						spelling = _quote_text(logical)
+						spelling = _emit_element(_Element(logical, False))
 					edits.append((colon, close + 1, (": " + spelling).encode("utf-8")))
 					continue
 			elif colon is not None:

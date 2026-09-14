@@ -1438,7 +1438,8 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 /// where the two rule sets disagree: a bare or single-quoted piece whose
 /// backslash meant an escape is double-quoted with that escape; a piece
 /// that opened a quote it never closed is quoted whole; the `name:[disc]`
-/// selector sugar loses its colon, and on a last segment becomes `name: disc`.
+/// selector sugar loses its colon, and on a last segment becomes `name: disc`,
+/// with `disc` spelled the way the formatter spells a value.
 /// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 /// could not read - comes through as written. One shape has no spelling
 /// here at all: a fence label holding a `#`, which 2.x ran to the end of the
@@ -1597,14 +1598,21 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 					// `name:[disc]` with nothing after it: 2.x read it as
 					// `name: disc`. A bare comma in there was refused as a
 					// bracket array, and an index or the wildcard was refused
-					// as a selector, so those stay as written.
+					// as a selector, so those stay as written. A bare body
+					// moves into a value, where a fence run opens a raw block
+					// and a leading `[` is bracket text, so the emitter spells it.
 					if !quoted && (body.contains(',') || index_shape(body) || body == "*") {
 						return rest.to_string();
 					}
-					let spelling = if logical == body {
+					let spelling = if logical != body {
+						quote_text(&logical)
+					} else if quoted {
 						rest[open + 1..close].trim_matches(is_wsp).to_string()
 					} else {
-						quote_text(&logical)
+						emit_element(&Element {
+							text: logical,
+							quoted: false,
+						})
 					};
 					edits.push((c, close + 1, format!(": {}", spelling)));
 					continue;
