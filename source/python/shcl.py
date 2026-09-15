@@ -27,6 +27,7 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Callable
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -141,7 +142,8 @@ class Read:
 	check the schema cannot express can still cite the line. .quoted is True
 	when the read's single scalar element was quoted in the source - the escape
 	hatch that lets a downstream language reserve @null while "@null" stays a
-	plain string. Arrays, raw blocks, and empties leave it False."""
+	plain string. Arrays, raw blocks, and empties leave it False. A written
+	value counts as quoted when a save would quote it."""
 	__slots__ = ("value", "status", "raw", "slots", "line", "quoted")
 	value: Any
 	status: Status
@@ -443,7 +445,7 @@ def _fits_i64(v):
 
 
 def _cell_of(text):
-	return _cell([_Element(text, False)])
+	return _cell([_new_element(text)])
 
 
 def _want(setter, v, kind):
@@ -492,7 +494,7 @@ def _array_cell(texts):
 	# Inline-array value; the empty array is an empty value (reads back Empty).
 	if not texts:
 		return _empty()
-	return _cell([_Element(t, False) for t in texts])
+	return _cell([_new_element(t) for t in texts])
 
 
 def _choose_fence(content):
@@ -1971,7 +1973,7 @@ class _Parser:
 				if found is not None:
 					cur = found
 				else:
-					disc = _cell([_Element(sel[1], False)])
+					disc = _cell([_new_element(sel[1])])
 					cur = self._select_or_create(cur, seg.name, seg.name_src, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
@@ -3368,26 +3370,26 @@ class Document:
 
 	# Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 	# The type gate runs whether or not the path exists, so a wrong-typed call
-	# fails the same way on every document. A path that already resolves
-	# reports what a write there would, so a wildcard is refused whether or not
-	# its slots happen to resolve.
+	# fails the same way on every document. A path that already resolves writes
+	# nothing and reports what a write there would: the path's verdict, so a
+	# wildcard is refused whether or not its slots happen to resolve, and the
+	# value's, which the same setter gives on an empty document.
+	def _set_default(self, path: str, set_: Callable[[Document, str], bool]) -> bool:
+		if not self.exists(path):
+			return set_(self, path)
+		return self.write_reason(path) == WriteReason.Writable and set_(Document.new(), "v")
+
 	def set_int_default(self, path: str, v: int) -> bool:
 		_want("set_int_default", v, "int")
-		if not self.exists(path):
-			return self.set_int(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_int(p, v))
 
 	def set_float_default(self, path: str, v: float) -> bool:
 		_want("set_float_default", v, "float")
-		if not self.exists(path):
-			return self.set_float(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_float(p, v))
 
 	def set_bool_default(self, path: str, v: bool) -> bool:
 		_want("set_bool_default", v, "bool")
-		if not self.exists(path):
-			return self.set_bool(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_bool(p, v))
 
 	def set_literal(self, path: str, text: str) -> bool:
 		"""Bind text at path as value syntax rather than as data.
@@ -3404,56 +3406,38 @@ class Document:
 		return self._set_value(path, v)
 
 	def set_literal_default(self, path: str, text: str) -> bool:
-		if not self.exists(path):
-			return self.set_literal(path, text)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_literal(p, text))
 
 	def set_string_default(self, path: str, v: str) -> bool:
 		_want("set_string_default", v, "str")
-		if not self.exists(path):
-			return self.set_string(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_string(p, v))
 
 	def set_datetime_default(self, path: str, v: ShclDateTime) -> bool:
 		_want("set_datetime_default", v, "datetime")
-		if not self.exists(path):
-			return self.set_datetime(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_datetime(p, v))
 
 	def set_raw_default(self, path: str, content: str, info: str) -> bool:
-		if not self.exists(path):
-			return self.set_raw(path, content, info)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_raw(p, content, info))
 
 	def set_int_array_default(self, path: str, v: list[int]) -> bool:
 		_want_all("set_int_array_default", v, "int")
-		if not self.exists(path):
-			return self.set_int_array(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_int_array(p, v))
 
 	def set_float_array_default(self, path: str, v: list[float]) -> bool:
 		_want_all("set_float_array_default", v, "float")
-		if not self.exists(path):
-			return self.set_float_array(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_float_array(p, v))
 
 	def set_bool_array_default(self, path: str, v: list[bool]) -> bool:
 		_want_all("set_bool_array_default", v, "bool")
-		if not self.exists(path):
-			return self.set_bool_array(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_bool_array(p, v))
 
 	def set_string_array_default(self, path: str, v: list[str]) -> bool:
 		_want_all("set_string_array_default", v, "str")
-		if not self.exists(path):
-			return self.set_string_array(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_string_array(p, v))
 
 	def set_datetime_array_default(self, path: str, v: list[ShclDateTime]) -> bool:
 		_want_all("set_datetime_array_default", v, "datetime")
-		if not self.exists(path):
-			return self.set_datetime_array(path, v)
-		return self.write_reason(path) == WriteReason.Writable
+		return self._set_default(path, lambda d, p: d.set_datetime_array(p, v))
 
 	# Layered loading: overlay a higher-priority document
 
@@ -4652,15 +4636,8 @@ def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None
 _RESERVED = frozenset(" \t\n,:#\"'[]")
 
 
-def _emit_element(e):
-	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
-
-	One addition: an author-quoted element keeps its quotes unless the text reads as
-	one of SHCL's own data formats - quoting those is just spelling (readers type the
-	value either way), but quoting a plain string is the escape and must survive
-	canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-	"""
-	t = e.text
+def _needs_quotes(t):
+	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it."""
 	# isdisjoint iterates the text in C and stops at the first hit; the generator
 	# it replaced made one Python call per character of every element emitted.
 	needs = (not t) or not _RESERVED.isdisjoint(t) or (_fence_open(t) is not None)
@@ -4670,9 +4647,25 @@ def _emit_element(e):
 	# interior whitespace is never trimmed and quoting it would move bytes.
 	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
 		needs = True
-	if not needs and e.quoted and not _is_data_format(e):
-		needs = True
+	return needs
+
+
+def _emit_element(e):
+	"""One addition to minimal quoting: an author-quoted element keeps its quotes unless
+	the text reads as one of SHCL's own data formats - quoting those is just spelling
+	(readers type the value either way), but quoting a plain string is the escape and
+	must survive canonicalization. This clause only ever adds quoting, so a bare emit
+	stays safe.
+	"""
+	t = e.text
+	needs = _needs_quotes(t) or (e.quoted and not _is_data_format(e))
 	return _quote_text(t) if needs else t
+
+
+def _new_element(text):
+	"""An element no source spelled. It counts as quoted when canonical output will
+	quote it, so a read gives the same answer before a save as after one."""
+	return _Element(text, _needs_quotes(text))
 
 
 def _is_data_format(e):
