@@ -83,13 +83,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
-	- 🔘 Item 11: the element cap turns a fence line into a malformed line, and the raw block's body then parses as live bindings with nothing counted lost.
-		- Reproduced in the reference and Python, and read in Go and C. Under `parse_limited` with `max_elements=3`, a fence whose info string is `a,b,c,d` is no longer recognized as a fence. `secrets.password` inside the block flips from NotFound to a live `Good` value, the line after the block is swallowed into a new block, and the lost count stays 0, so `save_file`'s gate passes and `fmt --write` writes it.
-		- Cause: `scan_value` zeroes the value on the cap, and the child-indent fence arm reads that value without checking the capped flag.
-		- Note: `parse_limited` is the documented entry point for input the consumer does not control, so this is the one path where a hostile document is expected.
-		- Sites: `lib.rs:977-981` and `:2746-2750`, `shcl.go:2728`, `shcl.py:2246`, `shcl.h:3069`.
-		- Opened: 20260909-101000
-
 	- 🔘 Item 13: a writer-built element reports `quoted=false`, so a value reads differently before and after a save.
 		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
 		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
@@ -554,6 +547,17 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-100600
 		- Closed: 20260909-151500
+
+	- ✅ Item 11: the element cap turns a fence line into a malformed line, and the raw block's body then parses as live bindings with nothing counted lost.
+		- Reproduced in the reference and Python, and read in Go and C. Under `parse_limited` with `max_elements=3`, a fence whose info string is `a,b,c,d` is no longer recognized as a fence. `secrets.password` inside the block flips from NotFound to a live `Good` value, the line after the block is swallowed into a new block, and the lost count stays 0, so `save_file`'s gate passes and `fmt --write` writes it.
+		- Cause: `scan_value` zeroes the value on the cap, and the child-indent fence arm reads that value without checking the capped flag.
+		- Note: `parse_limited` is the documented entry point for input the consumer does not control, so this is the one path where a hostile document is expected.
+		- Sites: `lib.rs:977-981` and `:2746-2750`, `shcl.go:2728`, `shcl.py:2246`, `shcl.h:3069`.
+		- Decided: a fence past the cap is refused with `E021`, and its block is skipped with it. Reading the info string without the cap would build the element list the cap exists to stop. A fence is told by its leading run alone, so the block can still be found.
+		- Fixed: the child-indent fence arm finds a capped line's fence from its leading run and refuses it with its block. The same-line spelling had the same hole one arm over: its body was skipped, but the closing fence opened a new block that swallowed the rest of the document. The field arm's `E021` refusal now takes a fence's block with it. Both are in `Parser::parse` (Rust), `parser.parse` (Go), `_Parser.parse` (Python) and `parse_body` (C).
+		- Pinned by: the `parse_limited` test in all four runners, over both spellings, which fails without the fix.
+		- Opened: 20260909-101000
+		- Closed: 20260915-123300
 
 	- ✅ Item 12: `_GNU_SOURCE` makes `shcl.h` impossible to compile.
 		- Reproduced. A translation unit that defines `_GNU_SOURCE` and includes the header fails with "conflicting types for 'splice'": the header's own `static ShclStr splice(...)` collides with glibc's `splice()`, which `<fcntl.h>` declares under that macro. The header includes `<fcntl.h>` itself, so no include order helps.

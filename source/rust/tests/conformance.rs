@@ -893,6 +893,20 @@ fn parse_limited_caps() {
 	let doc = Document::parse_limited("v: a, \"open, b\n", Strictness::Standard, 0, 1, 0).unwrap();
 	let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
 	assert_eq!(codes, ["E021"]);
+	// A fence whose info string splits past the cap is refused with its block,
+	// in both spellings, so the body never reads as live lines. Same fixture in
+	// every runner.
+	for text in [
+		"secrets:\n\t```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+		"secrets: ```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+	] {
+		let doc = Document::parse_limited(text, Strictness::Standard, 0, 3, 0).unwrap();
+		let codes: Vec<&str> = doc.diagnostics().iter().map(|d| d.code).collect();
+		assert_eq!(codes, ["E021"], "{text:?}");
+		assert!(!doc.exists("secrets.password"), "{text:?}");
+		assert_eq!(doc.get_int("after"), Ok(1), "{text:?}");
+		assert_eq!(doc.lost_count(), 1, "{text:?}");
+	}
 	// Diagnostic cap: the first N are listed and one E022 tail counts the
 	// rest. Its severity is Error when any unlisted one was, so a scan of the
 	// list for errors still finds one and error_count stays nonzero.
