@@ -869,8 +869,8 @@ static void op_err(size_t lineno, const char *fmt, ...) {
 
 // Apply one write-ops line. A "-default" suffix means "only if absent": values
 // are gated FIRST (a malformed value fails even when the path already exists,
-// matching the reference's argument-evaluation order), then the existence probe
-// decides whether the base op runs. Returns 0 or 1 (error).
+// matching the reference's argument-evaluation order), then the op runs as the
+// base setter or, with the suffix, as its default form. Returns 0 or 1 (error).
 static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno) {
 	size_t nf = 1;
 	for (size_t i = 0; i < linelen; i++) if (line[i] == '\t') nf++;
@@ -911,39 +911,37 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 		fn[0] -= 8; // strip suffix; the base op handles the actual write
 	}
 	#define OP(s) (fn[0] == strlen(s) && memcmp(fp[0], s, fn[0]) == 0)
-	// A present path still answers what a write there would, like the library's
-	// default forms: a wildcard is refused whether or not its slots resolve.
-	#define PRESENT (only_absent && shcl_exists(d, path, plen) && ((wrote = shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE), 1))
+	// A default op is the library's default form, so a path that is already
+	// there still has its value and its path judged the way a write would.
+	#define SET(fn, ...) (only_absent ? fn##_default(d, path, plen, __VA_ARGS__) : fn(d, path, plen, __VA_ARGS__))
 	size_t an = nf > 2 ? nf - 2 : 0; // array element count (fields from index 2)
-	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { op_err(lineno, "bad int: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
-	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { op_err(lineno, "bad float: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
-	else if (OP("bool")) { int x; if (!g_bool(v, vn, &x)) { op_err(lineno, "bad bool: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
-	else if (OP("string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (OP("datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { op_err(lineno, "bad datetime: %.*s", (int)vn, v); rc = 1; } else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
-	else if (OP("literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
-	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad int: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an); free(a); }
-	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad float: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an); free(a); }
-	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_bool(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad bool: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an); free(a); }
+	if (OP("int")) { int64_t x; if (!g_i64(v, vn, &x)) { op_err(lineno, "bad int: %.*s", (int)vn, v); rc = 1; } else wrote = SET(shcl_set_int, x); }
+	else if (OP("float")) { double x; if (!g_f64(v, vn, &x)) { op_err(lineno, "bad float: %.*s", (int)vn, v); rc = 1; } else wrote = SET(shcl_set_float, x); }
+	else if (OP("bool")) { int x; if (!g_bool(v, vn, &x)) { op_err(lineno, "bad bool: %.*s", (int)vn, v); rc = 1; } else wrote = SET(shcl_set_bool, x); }
+	else if (OP("string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = SET(shcl_set_string, b, m); free(b); }
+	else if (OP("datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) { op_err(lineno, "bad datetime: %.*s", (int)vn, v); rc = 1; } else wrote = SET(shcl_set_datetime, &dt); }
+	else if (OP("literal")) { wrote = SET(shcl_set_literal, v, vn); }
+	else if (OP("int-array")) { int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_i64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad int: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc) wrote = SET(shcl_set_int_array, a, an); free(a); }
+	else if (OP("float-array")) { double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_f64(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad float: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc) wrote = SET(shcl_set_float_array, a, an); free(a); }
+	else if (OP("bool-array")) { int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a); memset(a, 0, (an ? an : 1) * sizeof *a); for (size_t i = 0; i < an && !rc; i++) if (!g_bool(fp[2 + i], fn[2 + i], &a[i])) { op_err(lineno, "bad bool: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } if (!rc) wrote = SET(shcl_set_bool_array, a, an); free(a); }
 	else if (OP("string-array")) {
-		if (!PRESENT) {
-			// Zeroed, not just sized: an empty array writes nothing here and the setter
-			// reads nothing, but a compiler that inlines the allocator cannot see that
-			// and calls the slots uninitialized. gcc 13 does, 14 and 15 do not.
-			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
-			memset(sv, 0, (an ? an : 1) * sizeof *sv); memset(sl, 0, (an ? an : 1) * sizeof *sl);
-			for (size_t i = 0; i < an; i++) { char *b = (char *)xrealloc(NULL, fn[2 + i] ? fn[2 + i] : 1); sl[i] = unescape_ops(fp[2 + i], fn[2 + i], b); sv[i] = b; }
-			wrote = shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
-			for (size_t i = 0; i < an; i++) free(sv[i]);
-			free(sv); free(sl);
-		}
+		// Zeroed, not just sized: an empty array writes nothing here and the setter
+		// reads nothing, but a compiler that inlines the allocator cannot see that
+		// and calls the slots uninitialized. gcc 13 does, 14 and 15 do not.
+		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+		memset(sv, 0, (an ? an : 1) * sizeof *sv); memset(sl, 0, (an ? an : 1) * sizeof *sl);
+		for (size_t i = 0; i < an; i++) { char *b = (char *)xrealloc(NULL, fn[2 + i] ? fn[2 + i] : 1); sl[i] = unescape_ops(fp[2 + i], fn[2 + i], b); sv[i] = b; }
+		wrote = SET(shcl_set_string_array, (const char *const *)sv, sl, an);
+		for (size_t i = 0; i < an; i++) free(sv[i]);
+		free(sv); free(sl);
 	}
 	else if (OP("datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) { ShclStr sv; sv.p = fp[2 + i]; sv.n = fn[2 + i]; if (!parse_datetime(&d->arena, sv, &a[i])) { op_err(lineno, "bad datetime: %.*s", (int)fn[2 + i], fp[2 + i]); rc = 1; } }
-		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
+		if (!rc) wrote = SET(shcl_set_datetime_array, a, an);
 		free(a);
 	}
-	else if (OP("raw")) { if (!PRESENT) { const char *cont = nf > 3 ? fp[3] : ""; size_t contn = nf > 3 ? fn[3] : 0; char *b = (char *)xrealloc(NULL, contn ? contn : 1); size_t m = unescape_ops(cont, contn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
+	else if (OP("raw")) { const char *cont = nf > 3 ? fp[3] : ""; size_t contn = nf > 3 ? fn[3] : 0; char *b = (char *)xrealloc(NULL, contn ? contn : 1); size_t m = unescape_ops(cont, contn, b); wrote = SET(shcl_set_raw, b, m, v, vn); free(b); }
 	else if (OP("empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (OP("comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (OP("remove") && !only_absent) shcl_remove(d, path, plen);
@@ -958,7 +956,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 		op_err(lineno, "cannot write %.*s: %s", (int)plen, path, describe_refusal(d, path, plen, unwritable));
 		rc = 1;
 	}
-	#undef PRESENT
+	#undef SET
 	#undef OP
 	free(fp); free(fn);
 	return rc;
