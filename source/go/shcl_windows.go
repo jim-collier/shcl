@@ -18,8 +18,23 @@ import (
 
 func init() {
 	publishFile = windowsPublishFile
+	publishNewFile = windowsPublishNewFile
 	carriedAttrs = windowsCarriedAttrs
 	restoreAttrs = windowsRestoreAttrs
+}
+
+// A move without MOVEFILE_REPLACE_EXISTING refuses a target that exists, which
+// is all a create needs, and it works on volumes with no hard links.
+func windowsPublishNewFile(tmp, target string) error {
+	from, ferr := syscall.UTF16PtrFromString(tmp)
+	if ferr != nil {
+		return ferr
+	}
+	to, terr := syscall.UTF16PtrFromString(target)
+	if terr != nil {
+		return terr
+	}
+	return syscall.MoveFile(from, to)
 }
 
 // ReplaceFile's documented preserve list is creation time, short name, object

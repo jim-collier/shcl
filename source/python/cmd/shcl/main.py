@@ -1199,6 +1199,11 @@ def do_set(o):
 			sys.stderr.write(f"op line {n + 1}: {e}\n")
 			return 1
 	if o.write:
+		# "Create" was decided before the wait on stdin, so a file that turned
+		# up meanwhile is refused rather than replaced.
+		if creating and os.path.exists(file):
+			sys.stderr.write(f"{file}: file exists (it appeared while the edits were read)\n")
+			return EXIT_IO
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
 	return 0
