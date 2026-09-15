@@ -329,6 +329,9 @@ rows=(
 	## there is never given one.
 	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
 	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
+	## 20260909 item 6: the create was decided before the wait on stdin, so a
+	## file made during the wait was replaced by the edits at exit 0.
+	'create-appeared|set --write %C%|@appear|8|-|exists|b: 2\n'
 	## Literal text is read the way a file line is, so a # opens a comment
 	## there too and only what comes before it is written.
 	'literal-hash|set --write --no-banner %C% --set-literal=color=red#ff0000|-|0|-|-|color: red\n'
@@ -402,7 +405,7 @@ for row in "${rows[@]}"; do
 		echo "cli-regress ${id}" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 		continue
 	fi
-	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${id}" == write-names-the-phase ) ]]; then
+	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${id}" == write-names-the-phase ) ]]; then
 		echo "cli-regress: skipping ${id} (POSIX fixture; not judged on windows)"
 		continue
 	fi
@@ -419,6 +422,22 @@ for row in "${rows[@]}"; do
 			@fullout)   "${cli}" "${args[@]}" 2>"${tmpDir}/err" >/dev/full || rc=$?; : >"${tmpDir}/out" ;;
 			@fullerr)   "${cli}" "${args[@]}" >"${tmpDir}/out" 2>/dev/full || rc=$?; : >"${tmpDir}/err" ;;
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
+			## The file turns up while the command waits on stdin: after its
+			## notice and before the ops, so the create has already been decided.
+			@appear)
+				rm -f "${tmpDir}/in.fifo"; mkfifo "${tmpDir}/in.fifo"
+				"${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" <"${tmpDir}/in.fifo" &
+				appearPid=$!
+				exec {fifoFd}>"${tmpDir}/in.fifo"
+				for ((w = 0; w < 200; w++)); do
+					grep -q 'reading write-ops' "${tmpDir}/err" && break
+					sleep 0.05
+				done
+				printf 'b: 2\n' >"${tmpDir}/created.shcl"
+				printf 'int\tk\t1\n' >&"${fifoFd}"
+				exec {fifoFd}>&-
+				wait "${appearPid}" || rc=$?
+				;;
 			*)          printf '%b' "${stdinSpec}" | "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" || rc=$? ;;
 		esac
 		nRun+=1

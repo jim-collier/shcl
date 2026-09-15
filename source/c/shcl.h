@@ -6206,6 +6206,15 @@ static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 	if (!ok) errno = shcl_errno_from_win32(GetLastError());
 	return ok;
 }
+
+// The publish for a save that found nothing at the path, which must not replace
+// a file that turned up since. A move without the replace flag refuses an
+// existing target, and needs no hard links.
+static int shcl_publish_new_file(const wchar_t *tmp, const wchar_t *target) {
+	int ok = MoveFileExW(tmp, target, MOVEFILE_WRITE_THROUGH) != 0;
+	if (!ok) errno = shcl_errno_from_win32(GetLastError());
+	return ok;
+}
 #endif
 
 #ifdef _WIN32
@@ -6398,6 +6407,19 @@ static void shcl_sync_dir(const char *target) {
 	if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
 	free(dir);
 }
+
+// The publish for a save that found nothing at the path, which must not replace
+// a file that turned up since. A hard link fails on anything at the target, so
+// the check and the publish are one step, and the temp name comes off after. A
+// filesystem with no hard links gets a check and a rename, which leaves only
+// that short gap.
+static int shcl_publish_new_file(const char *tmp, const char *target) {
+	if (link(tmp, target) == 0) { (void)unlink(tmp); return 1; }
+	if (errno == EEXIST) return 0;
+	struct stat st;
+	if (lstat(target, &st) == 0) { errno = EEXIST; return 0; }
+	return rename(tmp, target) == 0;
+}
 #endif
 
 // The file tier's write mechanism (also what the CLI's --write uses): a temp
@@ -6498,7 +6520,9 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	ok = (fclose(f) == 0) && ok;
 #ifdef _WIN32
 	if (read_only) SetFileAttributesW(wtarget, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
-	ok = ok && shcl_publish_file(wtmp, wtarget);
+	// Nothing was at the path when the save started, so nothing that turns up
+	// before the publish is written over.
+	ok = ok && (attrs != INVALID_FILE_ATTRIBUTES ? shcl_publish_file(wtmp, wtarget) : shcl_publish_new_file(wtmp, wtarget));
 	if (read_only || carried) {
 		DWORD now = GetFileAttributesW(wtarget);
 		if (now != INVALID_FILE_ATTRIBUTES)
@@ -6506,7 +6530,9 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	}
 	#undef SHCL_CARRIED_ATTRS
 #else
-	ok = ok && rename(tmp, target) == 0;
+	// Nothing was at the path when the save started, so nothing that turns up
+	// before the publish is written over.
+	ok = ok && (have_st ? rename(tmp, target) == 0 : shcl_publish_new_file(tmp, target));
 	if (ok) shcl_sync_dir(target);
 #endif
 	// The unlink must not overwrite the errno the failure left behind.

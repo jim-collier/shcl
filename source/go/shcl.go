@@ -3428,7 +3428,13 @@ func WriteFileAtomic(file, data string) error {
 	if readOnly {
 		setReadOnly(target, false)
 	}
-	rerr := publishFile(tmp, target)
+	// Nothing was at the path when the save started, so nothing that turns up
+	// before the publish is written over.
+	publish := publishFile
+	if existErr != nil {
+		publish = publishNewFile
+	}
+	rerr := publish(tmp, target)
 	if carried != 0 {
 		restoreAttrs(target, carried) // whether or not the publish went through
 	}
@@ -3516,6 +3522,27 @@ func setReadOnly(path string, on bool) {
 // works on its own - the drop-in story is the whole point of the single file,
 // and a tree that took the module gets the better windows publish anyway.
 var publishFile = func(tmp, target string) error { return os.Rename(tmp, target) }
+
+// publishNewFile is the publish for a save that found nothing at the path, which
+// must not replace a file that turned up since. A hard link fails on anything at
+// the target, so the check and the publish are one step, and the temp name comes
+// off after. A filesystem with no hard links gets a check and a rename, which
+// leaves only that short gap. The windows build moves without the replace flag
+// instead.
+var publishNewFile = func(tmp, target string) error {
+	lerr := os.Link(tmp, target)
+	if lerr == nil {
+		os.Remove(tmp)
+		return nil
+	}
+	if errors.Is(lerr, os.ErrExist) {
+		return os.ErrExist
+	}
+	if _, serr := os.Lstat(target); serr == nil {
+		return os.ErrExist
+	}
+	return os.Rename(tmp, target)
+}
 
 // carriedAttrs is the attribute bits a publish will not carry across by itself
 // - hidden and system on windows, nothing anywhere else - and restoreAttrs

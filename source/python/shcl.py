@@ -4319,6 +4319,31 @@ def _publish_file(tmp, target):
 	os.replace(tmp, target)
 
 
+def _publish_new_file(tmp, target):
+	# The publish for a save that found nothing at the path, which must not
+	# replace a file that turned up since. A hard link fails on anything at the
+	# target, so the check and the publish are one step, and the temp name comes
+	# off after. A filesystem with no hard links gets a check and a rename, which
+	# leaves only that short gap. On windows a rename already refuses an
+	# existing target and needs no hard links.
+	if os.name == "nt":
+		os.rename(tmp, target)
+		return
+	try:
+		os.link(tmp, target)
+	except FileExistsError:
+		raise FileExistsError("File exists") from None
+	except OSError:
+		if os.path.lexists(target):
+			raise FileExistsError("File exists") from None
+		os.rename(tmp, target)
+		return
+	try:
+		os.remove(tmp)
+	except OSError:
+		pass
+
+
 def _sync_dir(d):
 	# The rename is a directory change, and the fsync on the file only covered
 	# the file: without this a power cut right after a save can lose the publish
@@ -4494,7 +4519,12 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	if read_only:
 		_set_read_only(target, False)
 	try:
-		_publish_file(tmp, target)
+		# Nothing was at the path when the save started, so nothing that turns
+		# up before the publish is written over.
+		if existing is None:
+			_publish_new_file(tmp, target)
+		else:
+			_publish_file(tmp, target)
 	except OSError as e:
 		if carried:
 			_restore_attrs(target, carried)
