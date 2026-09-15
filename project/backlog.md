@@ -226,6 +226,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Cause: the self-check reads the finished text, and a commented line is not part of it.
 	- Note: `spec.md` Schema-driven generation says a schema whose own `default` breaks its field's constraints fails generation with `V097`, with no required qualifier. The same paragraph ties the check to the finished text, so the sentence reads either way. It wants a decision before a fix.
 	- Note: found while designing 20260909 item 5, which changes how a commented line under a last-segment selector is spelled but not whether it is checked.
+	- Decided: an optional field's bad `default` fails generation with `V097`, the same as a required one.
 	- Opened: 20260914-165617
 
 ### Features and enhancements
@@ -338,6 +339,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - 🔘 Cut 3.0.0.
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
+	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
 	- Opened: 20260914-184244
 
 ### Done
