@@ -1011,6 +1011,21 @@ def main():
 	ldoc = shcl.Document.parse_limited('v: a, "open, b\n', shcl.Strictness.Standard, 0, 1)
 	if [g.code for g in ldoc.diagnostics()] != ["E021"]:
 		raise SystemExit("refused line must report the cap alone")
+	# A fence whose info string splits past the cap is refused with its block,
+	# in both spellings, so the body never reads as live lines. Same fixture in
+	# every runner.
+	for ftext in (
+		"secrets:\n\t```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+		"secrets: ```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+	):
+		ldoc = shcl.Document.parse_limited(ftext, shcl.Strictness.Standard, 0, 3)
+		if (
+			[g.code for g in ldoc.diagnostics()] != ["E021"]
+			or ldoc.exists("secrets.password")
+			or ldoc.get_int("after", None) != 1
+			or ldoc.lost_count() != 1
+		):
+			raise SystemExit(f"{ftext!r}: a capped fence must go with its block")
 	# What a capped parse holds is the text and its lines. The refused line
 	# used to be built in full first (38x the text), so the cap saved nothing.
 	btext = "arr: " + "1, " * 200000 + "\nok: 5\n"
