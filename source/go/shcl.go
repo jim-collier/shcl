@@ -678,8 +678,8 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 // document can make a load fail but never crash the consumer.
 const MaxDepth = 512
 
-// How much of a file's own name the temporary file beside it borrows.
-const tmpNameChars = 64
+// How much of a file's own name the temporary file beside it borrows, in bytes.
+const tmpNameBytes = 64
 
 // ---------------------------------------------------------------------------
 // Tokenizer - the one place the lexical rules live
@@ -3377,14 +3377,19 @@ func WriteFileAtomic(file, data string) error {
 	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
-	// At most the first 64 characters of the name, so the temp's own length is
-	// fixed. Carrying the whole name put the temp over the filesystem's 255 at
-	// a target name in the low 240s - and the exact cut-off moved with the
-	// width of the process id, so the same file saved on one machine and failed
-	// on another. A truncated name can collide; the exclusive create and the
-	// eight attempts already answer that.
-	if r := []rune(base); len(r) > tmpNameChars {
-		base = string(r[:tmpNameChars])
+	// At most the first 64 bytes of the name, cut where a character starts, so the
+	// temp's own length is fixed. Carrying the whole name put the temp over the
+	// filesystem's 255 bytes at a target name in the low 240s - and the exact
+	// cut-off moved with the width of the process id, so the same file saved on one
+	// machine and failed on another. Bytes, not characters: 64 characters of four
+	// bytes each put it back over. A truncated name can collide; the exclusive
+	// create and the eight attempts already answer that.
+	if len(base) > tmpNameBytes {
+		cut := tmpNameBytes
+		for cut > 0 && !utf8.RuneStart(base[cut]) {
+			cut--
+		}
+		base = base[:cut]
 	}
 	// Exclusive create: the name is predictable, so anything already sitting
 	// there - including a symlink someone else planted - must make this fail

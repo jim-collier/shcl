@@ -132,6 +132,10 @@ printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int
 ## low 240s - at a point that moved with the width of the pid.
 longName="$(printf 'l%.0s' $(seq 245)).shcl"
 printf 'k: 1\n' > "${tmpDir}/${longName}"
+## Sixty four-byte characters: 245 bytes, inside the filesystem's limit. The
+## temp name's cap counted characters, so this one could not be rewritten.
+wideName="$(printf '\xf0\x9f\x98\x80%.0s' $(seq 60)).shcl"
+printf 'k: 1\n' > "${tmpDir}/${wideName}"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
 ##	The last field is optional: when given, %C% must hold exactly that text
@@ -153,7 +157,8 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone,
 ##	%C% a path with nothing at it, cleared before every binding's run,
-##	%L% a fresh copy of a file whose basename is 250 characters.
+##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
+##	basename is 245 bytes of four-byte characters.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -253,6 +258,8 @@ rows=(
 	'sugar-migrate-write|migrate --write %W%|-|0||-'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
+	## 20260909 item 16.
+	'wide-name-write|fmt --write %LW%|-|0||-'
 	'sugar-migrate-write-stdin|migrate --write -|-|1|-|cannot rewrite stdin'
 	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
@@ -391,6 +398,11 @@ for row in "${rows[@]}"; do
 		freshLong=1
 		argv="${argv//%L%/${tmpDir}/${longName}}"
 	fi
+	freshWide=0
+	if [[ "${argv}" == *%LW%* ]]; then
+		freshWide=1
+		argv="${argv//%LW%/${tmpDir}/${wideName}}"
+	fi
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
@@ -422,6 +434,7 @@ for row in "${rows[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
 		((freshLong)) && printf 'k: 1\n' > "${tmpDir}/${longName}"
+		((freshWide)) && printf 'k: 1\n' > "${tmpDir}/${wideName}"
 		((freshCreate)) && rm -f "${tmpDir}/created.shcl"
 		rc=0
 		case "${stdinSpec}" in

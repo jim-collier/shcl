@@ -124,8 +124,8 @@ typedef struct { shcl_datetime *values; size_t n; shcl_status status; const shcl
 // fail but never crash the consumer.
 #define SHCL_MAX_DEPTH ((size_t)512)
 
-// How much of a file's own name the temporary file beside it borrows.
-#define SHCL_TMP_NAME_CHARS ((size_t)64)
+// How much of a file's own name the temporary file beside it borrows, in bytes.
+#define SHCL_TMP_NAME_BYTES ((size_t)64)
 
 // A parse never fails on the document's account: bad lines are skipped and
 // diagnosed. It returns NULL only when an allocation failed, which is the one
@@ -6301,19 +6301,17 @@ static const char *shcl_last_sep(const char *target) {
 	return sep;
 }
 
-// At most the first 64 characters of the name, so the temp's own length is
-// fixed. Carrying the whole name put the temp over the filesystem's 255 at a
-// target name in the low 240s - and the exact cut-off moved with the width of
-// the process id, so the same file saved on one machine and failed on another.
-// A truncated name can collide; the exclusive create and the eight attempts
-// already answer that. Counted in codepoints, so the cut never splits one.
+// At most the first 64 bytes of the name, cut where a character starts, so the
+// temp's own length is fixed. Carrying the whole name put the temp over the
+// filesystem's 255 bytes at a target name in the low 240s - and the exact
+// cut-off moved with the width of the process id, so the same file saved on one
+// machine and failed on another. Bytes, not characters: 64 characters of four
+// bytes each put it back over. A truncated name can collide; the exclusive
+// create and the eight attempts already answer that.
 static size_t s_tmp_base(const char *b) {
-	size_t i = 0, n = 0;
-	while (b[i] && n < SHCL_TMP_NAME_CHARS) {
-		i++;
-		while (((unsigned char)b[i] & 0xC0u) == 0x80u) i++;
-		n++;
-	}
+	size_t i = 0;
+	while (b[i] && i < SHCL_TMP_NAME_BYTES) i++;
+	while (i > 0 && ((unsigned char)b[i] & 0xC0u) == 0x80u) i--;
 	return i;
 }
 
