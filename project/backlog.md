@@ -77,12 +77,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
 		- Opened: 20260909-100300
 
-	- 🔘 Item 6: the create path replaces a file that appears between the existence check and the write, at exit 0.
-		- Reproduced with the reference. `set --write FILE` reading its ops from stdin checks whether FILE exists, then waits for the ops, then writes. A file created during the wait is replaced by the info block plus the edits, and the run exits 0. The window is the whole time the command waits on stdin, so this is not a microsecond race.
-		- Note: it also breaks the round's own recorded decision that a file which already exists is never given an info block.
-		- Note: the same window exists in `init` and in any create path that decides "new file" before it writes.
-		- Opened: 20260909-100500
-
 	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
 		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
 		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration cannot tell the difference between "migrated" and "gave up".
@@ -536,6 +530,18 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: not run on Windows.
 		- Opened: 20260909-100400
 		- Closed: 20260914-184244
+
+	- ✅ Item 6: the create path replaces a file that appears between the existence check and the write, at exit 0.
+		- Reproduced with the reference. `set --write FILE` reading its ops from stdin checks whether FILE exists, then waits for the ops, then writes. A file created during the wait is replaced by the info block plus the edits, and the run exits 0. The window is the whole time the command waits on stdin, so this is not a microsecond race.
+		- Note: it also breaks the round's own recorded decision that a file which already exists is never given an info block.
+		- Note: the same window exists in `init` and in any create path that decides "new file" before it writes.
+		- Decided: no new call. A save that found nothing at the path publishes without replacing, so a consumer has no second save to pick between.
+		- Fixed: `set --write` looks again just before the save, with the same test that decided the create, and exits 8 on a file that appeared. That is in `do_set` (Rust, Python, C) and `doSet` (Go). The save itself publishes through a hard link when nothing was at the path, then drops the temp name, so a file that appears after the save looked is reported and kept. A filesystem with no hard links gets a check and a rename. Windows moves without the replace flag. The publish is `publish_new_file` (Rust), `publishNewFile` (Go, with `windowsPublishNewFile`), `_publish_new_file` (Python) and `shcl_publish_new_file` (C).
+		- Pinned by: `cli-regress` row `create-appeared`, which fails on the old build. The save's own refusal was checked in all four with a file created after the save looked, and it kept that file and left no temp behind.
+		- Left alone: `init` prints to stdout and creates no file, so it has no such window.
+		- Note: the windows publish compiles for windows and has not been run there.
+		- Opened: 20260909-100500
+		- Closed: 20260915-121257
 
 	- ✅ Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
 		- Reproduced in all four. `set --set-literal='color=#ff0000'` writes `color:` and exits 0, with the whole value gone. The same text in a file, `color:#ff0000`, reads `#ff0000`.

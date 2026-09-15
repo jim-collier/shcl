@@ -1523,6 +1523,15 @@ fn do_set(o: &Opts) -> u8 {
 		}
 	}
 	if o.write {
+		// "Create" was decided before the wait on stdin, so a file that turned
+		// up meanwhile is refused rather than replaced.
+		if creating && std::path::Path::new(file).exists() {
+			errln!(
+				"{}: file exists (it appeared while the edits were read)",
+				file
+			);
+			return EXIT_IO;
+		}
 		return write_back(&doc, file, o);
 	}
 	out!("{}", doc.to_canonical());

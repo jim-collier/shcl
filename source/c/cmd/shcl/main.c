@@ -1054,7 +1054,13 @@ static int do_set(Opts *o) {
 		}
 	}
 	if (rc == 0) {
-		if (o->write) rc = write_back(d, file, o);
+		// "Create" was decided before the wait on stdin, so a file that turned up
+		// meanwhile is refused rather than replaced.
+		if (o->write && creating && !path_absent(file)) {
+			fprintf(stderr, "%s: file exists (it appeared while the edits were read)\n", file);
+			rc = EXIT_IO;
+		}
+		else if (o->write) rc = write_back(d, file, o);
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
 	free(ops); layered_free(&L); return rc;
