@@ -579,6 +579,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Site: `cicd/utility/lint-report.bash:91`.
 		- Fixed: a second scan, case-sensitive, counts error lines: a compiler `error:` or `error[`, a shellcheck code, a failed Rust or Go test, a panic, a Python traceback and the pipeline's abort line. A log with any of them reports FAILED, never CLEAN.
 		- Verified: the filed log reports FAILED, where the old script says CLEAN. Of the 14 run logs on hand, one changes verdict, and it is a real aborted run from 2026-07-12.
+		- Pinned by: `shell-regress.bash` rows that feed each failure spelling on its own. All seven report CLEAN on the old script.
 		- Opened: 20260909-102200
 		- Closed: 20260914-191700
 
@@ -588,6 +589,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Fixed: both gates say SEEN only when the marker names the newest artifact exactly, and `--file` never moves the marker. The lint gate records only a real timestamp. The flame gate finds a sidecar left under an old role by its timestamp, so the caveat is back.
 		- Verified: with a marker pushed ahead by `--file`, the old scripts say SEEN on a newer artifact and the new ones report it.
 		- Note: the live lint marker held `failrun3`, which kept that gate at SEEN from 2026-09-03 on. The first check after the fix reported that run's one warning.
+		- Pinned by: `shell-regress.bash` rows for both gates, one with a marker moved ahead by `--file` and one with a graph whose sidecar kept its old role. Each fails on the old scripts. A second look must still say SEEN, so neither gate can pass by always reporting.
 		- Opened: 20260909-102300
 		- Closed: 20260914-191700
 

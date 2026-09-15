@@ -582,6 +582,25 @@ fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
 	|| fBad "flame-report.py invented a sample count for a graph that carries none"
 grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
 	|| fBad "the profiler does not record how many samples reached the graph"
+##	20260909 item 24: rotation retagged a graph and left its sidecar under the
+##	old role, so the caveat vanished. And --check --file wrote the named graph's
+##	stamp into the shared marker, so one dated ahead left the gate at SEEN for
+##	good. SEEN needs the marker to name the newest graph; --file never moves it.
+mkdir -p "${tmpDir}/flameseen"
+cp "${tmpDir}/flame/flame_20260101-000000_whole.svg" "${tmpDir}/flameseen/flame_20260103-000000_latest.svg"
+printf '640 1600\n' > "${tmpDir}/flameseen/flame_20260103-000000_frequent.svg.samples"
+fFlameRun "${tmpDir}/flameseen/flame_20260103-000000_latest.svg"
+[[ "${flameOut}" == *"640 of about 1600 samples reached the graph"* ]] \
+	|| fBad "flame-report.py lost the sample count of a graph rotation retagged: ${flameOut@Q}"
+cp "${tmpDir}/flame/flame_20260101-000000_whole.svg" "${tmpDir}/flame_20991231-000000_ahead.svg"
+python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" >/dev/null 2>&1 || true
+python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" --file "${tmpDir}/flame_20991231-000000_ahead.svg" >/dev/null 2>&1 || true
+cp "${tmpDir}/flame/flame_20260101-000000_whole.svg" "${tmpDir}/flameseen/flame_20260104-000000_frequent.svg"
+flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" 2>&1 || true)"
+[[ "${flameOut}" == "NEW flame_20260104-000000_frequent.svg"* ]] \
+	|| fBad "flame-report.py stayed SEEN past a marker a --file run moved: ${flameOut@Q}"
+flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" 2>&1 || true)"
+[[ "${flameOut}" == "SEEN "* ]] || fBad "flame-report.py reported a graph it had already seen: ${flameOut@Q}"
 
 ##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
 ##	command line the pre-push gate's nested run echoes as a warning, so every
@@ -593,6 +612,27 @@ lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run
 printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n' >> "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
 [[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
+##	20260909 item 23: a failed run printed CLEAN, since only rustc's `error[`
+##	counted as a failure. Each spelling on its own must report FAILED.
+for failLine in 'src.c:3:5: error: conflicting types for x' 'SC2086 (info): Double quote to prevent globbing.' \
+	'test result: FAILED. 3 passed; 8 failed' '--- FAIL: TestX (0.00s)' "thread 'main' panicked at src/lib.rs:1:1:" \
+	'Traceback (most recent call last):' '[ CICD ABORTED (exit 1) at line 5: false ]'; do
+	printf 'OK: lint\n%s\n' "${failLine}" > "${tmpDir}/run_20260102-000000.log"
+	lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260102-000000.log" 2>&1 || true)"
+	[[ "${lintOut}" == "FAILED "* ]] || fBad "lint-report.bash called a failed run clean (${failLine}): ${lintOut@Q}"
+done
+##	20260909 item 24: --check --file wrote the named log's stamp into the shared
+##	marker, so a name that sorts high left the gate at SEEN for good.
+mkdir -p "${tmpDir}/lintseen"
+printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260101-000000.log"
+printf 'OK: lint\n' > "${tmpDir}/zzz.log"
+bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" >/dev/null 2>&1 || true
+bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" --file "${tmpDir}/zzz.log" >/dev/null 2>&1 || true
+printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260102-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "CLEAN run_20260102-000000.log"* ]] || fBad "lint-report.bash stayed SEEN past a marker a --file run moved: ${lintOut@Q}"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash reported a log it had already seen: ${lintOut@Q}"
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
