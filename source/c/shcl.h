@@ -6324,7 +6324,7 @@ static const char *shcl_last_sep(const char *target) {
 // create and the eight attempts already answer that.
 static size_t s_tmp_base(const char *b) {
 	size_t i = 0;
-	while (b[i] && i < SHCL_TMP_NAME_BYTES) i++;
+	while (i < SHCL_TMP_NAME_BYTES && b[i]) i++;
 	while (i > 0 && ((unsigned char)b[i] & 0xC0u) == 0x80u) i--;
 	return i;
 }
