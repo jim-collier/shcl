@@ -358,6 +358,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Note: same arm as 20260909 item 3, and near item 17. Whatever item 17 settles about a backslash in a selector body, the pinned 2.x build bound this line.
 	- Opened: 20260914-150934
 
+- 🔘 `init` writes an optional field whose `default` breaks its own constraints as a commented setting at exit 0, where the same field made required is `V097`.
+	- Reproduced in all four. `field: port` with `type: int`, `max: 10` and `default: 99` generates `# port: 99` at exit 0. Uncommenting the line gives a file `check --schema` fails at exit 6. Add `required: yes` and `init` exits 6 with `V097`.
+	- Cause: the self-check reads the finished text, and a commented line is not part of it.
+	- Note: `spec.md` Schema-driven generation says a schema whose own `default` breaks its field's constraints fails generation with `V097`, with no required qualifier. The same paragraph ties the check to the finished text, so the sentence reads either way. It wants a decision before a fix.
+	- Note: found while designing 20260909 item 5, which changes how a commented line under a last-segment selector is spelled but not whether it is checked.
+	- Opened: 20260914-165617
+
 ### Features and enhancements
 
 - Code review 20260909:
