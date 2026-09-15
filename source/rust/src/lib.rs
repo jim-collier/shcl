@@ -906,9 +906,11 @@ fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules, comments: bool) 
 			content_end = pos.min(s.len());
 		}
 	}
-	// 2.x judged a piece quoted by its shape after the scan: a quote at both
-	// ends, the last one not escaped, however many closes sat between.
+	// 2.x judged a value piece quoted by its shape after the scan: a quote at
+	// both ends, the last one not escaped, however many closes sat between. A
+	// selector body had to close right before its `]`, or the line was E014.
 	if rules == Rules::V2
+		&& term == b','
 		&& quote == Quote::Open
 		&& content_end - start >= 2
 		&& s[content_end - 1] == s[start]
@@ -1439,7 +1441,9 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 /// backslash meant an escape is double-quoted with that escape; a piece
 /// that opened a quote it never closed is quoted whole; the `name:[disc]`
 /// selector sugar loses its colon, and on a last segment becomes `name: disc`,
-/// with `disc` spelled the way the formatter spells a value.
+/// with `disc` spelled the way the formatter spells a value. A re-spelled
+/// piece holding a backslash is double-quoted, so the result reads the same
+/// under 2.x and a second run changes nothing.
 /// Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 /// could not read - comes through as written. One shape has no spelling
 /// here at all: a fence label holding a `#`, which 2.x ran to the end of the
@@ -1505,6 +1509,23 @@ fn reads_same(spelling: &str, quoted: bool, logical: &str) -> bool {
 		&& piece_text(&tok.elements[0], spelling) == logical
 }
 
+/// How a re-spelled piece is written. 2.x read a backslash in bare and
+/// single-quoted text as an escape too, and double quotes are where both rule
+/// sets read one alike. So the migrated file reads the same under 2.x, and a
+/// second run changes nothing.
+fn migrate_spelling(logical: &str, bare: bool) -> String {
+	if logical.contains('\\') {
+		quote_double(logical)
+	} else if bare {
+		emit_element(&Element {
+			text: logical.to_string(),
+			quoted: false,
+		})
+	} else {
+		quote_text(logical)
+	}
+}
+
 /// The re-spellings a value's pieces need. Each piece is read the 2.x way
 /// (escapes everywhere, an open quote kept whole, a quote at both ends
 /// making it quoted) and re-spelled only where the current rules would read
@@ -1525,14 +1546,7 @@ fn value_edits(text: &str, tok: &Tokens, edits: &mut Vec<Edit>) {
 		if reads_same(&text[a..b], quoted, &logical) {
 			continue;
 		}
-		let spelling = if quoted || p.quote == Quote::Open {
-			quote_text(&logical)
-		} else {
-			emit_element(&Element {
-				text: logical,
-				quoted: false,
-			})
-		};
+		let spelling = migrate_spelling(&logical, !(quoted || p.quote == Quote::Open));
 		edits.push((a, b, spelling));
 	}
 }
@@ -1605,14 +1619,11 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 						return rest.to_string();
 					}
 					let spelling = if logical != body {
-						quote_text(&logical)
+						migrate_spelling(&logical, false)
 					} else if quoted {
 						rest[open + 1..close].trim_matches(is_wsp).to_string()
 					} else {
-						emit_element(&Element {
-							text: logical,
-							quoted: false,
-						})
+						migrate_spelling(&logical, true)
 					};
 					edits.push((c, close + 1, format!(": {}", spelling)));
 					continue;
@@ -1630,7 +1641,7 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 					(sel.start, sel.end)
 				};
 				if sel.quote != Quote::Double {
-					edits.push((a, b, quote_text(&logical)));
+					edits.push((a, b, migrate_spelling(&logical, false)));
 				}
 			}
 		}
@@ -3937,6 +3948,11 @@ fn quote_text(t: &str) -> String {
 	if !control && !t.contains('\'') && (t.contains('"') || t.contains('\\')) {
 		return format!("'{}'", t);
 	}
+	quote_double(t)
+}
+
+/// The double-quoted spelling, which the 2.x and current rules read alike.
+fn quote_double(t: &str) -> String {
 	let mut out = String::with_capacity(t.len() + 2);
 	out.push('"');
 	for c in t.chars() {
