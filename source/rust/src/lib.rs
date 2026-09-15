@@ -3570,7 +3570,13 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	if read_only {
 		set_read_only(&target, false);
 	}
-	let published = publish_file(&tmp, &target);
+	// Nothing was at the path when the save started, so nothing that turns up
+	// before the publish is written over.
+	let published = if existing.is_some() {
+		publish_file(&tmp, &target)
+	} else {
+		publish_new_file(&tmp, &target)
+	};
 	#[cfg(windows)]
 	if carried != 0 {
 		set_attributes(&target, carried); // whether or not the publish went through
@@ -3690,6 +3696,50 @@ fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Res
 		return Ok(());
 	}
 	std::fs::rename(tmp, target)
+}
+
+/// The publish for a save that found nothing at the path, which must not
+/// replace a file that turned up since. A hard link fails on anything at the
+/// target, so the check and the publish are one step, and the temp name comes
+/// off after. A filesystem with no hard links gets a check and a rename, which
+/// leaves only that short gap.
+#[cfg(not(windows))]
+fn publish_new_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+	match std::fs::hard_link(tmp, target) {
+		Ok(()) => {
+			let _ = std::fs::remove_file(tmp);
+			Ok(())
+		}
+		Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+		Err(_) if std::fs::symlink_metadata(target).is_ok() => {
+			Err(std::io::ErrorKind::AlreadyExists.into())
+		}
+		Err(_) => std::fs::rename(tmp, target),
+	}
+}
+
+/// Windows moves without the replace flag, which refuses an existing target the
+/// same way and needs no hard links.
+#[cfg(windows)]
+fn publish_new_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+	use std::os::windows::ffi::OsStrExt;
+	const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+	}
+	let wide = |p: &std::path::Path| -> Vec<u16> {
+		p.as_os_str()
+			.encode_wide()
+			.chain(std::iter::once(0))
+			.collect()
+	};
+	let (from, to) = (wide(tmp), wide(target));
+	if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } != 0 {
+		Ok(())
+	} else {
+		Err(std::io::Error::last_os_error())
+	}
 }
 
 #[cfg(windows)]

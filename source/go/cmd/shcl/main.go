@@ -1751,6 +1751,12 @@ func doSet(o *opts) int {
 		}
 	}
 	if o.write {
+		// "Create" was decided before the wait on stdin, so a file that turned
+		// up meanwhile is refused rather than replaced.
+		if _, serr := os.Stat(file); creating && serr == nil {
+			fmt.Fprintf(os.Stderr, "%s: file exists (it appeared while the edits were read)\n", file)
+			return exitIO
+		}
 		return writeBack(doc, file, o)
 	}
 	outs(doc.ToCanonical())
