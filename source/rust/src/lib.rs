@@ -552,6 +552,12 @@ pub struct Document {
 	// every lookup scans the parent's children, so a flat document read or
 	// written key by key was quadratic.
 	index: std::sync::OnceLock<Box<NameIndex>>,
+	// Set only on the document a default form checks values against, never on
+	// one a caller holds: set_value stops once the value is judged, so a probe
+	// is never written. Built on the first default form that finds its path
+	// already there.
+	probe: bool,
+	probe_doc: Option<Box<Document>>,
 }
 
 /// The first child of each (parent, name), chained on to the next same-named
@@ -661,8 +667,8 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 /// a load fail but never crash the consumer.
 pub const MAX_DEPTH: usize = 512;
 
-/// How much of a file's own name the temporary file beside it borrows.
-const TMP_NAME_CHARS: usize = 64;
+/// How much of a file's own name the temporary file beside it borrows, in bytes.
+const TMP_NAME_BYTES: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Tokenizer - the one place the lexical rules live
@@ -3058,6 +3064,8 @@ impl Parser {
 			orphans,
 			lost: self.lost,
 			index: std::sync::OnceLock::new(),
+			probe: false,
+			probe_doc: None,
 		}
 	}
 }
@@ -3518,16 +3526,18 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		.file_name()
 		.map(|b| b.to_string_lossy().into_owned())
 		.unwrap_or_else(|| file.to_string());
-	// At most the first 64 characters of the name, so the temp's own length is
-	// fixed. Carrying the whole name put the temp over the filesystem's 255 at
-	// a target name in the low 240s - and the exact cut-off moved with the
-	// width of the process id, so the same file saved on one machine and failed
-	// on another. A truncated name can collide; the exclusive create and the
-	// eight attempts already answer that.
-	let base = base
-		.char_indices()
-		.nth(TMP_NAME_CHARS)
-		.map_or(base.as_str(), |(i, _)| &base[..i]);
+	// At most the first 64 bytes of the name, cut where a character starts, so the
+	// temp's own length is fixed. Carrying the whole name put the temp over the
+	// filesystem's 255 bytes at a target name in the low 240s - and the exact
+	// cut-off moved with the width of the process id, so the same file saved on one
+	// machine and failed on another. Bytes, not characters: 64 characters of four
+	// bytes each put it back over. A truncated name can collide; the exclusive
+	// create and the eight attempts already answer that.
+	let mut cut = base.len().min(TMP_NAME_BYTES);
+	while !base.is_char_boundary(cut) {
+		cut -= 1;
+	}
+	let base = &base[..cut];
 	// Exclusive create: the name is predictable, so anything already sitting
 	// there - including a symlink someone else planted - must make this fail
 	// rather than be written through. Retry past a stale collision, then give
@@ -4587,6 +4597,9 @@ impl Document {
 		if !value_reads_back(&value) {
 			return false;
 		}
+		if self.probe {
+			return true;
+		}
 		match self.place(path) {
 			Some(node) => {
 				self.arena[node].value = value;
@@ -4857,12 +4870,21 @@ impl Document {
 	// A path that already resolves writes nothing and reports what a write
 	// there would: the path's verdict, so a wildcard is refused whether or not
 	// its slots happen to resolve, and the value's, which the same setter gives
-	// on an empty document.
+	// on the probe document.
 	fn set_default(&mut self, path: &str, set: impl Fn(&mut Document, &str) -> bool) -> bool {
 		if !self.exists(path) {
 			return set(self, path);
 		}
-		self.write_reason(path) == WriteReason::Writable && set(&mut Document::new(), "v")
+		if self.write_reason(path) != WriteReason::Writable {
+			return false;
+		}
+		let probe = self.probe_doc.get_or_insert_with(|| {
+			Box::new(Document {
+				probe: true,
+				..Document::new()
+			})
+		});
+		set(probe, "v")
 	}
 	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]

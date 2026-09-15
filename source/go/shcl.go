@@ -566,6 +566,12 @@ type Document struct {
 	// build is guarded and the pointer is atomic; a write is exclusive anyway.
 	index   atomic.Pointer[nameIndex]
 	indexMu sync.Mutex
+	// probe is set only on the document a default form checks values against,
+	// never on one a caller holds: setValue stops once the value is judged, so
+	// a probe is never written. probeDoc is built on the first default form
+	// that finds its path already there.
+	probe    bool
+	probeDoc *Document
 }
 
 // nameIndex is the first child of each (parent, name), chained on to the next
@@ -678,8 +684,8 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 // document can make a load fail but never crash the consumer.
 const MaxDepth = 512
 
-// How much of a file's own name the temporary file beside it borrows.
-const tmpNameChars = 64
+// How much of a file's own name the temporary file beside it borrows, in bytes.
+const tmpNameBytes = 64
 
 // ---------------------------------------------------------------------------
 // Tokenizer - the one place the lexical rules live
@@ -3377,14 +3383,19 @@ func WriteFileAtomic(file, data string) error {
 	}
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
-	// At most the first 64 characters of the name, so the temp's own length is
-	// fixed. Carrying the whole name put the temp over the filesystem's 255 at
-	// a target name in the low 240s - and the exact cut-off moved with the
-	// width of the process id, so the same file saved on one machine and failed
-	// on another. A truncated name can collide; the exclusive create and the
-	// eight attempts already answer that.
-	if r := []rune(base); len(r) > tmpNameChars {
-		base = string(r[:tmpNameChars])
+	// At most the first 64 bytes of the name, cut where a character starts, so the
+	// temp's own length is fixed. Carrying the whole name put the temp over the
+	// filesystem's 255 bytes at a target name in the low 240s - and the exact
+	// cut-off moved with the width of the process id, so the same file saved on one
+	// machine and failed on another. Bytes, not characters: 64 characters of four
+	// bytes each put it back over. A truncated name can collide; the exclusive
+	// create and the eight attempts already answer that.
+	if len(base) > tmpNameBytes {
+		cut := tmpNameBytes
+		for cut > 0 && !utf8.RuneStart(base[cut]) {
+			cut--
+		}
+		base = base[:cut]
 	}
 	// Exclusive create: the name is predictable, so anything already sitting
 	// there - including a symlink someone else planted - must make this fail
@@ -4595,6 +4606,9 @@ func (d *Document) setValue(path string, v value) bool {
 	if !valueReadsBack(&v) {
 		return false
 	}
+	if d.probe {
+		return true
+	}
 	idx, ok := d.place(path)
 	if !ok {
 		return false
@@ -4903,7 +4917,7 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 // A path that already resolves writes nothing and reports what a write there
 // would: the path's verdict, so a wildcard is refused whether or not its slots
-// happen to resolve, and the value's, which the same setter gives on an empty
+// happen to resolve, and the value's, which the same setter gives on the probe
 // document.
 
 // setDefault runs set on the path when nothing is there yet, and otherwise
@@ -4912,7 +4926,14 @@ func (d *Document) setDefault(path string, set func(*Document, string) bool) boo
 	if !d.Exists(path) {
 		return set(d, path)
 	}
-	return d.WriteReason(path) == Writable && set(New(), "v")
+	if d.WriteReason(path) != Writable {
+		return false
+	}
+	if d.probeDoc == nil {
+		d.probeDoc = New()
+		d.probeDoc.probe = true
+	}
+	return set(d.probeDoc, "v")
 }
 
 // SetIntDefault is SetInt only when path has no node yet.
