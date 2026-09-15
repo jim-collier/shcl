@@ -66,17 +66,20 @@ else
 	ts="${nb%%$'\t'*}"; log="${nb#*$'\t'}"
 fi
 
+##	SEEN only when the marker names the newest log exactly. A marker ahead of every
+##	log, from a --file run on an old log or a name that sorts high, used to silence
+##	the gate for good. --file is not the newest log, so it never moves the marker.
 marker="${dir}/.lint-seen"
-if ((check)) && ((! force)); then
+if ((check)) && ((! force)) && [[ -z "$file" ]]; then
 	seen=""; [[ -f "$marker" ]] && seen="$(tr -d '[:space:]' < "$marker" 2>/dev/null)"
-	if [[ -n "$ts" && -n "$seen" && ! "$ts" > "$seen" ]]; then
+	if [[ -n "$ts" && "$ts" == "$seen" ]]; then
 		echo "SEEN $(basename "$log")  (nothing newer than $seen)"; exit 0
 	fi
 fi
 
 ##	Record the marker now (before printing the body) so a caller that pipes stdout
 ##	to head/less and closes it early still records the look.
-if ((check)) && ((! noMark)) && [[ -n "$ts" ]]; then
+if ((check)) && ((! noMark)) && [[ -z "$file" && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
 	printf '%s\n' "$ts" > "$marker" 2>/dev/null || echo "lint-report: could not write marker: $marker" >&2
 fi
 
@@ -88,13 +91,23 @@ fi
 ##	on every run), and the echoed command lines that carry the word: cppcheck's
 ##	`--enable=warning`, and clippy's `-D warnings`, which the pre-push gate's
 ##	nested run echoes during publish and which used to read as a finding.
-warns="$(grep -inE 'warning|rustsec-|vulnerab|unmaintained|yanked|error\[' "$log" 2>/dev/null \
+warns="$(grep -inE 'warning|rustsec-|vulnerab|unmaintained|yanked' "$log" 2>/dev/null \
 	| grep -viE 'generated 0 warnings|: 0 warnings|no warnings|0 warnings emitted' \
 	| grep -viE 'no vulnerabilities found|affected by 0 vulnerabilities|this scan also found|appear to call|^[0-9]+:these vulnerabilities\.$|enable=warning|-D warnings' || true)"
 if [[ -n "$warns" ]]; then n=$(printf '%s\n' "$warns" | grep -c .); else n=0; fi
 
+##	A failed run is never CLEAN. Case-sensitive: each tool spells its failure one
+##	way, and the lower-case words turn up in passing output.
+errs="$(grep -nE '(^|[^[:alnum:]_-])error(\[|:)|\bSC[0-9]{4}\b|test result: FAILED|^--- FAIL|^FAIL\b|panicked at|^Traceback \(most recent call last\)|CICD ABORTED' "$log" 2>/dev/null || true)"
+if [[ -n "$errs" ]]; then e=$(printf '%s\n' "$errs" | grep -c .); else e=0; fi
+
 tag="FLAG"; ((check)) && tag="NEW"
-if ((n)); then
+if ((e)); then
+	echo "FAILED $(basename "$log")  (${e} error line(s), ${n} warning line(s))"
+	echo
+	printf '%s\n' "$errs"
+	if ((n)); then echo; printf '%s\n' "$warns"; fi
+elif ((n)); then
 	echo "${tag} $(basename "$log")  (${n} warning line(s))"
 	echo
 	printf '%s\n' "$warns"
@@ -106,3 +119,5 @@ fi
 ##	Script history:
 ##		- 20260709: Created.
 ##		- 20260902: The echoed `-D warnings` of a nested clippy run is not a finding.
+##		- 20260914: A failed run reports FAILED with its error lines. The marker
+##		  moves only on the newest log, and SEEN needs an exact match.
