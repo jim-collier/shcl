@@ -7015,6 +7015,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		text  string
 	}
 	var blocks []genBlock
+	// An optional field's line goes out commented, with the constraint it came
+	// from, since the self-check below cannot see a comment.
+	type genCommented struct {
+		cons int
+		line string
+	}
+	var commented []genCommented
 	for i := range cons {
 		c := &cons[i]
 		tyname := c.ty
@@ -7079,7 +7086,12 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			prefix = ""
 		}
 		if c.defaultText != nil {
-			fmt.Fprintf(&block, "%s%s: %s\n", prefix, path, genDefaultText(*c.defaultText))
+			line := path + ": " + genDefaultText(*c.defaultText) + "\n"
+			block.WriteString(prefix)
+			block.WriteString(line)
+			if !mustExist(c) {
+				commented = append(commented, genCommented{i, line})
+			}
 		} else {
 			fmt.Fprintf(&block, "%s%s:\n", prefix, path)
 		}
@@ -7176,6 +7188,42 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				Code:     "V097",
 				Message:  "generated value fails the schema that produced it: " + d.Message,
 			})
+		}
+	}
+	// A commented default fails the same check once someone uncomments it. Each
+	// line is read back alone and only its value is checked: uncommenting every
+	// line at once would pair a valued parent with a dotted child, which names
+	// a second instance, and fault a schema whose lines each work.
+	for _, cm := range commented {
+		one := Parse(cm.line)
+		for _, d := range one.diags {
+			if d.Severity == SeverityError {
+				bad = append(bad, Diagnostic{
+					Line:     0,
+					Severity: SeverityError,
+					Code:     "V097",
+					Message:  "generated text does not load: " + d.Code + " " + d.Message,
+				})
+			}
+		}
+		leaf := root
+		for len(one.arena[leaf].children) > 0 {
+			leaf = one.arena[leaf].children[0]
+		}
+		if leaf == root {
+			continue
+		}
+		var found []Diagnostic
+		one.vNode(&cons[cm.cons], leaf, &found)
+		for _, d := range found {
+			if d.Severity == SeverityError {
+				bad = append(bad, Diagnostic{
+					Line:     0,
+					Severity: SeverityError,
+					Code:     "V097",
+					Message:  "generated value fails the schema that produced it: " + d.Message,
+				})
+			}
 		}
 	}
 	if len(bad) > 0 {

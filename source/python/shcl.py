@@ -5805,6 +5805,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# One block per generated line - its desc, annotation and binding - with
 	# the path's names, so the blocks can be laid out in tree order below.
 	blocks = []
+	# An optional field's line goes out commented, with the constraint it came
+	# from, since the self-check below cannot see a comment.
+	commented = []
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
@@ -5844,7 +5847,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		block.append("## " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
 		prefix = "" if must_exist(c) else "# "
 		if c.default_text is not None:
-			block.append(f"{prefix}{path}: {_gen_default_text(c.default_text)}\n")
+			line = f"{path}: {_gen_default_text(c.default_text)}\n"
+			block.append(prefix + line)
+			if not must_exist(c):
+				commented.append((i, line))
 		else:
 			block.append(f"{prefix}{path}:\n")
 		blocks.append((tuple(names_of(c.segs)), "".join(block)))
@@ -5900,6 +5906,29 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		for d in gdoc.validate(schema)
 		if d.severity == Severity.Error and not (d.code == "V007" and _v007_sanctioned(d.message))
 	]
+	# A commented default fails the same check once someone uncomments it. Each
+	# line is read back alone and only its value is checked: uncommenting every
+	# line at once would pair a valued parent with a dotted child, which names
+	# a second instance, and fault a schema whose lines each work.
+	for i, line in commented:
+		one = Document.parse(line)
+		bad += [
+			Diagnostic(0, Severity.Error, f"generated text does not load: {d.code} {d.message}", "V097")
+			for d in one.diagnostics()
+			if d.severity == Severity.Error
+		]
+		leaf = ROOT
+		while one.arena[leaf].children:
+			leaf = one.arena[leaf].children[0]
+		if leaf == ROOT:
+			continue
+		found: list[Diagnostic] = []
+		one._v_node(cons[i], leaf, found)
+		bad += [
+			Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
+			for d in found
+			if d.severity == Severity.Error
+		]
 	if bad:
 		return "", bad
 	return text, []
