@@ -929,9 +929,10 @@ func scanPiece(s string, pos int, term byte, rules Rules, comments bool) (Piece,
 			contentEnd = clamp(pos)
 		}
 	}
-	// 2.x judged a piece quoted by its shape after the scan: a quote at both
-	// ends, the last one not escaped, however many closes sat between.
-	if rules == RulesV2 && quote == QuoteOpen && contentEnd-start >= 2 && s[contentEnd-1] == s[start] {
+	// 2.x judged a value piece quoted by its shape after the scan: a quote at
+	// both ends, the last one not escaped, however many closes sat between. A
+	// selector body had to close right before its `]`, or the line was E014.
+	if rules == RulesV2 && term == ',' && quote == QuoteOpen && contentEnd-start >= 2 && s[contentEnd-1] == s[start] {
 		run := 0
 		for j := contentEnd - 2; j >= start && s[j] == '\\'; j-- {
 			run++
@@ -1564,7 +1565,9 @@ type openFence struct {
 // piece whose backslash meant an escape is double-quoted with that escape; a
 // piece that opened a quote it never closed is quoted whole; the
 // `name:[disc]` selector sugar loses its colon, and on a last segment becomes
-// `name: disc`, with `disc` spelled the way the formatter spells a value.
+// `name: disc`, with `disc` spelled the way the formatter spells a value. A
+// re-spelled piece holding a backslash is double-quoted, so the result reads
+// the same under 2.x and a second run changes nothing.
 // Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 // could not read - comes through as written. One shape has no spelling here
 // at all: a fence label holding a `#`, which 2.x ran to the end of the line
@@ -1639,6 +1642,20 @@ func readsSame(spelling string, quoted bool, logical string) bool {
 		p.Quote != QuoteOpen && pieceText(p, spelling) == logical
 }
 
+// migrateSpelling is how a re-spelled piece is written. 2.x read a backslash
+// in bare and single-quoted text as an escape too, and double quotes are
+// where both rule sets read one alike. So the migrated file reads the same
+// under 2.x, and a second run changes nothing.
+func migrateSpelling(logical string, bare bool) string {
+	if strings.Contains(logical, "\\") {
+		return quoteDouble(logical)
+	}
+	if bare {
+		return emitElement(&element{text: logical})
+	}
+	return quoteText(logical)
+}
+
 // valueEdits collects the re-spellings a value's pieces need. Each piece is
 // read the 2.x way (escapes everywhere, an open quote kept whole, a quote at
 // both ends making it quoted) and re-spelled only where the current rules
@@ -1659,12 +1676,7 @@ func valueEdits(text string, tok *Tokens, edits *[]edit) {
 		if readsSame(text[a:b], quoted, logical) {
 			continue
 		}
-		var spelling string
-		if quoted || p.Quote == QuoteOpen {
-			spelling = quoteText(logical)
-		} else {
-			spelling = emitElement(&element{text: logical})
-		}
+		spelling := migrateSpelling(logical, !(quoted || p.Quote == QuoteOpen))
 		*edits = append(*edits, edit{start: a, end: b, with: spelling})
 	}
 }
@@ -1742,11 +1754,11 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 					}
 					var spelling string
 					if logical != body {
-						spelling = quoteText(logical)
+						spelling = migrateSpelling(logical, false)
 					} else if quoted {
 						spelling = trimWsp(rest[open+1 : close])
 					} else {
-						spelling = emitElement(&element{text: logical})
+						spelling = migrateSpelling(logical, true)
 					}
 					edits = append(edits, edit{start: colon, end: close + 1, with: ": " + spelling})
 					continue
@@ -1766,7 +1778,7 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 					a, b = sel.Start-1, sel.End+1
 				}
 				if sel.Quote != QuoteDouble {
-					edits = append(edits, edit{start: a, end: b, with: quoteText(logical)})
+					edits = append(edits, edit{start: a, end: b, with: migrateSpelling(logical, false)})
 				}
 			}
 		}
@@ -3829,6 +3841,12 @@ func quoteText(t string) string {
 	if !control && !strings.Contains(t, "'") && strings.ContainsAny(t, "\"\\") {
 		return "'" + t + "'"
 	}
+	return quoteDouble(t)
+}
+
+// quoteDouble is the double-quoted spelling, which the 2.x and current rules
+// read alike.
+func quoteDouble(t string) string {
 	// Bytes: every escape written here is ASCII, and a continuation byte is
 	// none of them, so the rest of the text copies through untouched.
 	var out strings.Builder

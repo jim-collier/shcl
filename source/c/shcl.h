@@ -1235,9 +1235,10 @@ static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, int 
 		pos += utf8_len(b);
 		if (!is_wsp(b)) content_end = min_sz(pos, s.n);
 	}
-	/* 2.x judged a piece quoted by its shape after the scan: a quote at both
-	   ends, the last one not escaped, however many closes sat between. */
-	if (rules == SHCL_RULES_V2 && quote == SHCL_QUOTE_OPEN && content_end - start >= 2 && s.p[content_end - 1] == s.p[start]) {
+	/* 2.x judged a value piece quoted by its shape after the scan: a quote at
+	   both ends, the last one not escaped, however many closes sat between. A
+	   selector body had to close right before its `]`, or the line was E014. */
+	if (rules == SHCL_RULES_V2 && term == ',' && quote == SHCL_QUOTE_OPEN && content_end - start >= 2 && s.p[content_end - 1] == s.p[start]) {
 		size_t run = 0;
 		while (run < content_end - 1 - start && s.p[content_end - 2 - run] == '\\') run++;
 		if (run % 2 == 0) {
@@ -1563,6 +1564,7 @@ static ShclStr strip_common(ShclStr line, ShclStr common) {
 // --- Migration: a 2.x document rewritten for the current lexical rules -------
 
 static ShclStr quote_text(ShclArena *a, ShclStr t);
+static ShclStr quote_double(ShclArena *a, ShclStr t);
 static ShclStr emit_element(ShclArena *a, const ShclElement *e);
 static ShclStr escape_name(ShclArena *a, ShclStr name);
 static int index_shape(ShclStr body);
@@ -1605,6 +1607,16 @@ static int reads_same(ShclArena *a, ShclStr spelling, int quoted, ShclStr logica
 		&& s_eq(piece_text(a, &tok.elements[0], spelling), logical);
 }
 
+/* How a re-spelled piece is written. 2.x read a backslash in bare and
+   single-quoted text as an escape too, and double quotes are where both rule
+   sets read one alike. So the migrated file reads the same under 2.x, and a
+   second run changes nothing. */
+static ShclStr migrate_spelling(ShclArena *a, ShclStr logical, int bare) {
+	if (memchr(logical.p, '\\', logical.n)) return quote_double(a, logical);
+	if (bare) { ShclElement e; e.text = logical; e.quoted = 0; return emit_element(a, &e); }
+	return quote_text(a, logical);
+}
+
 /* The re-spellings a value's pieces need. Each piece is read the 2.x way
    (escapes everywhere, an open quote kept whole, a quote at both ends making
    it quoted) and re-spelled only where the current rules would read the same
@@ -1618,10 +1630,7 @@ static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclV
 		if (p->quote == SHCL_QUOTE_NONE && !memchr(raw.p, '\\', raw.n) && raw.n) continue;
 		ShclStr logical = apply_escapes(a, raw);
 		if (reads_same(a, s_slice(text, ea, eb), quoted, logical)) continue;
-		ShclStr spelling;
-		if (quoted || p->quote == SHCL_QUOTE_OPEN) spelling = quote_text(a, logical);
-		else { ShclElement e; e.text = logical; e.quoted = 0; spelling = emit_element(a, &e); }
-		edit_push(a, edits, ea, eb, spelling);
+		edit_push(a, edits, ea, eb, migrate_spelling(a, logical, !(quoted || p->quote == SHCL_QUOTE_OPEN)));
 	}
 }
 
@@ -1671,9 +1680,9 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 					   and a leading `[` is bracket text, so the emitter spells it. */
 					if (!quoted && (memchr(body.p, ',', body.n) || index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
 					ShclStr spelling;
-					if (!s_eq(logical, body)) spelling = quote_text(a, logical);
+					if (!s_eq(logical, body)) spelling = migrate_spelling(a, logical, 0);
 					else if (quoted) spelling = s_trim_wsp(s_slice(rest, open + 1, close));
-					else { ShclElement e; e.text = logical; e.quoted = 0; spelling = emit_element(a, &e); }
+					else spelling = migrate_spelling(a, logical, 1);
 					ShclSB sb = {0}; sb_puts(a, &sb, ": "); sb_putS(a, &sb, spelling);
 					edit_push(a, &edits, colon, close + 1, sb_S(&sb));
 					continue;
@@ -1686,7 +1695,7 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 			}
 			if (!s_eq(logical, body)) {
 				size_t ea = quoted ? sel->start - 1 : sel->start, eb = quoted ? sel->end + 1 : sel->end;
-				if (sel->quote != SHCL_QUOTE_DOUBLE) edit_push(a, &edits, ea, eb, quote_text(a, logical));
+				if (sel->quote != SHCL_QUOTE_DOUBLE) edit_push(a, &edits, ea, eb, migrate_spelling(a, logical, 0));
 			}
 		}
 		if (tok->has_sep) {
@@ -1705,7 +1714,9 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    backslash meant an escape is double-quoted with that escape; a piece that
    opened a quote it never closed is quoted whole; the name:[disc] selector
    sugar loses its colon, and on a last segment becomes `name: disc`, with
-   `disc` spelled the way the formatter spells a value.
+   `disc` spelled the way the formatter spells a value. A re-spelled piece
+   holding a backslash is double-quoted, so the result reads the same under
+   2.x and a second run changes nothing.
    Everything else - comments, blank lines, raw bodies, layout, a line 2.x
    could not read - comes through as written. One shape has no spelling here
    at all: a fence label holding a `#`, which 2.x ran to the end of the line
@@ -4515,6 +4526,12 @@ static ShclStr quote_text(ShclArena *a, ShclStr t) {
 		sb_putc(a, &s, '\''); sb_putS(a, &s, t); sb_putc(a, &s, '\'');
 		return sb_S(&s);
 	}
+	return quote_double(a, t);
+}
+
+/* The double-quoted spelling, which the 2.x and current rules read alike. */
+static ShclStr quote_double(ShclArena *a, ShclStr t) {
+	ShclSB s = {0};
 	sb_reserve(a, &s, t.n + 2);
 	sb_putc(a, &s, '"');
 	for (size_t i = 0; i < t.n; i++) {

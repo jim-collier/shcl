@@ -673,8 +673,9 @@ fn layered_merge_matches_expected() {
 fn migrate_matches_expected() {
 	// Migration dimension: `migrate` on the input must reproduce the golden
 	// byte for byte, and the golden's load diagnostics are pinned beside it,
-	// so a rewrite that no longer loads cannot pass. No fixpoint is required:
-	// migrate keeps the author's layout.
+	// so a rewrite that no longer loads cannot pass. A fmt fixpoint is not
+	// required, since migrate keeps the author's layout; the migrate fixpoint
+	// is checked next.
 	for case in load_cases() {
 		let (want, want_diags) = match (&case.expected_migrate, &case.expected_migrate_diags) {
 			(Some(w), Some(d)) => (w, d),
@@ -694,6 +695,19 @@ fn migrate_matches_expected() {
 			&diag_text(&got),
 			want_diags,
 			"{}: migrated text's diagnostics differ from expected-migrate-diags.txt",
+			case.name
+		);
+	}
+}
+
+#[test]
+fn migrate_is_a_fixpoint() {
+	for case in load_cases() {
+		let once = migrate(&case.input);
+		assert_eq!(
+			migrate(&once),
+			once,
+			"{}: migrate changes its own output",
 			case.name
 		);
 	}
