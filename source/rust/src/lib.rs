@@ -2719,7 +2719,13 @@ impl Parser {
 			if rest.starts_with(['`', '~'])
 				&& let Some(fence) = {
 					tokenize_value(rest, 0, Rules::Current, &mut tok);
-					fence_open(&rest[tok.value.0..tok.value.1])
+					// A capped scan zeroed the value, and a fence is told by its
+					// leading run alone.
+					fence_open(if tok.capped {
+						rest
+					} else {
+						&rest[tok.value.0..tok.value.1]
+					})
 				} {
 				let comment = tok.comment.map(|c| &rest[c..]);
 				let parent = self.resolve_parent(indent);
@@ -2739,6 +2745,19 @@ impl Parser {
 				};
 				if parent == DEAD {
 					self.skip_under_dead(lineno, indent);
+				} else if tok.capped {
+					// The block goes with its line, or the body would read as
+					// live lines.
+					self.refuse(
+						lineno,
+						"E021",
+						format!(
+							"array longer than {} elements; line skipped",
+							self.max_elements
+						),
+						Outcome::Dropped,
+						indent,
+					);
 				} else if let Some(node) = self.bind_block(parent, value, lineno, indent) {
 					self.attach_trivia(node, comment);
 				}
@@ -2884,6 +2903,11 @@ impl Parser {
 					Outcome::Dropped,
 					indent,
 				);
+				// A fence's body goes with its line, or it would read as live
+				// lines.
+				if let Some(fence) = fence_open(trim_wsp(&rest[tok.value.0..])) {
+					next = self.consume_raw(&lines, i + 1, lineno, indent, fence).1;
+				}
 				i = next;
 				continue;
 			}

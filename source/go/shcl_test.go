@@ -1549,6 +1549,27 @@ func TestParseLimitedCaps(t *testing.T) {
 	if len(doc.Diagnostics()) != 1 || doc.Diagnostics()[0].Code != "E021" {
 		t.Fatalf("refused line: %v", doc.Diagnostics())
 	}
+	// A fence whose info string splits past the cap is refused with its block,
+	// in both spellings, so the body never reads as live lines. Same fixture in
+	// every runner.
+	for _, text := range []string{
+		"secrets:\n\t```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+		"secrets: ```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+	} {
+		doc, _ = ParseLimited(text, Standard, 0, 3, 0)
+		if len(doc.Diagnostics()) != 1 || doc.Diagnostics()[0].Code != "E021" {
+			t.Fatalf("%q: %v", text, doc.Diagnostics())
+		}
+		if doc.Exists("secrets.password") {
+			t.Fatalf("%q: the body bound", text)
+		}
+		if v, st := doc.GetInt("after"); v != 1 || st != Good {
+			t.Fatalf("%q: after: %d %v", text, v, st)
+		}
+		if doc.LostCount() != 1 {
+			t.Fatalf("%q: lost %d", text, doc.LostCount())
+		}
+	}
 	// Diagnostic cap: the first N are listed and one E022 tail counts the
 	// rest. Its severity is Error when any unlisted one was, so a scan of the
 	// list for errors still finds one and ErrorCount stays nonzero.

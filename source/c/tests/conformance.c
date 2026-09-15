@@ -971,6 +971,21 @@ int main(int argc, char **argv) {
 		ld = shcl_parse_limited(qt, strlen(qt), SHCL_STANDARD, 0, 1, 0);
 		if (shcl_diag_count(ld) != 1 || strcmp(shcl_diag_code(ld, 0), "E021") != 0) fail("parse_limited", "refused line must report the cap alone");
 		shcl_free(ld);
+		// A fence whose info string splits past the cap is refused with its
+		// block, in both spellings, so the body never reads as live lines. Same
+		// fixture in every runner.
+		const char *fences[] = {
+			"secrets:\n\t```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+			"secrets: ```a,b,c,d\n\tpassword: hunter2\n\t```\nafter: 1\n",
+		};
+		for (size_t fi = 0; fi < 2; fi++) {
+			ld = shcl_parse_limited(fences[fi], strlen(fences[fi]), SHCL_STANDARD, 0, 3, 0);
+			if (shcl_diag_count(ld) != 1 || strcmp(shcl_diag_code(ld, 0), "E021") != 0) fail("parse_limited", "a capped fence must report the cap alone");
+			if (shcl_exists(ld, "secrets.password", 16)) fail("parse_limited", "a capped fence's body bound");
+			if (shcl_get_int_or(ld, "after", 5, 0) != 1) fail("parse_limited", "the line after a capped fence's block is gone");
+			if (shcl_lost_count(ld) != 1) fail("parse_limited", "a capped fence must count one lost");
+			shcl_free(ld);
+		}
 		// Diagnostic cap: the first N are listed and one E022 tail counts the
 		// rest. Its severity is Error when any unlisted one was, so a scan of
 		// the list for errors still finds one and error_count stays nonzero.

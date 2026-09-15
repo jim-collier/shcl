@@ -3057,7 +3057,9 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		ShclFence f; f.ok = 0; f.ch = 0; f.len = 0; f.info = s_empty();
 		if (rest.p[0] == '`' || rest.p[0] == '~') {
 			tokenize_value(P.tmp, rest, 0, SHCL_RULES_CURRENT, &tok);
-			f = fence_open(s_slice(rest, tok.value_start, tok.value_end));
+			/* A capped scan zeroed the value, and a fence is told by its leading
+			   run alone. */
+			f = fence_open(tok.capped ? rest : s_slice(rest, tok.value_start, tok.value_end));
 		}
 		if (f.ok) {
 			ShclStr fcomment = tok.has_comment ? s_slice(rest, tok.comment, rest.n) : s_empty();
@@ -3068,6 +3070,12 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			   bindings and the closing fence would open a second block. */
 			if (!resolved) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i = next; continue; }
 			if (parent == DEAD) skip_under_dead(&P, lineno, indent);
+			else if (tok.capped) {
+				/* The block goes with its line, or the body would read as live
+				   lines. */
+				ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
+				p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
+			}
 			else {
 				size_t bnode = bind_block(&P, parent, val, lineno, indent);
 				if (bnode != (size_t)-1) attach_trivia(&P, bnode, fcomment);
@@ -3129,6 +3137,9 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (tok.capped) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
 			p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
+			/* A fence's body goes with its line, or it would read as live lines. */
+			ShclFence cf = fence_open(s_trim_wsp(s_slice(rest, tok.value_start, rest.n)));
+			if (cf.ok) (void)consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, cf, &next);
 			i = next; continue;
 		}
 		/* A selector body takes the same open-quote rule as a value element,
