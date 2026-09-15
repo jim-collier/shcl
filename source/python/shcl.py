@@ -2218,7 +2218,9 @@ class _Parser:
 			fence = None
 			if rest[0] == "`" or rest[0] == "~":
 				tokenize_value(rest, 0, Rules.CURRENT, tok)
-				fence = _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8"))
+				# A capped scan zeroed the value, and a fence is told by its
+				# leading run alone.
+				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8"))
 			if fence is not None:
 				comment = tok.src[tok.comment:].decode("utf-8") if tok.comment is not None else ""
 				parent = self._resolve_parent(indent)
@@ -2231,6 +2233,10 @@ class _Parser:
 					continue
 				if parent == DEAD:
 					self._skip_under_dead(lineno, indent)
+				elif tok.capped:
+					# The block goes with its line, or the body would read as live
+					# lines.
+					self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
 				else:
 					node = self._bind_block(parent, value, lineno, indent)
 					if node is not None:
@@ -2314,6 +2320,10 @@ class _Parser:
 			# built either.
 			if tok.capped:
 				self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
+				# A fence's body goes with its line, or it would read as live lines.
+				cfence = _fence_open(_trim_wsp(tok.src[tok.value[0]:].decode("utf-8")))
+				if cfence is not None:
+					nxt = self._consume_raw(lines, i + 1, lineno, indent, cfence)[1]
 				i = nxt
 				continue
 			# A selector body takes the same open-quote rule as a value

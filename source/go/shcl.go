@@ -2698,7 +2698,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// and its info string are the value; a comment may follow them.
 		if rest[0] == '`' || rest[0] == '~' {
 			TokenizeValue(rest, 0, RulesCurrent, &tok)
-			if ch, length, info, ok := fenceOpen(rest[tok.Value[0]:tok.Value[1]]); ok {
+			// A capped scan zeroed the value, and a fence is told by its leading
+			// run alone.
+			fenceText := rest[tok.Value[0]:tok.Value[1]]
+			if tok.Capped {
+				fenceText = rest
+			}
+			if ch, length, info, ok := fenceOpen(fenceText); ok {
 				comment := ""
 				if tok.Comment >= 0 {
 					comment = rest[tok.Comment:]
@@ -2714,6 +2720,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				}
 				if parent == dead {
 					p.skipUnderDead(lineno, indent)
+				} else if tok.Capped {
+					// The block goes with its line, or the body would read as live
+					// lines.
+					p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 				} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
 					p.attachTrivia(node, comment)
 				}
@@ -2814,6 +2824,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// The scan stopped at the cap, so nothing past it was built either.
 		if tok.Capped {
 			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
+			// A fence's body goes with its line, or it would read as live lines.
+			if ch, length, info, ok := fenceOpen(trimWsp(rest[tok.Value[0]:])); ok {
+				_, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
+			}
 			i = next
 			continue
 		}
