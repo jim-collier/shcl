@@ -51,8 +51,14 @@ def fKept(path: Path) -> tuple[int, int] | None:
 	##	drops a sample whose leaf is inside libc rather than truncating it and
 	##	the graph itself carries no trace of that. An older graph has no such
 	##	file, and says nothing rather than guessing.
+	##	Rotation retags the SVG and leaves the sidecar under its old role, so a
+	##	missing one is looked for by the timestamp in the name.
+	sidecar = Path(f"{path}.samples")
+	m = NAME_RE.match(path.name)
+	if not sidecar.is_file() and m:
+		sidecar = next(iter(sorted(path.parent.glob(f"flame_{m.group(1)}_*.svg.samples"))), sidecar)
 	try:
-		got, want = Path(f"{path}.samples").read_text().split()[:2]
+		got, want = sidecar.read_text().split()[:2]
 		return int(got), int(want)
 	except (OSError, ValueError):
 		return None
@@ -240,14 +246,16 @@ def main() -> None:
 		ts, name = nb
 		path = a.dir / name
 
+	##	SEEN only when the marker names the newest graph exactly, and --file never
+	##	moves it: a marker ahead of every graph used to silence the gate for good.
 	marker = a.dir / SEEN_FILE
-	if a.check and not a.force:
+	if a.check and not a.force and not a.file:
 		seen = ""
 		try:
 			seen = marker.read_text().strip()
 		except OSError:
 			pass
-		if ts and seen and ts <= seen:
+		if ts and ts == seen:
 			print(f"SEEN {name}  (nothing newer than {seen})")
 			return
 
@@ -263,7 +271,7 @@ def main() -> None:
 	print()
 	fAnalyze(total, frames, a.top)
 
-	if a.check and not a.no_mark and ts:
+	if a.check and not a.no_mark and not a.file and ts:
 		try:
 			marker.write_text(ts + "\n")
 		except OSError as e:
@@ -279,3 +287,5 @@ if __name__ == "__main__":
 ##		- 20260829: Regexes compiled once; rows indexed and bisected instead of scanned per frame.
 ##		- 2026-09-02 JC: A truncated or reshaped graph skips at exit 2 instead of
 ##		  reporting a fraction of it; the row height is read off the rows.
+##		- 20260914: The marker moves only on the newest graph, and SEEN needs an
+##		  exact match. A sidecar left under an old role is found by timestamp.

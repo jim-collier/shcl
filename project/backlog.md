@@ -150,18 +150,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
 		- Opened: 20260909-102100
 
-	- 🔘 Item 23: `lint-report.bash` reports a failed run as CLEAN.
-		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
-		- Cause: the scan matches `warning`, `rustsec-`, `vulnerab`, `unmaintained`, `yanked` and `error[`. Only rustc's bracketed error-code form is an error spelling; a gcc error, a shellcheck finding, a failed test and the pipeline's own abort line all pass through.
-		- Note: this is one of the two session-startup gates, so it is the thing that would tell someone a broken build is fine.
-		- Site: `cicd/utility/lint-report.bash:91`.
-		- Opened: 20260909-102200
-
-	- 🔘 Item 24: both startup gates are silenced permanently by a marker timestamp ahead of every artifact.
-		- Reproduced. `--check --file` writes the named log's timestamp into the shared marker, so pointing either gate at an old or arbitrary log once leaves the marker ahead of everything and both gates report SEEN from then on.
-		- Note: `flame-report.py`'s drop-share caveat is missing in the live repo right now, for a related reason - gfs rotation retagged the frequent svg to `_latest` and left its `.samples` sidecar behind, so every percentage currently reads as a share of all CPU rather than of the survivors.
-		- Opened: 20260909-102300
-
 	- 🔘 Item 25: `check-migrate.bash` passes with four of `migrate`'s six rules deleted.
 		- Reproduced. The sugar rewrite in both halves, the single-quoted-name re-spelling and the whole-line carriage-return rule can each be removed from `migrate` and the gate still reports OK at its real settings.
 		- Cause: three separate holes. The only sugar corpus case is skipped because 2.x hints `E019` on it; the gate compares reads only, never diagnostics, exit code or lost count; and the skip predicate is unanchored and whole-file, so one plain comment line skips a whole document - 422 of 615 documents are skipped per run, and in one configuration 114 of 115.
@@ -210,11 +198,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
 		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
 		- Opened: 20260909-103400
-
-	- 🔘 Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
-		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.
-		- Note: `design.md:98` says it "prints the same help text but as a usage error" and names it as one of the two deliberately unpadded outputs.
-		- Opened: 20260909-103500
 
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that cannot be nonzero.
@@ -360,6 +343,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 ### Done
 
 #### Done - Bugs
+
+- ✅ The PSScriptAnalyzer tool pin reported drift on every run, so a real drift would read the same.
+	- Reproduced: the run log's warning shows the version expression itself where the version belongs. The other eleven pins matched.
+	- Cause: the pin check runs its command from an unquoted expansion, which passes the quotes around the PowerShell expression as literal text. `pwsh` took the expression as a string and printed it.
+	- Fixed: the check runs each pin's command through `bash -c`. PSScriptAnalyzer now matches 1.25.0, and the other eleven pins report the same versions as before.
+	- Note: found through the lint startup gate once 20260909 item 24 stopped it saying SEEN.
+	- Opened: n/a
+	- Closed: 20260914-191849
 
 - ✅ The round went out green locally and red on the hosted runner: gcc 13 rejected what gcc 14 and 15 accept.
 	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator cannot see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
@@ -510,7 +501,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 14, 30 and 31 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 14, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -581,6 +572,25 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-101300
 		- Closed: 20260910-095333
 
+	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
+		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
+		- Cause: the scan matches `warning`, `rustsec-`, `vulnerab`, `unmaintained`, `yanked` and `error[`. Only rustc's bracketed error-code form is an error spelling; a gcc error, a shellcheck finding, a failed test and the pipeline's own abort line all pass through.
+		- Note: this is one of the two session-startup gates, so it is the thing that would tell someone a broken build is fine.
+		- Site: `cicd/utility/lint-report.bash:91`.
+		- Fixed: a second scan, case-sensitive, counts error lines: a compiler `error:` or `error[`, a shellcheck code, a failed Rust or Go test, a panic, a Python traceback and the pipeline's abort line. A log with any of them reports FAILED, never CLEAN.
+		- Verified: the filed log reports FAILED, where the old script says CLEAN. Of the 14 run logs on hand, one changes verdict, and it is a real aborted run from 2026-07-12.
+		- Opened: 20260909-102200
+		- Closed: 20260914-191700
+
+	- ✅ Item 24: both startup gates are silenced permanently by a marker timestamp ahead of every artifact.
+		- Reproduced. `--check --file` writes the named log's timestamp into the shared marker, so pointing either gate at an old or arbitrary log once leaves the marker ahead of everything and both gates report SEEN from then on.
+		- Note: `flame-report.py`'s drop-share caveat is missing in the live repo right now, for a related reason - gfs rotation retagged the frequent svg to `_latest` and left its `.samples` sidecar behind, so every percentage currently reads as a share of all CPU rather than of the survivors.
+		- Fixed: both gates say SEEN only when the marker names the newest artifact exactly, and `--file` never moves the marker. The lint gate records only a real timestamp. The flame gate finds a sidecar left under an old role by its timestamp, so the caveat is back.
+		- Verified: with a marker pushed ahead by `--file`, the old scripts say SEEN on a newer artifact and the new ones report it.
+		- Note: the live lint marker held `failrun3`, which kept that gate at SEEN from 2026-09-03 on. The first check after the fix reported that run's one warning.
+		- Opened: 20260909-102300
+		- Closed: 20260914-191700
+
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
 		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
@@ -599,6 +609,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-103000
 		- Closed: 20260909-151500
+
+	- ✅ Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
+		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.
+		- Note: `design.md:98` says it "prints the same help text but as a usage error" and names it as one of the two deliberately unpadded outputs.
+		- Decided: the code is right and `design.md` was stale. The 20260802 round's item 28 made a bare run print the help and exit 0, one convention with `shcl help`, and that went in on 2026-08-18. The usage-error sentence came from the 2026-08-04 padding item, before it. The exit code has flipped once already, so it stays.
+		- Fixed: `design.md` says a bare run prints the padded help and exits 0, and names `version` as the one unpadded output.
+		- Opened: 20260909-103500
+		- Closed: 20260914-191700
 
 - Code review 20260905:
 
@@ -3012,6 +3030,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Both are stdout, so both are byte-for-byte contracts across the four CLIs, and both spellings are pinned in the differential check.
 	- Done: `help`, `about` and `donate` now print a blank line above and below, so the block stands clear of the prompts either side. Bare `shcl` keeps printing the same help text unpadded, since it is a usage error rather than something asked for, and `version` stays a bare line for capture.
 	- Found en route: C's option-skip list was missing `--set-literal`, so `shcl get --set-literal -h FILE PATH` answered with the help text where the other three read the value. Predated this change; fixed with it.
+	- Note: superseded on bare `shcl` by the 20260802 round's item 28, which went in on 2026-08-18. A bare run prints the padded help and exits 0, like `shcl help`.
 	- Opened: n/a
 	- Closed: 20260804-170930
 
