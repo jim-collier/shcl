@@ -153,6 +153,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.
+
 - `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one.
 
 - `init` no longer writes a starter config that fails its own `check`. A schema path whose last segment selects by value, with a `default`, came out as `a[b]: hello`, and a value after that selector is ignored, so the file loaded with `E002` and `check` exited 6 on it. Such a line is now the bare path carrying the default (`env[prod]` with `default: prod` gives `env: prod`), and a default that names a different instance than the path selects is a `V097` fault. The self-check reads the generated text's load as well as its validation, so a line that does not load is refused too.
