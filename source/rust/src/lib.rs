@@ -6668,12 +6668,16 @@ fn v007_sanctioned(message: &str) -> bool {
 /// parent gets materialized by another live line is generated too, in dotted
 /// form - otherwise the file would fail the very schema that produced it -
 /// and remaining wildcard or `[#N]` paths (which cannot be materialized) are
-/// listed in a trailing comment block. The output always loads clean and
+/// listed in a trailing comment block. A path whose last segment selects by
+/// value is written without that selector when it has a `default`, since a
+/// value after the selector would be ignored: `env[prod]` with `default: prod`
+/// is `env: prod`. The output always loads clean and
 /// validates clean against its schema, except a repeat lower bound of 2+
 /// (identical generated lines would merge, so the shortfall is reported).
-/// The promise is checked against the finished text, so a schema whose own
-/// `default` breaks its field's constraints is a fault (`V097`) instead of a
-/// starter config that fails the first time it is checked.
+/// The promise is checked against the finished text, both its load and its
+/// validation, so a line that does not load, or a schema whose own `default`
+/// breaks its field's constraints, is a fault (`V097`) instead of a starter
+/// config that fails the first time it is checked.
 /// A footer naming the format and pointing at the spec is written last unless
 /// `no_banner`; the flag is negative so leaving it alone writes the footer.
 /// Err = schema faults (V09x), same as `validate`/`check --schema`.
@@ -6810,7 +6814,21 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// A name carrying a newline has no verbatim spelling on a binding line;
 		// the segment renderer escapes it, so such a path goes through there
 		// whether or not it was filled.
-		let path = if fill[i] || under_valued_parent || c.path.contains('\n') {
+		// A value after a last-segment selector is ignored, so a default there
+		// goes on the bare path: the line materializes the instance, and
+		// validation below decides whether the default names the one selected.
+		let selects_by_value = c.default_text.is_some()
+			&& matches!(
+				c.segs.last().and_then(|s| s.selector.as_ref()),
+				Some(Selector::ByValue { .. })
+			);
+		let path = if selects_by_value {
+			let mut segs = c.segs.clone();
+			if let Some(last) = segs.last_mut() {
+				last.selector = None;
+			}
+			gen_path_text(&segs, &parent_values)
+		} else if fill[i] || under_valued_parent || c.path.contains('\n') {
 			gen_path_text(&c.segs, &parent_values)
 		} else {
 			c.path.clone()
@@ -6894,21 +6912,36 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// V007 for a repeat lower bound of 2+: generating that many identical
 	// lines merges them into one. A lower bound of 1 is a must-exist path
 	// like any other, so its V007 is a fault.
-	let bad: Vec<Diagnostic> = Document::parse(&out)
-		.validate(schema)
-		.into_iter()
-		.filter(|d| {
-			d.severity == Severity::Error && !(d.code == "V007" && v007_sanctioned(&d.message))
-		})
+	// The load comes first, in the order `check --schema` prints: a line that
+	// does not load is refused even when validation happens to pass without it.
+	let gdoc = Document::parse(&out);
+	let bad: Vec<Diagnostic> = gdoc
+		.diagnostics()
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
 		.map(|d| Diagnostic {
 			line: 0,
 			severity: Severity::Error,
 			code: "V097",
-			message: format!(
-				"generated value fails the schema that produced it: {}",
-				d.message
-			),
+			message: format!("generated text does not load: {} {}", d.code, d.message),
 		})
+		.chain(
+			gdoc.validate(schema)
+				.into_iter()
+				.filter(|d| {
+					d.severity == Severity::Error
+						&& !(d.code == "V007" && v007_sanctioned(&d.message))
+				})
+				.map(|d| Diagnostic {
+					line: 0,
+					severity: Severity::Error,
+					code: "V097",
+					message: format!(
+						"generated value fails the schema that produced it: {}",
+						d.message
+					),
+				}),
+		)
 		.collect();
 	if !bad.is_empty() {
 		return Err(bad);

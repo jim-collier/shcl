@@ -115,6 +115,11 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ## that names %W%, since a rewrite is the thing being tested.
 printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
 printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
+## A default on a path whose last segment selects by value. A value after that
+## selector is ignored, so generation used to write a line that failed its own
+## check. One default contradicts the selector and one names it.
+printf 'field: "a[b]"\n\trequired: yes\n\tdefault: hello\n' > "${tmpDir}/seldefbad.shcl"
+printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -137,6 +142,8 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
 ##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file,
+##	%SB%/%SC% a last-segment selector whose default contradicts it and one
+##	whose default names it,
 ##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
@@ -194,6 +201,10 @@ rows=(
 	'init-genfault-line-space|init --schema=%S4%|-|6||^line 0: Error: V097'
 	'init-build-fault|init --schema=%S3%|-|6||V091 unknown schema type'
 	'init-build-fault-only|init --schema=%S3%|-|6||!V002'
+	## 20260909 item 5: a value after a last-segment selector is ignored, so a
+	## default there generated a line that failed check at exit 6.
+	'init-selector-default-contradicts|init --schema=%SB%|-|6||V097 generated value fails the schema that produced it: required path missing: a\[b\]'
+	'init-selector-default-consistent|init --no-banner --schema=%SC%|-|0|## any, required\na: b\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -333,6 +344,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S8%/${tmpDir}/rawdef.shcl}"
 	argv="${argv//%S9%/${tmpDir}/commadesc.shcl}"
 	argv="${argv//%SA%/${tmpDir}/rawvalschema.shcl}"
+	argv="${argv//%SB%/${tmpDir}/seldefbad.shcl}"
+	argv="${argv//%SC%/${tmpDir}/seldefok.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
