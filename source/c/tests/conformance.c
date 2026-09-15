@@ -733,8 +733,9 @@ int main(int argc, char **argv) {
 
 		// Migration dimension (optional): migrate on the input must reproduce the
 		// golden byte for byte, and the golden's load diagnostics are pinned
-		// beside it, so a rewrite that no longer loads cannot pass. No fixpoint
-		// is required: migrate keeps the author's layout.
+		// beside it, so a rewrite that no longer loads cannot pass. A fmt
+		// fixpoint is not required, since migrate keeps the author's layout;
+		// the migrate fixpoint is checked next.
 		snprintf(path, sizeof path, "%s/%s/expected-migrate.shcl", corpus, names[ci]); size_t mglen; char *emig = read_file(path, &mglen);
 		snprintf(path, sizeof path, "%s/%s/expected-migrate-diags.txt", corpus, names[ci]); size_t mgdlen; char *emigd = read_file(path, &mgdlen);
 		if (!emig != !emigd) fail(names[ci], "expected-migrate.shcl and expected-migrate-diags.txt must come as a pair");
@@ -747,6 +748,13 @@ int main(int argc, char **argv) {
 			free(mj); shcl_free(md); free(mt);
 		}
 		free(emig); free(emigd);
+		{
+			size_t on = 0, tn = 0;
+			char *once = shcl_migrate(input, ilen, &on);
+			char *twice = shcl_migrate(once, on, &tn);
+			if (tn != on || (on && memcmp(once, twice, on) != 0)) fail(names[ci], "migrate changes its own output");
+			free(twice); free(once);
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);

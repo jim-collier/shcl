@@ -565,8 +565,9 @@ func TestDiagnosticsMatchExpected(t *testing.T) {
 func TestMigrateMatchesExpected(t *testing.T) {
 	// Migration dimension: Migrate on the input must reproduce the golden byte
 	// for byte, and the golden's load diagnostics are pinned beside it, so a
-	// rewrite that no longer loads cannot pass. No fixpoint is required:
-	// migrate keeps the author's layout.
+	// rewrite that no longer loads cannot pass. A fmt fixpoint is not required,
+	// since migrate keeps the author's layout; the migrate fixpoint is checked
+	// next.
 	for _, c := range loadCases(t) {
 		if !c.hasMigrate {
 			continue
@@ -577,6 +578,15 @@ func TestMigrateMatchesExpected(t *testing.T) {
 		}
 		if d := diagText(got); d != c.expectedMigrateDiags {
 			t.Errorf("%s: migrated text's diagnostics differ from expected-migrate-diags.txt\ngot:\n%s\nwant:\n%s", c.name, d, c.expectedMigrateDiags)
+		}
+	}
+}
+
+func TestMigrateIsAFixpoint(t *testing.T) {
+	for _, c := range loadCases(t) {
+		once := Migrate(c.input)
+		if again := Migrate(once); again != once {
+			t.Errorf("%s: migrate changes its own output\ngot:\n%s\nwant:\n%s", c.name, again, once)
 		}
 	}
 }

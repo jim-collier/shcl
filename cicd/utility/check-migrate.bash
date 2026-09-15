@@ -12,7 +12,9 @@
 ##		string array, raw body and info string. The 2.x side is a build of the
 ##		last pre-cut dev commit, pinned below by hash and built into its own
 ##		gitignored target the way the pre-push gate builds, so the comparison
-##		never rests on whatever `shcl` is on PATH.
+##		never rests on whatever `shcl` is on PATH. The 2.x build also reads the
+##		migrated text, which has to give the tree it read from the original: a
+##		spelling 2.x reads differently is what makes a second run change a file.
 ##
 ##		Compared are the documents 2.x read cleanly: no line it kept as
 ##		malformed (a line 2.x could not read may read as a binding now, which
@@ -157,13 +159,20 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	if ! fClean2x "${f}"; then nSkipped+=1; continue; fi
 	if fInfoHashLabel "${f}" || fCrMidLine "${f}"; then nSkipped+=1; continue; fi
 	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
-	want="$(fReadTree "${oldCli}" "${f}" | fAge2xReads)"
+	old="$(fReadTree "${oldCli}" "${f}")"
+	want="$(fAge2xReads <<<"${old}")"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"
 	nCompared+=1
 	if [[ "${want}" != "${got}" ]]; then
 		nBad+=1
 		echo "check-migrate: DIVERGE ${name}: the 2.x reads of the original and the current reads of the migrated text differ"
 		diff <(printf '%s\n' "${want}") <(printf '%s\n' "${got}") | head -12 || true
+	fi
+	old2="$(fReadTree "${oldCli}" "${tmpDir}/migrated.shcl")"
+	if [[ "${old}" != "${old2}" ]]; then
+		nBad+=1
+		echo "check-migrate: DIVERGE ${name}: the 2.x reads of the original and of the migrated text differ"
+		diff <(printf '%s\n' "${old}") <(printf '%s\n' "${old2}") | head -12 || true
 	fi
 done
 
@@ -184,3 +193,4 @@ echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read (
 
 ##	History:
 ##		2026-09-08  Created with the 3.0 lexical cut, pinned on the funnel merge.
+##		2026-09-15  The 2.x build reads the migrated text too.

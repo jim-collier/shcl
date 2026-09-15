@@ -71,10 +71,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
+	- 🛠️ Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
 		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
 		- Cause: the single-quoted-name re-spelling runs on text it has already migrated, since nothing marks a document as done and nothing tests whether the 2.x and 3.0 readings already agree.
 		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
+		- Decided: 2026-09-14. A version line in the SHCL comment block records the format's major version, and only `migrate` reads it. `migrate --write` appends it plus a line saying the file was migrated. A file with no version line gets option B: an ambiguous backslash re-spelling is left as written at exit 7 unless a flag says the file is 2.x.
+		- Fixed: the half where a second run changed `migrate`'s own output. A re-spelled piece holding a backslash is written in double quotes, which 2.x and 3.0 read alike, through `migrate_spelling` (Rust and C), `migrateSpelling` (Go) and `_migrate_spelling` (Python). The other half, a 3.0 file `migrate` did not write, is still open and needs its own design from the decision above.
+		- Pinned by: corpus `118-migrate-backslash-spelling` and `119-migrate-sugar-backslash`, a `migrate` fixpoint check over every case in all four runners and in the reference fuzz, and a second comparison in `check-migrate.bash` that reads the migrated text with the 2.x build. With the fix backed out, all four runners fail both cases, the fuzz fails at iteration 56, and `check-migrate.bash` reports 118.
 		- Opened: 20260909-100300
 
 	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
@@ -190,7 +193,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-103800
 
 - 🔘 `migrate` leaves a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding is gone and `migrate --write` exits 0.
-	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` writes the line back unchanged, which is `E019` now, so `k` binds nothing, and `migrate --write` exits 0. The value spelling `k: a\,b` migrates to `k: 'a\,b'`, and `srv:[a\,b].name: 1` migrates to a selector that reads the same, so only the last-segment arm drops it.
+	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` writes the line back unchanged, which is `E019` now, so `k` binds nothing, and `migrate --write` exits 0. The value spelling `k: a\,b` migrates to `k: "a\\,b"`, and `srv:[a\,b].name: 1` migrates to a selector that reads the same, so only the last-segment arm drops it.
 	- Cause: that arm bails when the raw body holds any comma. 2.x refused only a bare one, and a comma behind a backslash never made the brackets an array.
 	- Note: `migrateLine`, `_migrate_line` and `migrate_line` test the raw body the same way. Read, not run.
 	- Note: same arm as 20260909 item 3, and near item 17. Whatever item 17 settles about a backslash in a selector body, the pinned 2.x build bound this line.
@@ -318,6 +321,15 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 ### Done
 
 #### Done - Bugs
+
+- ✅ `migrate` read a quoted discriminator with text after its closing quote as a value, where 2.x refused the line, so it wrote a binding 2.x never had.
+	- Reproduced in all four against the pinned 2.x build. 2.x reports `k:['C':x']` as `E014 unterminated selector` and binds nothing. `migrate` wrote `k: 'C':x'`, which loads as `E017`, at exit 0, and a second run rewrote that to `k: "C':x"`.
+	- Cause: the 2.x rules in the tokenizer called any piece quoted when a quote sat at both ends. 2.x did that for a value piece only. A selector body had to close right before its `]`.
+	- Fixed: the both-ends reading applies to a value piece only, in `scan_piece` (Rust and C), `scanPiece` (Go) and `_scan_piece` (Python). The line comes through as written, like any other line 2.x could not read.
+	- Pinned by: a `sugar-inner` line in corpus `119-migrate-sugar-backslash`, and the `migrate` fixpoint check in all four runners and the reference fuzz. All four runners fail the case with the fix backed out.
+	- Note: found while testing 20260909 item 4. Item 17 is a different 2.x difference in the same selector body, and stays open.
+	- Opened: n/a
+	- Closed: 20260915-132809
 
 - ✅ `init` writes an optional field whose `default` breaks its own constraints as a commented setting at exit 0, where the same field made required is `V097`.
 	- Reproduced in all four. `field: port` with `type: int`, `max: 10` and `default: 99` generates `# port: 99` at exit 0. Uncommenting the line gives a file `check --schema` fails at exit 6. Add `required: yes` and `init` exits 6 with `V097`.
