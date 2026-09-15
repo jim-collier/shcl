@@ -69,40 +69,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- The code and documents follow the table as of 2026-09-10, in all four bindings. Two edges turned out to read differently from 2.x after all, and `migrate` leaves both: a fence label holding a `#`, which 2.x ran to the end of the line, and a carriage return at a piece's edge in the middle of a line, which 2.x kept. The spec's Migrating section, `design.md` and `check-migrate.bash` name both. A `[#N]` selector is a path spelling again, not a file spelling.
 
-	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
-		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
-		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
-		- Note: the spec promises this in four places - `spec.md:109`, `:139`, the `E017` row at `:440`, and `grammar.abnf:71-73` ("a value element **or a selector body**"). Nothing emits it.
-		- Note: it is a regression across the cut. The pinned 2.x build reports `E014` at exit 6 and retains the line verbatim; `migrate` passes the line through unchanged at exit 0, so the migration path does not warn either. A user goes from a loud refusal to a silent wrong binding.
-		- Note: corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed, and expects zero diagnostics. It has no unclosed case, so the suite is blind to this.
-		- Sites: the `path_of` call site in each - `lib.rs:2870`, `shcl.go:2826`, `shcl.py:2326`, `shcl.h:3125`; the selector arms are `lib.rs:1733` and `:1793`, `shcl.go:1882` and `:1938`, `shcl.py:1597` and `:1642`, `shcl.h:1824` and `:1861`.
-		- Fixed: one `selector_open_quote` per binding (`selectorOpenQuote` in Go, `_selector_open_quote` in Python) reads the flag the tokenizer already recorded, and the parse loop reports `E017` beside the value half's own check. The binding is unchanged - the body is still read bare, quotes and all, which is what the spec says the piece does - so only the diagnostic is new. A line whose value and whose selector both open a quote reports both, since they are independent faults.
-		- Pinned by: corpus `116-selector-open-quote`, which carries an open double quote, an open single quote on a deeper segment, and a line where the selector and the value each open one. All four fail the case with the check backed out. Case `105` keeps its zero-diagnostic character.
-		- Note: reporting does not stop `fmt --write` from writing the canonical spelling, since nothing is lost and the save gate reads the lost count. That matches what an unterminated quote in a value has always done. What changes is that `check` exits 6 and a strict load fails, so the typo is no longer silent.
-		- Opened: 20260909-100000
-		- Closed: 20260909-174000
-
-	- 🚫 Item 2: a 2.x file whose values change meaning under the new comment rule is not detected by anything, and the first in-place write makes the new reading permanent.
-		- Reproduced against the pinned 2.x build and the current one. `url: http://x/y#frag` reads `http://x/y` under 2.x and `http://x/y#frag` now. Both report `ok (0 diagnostic(s))` at exit 0, both have a lost count of 0, and `fmt --write` writes `url: "http://x/y#frag"`, after which even 2.x reads it the new way. `note: hello#world` and `port: 8080#comment` do the same.
-		- Cause: the load has nothing that compares the two readings, so no diagnostic exists for the case. The save gate reads the lost count, which is correctly 0 - nothing was lost, the line simply means something else.
-		- Note: `README.md:33` says "A save never deletes a line you typed". A comment the author wrote is not a line the load lost; it is a line the load stopped seeing.
-		- Note: the predicate that would catch it already exists in every binding. A load whose text differs from `migrate`'s output of that text is a load whose reading changed, and that is one call.
-		- Note: 21 of 49 ordinary config lines tried change meaning with both sides reading clean. The table is in `details.md`.
-		- Note: the compromise is stated now, in `spec.md`, the changelog, the README, the man page and `migrate`'s own stderr, and `check-docs` keeps it there. That is a warning, not a fix; the detection this item asks for is still open.
-		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so no value changes meaning across the cut and there is nothing to detect.
-		- Opened: 20260909-100100
-		- Closed: 20260910-081017
-
-	- ✅ Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
-		- Reproduced in all four. `k:[~~~x]` followed by `after: 1` migrates to `k: ~~~x`, which opens a raw block; `after: 1` is swallowed into it, `paths` reports only `k`, and `check` on the result exits 6 with `E005 unterminated raw block`. `migrate --write` prints the diagnostic and exits 0, so a scripted `shcl migrate --write *.shcl && deploy` succeeds on a destroyed file. A discriminator beginning with `[` loses its own field instead.
-		- Cause: the `name:[disc]` rewrite writes the discriminator text straight into the line rather than through `emit_element`, so nothing quotes a discriminator that opens a fence, a comment or a bracket.
-		- Sites: `lib.rs:1641`, `shcl.go:1779`, `shcl.py:1509`, `shcl.h:1689`.
-		- Fixed: a bare discriminator in the last-segment sugar arm is spelled by the emitter, the way `fmt` spells a value, in `migrate_line` (Rust and C), `migrateLine` (Go) and `_migrate_line` (Python). A quoted or escaped one keeps the spelling it had.
-		- Pinned by: corpus `117-migrate-sugar-spelling`, through an `expected-migrate.shcl` pair that all four conformance runners now check. All four fail the case with the fix backed out. Its migrated text reads the same as 2.x read the input, and migrating it again changes nothing.
-		- Note: not run on Windows.
-		- Note: a discriminator holding a backslash before a comma still loses its binding. It is filed as its own bug, below.
-		- Opened: 20260909-100200
-		- Closed: 20260914-162507
+	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 	- 🔘 Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
 		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
@@ -110,46 +77,11 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
 		- Opened: 20260909-100300
 
-	- 🔘 Item 5: `shcl init` emits a starter config that fails its own `check` at exit 6.
-		- Reproduced in all four. A schema field whose path ends in a by-value selector with a default (`field: a[b]` with `type: string`, `required: yes`, `default: hello`) generates `a[b]: hello`. That is `E002 value after selector`, so `check` on the generated file exits 6, `fmt` rewrites the line to `a: b`, and `get 'a[b]'` answers `b`. The default is gone. 528 of 3,648 enumerated shapes hit it.
-		- Cause: the `V097` self-check parses its own output and reads only the validation diagnostics. The parse diagnostics are never read, so half of the promise ("loads with no error diagnostics and validates clean") is unchecked.
-		- Note: `init` is the first command a new user runs, and its whole point is a file that works.
-		- Opened: 20260909-100400
-
 	- 🔘 Item 6: the create path replaces a file that appears between the existence check and the write, at exit 0.
 		- Reproduced with the reference. `set --write FILE` reading its ops from stdin checks whether FILE exists, then waits for the ops, then writes. A file created during the wait is replaced by the info block plus the edits, and the run exits 0. The window is the whole time the command waits on stdin, so this is not a microsecond race.
 		- Note: it also breaks the round's own recorded decision that a file which already exists is never given an info block.
 		- Note: the same window exists in `init` and in any create path that decides "new file" before it writes.
 		- Opened: 20260909-100500
-
-	- ✅ Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
-		- Reproduced in all four. `set --set-literal='color=#ff0000'` writes `color:` and exits 0, with the whole value gone. The same text in a file, `color:#ff0000`, reads `#ff0000`.
-		- Cause: `literal_value` hands the text to `tokenize_value` with `from=0`, which applies the line-start comment rule to what is actually a value half.
-		- Note: `spec.md:87` says `a:#x` is the value `#x`, and `spec.md:95` says a `#` with no whitespace before it is content. Hex colors, URL fragments and CSS ids all take this shape, and no refusal channel fires.
-		- Sites: `lib.rs:4309`, `shcl.go:4341`, `shcl.py:430`, `shcl.h:4006`.
-		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule cannot reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
-		- Pinned by: corpus `044-write-literal` gains a leading `#`, a `#` mid-value and a trailing one, and a `cli-regress` row takes the same value through `--set-literal`. All four fail the case with the fix backed out.
-		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they cannot place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
-		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
-		- Opened: 20260909-100600
-		- Closed: 20260909-151500
-
-	- 🚫 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
-		- Reproduced. a value `x`, then a carriage return, then two spaces and `# c` reads `x` with the CR gone, and `fmt --write` writes `a: x  # c` at exit 0 with no diagnostic and a lost count of 0, so the save gate does not refuse.
-		- Cause: the value-end trim takes the CR along with the blanks.
-		- Note: three documents say the opposite. `spec.md:279` ("A carriage return inside a line is content and is preserved"), `design.md:106` ("a CR is special nowhere else"), and `changelog.md:382`.
-		- Note: the code comment gives the reason as a fence line's bare info string. That is right for a fence label and is not forced for a plain value - the emitter already quotes an element with whitespace at its edges, so `x` with a trailing carriage return would have round-tripped.
-		- Sites: `lib.rs:999`, `shcl.go:1004`, `shcl.py:1093`, `shcl.h:1284`.
-		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank, and a blank before a comment is trimmed.
-		- Opened: 20260909-100700
-		- Closed: 20260910-081017
-
-	- 🚫 Item 9: `migrate` turns a quoted value's own quotes into content when a carriage return sits before its comment.
-		- Reproduced against the pinned 2.x build. a quoted value followed by a carriage return and then `#c` reads `secret` under 2.x and `'secret'` after migration.
-		- Note: the document is clean under 2.x, so this shape is inside `check-migrate.bash`'s own comparison set. The gate never generated it.
-		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank and a `#` opens a comment under both rule sets, so `migrate` has nothing to rewrite here.
-		- Opened: 20260909-100800
-		- Closed: 20260910-081017
 
 	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
 		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
@@ -176,17 +108,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
 		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
 		- Opened: 20260909-101200
-
-	- ✅ Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
-		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.
-		- Cause: `set_raw` normalizes the info string with the space-and-tab trim, while the load's line-end trim also takes the trailing CR run.
-		- Note: `spec.md:453` and `:454` and `design.md:440` all say the setter normalizes what the load normalizes, and the refusal list does not include this.
-		- Sites: `lib.rs:4719`, `shcl.go:4786`, `shcl.py:3331`, `shcl.h:4030`.
-		- Note: follows from the carriage-return rule in `design.md` under Lexical edges. A trailing carriage return on a fence label is a blank and comes off, so the setter trims it.
-		- Fixed: the blank set carries the carriage return in all four, so the setter's info-string trim takes a trailing one the way the load does. One mid-label is still content.
-		- Pinned by: the `set_raw` fixture in all four runners, where `ab` followed by a carriage return is accepted and reads back as `ab`.
-		- Opened: 20260909-101300
-		- Closed: 20260910-095333
 
 	- 🔘 Item 15: the `Set<T>Default` forms report success for a value that has no spelling, whenever the path already resolves.
 		- Reproduced in all four. `--set-literal-default 'a=[1, 2]'` exits 1 on an absent path and 0 on a present one, writing nothing either way. 45 asymmetric verdicts over a 670-value corpus.
@@ -277,25 +198,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
 		- Opened: 20260909-102800
 
-	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
-		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
-		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
-		- Note: everything under `## Unreleased` becomes the 3.0.0 release notes, so all three ship. This is the third occurrence of the same pattern - a later round amended an entry by appending a second one instead of editing the first - and 20260905 item 5 closed the previous one by fixing that one entry rather than looking for siblings.
-		- Fixed: one `E019` entry under Unreleased, under Added, saying what ships; the other two are gone. The comment-rule and carriage-return entries were cut to the rules in `design.md` under Lexical edges in the same pass.
-		- Opened: 20260909-102900
-		- Closed: 20260910-081017
-
-	- ✅ Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
-		- Reproduced. Printed help line 93 says an unquoted `#` ends a `--set-literal` value. It does not: `literal k a#b` stores `a#b` in all four.
-		- Note: the same stale sentence is in `shcl.1:346-348` and `:464-468`, in the public C header above `shcl_set_literal` at `shcl.h:495`, in all four library doc comments, in `changelog.md:264`, in `conformance/README.md:22` and `:146`, and in `design.md:337` - which contradicts `design.md:438` in the same file.
-		- Note: item 7 is the code half of the same confusion, and the two disagree in opposite directions, so fixing either alone leaves a lie.
-		- Fixed with item 7, in the same pass, so neither half stood alone. The rule is the 3.0 comment rule everywhere it is stated: a `#` behind a space or tab ends the value, one anywhere else is content. The same sentence had gone stale for `set_raw`'s info string, which has refused only a `#` behind a blank since the setter round, so that family went with it - `changelog.md`, `design.md`, the four runner fixtures and the man page.
-		- Note: the released `changelog.md` entry for `SetLiteral` at 1.1.0 keeps its wording. It was true of 1.1.0. The Fixed entry under Unreleased is what says the rule changed.
-		- Left alone: the four `migrate` doc comments say "any unquoted `#` is a comment", which is what 2.x did and is the whole point of the flag they describe.
-		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
-		- Opened: 20260909-103000
-		- Closed: 20260909-151500
-
 	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
 		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
 		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that cannot express shipped behavior costs more than a typo.
@@ -322,12 +224,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: `design.md:98` says it "prints the same help text but as a usage error" and names it as one of the two deliberately unpadded outputs.
 		- Opened: 20260909-103500
 
-	- 🚫 Item 37: the reason given for refusing `[#N]` in a generated path stopped being true at the 3.0 cut.
-		- Reproduced. `spec.md:644` and all four generators justify the refusal partly on the `#` starting a comment. It does not any more: `a[#0].c: 2` loads clean and `tokens` reads `#0` as a selector.
-		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a `#` outside quotes opens a comment, so the reason holds again and `[#N]` is a path spelling for the API and the CLI.
-		- Opened: 20260909-103600
-		- Closed: 20260910-081017
-
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that cannot be nonzero.
 		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
@@ -341,15 +237,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `git-auto-msg.bash` produces commit messages git rejects.
 		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
 		- Opened: 20260909-103800
-
-	- 🚫 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
-		- Reproduced in all four. A fence label holding a whitespace-`#` reads `sql #note` under 2.x and `sql` now, and `check` says `ok (0 diagnostic(s))`. Corpus `068`'s own `expected-diags.txt` pins that silence.
-		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
-		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
-		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so there is no such shape.
-		- Note: a narrower form of the shape does exist. The pinned 2.x build ran a fence label to the end of the line, so any `#` in one reads differently now, spaced or not. It has no spelling, so the load still cannot name it; the spec's Migrating section and `design.md` say so, and `check-migrate.bash` skips it by name with corpus `068` asserted.
-		- Opened: 20260909-103900
-		- Closed: 20260910-081017
 
 - 🔘 `migrate` leaves a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding is gone and `migrate --write` exits 0.
 	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` writes the line back unchanged, which is `E019` now, so `k` binds nothing, and `migrate --write` exits 0. The value spelling `k: a\,b` migrates to `k: 'a\,b'`, and `srv:[a\,b].name: 1` migrates to a selector that reads the same, so only the last-segment arm drops it.
@@ -472,6 +359,10 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
 	- Opened: 20260914-145320
+
+- 🔘 Cut 3.0.0.
+	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
+	- Opened: 20260914-184244
 
 ### Done
 
@@ -623,6 +514,87 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260909:
+
+	- Items 1, 3, 5, 7, 14, 30 and 31 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+
+	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
+		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
+		- Cause: the tokenizer records the open quote and `shcl tokens` prints it as `sel=4-8?`, but `selector_of` arms only on a closed single or double quote and drops the open state. The value half of the same line reads the same flag correctly, which is why `srv: "web` does report `E017`.
+		- Note: the spec promises this in four places - `spec.md:109`, `:139`, the `E017` row at `:440`, and `grammar.abnf:71-73` ("a value element **or a selector body**"). Nothing emits it.
+		- Note: it is a regression across the cut. The pinned 2.x build reports `E014` at exit 6 and retains the line verbatim; `migrate` passes the line through unchanged at exit 0, so the migration path does not warn either. A user goes from a loud refusal to a silent wrong binding.
+		- Note: corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed, and expects zero diagnostics. It has no unclosed case, so the suite is blind to this.
+		- Sites: the `path_of` call site in each - `lib.rs:2870`, `shcl.go:2826`, `shcl.py:2326`, `shcl.h:3125`; the selector arms are `lib.rs:1733` and `:1793`, `shcl.go:1882` and `:1938`, `shcl.py:1597` and `:1642`, `shcl.h:1824` and `:1861`.
+		- Fixed: one `selector_open_quote` per binding (`selectorOpenQuote` in Go, `_selector_open_quote` in Python) reads the flag the tokenizer already recorded, and the parse loop reports `E017` beside the value half's own check. The binding is unchanged - the body is still read bare, quotes and all, which is what the spec says the piece does - so only the diagnostic is new. A line whose value and whose selector both open a quote reports both, since they are independent faults.
+		- Pinned by: corpus `116-selector-open-quote`, which carries an open double quote, an open single quote on a deeper segment, and a line where the selector and the value each open one. All four fail the case with the check backed out. Case `105` keeps its zero-diagnostic character.
+		- Note: reporting does not stop `fmt --write` from writing the canonical spelling, since nothing is lost and the save gate reads the lost count. That matches what an unterminated quote in a value has always done. What changes is that `check` exits 6 and a strict load fails, so the typo is no longer silent.
+		- Opened: 20260909-100000
+		- Closed: 20260909-174000
+
+	- ✅ Item 3: `migrate --write` can write a file that no longer loads, and exits 0.
+		- Reproduced in all four. `k:[~~~x]` followed by `after: 1` migrates to `k: ~~~x`, which opens a raw block; `after: 1` is swallowed into it, `paths` reports only `k`, and `check` on the result exits 6 with `E005 unterminated raw block`. `migrate --write` prints the diagnostic and exits 0, so a scripted `shcl migrate --write *.shcl && deploy` succeeds on a destroyed file. A discriminator beginning with `[` loses its own field instead.
+		- Cause: the `name:[disc]` rewrite writes the discriminator text straight into the line rather than through `emit_element`, so nothing quotes a discriminator that opens a fence, a comment or a bracket.
+		- Sites: `lib.rs:1641`, `shcl.go:1779`, `shcl.py:1509`, `shcl.h:1689`.
+		- Fixed: a bare discriminator in the last-segment sugar arm is spelled by the emitter, the way `fmt` spells a value, in `migrate_line` (Rust and C), `migrateLine` (Go) and `_migrate_line` (Python). A quoted or escaped one keeps the spelling it had.
+		- Pinned by: corpus `117-migrate-sugar-spelling`, through an `expected-migrate.shcl` pair that all four conformance runners now check. All four fail the case with the fix backed out. Its migrated text reads the same as 2.x read the input, and migrating it again changes nothing.
+		- Note: not run on Windows.
+		- Note: a discriminator holding a backslash before a comma still loses its binding. It is filed as its own bug, below.
+		- Opened: 20260909-100200
+		- Closed: 20260914-162507
+
+	- ✅ Item 5: `shcl init` emits a starter config that fails its own `check` at exit 6.
+		- Reproduced in all four. A schema field whose path ends in a by-value selector with a default (`field: a[b]` with `type: string`, `required: yes`, `default: hello`) generates `a[b]: hello`. That is `E002 value after selector`, so `check` on the generated file exits 6, `fmt` rewrites the line to `a: b`, and `get 'a[b]'` answers `b`. The default is gone. 528 of 3,648 enumerated shapes hit it.
+		- Cause: the `V097` self-check parses its own output and reads only the validation diagnostics. The parse diagnostics are never read, so half of the promise ("loads with no error diagnostics and validates clean") is unchecked.
+		- Note: `init` is the first command a new user runs, and its whole point is a file that works.
+		- Fixed: a path whose last segment selects by value, with a `default`, is written as the bare path carrying the default, so `env[prod]` with `default: prod` gives `env: prod`. Validation decides whether the default names the selected instance, and one that names another is `V097`. The self-check reads the generated text's load errors before its validation errors. Both are in `generate` (Rust and Python), `Generate` (Go) and `shcl_generate` (C).
+		- Pinned by: corpus `120-init-selector-default` in all four runners, `cli-regress` rows `init-selector-default-contradicts` and `init-selector-default-consistent`, and the property `generated_starters_load_and_validate_clean` over a grid of 1,560 schemas plus corpus mutations. All of them fail with the fix backed out. With only the spelling half backed out, all four refuse with `V097 generated text does not load: E002`.
+		- Left alone: `field: a` beside `field: "a[b]"` with a default puts two lines on one path. The first wins, so `init` refuses and names `a[b]`. Keying the duplicate check on the whole line would move corpus `102`'s rule.
+		- Note: not run on Windows.
+		- Opened: 20260909-100400
+		- Closed: 20260914-184244
+
+	- ✅ Item 7: `SetLiteral` stores an empty value for text beginning with `#`, and reports success.
+		- Reproduced in all four. `set --set-literal='color=#ff0000'` writes `color:` and exits 0, with the whole value gone. The same text in a file, `color:#ff0000`, reads `#ff0000`.
+		- Cause: `literal_value` hands the text to `tokenize_value` with `from=0`, which applies the line-start comment rule to what is actually a value half.
+		- Note: `spec.md:87` says `a:#x` is the value `#x`, and `spec.md:95` says a `#` with no whitespace before it is content. Hex colors, URL fragments and CSS ids all take this shape, and no refusal channel fires.
+		- Sites: `lib.rs:4309`, `shcl.go:4341`, `shcl.py:430`, `shcl.h:4006`.
+		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule cannot reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
+		- Pinned by: corpus `044-write-literal` gains a leading `#`, a `#` mid-value and a trailing one, and a `cli-regress` row takes the same value through `--set-literal`. All four fail the case with the fix backed out.
+		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they cannot place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
+		- Opened: 20260909-100600
+		- Closed: 20260909-151500
+
+	- ✅ Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
+		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.
+		- Cause: `set_raw` normalizes the info string with the space-and-tab trim, while the load's line-end trim also takes the trailing CR run.
+		- Note: `spec.md:453` and `:454` and `design.md:440` all say the setter normalizes what the load normalizes, and the refusal list does not include this.
+		- Sites: `lib.rs:4719`, `shcl.go:4786`, `shcl.py:3331`, `shcl.h:4030`.
+		- Note: follows from the carriage-return rule in `design.md` under Lexical edges. A trailing carriage return on a fence label is a blank and comes off, so the setter trims it.
+		- Fixed: the blank set carries the carriage return in all four, so the setter's info-string trim takes a trailing one the way the load does. One mid-label is still content.
+		- Pinned by: the `set_raw` fixture in all four runners, where `ab` followed by a carriage return is accepted and reads back as `ab`.
+		- Opened: 20260909-101300
+		- Closed: 20260910-095333
+
+	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
+		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
+		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
+		- Note: everything under `## Unreleased` becomes the 3.0.0 release notes, so all three ship. This is the third occurrence of the same pattern - a later round amended an entry by appending a second one instead of editing the first - and 20260905 item 5 closed the previous one by fixing that one entry rather than looking for siblings.
+		- Fixed: one `E019` entry under Unreleased, under Added, saying what ships; the other two are gone. The comment-rule and carriage-return entries were cut to the rules in `design.md` under Lexical edges in the same pass.
+		- Opened: 20260909-102900
+		- Closed: 20260910-081017
+
+	- ✅ Item 31: "an unquoted `#`" is stale in twelve user-facing places, including all four CLIs' help text.
+		- Reproduced. Printed help line 93 says an unquoted `#` ends a `--set-literal` value. It does not: `literal k a#b` stores `a#b` in all four.
+		- Note: the same stale sentence is in `shcl.1:346-348` and `:464-468`, in the public C header above `shcl_set_literal` at `shcl.h:495`, in all four library doc comments, in `changelog.md:264`, in `conformance/README.md:22` and `:146`, and in `design.md:337` - which contradicts `design.md:438` in the same file.
+		- Note: item 7 is the code half of the same confusion, and the two disagree in opposite directions, so fixing either alone leaves a lie.
+		- Fixed with item 7, in the same pass, so neither half stood alone. The rule is the 3.0 comment rule everywhere it is stated: a `#` behind a space or tab ends the value, one anywhere else is content. The same sentence had gone stale for `set_raw`'s info string, which has refused only a `#` behind a blank since the setter round, so that family went with it - `changelog.md`, `design.md`, the four runner fixtures and the man page.
+		- Note: the released `changelog.md` entry for `SetLiteral` at 1.1.0 keeps its wording. It was true of 1.1.0. The Fixed entry under Unreleased is what says the rule changed.
+		- Left alone: the four `migrate` doc comments say "any unquoted `#` is a comment", which is what 2.x did and is the whole point of the flag they describe.
+		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
+		- Opened: 20260909-103000
+		- Closed: 20260909-151500
 
 - Code review 20260905:
 
@@ -5560,6 +5532,53 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Dropped: strictness and on-bad are the consuming program's contract, not the user's. A user-level override would silently weaken guarantees an app makes about its own config handling, and would make the same `shcl` command mean different things on different machines. Nothing else the CLI exposes is presentation-only, so there is nothing left for a config file to hold. Rationale in `design.md`; runtime options and the library's per-document strictness argument stay as they are.
 	- Opened: 20260711-150807
 	- Closed: 20260723-134323
+
+- Code review 20260909:
+
+	- Items 2, 8, 9, 37 and 40 are here. The rest of the round is under Bugs and Done - Bugs.
+
+	- 🚫 Item 2: a 2.x file whose values change meaning under the new comment rule is not detected by anything, and the first in-place write makes the new reading permanent.
+		- Reproduced against the pinned 2.x build and the current one. `url: http://x/y#frag` reads `http://x/y` under 2.x and `http://x/y#frag` now. Both report `ok (0 diagnostic(s))` at exit 0, both have a lost count of 0, and `fmt --write` writes `url: "http://x/y#frag"`, after which even 2.x reads it the new way. `note: hello#world` and `port: 8080#comment` do the same.
+		- Cause: the load has nothing that compares the two readings, so no diagnostic exists for the case. The save gate reads the lost count, which is correctly 0 - nothing was lost, the line simply means something else.
+		- Note: `README.md:33` says "A save never deletes a line you typed". A comment the author wrote is not a line the load lost; it is a line the load stopped seeing.
+		- Note: the predicate that would catch it already exists in every binding. A load whose text differs from `migrate`'s output of that text is a load whose reading changed, and that is one call.
+		- Note: 21 of 49 ordinary config lines tried change meaning with both sides reading clean. The table is in `details.md`.
+		- Note: the compromise is stated now, in `spec.md`, the changelog, the README, the man page and `migrate`'s own stderr, and `check-docs` keeps it there. That is a warning, not a fix; the detection this item asks for is still open.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so no value changes meaning across the cut and there is nothing to detect.
+		- Opened: 20260909-100100
+		- Closed: 20260910-081017
+
+	- 🚫 Item 8: a carriage return between a value and its trailing comment is deleted, in all four.
+		- Reproduced. a value `x`, then a carriage return, then two spaces and `# c` reads `x` with the CR gone, and `fmt --write` writes `a: x  # c` at exit 0 with no diagnostic and a lost count of 0, so the save gate does not refuse.
+		- Cause: the value-end trim takes the CR along with the blanks.
+		- Note: three documents say the opposite. `spec.md:279` ("A carriage return inside a line is content and is preserved"), `design.md:106` ("a CR is special nowhere else"), and `changelog.md:382`.
+		- Note: the code comment gives the reason as a fence line's bare info string. That is right for a fence label and is not forced for a plain value - the emitter already quotes an element with whitespace at its edges, so `x` with a trailing carriage return would have round-tripped.
+		- Sites: `lib.rs:999`, `shcl.go:1004`, `shcl.py:1093`, `shcl.h:1284`.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank, and a blank before a comment is trimmed.
+		- Opened: 20260909-100700
+		- Closed: 20260910-081017
+
+	- 🚫 Item 9: `migrate` turns a quoted value's own quotes into content when a carriage return sits before its comment.
+		- Reproduced against the pinned 2.x build. a quoted value followed by a carriage return and then `#c` reads `secret` under 2.x and `'secret'` after migration.
+		- Note: the document is clean under 2.x, so this shape is inside `check-migrate.bash`'s own comparison set. The gate never generated it.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a carriage return is a blank and a `#` opens a comment under both rule sets, so `migrate` has nothing to rewrite here.
+		- Opened: 20260909-100800
+		- Closed: 20260910-081017
+
+	- 🚫 Item 37: the reason given for refusing `[#N]` in a generated path stopped being true at the 3.0 cut.
+		- Reproduced. `spec.md:644` and all four generators justify the refusal partly on the `#` starting a comment. It does not any more: `a[#0].c: 2` loads clean and `tokens` reads `#0` as a selector.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges a `#` outside quotes opens a comment, so the reason holds again and `[#N]` is a path spelling for the API and the CLI.
+		- Opened: 20260909-103600
+		- Closed: 20260910-081017
+
+	- 🚫 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
+		- Reproduced in all four. A fence label holding a whitespace-`#` reads `sql #note` under 2.x and `sql` now, and `check` says `ok (0 diagnostic(s))`. Corpus `068`'s own `expected-diags.txt` pins that silence.
+		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
+		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
+		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so there is no such shape.
+		- Note: a narrower form of the shape does exist. The pinned 2.x build ran a fence label to the end of the line, so any `#` in one reads differently now, spaced or not. It has no spelling, so the load still cannot name it; the spec's Migrating section and `design.md` say so, and `check-migrate.bash` skips it by name with corpus `068` asserted.
+		- Opened: 20260909-103900
+		- Closed: 20260910-081017
 
 - Code review 20260819:
 
