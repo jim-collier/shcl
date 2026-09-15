@@ -6,7 +6,7 @@
 //! no panic at any strictness, and the canonical formatter is a fixpoint.
 //! Iteration count scales via SHCL_FUZZ_ITERS (cicd raises it; default is quick).
 
-use shcl::{Document, Piece, Quote, Rules, SegTok, Strictness, Tokens, tokenize};
+use shcl::{Document, Piece, Quote, Rules, SegTok, Severity, Strictness, Tokens, tokenize};
 
 /// Small deterministic PRNG (xorshift64*); no external crates, stable across runs.
 struct Rng(u64);
@@ -775,4 +775,183 @@ fn grammar_line(rng: &mut Rng) -> (String, Tokens) {
 		}
 	}
 	(g.text, g.want)
+}
+
+/// The self-check's sanctioned shortfall, written again here rather than
+/// borrowed: a V007 whose `not in LO..HI` has LO of 2 or more.
+fn v007_shortfall(message: &str) -> bool {
+	let Some(at) = message.rfind(" not in ") else {
+		return false;
+	};
+	message[at + " not in ".len()..]
+		.split("..")
+		.next()
+		.and_then(|lo| lo.parse::<u64>().ok())
+		.is_some_and(|lo| lo >= 2)
+}
+
+/// Generate from a schema that loads, and hold an `Ok` to the promise itself:
+/// the starter loads with no error and validates clean apart from the
+/// shortfall. None when the schema does not load or generation refuses.
+fn generate_checked(schema_text: &str) -> Option<String> {
+	let sdoc = Document::parse(schema_text);
+	if sdoc
+		.diagnostics()
+		.iter()
+		.any(|d| d.severity == Severity::Error)
+	{
+		return None;
+	}
+	let text = shcl::generate(&sdoc, true).ok()?;
+	let gdoc = Document::parse(&text);
+	let load: Vec<String> = gdoc
+		.diagnostics()
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.map(|d| format!("{} {}", d.code, d.message))
+		.collect();
+	assert!(
+		load.is_empty(),
+		"generated starter does not load: {:?}\nschema:\n{}\nstarter:\n{}",
+		load,
+		schema_text,
+		text
+	);
+	let bad: Vec<String> = gdoc
+		.validate(&sdoc)
+		.into_iter()
+		.filter(|d| {
+			d.severity == Severity::Error && !(d.code == "V007" && v007_shortfall(&d.message))
+		})
+		.map(|d| format!("{} {}", d.code, d.message))
+		.collect();
+	assert!(
+		bad.is_empty(),
+		"generated starter fails its schema: {:?}\nschema:\n{}\nstarter:\n{}",
+		bad,
+		schema_text,
+		text
+	);
+	Some(text)
+}
+
+/// A generated starter loads clean and validates clean against the schema that
+/// produced it (spec, Schema-driven generation). The library checks its own
+/// text, so this checks every `Ok` again without trusting that. The grid is
+/// every path shape and default a selector can meet; floors keep the gate from
+/// passing by refusing.
+#[test]
+fn generated_starters_load_and_validate_clean() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	const PATHS: &[&str] = &[
+		"a",
+		"a.b",
+		"a[b]",
+		"a[b].c",
+		"a[*].c",
+		"a[*]",
+		"\"x:y\"",
+		"\"x#y\"",
+		"\"x y\"",
+		"\"x.y\"",
+		"a['#']",
+		"a[\"b c\"]",
+		"a[\" b\"]",
+		"a[b#c]",
+		"a.b[c].d",
+		"\"a b\"[c]",
+		"a[~~~]",
+		"a.b[c]",
+		"a[*].b[c]",
+		"a[\"b\"]",
+	];
+	const DEFAULTS: &[Option<&str>] = &[
+		None,
+		Some("hello"),
+		Some("b"),
+		Some("\"b\""),
+		Some("c"),
+		Some("\"c\""),
+		Some("\"~~~x\""),
+		Some("'#x'"),
+		Some("\" b\""),
+		Some("\"b c\""),
+		Some("\"#\""),
+		Some("'#'"),
+		Some("\"[x]\""),
+		Some("1, 2"),
+		Some("\"\""),
+		Some("\"*\""),
+		Some("\"7\""),
+	];
+	const REQUIRED: &str = "\trequired: yes\n";
+	const KINDS: &[&str] = &[REQUIRED, "\trepeat: 1\n", ""];
+	const CHILDREN: &[&str] = &["a.c", "a[*].c", "a[b].c", "a.c[d]", "a[*]", "a[b]"];
+	const CHILD_DEFAULTS: &[Option<&str>] =
+		&[None, Some("v"), Some("b"), Some("d"), Some("\"~~~y\"")];
+	fn field(path: &str, default: Option<&str>, kind: &str) -> String {
+		let mut s = format!(
+			"field: \"{}\"\n{}",
+			path.replace('\\', "\\\\").replace('"', "\\\""),
+			kind
+		);
+		if let Some(d) = default {
+			s.push_str(&format!("\tdefault: {}\n", d));
+		}
+		s
+	}
+	let mut grid: Vec<String> = Vec::new();
+	for p in PATHS {
+		for d in DEFAULTS {
+			for k in KINDS {
+				grid.push(field(p, *d, k));
+			}
+		}
+	}
+	for ch in CHILDREN {
+		for cd in CHILD_DEFAULTS {
+			for d in DEFAULTS {
+				grid.push(field("a", *d, REQUIRED) + &field(ch, *cd, REQUIRED));
+			}
+			grid.push(field("a", None, "") + &field(ch, *cd, REQUIRED));
+		}
+	}
+	let generated = grid
+		.iter()
+		.filter(|s| generate_checked(s).is_some())
+		.count();
+
+	let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../project/conformance");
+	let entries =
+		std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("corpus dir {}: {}", dir.display(), e));
+	let mut seeds: Vec<String> = entries
+		.flatten()
+		.filter_map(|e| std::fs::read_to_string(e.path().join("init-schema.shcl")).ok())
+		.collect();
+	seeds.sort();
+	assert!(!seeds.is_empty(), "no init-schema.shcl in the corpus");
+	let mut rng = Rng(0x5EED_CAFE_F00D_0005);
+	for _ in 0..iters {
+		let base = &seeds[rng.below(seeds.len())];
+		generate_checked(&mutate(&mut rng, base));
+	}
+
+	assert_eq!(
+		generate_checked("field: \"a[b]\"\n\trequired: yes\n\tdefault: b\n").as_deref(),
+		Some("## any, required\na: b\n"),
+		"a default naming the selected instance must generate"
+	);
+	let spaced = generate_checked("field: \"\\\"a b\\\"[c]\"\n\trequired: yes\n\tdefault: c\n")
+		.expect("a quoted name with a selector default must generate");
+	assert!(
+		spaced.lines().any(|l| l == "\"a b\": c"),
+		"quoted name lost its bare line:\n{}",
+		spaced
+	);
+	// Recorded after 20260909 item 5. A change to this count needs a reason on
+	// the backlog item that moves it.
+	assert_eq!(generated, 1171, "grid schemas that generate");
 }
