@@ -639,8 +639,8 @@ def _fold_node_into(arena, survivor, loser):
 # fail but never crash the consumer.
 MAX_DEPTH = 512
 
-# How much of a file's own name the temporary file beside it borrows.
-TMP_NAME_CHARS = 64
+# How much of a file's own name the temporary file beside it borrows, in bytes.
+TMP_NAME_BYTES = 64
 
 
 # ---------------------------------------------------------------------------
@@ -2493,7 +2493,7 @@ def _name_key(parent, name):
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc")
 
 	def __init__(
 		self,
@@ -2517,6 +2517,12 @@ class Document:
 		# it every lookup scans the parent's children, so a flat document read
 		# or written key by key was quadratic.
 		self._index: _NameIndex | None = None
+		# Set only on the document a default form checks values against, never
+		# on one a caller holds: _set_value stops once the value is judged, so a
+		# probe is never written. Built on the first default form that finds its
+		# path already there.
+		self._probe = False
+		self._probe_doc: Document | None = None
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -3150,6 +3156,8 @@ class Document:
 	def _set_value(self, path, value):
 		if not _value_reads_back(value):
 			return False
+		if self._probe:
+			return True
 		idx = self._place(path)
 		if idx is None:
 			return False
@@ -3373,11 +3381,16 @@ class Document:
 	# fails the same way on every document. A path that already resolves writes
 	# nothing and reports what a write there would: the path's verdict, so a
 	# wildcard is refused whether or not its slots happen to resolve, and the
-	# value's, which the same setter gives on an empty document.
+	# value's, which the same setter gives on the probe document.
 	def _set_default(self, path: str, set_: Callable[[Document, str], bool]) -> bool:
 		if not self.exists(path):
 			return set_(self, path)
-		return self.write_reason(path) == WriteReason.Writable and set_(Document.new(), "v")
+		if self.write_reason(path) != WriteReason.Writable:
+			return False
+		if self._probe_doc is None:
+			self._probe_doc = Document.new()
+			self._probe_doc._probe = True
+		return set_(self._probe_doc, "v")
 
 	def set_int_default(self, path: str, v: int) -> bool:
 		_want("set_int_default", v, "int")
@@ -4447,13 +4460,18 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	if d == "":
 		d = "."
 	base = os.path.basename(target)
-	# At most the first 64 characters of the name, so the temp's own length is
-	# fixed. Carrying the whole name put the temp over the filesystem's 255 at
-	# a target name in the low 240s - and the exact cut-off moved with the
-	# width of the process id, so the same file saved on one machine and failed
-	# on another. A truncated name can collide; the exclusive create and the
-	# eight attempts already answer that.
-	base = base[:TMP_NAME_CHARS]
+	# At most the first 64 bytes of the name, cut where a character starts, so the
+	# temp's own length is fixed. Carrying the whole name put the temp over the
+	# filesystem's 255 bytes at a target name in the low 240s - and the exact
+	# cut-off moved with the width of the process id, so the same file saved on one
+	# machine and failed on another. Bytes, not characters: 64 characters of four
+	# bytes each put it back over. A truncated name can collide; the exclusive
+	# create and the eight attempts already answer that.
+	raw = os.fsencode(base)
+	cut = min(len(raw), TMP_NAME_BYTES)
+	while 0 < cut < len(raw) and (raw[cut] & 0xC0) == 0x80:
+		cut -= 1
+	base = os.fsdecode(raw[:cut])
 	if base == "":
 		base = target
 	# Exclusive create: the name is predictable, so anything already sitting

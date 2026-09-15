@@ -86,12 +86,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
-	- 🔘 Item 16: the 64-character temp-name cap is counted in codepoints, so a filename well inside the byte limit still cannot be rewritten.
-		- Reproduced in all four. A basename of 60 emoji plus `.shcl` is 245 bytes, under `NAME_MAX`, and `fmt --write` on it exits 8 with "File name too long". The temp name's byte length ranges 69 to 261 where the header says the cut makes it fixed.
-		- Note: the pinning row `cli-regress.bash:227` uses an ASCII name, so the cap has never been exercised where it fails.
-		- Site: `shcl.h:6239-6244` and the same cut in the other three.
-		- Opened: 20260909-101500
-
 	- 🔘 Item 17: `migrate`'s 2.x emulation shields a backslash inside a selector body; 2.x did not.
 		- Reproduced against the pinned 2.x build. Any bare selector ending in a backslash makes `migrate` bail, and with the sugar spelling the whole line's bindings disappear instead.
 		- Opened: 20260909-101600
@@ -488,7 +482,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 13, 14, 15, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -596,11 +590,22 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: the verdict is `write_reason(path)`, which by spec names only path faults, so the value is never looked at.
 		- Note: same shape as 20260904 item 6, whose fix covered the wildcard half only.
 		- Note: the C CLI's and C runner's op scripts still carried their own present check, which 20260904 item 6 recorded as gone. They skipped the library's default forms, so they kept the old answer after the library was fixed.
-		- Fixed: every default form goes through one `set_default` (`setDefault` in Go, `_set_default` in Python). A present path answers with the path's verdict and then with what the same plain setter does on an empty document, so every value rule stays in the plain setter. C has no closures, so each form calls `w_default_probe` and `w_probe_done` around the plain setter. The C CLI and runner op scripts call the library's default forms. The spec says a default form refuses what `Set<T>` would.
+		- Fixed: every default form goes through one `set_default` (`setDefault` in Go, `_set_default` in Python). A present path answers with the path's verdict and then with what the same plain setter does on a probe document the document keeps, so every value rule stays in the plain setter. A probe is marked when it is built, and `set_value` on one returns once the value is judged, so nothing is ever written to it. C has no closures, so each form gets the probe from `w_default_probe`, which also resets the probe's scratch. The C CLI and runner op scripts call the library's default forms. The spec says a default form refuses what `Set<T>` would.
 		- Decided: a flag on the document that turned the plain setter into a probe was tried first and dropped. An `SHCL_OOM` hook that longjmps between setting and clearing it leaves it set, and every later write on that document would then do nothing and report success.
+		- Decided: a fresh empty document per call was tried next and dropped. Each present-path default ran a whole write on it, and 40,000 of them took Python's perf-gate read workload over budget, with the other three near it.
+		- Measured: 40,000 present-path defaults in Python took 1383 ms with a fresh document per call and 633 ms with the kept probe.
 		- Pinned by: corpus `121-default-value-refused`, bracket text and an open quote on present paths, and present-path float and datetime default checks in each runner's setter-refusal test. The old code accepts all three corpus lines and fails all thirteen new checks.
 		- Opened: 20260909-101400
 		- Closed: 20260915-145757
+
+	- ✅ Item 16: the 64-character temp-name cap is counted in codepoints, so a filename well inside the byte limit still cannot be rewritten.
+		- Reproduced in all four. A basename of 60 emoji plus `.shcl` is 245 bytes, under `NAME_MAX`, and `fmt --write` on it exits 8 with "File name too long". The temp name's byte length ranges 69 to 261 where the header says the cut makes it fixed.
+		- Note: the pinning row `cli-regress.bash:227` uses an ASCII name, so the cap has never been exercised where it fails.
+		- Site: `shcl.h:6239-6244` and the same cut in the other three.
+		- Fixed: the cap is 64 bytes, cut back to where a character starts, in `write_file_atomic` in the reference, Go and Python, and `s_tmp_base` in C. The constant is `TMP_NAME_BYTES` (`tmpNameBytes` in Go), and the public C macro is `SHCL_TMP_NAME_BYTES` now. `design.md` says bytes.
+		- Pinned by: a `cli-regress.bash` row that rewrites a file named with sixty four-byte characters. All four exit 8 on it with the old code.
+		- Opened: 20260909-101500
+		- Closed: 20260915-150413
 
 	- ✅ Item 21: a failed pull strands uncommitted work in a stash, and the next run reports success.
 		- Reproduced twice in `n8git_backup-and-publish`. With a dirty tree and a divergent upstream the script stashes, `git pull --ff-only` fails, and the error trap exits with the stash pushed and the tree now clean. The next run finds a clean tree, so it never pops, commits the merge, pushes, and prints "Done." at rc 0 with the work still in `stash@{0}`. A second failure adds `stash@{1}` and only the newest would ever be popped.
