@@ -96,14 +96,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Sites: `lib.rs:977-981` and `:2746-2750`, `shcl.go:2728`, `shcl.py:2246`, `shcl.h:3069`.
 		- Opened: 20260909-101000
 
-	- 🔘 Item 12: `_GNU_SOURCE` makes `shcl.h` impossible to compile.
-		- Reproduced. A translation unit that defines `_GNU_SOURCE` and includes the header fails with "conflicting types for 'splice'": the header's own `static ShclStr splice(...)` collides with glibc's `splice()`, which `<fcntl.h>` declares under that macro. The header includes `<fcntl.h>` itself, so no include order helps.
-		- Cause: the name arrived with the tokenizer round's C port, for `shcl_migrate`.
-		- Note: this breaks the drop-in promise for any Linux C consumer whose build defines `_GNU_SOURCE`, which is most of them - `asprintf`, `memmem` and `strcasestr` all need it. `SHCL_NO_FILE_IO` avoids it and g++ is unaffected.
-		- Note: a sweep of all 273 `static` names in the header found `splice` and nothing else.
-		- Site: `source/c/shcl.h:1592`.
-		- Opened: 20260909-101100
-
 	- 🔘 Item 13: a writer-built element reports `quoted=false`, so a value reads differently before and after a save.
 		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
 		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
@@ -232,10 +224,11 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: the rpm does not own `/usr/share/doc/shcl` where the deb does, against the rule stated at `nfpm.yaml:39-41`.
 		- Opened: 20260909-103700
 
-	- 🔘 Item 39: three copied or generated tools do the wrong thing and say it worked.
+	- 🛠️ Item 39: three copied or generated tools do the wrong thing and say it worked.
 		- `n8runshcl.ps1` deletes the copy it just staged and is about to launch, is squatted by any `shcl-*` file in its build directory on POSIX, and reports a failed delete as a success.
 		- `git-auto-msg.bash` produces commit messages git rejects.
 		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
+		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
 		- Opened: 20260909-103800
 
 - 🔘 `migrate` leaves a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding is gone and `migrate --write` exits 0.
@@ -517,7 +510,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 14, 30 and 31 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 14, 30 and 31 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -565,6 +558,17 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-100600
 		- Closed: 20260909-151500
+
+	- ✅ Item 12: `_GNU_SOURCE` makes `shcl.h` impossible to compile.
+		- Reproduced. A translation unit that defines `_GNU_SOURCE` and includes the header fails with "conflicting types for 'splice'": the header's own `static ShclStr splice(...)` collides with glibc's `splice()`, which `<fcntl.h>` declares under that macro. The header includes `<fcntl.h>` itself, so no include order helps.
+		- Cause: the name arrived with the tokenizer round's C port, for `shcl_migrate`.
+		- Note: this breaks the drop-in promise for any Linux C consumer whose build defines `_GNU_SOURCE`, which is most of them - `asprintf`, `memmem` and `strcasestr` all need it. `SHCL_NO_FILE_IO` avoids it and g++ is unaffected.
+		- Note: a sweep of all 273 `static` names in the header found `splice` and nothing else.
+		- Site: `source/c/shcl.h:1592`.
+		- Fixed: the C helper is `s_splice`, beside the header's other string helpers. The reference and Go keep `splice` and Python keeps `_splice`, since only C shares a namespace with libc.
+		- Pinned by: `check-c-compilers.bash` builds the CLI with `_GNU_SOURCE` defined under every compiler present. With the old header those builds fail on all six compilers here.
+		- Opened: 20260909-101100
+		- Closed: 20260914-191006
 
 	- ✅ Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
 		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.

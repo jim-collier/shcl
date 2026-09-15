@@ -1574,7 +1574,7 @@ static void edit_push(ShclArena *a, ShclVecEdit *v, size_t start, size_t end, Sh
 	ShclEdit e; e.start = start; e.end = end; e.with = with; ShclVecEdit_push(a, v, e);
 }
 
-static ShclStr splice(ShclArena *a, ShclStr text, ShclVecEdit *edits) {
+static ShclStr s_splice(ShclArena *a, ShclStr text, ShclVecEdit *edits) {
 	/* Stable by start, the way the reference sorts, so two edits at one
 	   offset keep the order they were found in. */
 	for (size_t i = 1; i < edits->len; i++) {
@@ -1692,11 +1692,11 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 		if (tok->has_sep) {
 			/* A same-line fence: the info string ran to the end of the line. */
 			ShclFence vf = fence_open(s_slice(rest, tok->value_start, rest.n));
-			if (vf.ok) { *fence_on = 1; *fence_ch = vf.ch; *fence_len = vf.len; return splice(a, rest, &edits); }
+			if (vf.ok) { *fence_on = 1; *fence_ch = vf.ch; *fence_len = vf.len; return s_splice(a, rest, &edits); }
 			value_edits(a, rest, tok, &edits);
 		}
 	}
-	return splice(a, rest, &edits);
+	return s_splice(a, rest, &edits);
 }
 
 /* Rewrite a document written under the 2.x rules so this parser reads the
