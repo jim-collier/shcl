@@ -96,7 +96,7 @@ Other points
 
 - It was decided that `-` (stdin) may be named only once across FILE, `--layer` and `--schema`. There is one stream, so two names for it each read part of a document, and which name got the real content depended on read order; the second name is a usage error instead.
 
-- Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Two neighbors stay unpadded on purpose: bare `shcl`, which prints the same help text but as a usage error, and `version`, which stays a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
+- Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Bare `shcl` counts as asking: it prints the same padded help as `shcl help` and exits 0. `version` stays unpadded on purpose, a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
 - The lexical rules are few, and a byte's position decides what it means. The rule table is under Lexical edges below; `spec.md` carries the normative wording.
 	- Why: the same lexical rule lived in seven scanners per binding, and every scanner defect since July was two of them disagreeing. A fix reached the copies that were reproduced. One tokenizer per binding replaces them, and fewer rules leave it less to get wrong.
