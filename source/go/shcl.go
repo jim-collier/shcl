@@ -566,6 +566,12 @@ type Document struct {
 	// build is guarded and the pointer is atomic; a write is exclusive anyway.
 	index   atomic.Pointer[nameIndex]
 	indexMu sync.Mutex
+	// probe is set only on the document a default form checks values against,
+	// never on one a caller holds: setValue stops once the value is judged, so
+	// a probe is never written. probeDoc is built on the first default form
+	// that finds its path already there.
+	probe    bool
+	probeDoc *Document
 }
 
 // nameIndex is the first child of each (parent, name), chained on to the next
@@ -4600,6 +4606,9 @@ func (d *Document) setValue(path string, v value) bool {
 	if !valueReadsBack(&v) {
 		return false
 	}
+	if d.probe {
+		return true
+	}
 	idx, ok := d.place(path)
 	if !ok {
 		return false
@@ -4908,7 +4917,7 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
 // A path that already resolves writes nothing and reports what a write there
 // would: the path's verdict, so a wildcard is refused whether or not its slots
-// happen to resolve, and the value's, which the same setter gives on an empty
+// happen to resolve, and the value's, which the same setter gives on the probe
 // document.
 
 // setDefault runs set on the path when nothing is there yet, and otherwise
@@ -4917,7 +4926,14 @@ func (d *Document) setDefault(path string, set func(*Document, string) bool) boo
 	if !d.Exists(path) {
 		return set(d, path)
 	}
-	return d.WriteReason(path) == Writable && set(New(), "v")
+	if d.WriteReason(path) != Writable {
+		return false
+	}
+	if d.probeDoc == nil {
+		d.probeDoc = New()
+		d.probeDoc.probe = true
+	}
+	return set(d.probeDoc, "v")
 }
 
 // SetIntDefault is SetInt only when path has no node yet.

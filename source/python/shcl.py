@@ -2493,7 +2493,7 @@ def _name_key(parent, name):
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc")
 
 	def __init__(
 		self,
@@ -2517,6 +2517,12 @@ class Document:
 		# it every lookup scans the parent's children, so a flat document read
 		# or written key by key was quadratic.
 		self._index: _NameIndex | None = None
+		# Set only on the document a default form checks values against, never
+		# on one a caller holds: _set_value stops once the value is judged, so a
+		# probe is never written. Built on the first default form that finds its
+		# path already there.
+		self._probe = False
+		self._probe_doc: Document | None = None
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -3150,6 +3156,8 @@ class Document:
 	def _set_value(self, path, value):
 		if not _value_reads_back(value):
 			return False
+		if self._probe:
+			return True
 		idx = self._place(path)
 		if idx is None:
 			return False
@@ -3373,11 +3381,16 @@ class Document:
 	# fails the same way on every document. A path that already resolves writes
 	# nothing and reports what a write there would: the path's verdict, so a
 	# wildcard is refused whether or not its slots happen to resolve, and the
-	# value's, which the same setter gives on an empty document.
+	# value's, which the same setter gives on the probe document.
 	def _set_default(self, path: str, set_: Callable[[Document, str], bool]) -> bool:
 		if not self.exists(path):
 			return set_(self, path)
-		return self.write_reason(path) == WriteReason.Writable and set_(Document.new(), "v")
+		if self.write_reason(path) != WriteReason.Writable:
+			return False
+		if self._probe_doc is None:
+			self._probe_doc = Document.new()
+			self._probe_doc._probe = True
+		return set_(self._probe_doc, "v")
 
 	def set_int_default(self, path: str, v: int) -> bool:
 		_want("set_int_default", v, "int")
