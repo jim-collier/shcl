@@ -120,6 +120,11 @@ printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 ## check. One default contradicts the selector and one names it.
 printf 'field: "a[b]"\n\trequired: yes\n\tdefault: hello\n' > "${tmpDir}/seldefbad.shcl"
 printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.shcl"
+## An optional field's line is commented, so the self-check never read its
+## default. The second schema must still pass, since each line works alone;
+## checked all at once, srv and srv.port make two srv against a repeat of 1.
+printf 'field: port\n\ttype: int\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/optdefbad.shcl"
+printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: c\n' > "${tmpDir}/optdefok.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -143,7 +148,8 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
 ##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
-##	whose default names it,
+##	whose default names it, %SD%/%SE% an optional field's bad default and
+##	optional lines that each pass alone,
 ##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
@@ -205,6 +211,10 @@ rows=(
 	## default there generated a line that failed check at exit 6.
 	'init-selector-default-contradicts|init --schema=%SB%|-|6||V097 generated value fails the schema that produced it: required path missing: a\[b\]'
 	'init-selector-default-consistent|init --no-banner --schema=%SC%|-|0|## any, required\na: b\n|-'
+	## Loose bug from 20260909 item 5: an optional field's bad default went out
+	## commented at exit 0.
+	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max at .port.'
+	'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv.port: 80\n\n## any\n# a: c\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -346,6 +356,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SA%/${tmpDir}/rawvalschema.shcl}"
 	argv="${argv//%SB%/${tmpDir}/seldefbad.shcl}"
 	argv="${argv//%SC%/${tmpDir}/seldefok.shcl}"
+	argv="${argv//%SD%/${tmpDir}/optdefbad.shcl}"
+	argv="${argv//%SE%/${tmpDir}/optdefok.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"

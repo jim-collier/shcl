@@ -221,12 +221,11 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Note: same arm as 20260909 item 3, and near item 17. Whatever item 17 settles about a backslash in a selector body, the pinned 2.x build bound this line.
 	- Opened: 20260914-150934
 
-- 🔘 `init` writes an optional field whose `default` breaks its own constraints as a commented setting at exit 0, where the same field made required is `V097`.
-	- Reproduced in all four. `field: port` with `type: int`, `max: 10` and `default: 99` generates `# port: 99` at exit 0. Uncommenting the line gives a file `check --schema` fails at exit 6. Add `required: yes` and `init` exits 6 with `V097`.
-	- Cause: the self-check reads the finished text, and a commented line is not part of it.
-	- Note: `spec.md` Schema-driven generation says a schema whose own `default` breaks its field's constraints fails generation with `V097`, with no required qualifier. The same paragraph ties the check to the finished text, so the sentence reads either way. It wants a decision before a fix.
-	- Note: found while designing 20260909 item 5, which changes how a commented line under a last-segment selector is spelled but not whether it is checked.
-	- Opened: 20260914-165617
+- 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
+	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
+	- Cause: only must-exist lines count as valued parents, so a child under a commented valued parent is not written `srv[web].port`.
+	- Note: found while fixing the optional-default `V097` bug. That fix checks each commented line alone on purpose, so this stays a starter config that breaks only when two lines are uncommented together.
+	- Opened: 20260915-110339
 
 ### Features and enhancements
 
@@ -338,11 +337,23 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - 🔘 Cut 3.0.0.
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
+	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
 	- Opened: 20260914-184244
 
 ### Done
 
 #### Done - Bugs
+
+- ✅ `init` writes an optional field whose `default` breaks its own constraints as a commented setting at exit 0, where the same field made required is `V097`.
+	- Reproduced in all four. `field: port` with `type: int`, `max: 10` and `default: 99` generates `# port: 99` at exit 0. Uncommenting the line gives a file `check --schema` fails at exit 6. Add `required: yes` and `init` exits 6 with `V097`.
+	- Cause: the self-check reads the finished text, and a commented line is not part of it.
+	- Fixed: each commented line with a default is read back alone and its value checked against its own field, in all four. `spec.md` and `design.md` say so.
+	- Pinned by: two `cli-regress.bash` rows. A bad optional default is `V097` at exit 6, and optional lines that each pass alone, a valued parent with a dotted child among them, still generate at exit 0.
+	- Note: `spec.md` Schema-driven generation says a schema whose own `default` breaks its field's constraints fails generation with `V097`, with no required qualifier. The same paragraph ties the check to the finished text, so the sentence reads either way. It wants a decision before a fix.
+	- Note: found while designing 20260909 item 5, which changes how a commented line under a last-segment selector is spelled but not whether it is checked.
+	- Decided: an optional field's bad `default` fails generation with `V097`, the same as a required one.
+	- Opened: 20260914-165617
+	- Closed: 20260915-110339
 
 - ✅ The PSScriptAnalyzer tool pin reported drift on every run, so a real drift would read the same.
 	- Reproduced: the run log's warning shows the version expression itself where the version belongs. The other eleven pins matched.
