@@ -138,7 +138,8 @@ pub enum WriteReason {
 /// check the schema cannot express can still cite the line. `quoted` is true
 /// when the read's single scalar element was quoted in the source - the escape
 /// hatch that lets a downstream language reserve `@null` while `"@null"` stays
-/// a plain string. Arrays, raw blocks, and empties leave it false.
+/// a plain string. Arrays, raw blocks, and empties leave it false. A written
+/// value counts as quoted when a save would quote it.
 #[derive(Debug, Clone)]
 pub struct Read<T> {
 	pub value: T,
@@ -2293,10 +2294,7 @@ impl Parser {
 					cur = match found {
 						Some(c) => c,
 						None => {
-							let disc = Value::Cell(vec![Element {
-								text: text.clone(),
-								quoted: false,
-							}]);
+							let disc = Value::Cell(vec![new_element(text.clone())]);
 							self.select_or_create(cur, &seg.name, &seg.name_src, disc, line)
 						}
 					};
@@ -3897,17 +3895,12 @@ pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>)
 }
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
-/// One addition: an author-quoted element keeps its quotes unless the text reads as
-/// one of SHCL's own data formats - quoting those is just spelling (readers type the
-/// value either way), but quoting a plain string is the escape and must survive
-/// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-fn emit_element(e: &Element) -> String {
-	let t = &e.text;
+fn needs_quotes(t: &str) -> bool {
 	// Edge whitespace beyond the space/tab above still has to force quotes: the
 	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
 	// ideographic space) at either end would not survive the reload. Edges only
 	// - interior whitespace is never trimmed and quoting it would move bytes.
-	let needs = t.is_empty()
+	t.is_empty()
 		|| t.chars().any(|c| {
 			matches!(
 				c,
@@ -3916,8 +3909,26 @@ fn emit_element(e: &Element) -> String {
 		}) || t.starts_with(char::is_whitespace)
 		|| t.ends_with(char::is_whitespace)
 		|| fence_open(t).is_some()
-		|| (e.quoted && !is_data_format(e));
+}
+
+/// One addition to minimal quoting: an author-quoted element keeps its quotes unless
+/// the text reads as one of SHCL's own data formats - quoting those is just spelling
+/// (readers type the value either way), but quoting a plain string is the escape and
+/// must survive canonicalization. This clause only ever adds quoting, so a bare emit
+/// stays safe.
+fn emit_element(e: &Element) -> String {
+	let t = &e.text;
+	let needs = needs_quotes(t) || (e.quoted && !is_data_format(e));
 	if needs { quote_text(t) } else { t.clone() }
+}
+
+/// An element no source spelled. It counts as quoted when canonical output will
+/// quote it, so a read gives the same answer before a save as after one.
+fn new_element(text: String) -> Element {
+	Element {
+		quoted: needs_quotes(&text),
+		text,
+	}
 }
 
 /// True when the text reads as an int, float, bool, or datetime at standard
@@ -4394,10 +4405,7 @@ fn literal_value(text: &str) -> Option<Value> {
 }
 
 fn cell_of(text: String) -> Value {
-	Value::Cell(vec![Element {
-		text,
-		quoted: false,
-	}])
+	Value::Cell(vec![new_element(text)])
 }
 
 /// Pick a backtick fence long enough that no content line closes it early.
@@ -4417,15 +4425,7 @@ fn array_cell(texts: Vec<String>) -> Value {
 	if texts.is_empty() {
 		Value::Empty
 	} else {
-		Value::Cell(
-			texts
-				.into_iter()
-				.map(|text| Element {
-					text,
-					quoted: false,
-				})
-				.collect(),
-		)
+		Value::Cell(texts.into_iter().map(new_element).collect())
 	}
 }
 

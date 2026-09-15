@@ -271,6 +271,7 @@ public:
 	// Whether the single scalar value at a path was quoted in the source, so a
 	// quoted plain string is distinguishable from a bare word that happens to
 	// spell a reserved one. False for anything that is not one scalar element.
+	// A written value counts as quoted when a save would quote it.
 	bool quoted(std::string_view p) const { return shcl_quoted(d_.get(), p.data(), p.size()) != 0; }
 
 	// Whether a path resolves to at least one node.

@@ -141,7 +141,8 @@ class Read:
 	check the schema cannot express can still cite the line. .quoted is True
 	when the read's single scalar element was quoted in the source - the escape
 	hatch that lets a downstream language reserve @null while "@null" stays a
-	plain string. Arrays, raw blocks, and empties leave it False."""
+	plain string. Arrays, raw blocks, and empties leave it False. A written
+	value counts as quoted when a save would quote it."""
 	__slots__ = ("value", "status", "raw", "slots", "line", "quoted")
 	value: Any
 	status: Status
@@ -443,7 +444,7 @@ def _fits_i64(v):
 
 
 def _cell_of(text):
-	return _cell([_Element(text, False)])
+	return _cell([_new_element(text)])
 
 
 def _want(setter, v, kind):
@@ -492,7 +493,7 @@ def _array_cell(texts):
 	# Inline-array value; the empty array is an empty value (reads back Empty).
 	if not texts:
 		return _empty()
-	return _cell([_Element(t, False) for t in texts])
+	return _cell([_new_element(t) for t in texts])
 
 
 def _choose_fence(content):
@@ -1971,7 +1972,7 @@ class _Parser:
 				if found is not None:
 					cur = found
 				else:
-					disc = _cell([_Element(sel[1], False)])
+					disc = _cell([_new_element(sel[1])])
 					cur = self._select_or_create(cur, seg.name, seg.name_src, disc, line)
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
@@ -4652,15 +4653,8 @@ def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None
 _RESERVED = frozenset(" \t\n,:#\"'[]")
 
 
-def _emit_element(e):
-	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
-
-	One addition: an author-quoted element keeps its quotes unless the text reads as
-	one of SHCL's own data formats - quoting those is just spelling (readers type the
-	value either way), but quoting a plain string is the escape and must survive
-	canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-	"""
-	t = e.text
+def _needs_quotes(t):
+	"""Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it."""
 	# isdisjoint iterates the text in C and stops at the first hit; the generator
 	# it replaced made one Python call per character of every element emitted.
 	needs = (not t) or not _RESERVED.isdisjoint(t) or (_fence_open(t) is not None)
@@ -4670,9 +4664,25 @@ def _emit_element(e):
 	# interior whitespace is never trimmed and quoting it would move bytes.
 	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
 		needs = True
-	if not needs and e.quoted and not _is_data_format(e):
-		needs = True
+	return needs
+
+
+def _emit_element(e):
+	"""One addition to minimal quoting: an author-quoted element keeps its quotes unless
+	the text reads as one of SHCL's own data formats - quoting those is just spelling
+	(readers type the value either way), but quoting a plain string is the escape and
+	must survive canonicalization. This clause only ever adds quoting, so a bare emit
+	stays safe.
+	"""
+	t = e.text
+	needs = _needs_quotes(t) or (e.quoted and not _is_data_format(e))
 	return _quote_text(t) if needs else t
+
+
+def _new_element(text):
+	"""An element no source spelled. It counts as quoted when canonical output will
+	quote it, so a read gives the same answer before a save as after one."""
+	return _Element(text, _needs_quotes(text))
 
 
 def _is_data_format(e):

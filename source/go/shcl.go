@@ -180,7 +180,8 @@ func (r WriteReason) String() string {
 // check the schema cannot express can still cite the line. Quoted is true
 // when the read's single scalar element was quoted in the source - the escape
 // hatch that lets a downstream language reserve `@null` while `"@null"` stays
-// a plain string. Arrays, raw blocks, and empties leave it false.
+// a plain string. Arrays, raw blocks, and empties leave it false. A written
+// value counts as quoted when a save would quote it.
 type Read[T any] struct {
 	Value  T
 	Status Status
@@ -2384,7 +2385,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int, inden
 			if found, ok := p.findByValue(cur, seg.name, seg.sel.value, seg.sel.quoted); ok {
 				cur = found
 			} else {
-				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
+				disc := value{kind: vCell, els: []element{newElement(seg.sel.value)}}
 				cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, disc, line)
 			}
 			if isLast && !v.isEmpty() {
@@ -3747,14 +3748,9 @@ func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic 
 	return kept
 }
 
-// emitElement uses minimal quoting: bare unless a reserved character (or
+// needsQuotes reports minimal quoting: bare unless a reserved character (or
 // lookalike hazard) forces it.
-// One addition: an author-quoted element keeps its quotes unless the text reads as
-// one of SHCL's own data formats - quoting those is just spelling (readers type the
-// value either way), but quoting a plain string is the escape and must survive
-// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-func emitElement(e *element) string {
-	t := e.text
+func needsQuotes(t string) bool {
 	needs := t == ""
 	if !needs {
 		for _, c := range t {
@@ -3783,13 +3779,27 @@ func emitElement(e *element) string {
 			needs = true
 		}
 	}
-	if !needs && e.quoted && !isDataFormat(e) {
-		needs = true
-	}
-	if needs {
+	return needs
+}
+
+// emitElement adds one thing to minimal quoting: an author-quoted element keeps
+// its quotes unless the text reads as one of SHCL's own data formats - quoting
+// those is just spelling (readers type the value either way), but quoting a
+// plain string is the escape and must survive canonicalization. This clause
+// only ever adds quoting, so a bare emit stays safe.
+func emitElement(e *element) string {
+	t := e.text
+	if needsQuotes(t) || (e.quoted && !isDataFormat(e)) {
 		return quoteText(t)
 	}
 	return t
+}
+
+// newElement builds an element no source spelled. It counts as quoted when
+// canonical output will quote it, so a read gives the same answer before a
+// save as after one.
+func newElement(text string) element {
+	return element{text: text, quoted: needsQuotes(text)}
 }
 
 // isDataFormat reports whether the text reads as an int, float, bool, or
@@ -4396,7 +4406,7 @@ func literalValue(text string) (value, bool) {
 }
 
 func cellOf(text string) value {
-	return value{kind: vCell, els: []element{{text: text}}}
+	return value{kind: vCell, els: []element{newElement(text)}}
 }
 
 // chooseFence picks a backtick fence long enough that no content line closes it.
@@ -4421,7 +4431,7 @@ func arrayCell(texts []string) value {
 	}
 	els := make([]element, len(texts))
 	for i, t := range texts {
-		els[i] = element{text: t}
+		els[i] = newElement(t)
 	}
 	return value{kind: vCell, els: els}
 }

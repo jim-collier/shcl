@@ -86,11 +86,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
-	- 🔘 Item 13: a writer-built element reports `quoted=false`, so a value reads differently before and after a save.
-		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
-		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
-		- Opened: 20260909-101200
-
 	- 🔘 Item 15: the `Set<T>Default` forms report success for a value that has no spelling, whenever the path already resolves.
 		- Reproduced in all four. `--set-literal-default 'a=[1, 2]'` exits 1 on an absent path and 0 on a present one, writing nothing either way. 45 asymmetric verdicts over a 670-value corpus.
 		- Cause: the verdict is `write_reason(path)`, which by spec names only path faults, so the value is never looked at.
@@ -499,7 +494,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 14, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 13, 14, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -581,6 +576,15 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Pinned by: `check-c-compilers.bash` builds the CLI with `_GNU_SOURCE` defined under every compiler present. With the old header those builds fail on all six compilers here.
 		- Opened: 20260909-101100
 		- Closed: 20260914-191006
+
+	- ✅ Item 13: a writer-built element reports `quoted=false`, so a value reads differently before and after a save.
+		- Reproduced in all four. `set_string("a", "1,000")` then `read_int("a")` is BadType; the canonical text is `a: "1,000"`, and after a reload the same read is `Good 1000`.
+		- Note: no gate can see this. The corpus never reads after a write, and all four share the behavior.
+		- Note: the parser had the same gap. A selector that creates an instance, as in `srv["1,000"].port: 1`, built its value unquoted, so `srv` read BadType until a `fmt`.
+		- Fixed: a value no source spelled counts as quoted exactly when canonical output quotes it. The reserved-character test moved out of the emitter into `needs_quotes` (`needsQuotes` in Go, `_needs_quotes` in Python), and `new_element` (`newElement`, `_new_element`) builds every setter value, array element and selector-created value from it. Canonical text is unchanged. The spec says so beside the `quoted` flag.
+		- Pinned by: three `cli-regress.bash` rows, one each for `--set`, a `--set` selector and a selector in a file. All four fail all three with the old code.
+		- Opened: 20260909-101200
+		- Closed: 20260915-143945
 
 	- ✅ Item 14: `SetRaw` refuses an info string ending in a carriage return where the spec says it trims it.
 		- Reproduced in all four, both ways. A file whose fence line is a fence line whose info string ends in a carriage return loads clean and reads the info string as `abc`, but `set_raw` with that same info string is refused, while `set_comment` with a trailing carriage return normalizes - which is what the same design sentence promises for both.
