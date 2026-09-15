@@ -6,7 +6,9 @@
 //! no panic at any strictness, and the canonical formatter is a fixpoint.
 //! Iteration count scales via SHCL_FUZZ_ITERS (cicd raises it; default is quick).
 
-use shcl::{Document, Piece, Quote, Rules, SegTok, Severity, Strictness, Tokens, tokenize};
+use shcl::{
+	Document, Piece, Quote, Rules, SegTok, Severity, Strictness, Tokens, migrate, tokenize,
+};
 
 /// Small deterministic PRNG (xorshift64*); no external crates, stable across runs.
 struct Rng(u64);
@@ -227,6 +229,14 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			twice, once,
 			"formatter not idempotent at iteration {} for mutated input:\n{}",
 			i, text
+		);
+		let m = migrate(&text);
+		assert_eq!(
+			migrate(&m),
+			m,
+			"migrate changes its own output at iteration {} for mutated input:\n{}",
+			i,
+			text
 		);
 	}
 }

@@ -996,9 +996,10 @@ def _scan_piece(s, pos, term, rules, comments):
 		pos += 1 if b < 0x80 else _utf8_len(b)
 		if b != _B_SPACE and b != _B_TAB and b != _B_CR:
 			content_end = pos
-	# 2.x judged a piece quoted by its shape after the scan: a quote at both
-	# ends, the last one not escaped, however many closes sat between.
-	if rules is Rules.V2 and quote is Quote.OPEN and content_end - start >= 2 and s[content_end - 1] == s[start]:
+	# 2.x judged a value piece quoted by its shape after the scan: a quote at
+	# both ends, the last one not escaped, however many closes sat between. A
+	# selector body had to close right before its `]`, or the line was E014.
+	if rules is Rules.V2 and term == _B_COMMA and quote is Quote.OPEN and content_end - start >= 2 and s[content_end - 1] == s[start]:
 		run = 0
 		k = content_end - 2
 		while k >= start and s[k] == _B_BACKSLASH:
@@ -1335,7 +1336,9 @@ def migrate(text: str) -> str:
 	backslash meant an escape is double-quoted with that escape; a piece that
 	opened a quote it never closed is quoted whole; the `name:[disc]` selector
 	sugar loses its colon, and on a last segment becomes `name: disc`, with
-	`disc` spelled the way the formatter spells a value.
+	`disc` spelled the way the formatter spells a value. A re-spelled piece
+	holding a backslash is double-quoted, so the result reads the same under
+	2.x and a second run changes nothing.
 	Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 	could not read - comes through as written. One shape has no spelling
 	here at all: a fence label holding a `#`, which 2.x ran to the end of the
@@ -1396,6 +1399,18 @@ def _reads_same(spelling, quoted, logical):
 	)
 
 
+def _migrate_spelling(logical, bare):
+	"""How a re-spelled piece is written. 2.x read a backslash in bare and
+	single-quoted text as an escape too, and double quotes are where both rule
+	sets read one alike. So the migrated file reads the same under 2.x, and a
+	second run changes nothing."""
+	if "\\" in logical:
+		return _quote_double(logical)
+	if bare:
+		return _emit_element(_Element(logical, False))
+	return _quote_text(logical)
+
+
 def _value_edits(s, tok, edits):
 	"""The re-spellings a value's pieces need. Each piece is read the 2.x way
 	(escapes everywhere, an open quote kept whole, a quote at both ends making
@@ -1413,10 +1428,7 @@ def _value_edits(s, tok, edits):
 		logical = _apply_escapes(raw)
 		if _reads_same(s[a:b].decode("utf-8"), quoted, logical):
 			continue
-		if quoted or p.quote is Quote.OPEN:
-			spelling = _quote_text(logical)
-		else:
-			spelling = _emit_element(_Element(logical, False))
+		spelling = _migrate_spelling(logical, not (quoted or p.quote is Quote.OPEN))
 		edits.append((a, b, spelling.encode("utf-8")))
 
 
@@ -1476,11 +1488,11 @@ def _migrate_line(rest, tok, fence):
 					if not quoted and ("," in body or _index_shape(body) or body == "*"):
 						return rest, fence
 					if logical != body:
-						spelling = _quote_text(logical)
+						spelling = _migrate_spelling(logical, False)
 					elif quoted:
 						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8"))
 					else:
-						spelling = _emit_element(_Element(logical, False))
+						spelling = _migrate_spelling(logical, True)
 					edits.append((colon, close + 1, (": " + spelling).encode("utf-8")))
 					continue
 			elif colon is not None:
@@ -1494,7 +1506,7 @@ def _migrate_line(rest, tok, fence):
 				else:
 					a, b = sel.start, sel.end
 				if sel.quote is not Quote.DOUBLE:
-					edits.append((a, b, _quote_text(logical).encode("utf-8")))
+					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8")))
 		if tok.sep is not None:
 			# A same-line fence: the info string ran to the end of the line.
 			fo = _fence_open(s[tok.value[0]:].decode("utf-8"))
@@ -4694,6 +4706,11 @@ def _quote_text(t):
 	control = "\n" in t or "\t" in t
 	if not control and "'" not in t and ('"' in t or "\\" in t):
 		return "'" + t + "'"
+	return _quote_double(t)
+
+
+def _quote_double(t):
+	"""The double-quoted spelling, which the 2.x and current rules read alike."""
 	out = ['"']
 	for c in t:
 		if c == "\\":
