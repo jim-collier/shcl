@@ -255,7 +255,10 @@ if declare -p TOOL_PINS &>/dev/null; then
 		pin_name="${pin%%|*}"; rest="${pin#*|}"; pin_ver="${rest%%|*}"; pin_cmd="${rest#*|}"
 		## Scan the first few lines, not just one: some tools (shellcheck) lead
 		## with a banner and put the version underneath.
-		have="$(${pin_cmd} 2>/dev/null | head -5 | tr '\n' ' ' || true)"
+		## Through bash -c: an unquoted expansion hands a quoted argument over with
+		## its quotes as literal text, so pwsh echoed its own expression back and
+		## the PSScriptAnalyzer pin reported drift on every run.
+		have="$(bash -c "${pin_cmd}" 2>/dev/null | head -5 | tr '\n' ' ' || true)"
 		if [[ -z "$have" ]]; then
 			fEcho "WARNING: pinned tool missing: ${pin_name} (want ${pin_ver}); its stage will skip or fail"
 		elif [[ "$have" != *"${pin_ver}"* ]]; then

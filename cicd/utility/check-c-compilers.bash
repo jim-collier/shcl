@@ -50,13 +50,16 @@ if ((nGcc < 2)) || [[ " ${compilers[*]} " != *" clang "* ]]; then
 	echo check-c-compilers >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 
-fBuild(){  ## fBuild CC OPT SRC
+fBuild(){  ## fBuild CC OPT SRC [FLAG...]
 	local cc="$1" opt="$2" src="$3" out
+	shift 3
 	nRun+=1
-	if ! out="$("${cc}" -std=c11 "${opt}" -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+	if ! out="$("${cc}" -std=c11 "${opt}" "$@" -Wall -Wextra -Werror -I"${repoDir}/source/c" \
 		"${repoDir}/${src}" -o "${tmpDir}/out" -lm -lpthread 2>&1)"; then
-		echo "check-c-compilers: ${cc} ${opt} refuses ${src}:" >&2
-		echo "${out}" | head -n 8 >&2
+		echo "check-c-compilers: ${cc} ${opt} ${*:+$* }refuses ${src}:" >&2
+		## Not a pipe: head quits after 8 lines, and under pipefail the writer's
+		## SIGPIPE on a long cascade ended the whole sweep.
+		head -n 8 <<< "${out}" >&2
 		nBad+=1
 	fi
 }
@@ -67,6 +70,9 @@ for cc in "${compilers[@]}"; do
 	for src in source/c/cmd/shcl/main.c source/c/tests/conformance.c source/c/tests/mem_bounds.c; do
 		fBuild "${cc}" -O2 "${src}"
 	done
+	## Most Linux consumers define _GNU_SOURCE, and glibc declares more under it,
+	## so a static name in the header can collide with one of those functions.
+	fBuild "${cc}" -O2 source/c/cmd/shcl/main.c -D_GNU_SOURCE
 	## The two OOM tests get every level. Their shape is the one this gate was
 	## written for - which locals a compiler thinks a setjmp's unwind can
 	## clobber, and whether it gives the frame a pointer and saved xmm registers
@@ -92,3 +98,5 @@ echo "check-c-compilers: OK: ${nRun} build(s) across ${#compilers[@]} compiler(s
 ##		2026-09-05  A floor on the compiler set under SHCL_GATE_STRICT.
 ##		2026-09-08  The two OOM tests build at every optimization level, since
 ##		            the shape they exist for is one gcc decides per level.
+##		2026-09-14  A build with _GNU_SOURCE defined. A long error cascade no
+##		            longer ends the sweep.
