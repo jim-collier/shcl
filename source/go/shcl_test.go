@@ -780,9 +780,17 @@ func TestSettersRefuseAValueTheReaderRefuses(t *testing.T) {
 		if doc.SetFloat("f", v) || doc.SetFloatDefault("f", v) || doc.SetFloatArray("f", []float64{1, v}) {
 			t.Fatalf("float %v was written", v)
 		}
+		// A default form on a path that is already there writes nothing, and
+		// still refuses what the plain setter would.
+		if doc.SetFloatDefault("z", v) || doc.SetFloatArrayDefault("z", []float64{1, v}) {
+			t.Fatalf("float %v passed a default form on a present path", v)
+		}
 	}
 	if v, st := 2.5, Good; !doc.SetFloat("f", v) || func() bool { g, s := doc.GetFloat("f"); return g != v || s != st }() {
 		t.Fatalf("a finite float was refused")
+	}
+	if !doc.SetFloatDefault("z", 2.5) || func() bool { g, _ := doc.GetFloat("z"); return g != 0 }() {
+		t.Fatalf("a finite float default on a present path was refused or written")
 	}
 	date := func(y, m, d int) DateTime { return DateTime{HasDate: true, Year: y, Month: m, Day: d} }
 	clock := func(h, mi int, sec int, hasSec bool, frac string) DateTime {
@@ -804,6 +812,9 @@ func TestSettersRefuseAValueTheReaderRefuses(t *testing.T) {
 	for _, dt := range bad {
 		if doc.SetDateTime("d", dt) || doc.SetDateTimeDefault("d", dt) || doc.SetDateTimeArray("d", []DateTime{date(2026, 1, 1), dt}) {
 			t.Fatalf("datetime %q was written", dt.String())
+		}
+		if doc.SetDateTimeDefault("z", dt) || doc.SetDateTimeArrayDefault("z", []DateTime{date(2026, 1, 1), dt}) {
+			t.Fatalf("datetime %q passed a default form on a present path", dt.String())
 		}
 	}
 	ok := offset(DateTime{HasDate: true, Year: 2026, Month: 1, Day: 2, HasTime: true, Hour: 3, Minute: 4, HasSeconds: true, Second: 5, Frac: "60"}, -90)

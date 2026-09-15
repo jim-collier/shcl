@@ -1064,8 +1064,13 @@ fn setters_refuse_a_value_the_reader_refuses() {
 		assert!(!doc.set_float("f", v), "{v}");
 		assert!(!doc.set_float_default("f", v), "{v}");
 		assert!(!doc.set_float_array("f", &[1.0, v]), "{v}");
+		// A default form on a path that is already there writes nothing, and
+		// still refuses what the plain setter would.
+		assert!(!doc.set_float_default("z", v), "{v}");
+		assert!(!doc.set_float_array_default("z", &[1.0, v]), "{v}");
 	}
 	assert!(doc.set_float("f", 2.5) && doc.get_float("f") == Ok(2.5));
+	assert!(doc.set_float_default("z", 2.5) && doc.get_float("z") == Ok(0.0));
 	let good = |d: Option<(i32, u32, u32)>, t: Option<(u32, u32, Option<u32>)>| ShclDateTime {
 		date: d,
 		time: t,
@@ -1098,6 +1103,11 @@ fn setters_refuse_a_value_the_reader_refuses() {
 		assert!(!doc.set_datetime_default("d", dt), "{dt}");
 		assert!(
 			!doc.set_datetime_array("d", &[good(Some((2026, 1, 1)), None), dt.clone()]),
+			"{dt}"
+		);
+		assert!(!doc.set_datetime_default("z", dt), "{dt}");
+		assert!(
+			!doc.set_datetime_array_default("z", &[good(Some((2026, 1, 1)), None), dt.clone()]),
 			"{dt}"
 		);
 	}

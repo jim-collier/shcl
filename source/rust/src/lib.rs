@@ -4854,39 +4854,35 @@ impl Document {
 	}
 
 	// Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-	// A path that already resolves reports what a write there would, so a
-	// wildcard is refused whether or not its slots happen to resolve.
+	// A path that already resolves writes nothing and reports what a write
+	// there would: the path's verdict, so a wildcard is refused whether or not
+	// its slots happen to resolve, and the value's, which the same setter gives
+	// on an empty document.
+	fn set_default(&mut self, path: &str, set: impl Fn(&mut Document, &str) -> bool) -> bool {
+		if !self.exists(path) {
+			return set(self, path);
+		}
+		self.write_reason(path) == WriteReason::Writable && set(&mut Document::new(), "v")
+	}
 	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_default(&mut self, path: &str, v: i64) -> bool {
-		if !self.exists(path) {
-			return self.set_int(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_int(p, v))
 	}
 	/// `set_float` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_default(&mut self, path: &str, v: f64) -> bool {
-		if !self.exists(path) {
-			return self.set_float(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_float(p, v))
 	}
 	/// `set_bool` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_default(&mut self, path: &str, v: bool) -> bool {
-		if !self.exists(path) {
-			return self.set_bool(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_bool(p, v))
 	}
 	/// `set_string` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_default(&mut self, path: &str, v: &str) -> bool {
-		if !self.exists(path) {
-			return self.set_string(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_string(p, v))
 	}
 	/// Write TEXT as value syntax rather than as data: `80, 443` becomes a
 	/// two-element array where `set_string` would store one string that has to
@@ -4903,66 +4899,42 @@ impl Document {
 	/// `set_literal` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_literal_default(&mut self, path: &str, text: &str) -> bool {
-		if !self.exists(path) {
-			return self.set_literal(path, text);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_literal(p, text))
 	}
 	/// `set_datetime` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_default(&mut self, path: &str, v: &ShclDateTime) -> bool {
-		if !self.exists(path) {
-			return self.set_datetime(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_datetime(p, v))
 	}
 	/// `set_raw` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_raw_default(&mut self, path: &str, content: &str, info: &str) -> bool {
-		if !self.exists(path) {
-			return self.set_raw(path, content, info);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_raw(p, content, info))
 	}
 	/// `set_int_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_int_array_default(&mut self, path: &str, v: &[i64]) -> bool {
-		if !self.exists(path) {
-			return self.set_int_array(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_int_array(p, v))
 	}
 	/// `set_float_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_float_array_default(&mut self, path: &str, v: &[f64]) -> bool {
-		if !self.exists(path) {
-			return self.set_float_array(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_float_array(p, v))
 	}
 	/// `set_bool_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_bool_array_default(&mut self, path: &str, v: &[bool]) -> bool {
-		if !self.exists(path) {
-			return self.set_bool_array(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_bool_array(p, v))
 	}
 	/// `set_string_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_string_array_default(&mut self, path: &str, v: &[&str]) -> bool {
-		if !self.exists(path) {
-			return self.set_string_array(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_string_array(p, v))
 	}
 	/// `set_datetime_array` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
 	pub fn set_datetime_array_default(&mut self, path: &str, v: &[ShclDateTime]) -> bool {
-		if !self.exists(path) {
-			return self.set_datetime_array(path, v);
-		}
-		self.write_reason(path) == WriteReason::Writable
+		self.set_default(path, |d, p| d.set_datetime_array(p, v))
 	}
 }
 

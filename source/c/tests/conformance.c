@@ -268,56 +268,54 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 		only_absent = 1;
 		op[oplen - 8] = '\0';
 	}
-	// A present path still answers what a write there would, like the library's
-	// default forms: a wildcard is refused whether or not its slots resolve.
-	#define PRESENT (only_absent && shcl_exists(d, path, plen) && ((wrote = shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE), 1))
-	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_int(d, path, plen, x); }
-	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_float(d, path, plen, x); }
-	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else if (!PRESENT) wrote = shcl_set_bool(d, path, plen, x); }
-	else if (!strcmp(op, "literal")) { if (!PRESENT) wrote = shcl_set_literal(d, path, plen, v, vn); }
-	else if (!strcmp(op, "string")) { if (!PRESENT) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_string(d, path, plen, b, m); free(b); } }
-	else if (!strcmp(op, "datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else if (!PRESENT) wrote = shcl_set_datetime(d, path, plen, &dt); }
+	// A default op is the library's default form, so a path that is already
+	// there still has its value and its path judged the way a write would.
+	#define SET(fn, ...) (only_absent ? fn##_default(d, path, plen, __VA_ARGS__) : fn(d, path, plen, __VA_ARGS__))
+	if (!strcmp(op, "int")) { int64_t x; if (!cf_i64(v, vn, &x)) rc = 1; else wrote = SET(shcl_set_int, x); }
+	else if (!strcmp(op, "float")) { double x; if (!cf_f64(v, vn, &x)) rc = 1; else wrote = SET(shcl_set_float, x); }
+	else if (!strcmp(op, "bool")) { int x; if (!cf_bool(v, &x)) rc = 1; else wrote = SET(shcl_set_bool, x); }
+	else if (!strcmp(op, "literal")) { wrote = SET(shcl_set_literal, v, vn); }
+	else if (!strcmp(op, "string")) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = SET(shcl_set_string, b, m); free(b); }
+	else if (!strcmp(op, "datetime")) { shcl_datetime dt; ShclStr sv; sv.p = v; sv.n = vn; if (!parse_datetime(&d->arena, sv, &dt)) rc = 1; else wrote = SET(shcl_set_datetime, &dt); }
 	else if (!strcmp(op, "int-array")) {
 		int64_t *a = (int64_t *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) if (!cf_i64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
-		if (!rc && !PRESENT) wrote = shcl_set_int_array(d, path, plen, a, an);
+		if (!rc) wrote = SET(shcl_set_int_array, a, an);
 		free(a);
 	}
 	else if (!strcmp(op, "float-array")) {
 		double *a = (double *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) if (!cf_f64(f[2 + i], strlen(f[2 + i]), &a[i])) rc = 1;
-		if (!rc && !PRESENT) wrote = shcl_set_float_array(d, path, plen, a, an);
+		if (!rc) wrote = SET(shcl_set_float_array, a, an);
 		free(a);
 	}
 	else if (!strcmp(op, "bool-array")) {
 		int *a = (int *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) if (!cf_bool(f[2 + i], &a[i])) rc = 1;
-		if (!rc && !PRESENT) wrote = shcl_set_bool_array(d, path, plen, a, an);
+		if (!rc) wrote = SET(shcl_set_bool_array, a, an);
 		free(a);
 	}
 	else if (!strcmp(op, "string-array")) {
-		if (!PRESENT) {
-			char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
-			sv[0] = NULL; sl[0] = 0; // silence -Wmaybe-uninitialized for the an==0 call
-			for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
-			wrote = shcl_set_string_array(d, path, plen, (const char *const *)sv, sl, an);
-			for (size_t i = 0; i < an; i++) free(sv[i]);
-			free(sv); free(sl);
-		}
+		char **sv = (char **)xrealloc(NULL, (an ? an : 1) * sizeof *sv); size_t *sl = (size_t *)xrealloc(NULL, (an ? an : 1) * sizeof *sl);
+		sv[0] = NULL; sl[0] = 0; // silence -Wmaybe-uninitialized for the an==0 call
+		for (size_t i = 0; i < an; i++) { size_t L = strlen(f[2 + i]); char *b = (char *)xrealloc(NULL, L ? L : 1); sl[i] = cf_unescape(f[2 + i], L, b); sv[i] = b; }
+		wrote = SET(shcl_set_string_array, (const char *const *)sv, sl, an);
+		for (size_t i = 0; i < an; i++) free(sv[i]);
+		free(sv); free(sl);
 	}
 	else if (!strcmp(op, "datetime-array")) {
 		shcl_datetime *a = (shcl_datetime *)xrealloc(NULL, (an ? an : 1) * sizeof *a);
 		for (size_t i = 0; i < an && !rc; i++) { ShclStr sv; sv.p = f[2 + i]; sv.n = strlen(f[2 + i]); if (!parse_datetime(&d->arena, sv, &a[i])) rc = 1; }
-		if (!rc && !PRESENT) wrote = shcl_set_datetime_array(d, path, plen, a, an);
+		if (!rc) wrote = SET(shcl_set_datetime_array, a, an);
 		free(a);
 	}
-	else if (!strcmp(op, "raw")) { if (!PRESENT) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); wrote = shcl_set_raw(d, path, plen, b, m, v, vn); free(b); } }
+	else if (!strcmp(op, "raw")) { const char *cont = nf > 3 ? f[3] : ""; size_t cn = nf > 3 ? strlen(f[3]) : 0; char *b = (char *)xrealloc(NULL, cn ? cn : 1); size_t m = cf_unescape(cont, cn, b); wrote = SET(shcl_set_raw, b, m, v, vn); free(b); }
 	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (!strcmp(op, "comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
 	else rc = 1; // unknown op
 	if (rc == 0 && !wrote) rc = 1;
-	#undef PRESENT
+	#undef SET
 	free(f);
 	return rc;
 }
@@ -1534,8 +1532,13 @@ int main(int argc, char **argv) {
 			double pair[2]; pair[0] = 1; pair[1] = nonfinite[i];
 			if (shcl_set_float(sd, "f", 1, nonfinite[i]) || shcl_set_float_default(sd, "f", 1, nonfinite[i]) || shcl_set_float_array(sd, "f", 1, pair, 2))
 				fail("setters_refuse", "a non-finite float was written");
+			// A default form on a path that is already there writes nothing, and
+			// still refuses what the plain setter would.
+			if (shcl_set_float_default(sd, "z", 1, nonfinite[i]) || shcl_set_float_array_default(sd, "z", 1, pair, 2))
+				fail("setters_refuse", "a non-finite float passed a default form on a present path");
 		}
 		if (!shcl_set_float(sd, "f", 1, 2.5) || shcl_get_float_or(sd, "f", 1, 0) != 2.5) fail("setters_refuse", "a finite float was refused");
+		if (!shcl_set_float_default(sd, "z", 1, 2.5) || shcl_get_float_or(sd, "z", 1, 1) != 0) fail("setters_refuse", "a finite float default on a present path was refused or written");
 		shcl_datetime bad[10]; memset(bad, 0, sizeof bad);
 		// [0] nothing written
 		bad[1].has_date = 1; bad[1].year = 2026; bad[1].month = 13; bad[1].day = 1;
@@ -1552,6 +1555,8 @@ int main(int argc, char **argv) {
 			shcl_datetime pair[2]; pair[0] = good; pair[1] = bad[i];
 			if (shcl_set_datetime(sd, "d", 1, &bad[i]) || shcl_set_datetime_default(sd, "d", 1, &bad[i]) || shcl_set_datetime_array(sd, "d", 1, pair, 2))
 				fail("setters_refuse", "a datetime the reader refuses was written");
+			if (shcl_set_datetime_default(sd, "z", 1, &bad[i]) || shcl_set_datetime_array_default(sd, "z", 1, pair, 2))
+				fail("setters_refuse", "a datetime the reader refuses passed a default form on a present path");
 		}
 		shcl_datetime ok = good; ok.day = 2; ok.has_time = 1; ok.hour = 3; ok.minute = 4; ok.has_sec = 1; ok.sec = 5; ok.has_frac = 1; ok.frac = s_lit("60"); ok.zone = SHCL_ZONE_OFFSET; ok.off_min = -90;
 		if (!shcl_set_datetime(sd, "d", 1, &ok)) fail("setters_refuse", "a valid datetime was refused");
