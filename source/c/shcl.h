@@ -7011,6 +7011,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   below. */
 	ShclVecS block_text = {0, 0, 0};
 	ShclVecSize block_cons = {0, 0, 0};
+	// An optional field's line goes out commented, with the constraint it came
+	// from, since the self-check below cannot see a comment.
+	ShclVecS commented_line = {0, 0, 0};
+	ShclVecSize commented_cons = {0, 0, 0};
 	for (size_t i = 0; i < cons.len; i++) {
 		ShclVCons *c = &cons.data[i];
 		ShclStr tyname;
@@ -7061,11 +7065,17 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			}
 		}
 		sb_puts(a, &blk, "## "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
+		ShclSB ln = {0};
+		sb_putS(a, &ln, path);
+		if (c->has_default) { sb_puts(a, &ln, ": "); sb_putS(a, &ln, g_default_text(a, c->default_text)); }
+		else sb_putc(a, &ln, ':');
+		sb_putc(a, &ln, '\n');
 		if (!g_must_exist(c)) sb_puts(a, &blk, "# ");
-		sb_putS(a, &blk, path);
-		if (c->has_default) { sb_puts(a, &blk, ": "); sb_putS(a, &blk, g_default_text(a, c->default_text)); }
-		else sb_putc(a, &blk, ':');
-		sb_putc(a, &blk, '\n');
+		sb_putS(a, &blk, sb_S(&ln));
+		if (!g_must_exist(c) && c->has_default) {
+			ShclVecS_push(a, &commented_line, sb_S(&ln));
+			ShclVecSize_push(a, &commented_cons, i);
+		}
 		ShclVecS_push(a, &block_text, sb_S(&blk));
 		ShclVecSize_push(a, &block_cons, i);
 	}
@@ -7180,6 +7190,40 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		}
 		if (v) shcl_validation_free(v);
 		if (self_) shcl_free(self_);
+		/* A commented default fails the same check once someone uncomments it.
+		   Each line is read back alone and only its value is checked:
+		   uncommenting every line at once would pair a valued parent with a
+		   dotted child, which names a second instance, and fault a schema whose
+		   lines each work. */
+		for (size_t j = 0; j < commented_line.len; j++) {
+			ShclStr text = commented_line.data[j];
+			shcl_doc *one = shcl_parse(text.p, text.n);
+			if (!one) continue;
+			for (size_t i = 0; i < one->diags.len; i++) {
+				const ShclDiag *dg = &one->diags.data[i];
+				if (dg->sev != SHCL_SEV_ERROR) continue;
+				ShclSB m = {0, 0, 0};
+				sb_puts(a, &m, "generated text does not load: ");
+				sb_puts(a, &m, dg->code); sb_putc(a, &m, ' '); sb_putS(a, &m, dg->message);
+				push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+				nbad++;
+			}
+			size_t leaf = ROOT;
+			while (NODE(one, leaf).children.len) leaf = NODE(one, leaf).children.data[0];
+			if (leaf != ROOT) {
+				ShclVecDiag found = {0, 0, 0};
+				v_node(a, a, one, &cons.data[commented_cons.data[j]], leaf, &found);
+				for (size_t i = 0; i < found.len; i++) {
+					if (found.data[i].sev != SHCL_SEV_ERROR) continue;
+					ShclSB m = {0, 0, 0};
+					sb_puts(a, &m, "generated value fails the schema that produced it: ");
+					sb_putS(a, &m, found.data[i].message);
+					push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+					nbad++;
+				}
+			}
+			shcl_free(one);
+		}
 		if (nbad) {
 			if (ok) *ok = 0;
 			ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp);

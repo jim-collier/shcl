@@ -6797,6 +6797,9 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// One block per generated line - its desc, annotation and binding - with
 	// the path's names, so the blocks can be laid out in tree order below.
 	let mut blocks: Vec<(Vec<String>, String)> = Vec::new();
+	// An optional field's line goes out commented, with the constraint it came
+	// from, since the self-check below cannot see a comment.
+	let mut commented: Vec<(usize, String)> = Vec::new();
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
@@ -6851,7 +6854,14 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		block.push('\n');
 		let prefix = if must_exist(c) { "" } else { "# " };
 		match &c.default_text {
-			Some(v) => block.push_str(&format!("{}{}: {}\n", prefix, path, gen_default_text(v))),
+			Some(v) => {
+				let line = format!("{}: {}\n", path, gen_default_text(v));
+				block.push_str(prefix);
+				block.push_str(&line);
+				if !must_exist(c) {
+					commented.push((i, line));
+				}
+			}
 			None => block.push_str(&format!("{}{}:\n", prefix, path)),
 		}
 		let names: Vec<String> = names_of(&c.segs).iter().map(|s| s.to_string()).collect();
@@ -6915,7 +6925,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// The load comes first, in the order `check --schema` prints: a line that
 	// does not load is refused even when validation happens to pass without it.
 	let gdoc = Document::parse(&out);
-	let bad: Vec<Diagnostic> = gdoc
+	let mut bad: Vec<Diagnostic> = gdoc
 		.diagnostics()
 		.iter()
 		.filter(|d| d.severity == Severity::Error)
@@ -6943,6 +6953,47 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 				}),
 		)
 		.collect();
+	// A commented default fails the same check once someone uncomments it. Each
+	// line is read back alone and only its value is checked: uncommenting every
+	// line at once would pair a valued parent with a dotted child, which names
+	// a second instance, and fault a schema whose lines each work.
+	for (i, line) in &commented {
+		let one = Document::parse(line);
+		bad.extend(
+			one.diagnostics()
+				.iter()
+				.filter(|d| d.severity == Severity::Error)
+				.map(|d| Diagnostic {
+					line: 0,
+					severity: Severity::Error,
+					code: "V097",
+					message: format!("generated text does not load: {} {}", d.code, d.message),
+				}),
+		);
+		let mut leaf = ROOT;
+		while let Some(&k) = one.arena[leaf].children.first() {
+			leaf = k;
+		}
+		if leaf == ROOT {
+			continue;
+		}
+		let mut found = Vec::new();
+		one.v_node(&cons[*i], leaf, &mut found);
+		bad.extend(
+			found
+				.into_iter()
+				.filter(|d| d.severity == Severity::Error)
+				.map(|d| Diagnostic {
+					line: 0,
+					severity: Severity::Error,
+					code: "V097",
+					message: format!(
+						"generated value fails the schema that produced it: {}",
+						d.message
+					),
+				}),
+		);
+	}
 	if !bad.is_empty() {
 		return Err(bad);
 	}
