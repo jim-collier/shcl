@@ -1009,6 +1009,12 @@ struct shcl_doc {
 	ShclCMap index_last;     /* name_key -> chain tail */
 	size_t *index_next;  /* per node; NIL ends the chain */
 	size_t index_next_cap;
+	/* The document a default form checks values against, built on the first
+	   one that finds its path already there, and the flag that makes a
+	   document a probe: w_set_marked stops once the value is judged and gives
+	   the value back, so a probe is never written. */
+	shcl_doc *probe_doc;
+	int probe;
 };
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
@@ -3926,6 +3932,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
 	if (!value_reads_back(&d->scratch, &v)) { arena_release(&d->arena, m); return 0; }
+	if (d->probe) { arena_release(&d->arena, m); return 1; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
 	w_collapse_dup(d, idx);
@@ -4085,27 +4092,33 @@ int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const sh
 
 /* A default form writes only where nothing is yet. Where something is, it
    writes nothing and reports what a write there would: the path's verdict,
-   then the value's, which the same setter gives on an empty document. NULL
+   then the value's, which the same setter gives on the probe document. NULL
    means the path alone refuses. */
 static shcl_doc *w_default_probe(shcl_doc *d, const char *path, size_t plen) {
 	if (shcl_write_reason_(d, path, plen) != SHCL_W_WRITABLE) return NULL;
-	shcl_doc *e = shcl_new();
-	if (!e) SHCL_OOM();
-	return e;
+	if (!d->probe_doc) {
+		shcl_doc *e = shcl_new();
+		if (!e) { SHCL_OOM(); return NULL; }
+		e->probe = 1;
+		d->probe_doc = e;
+	}
+	/* A refused value leaves its working set in scratch, and nothing else
+	   ever resets a probe's. */
+	arena_reset(&d->probe_doc->scratch);
+	return d->probe_doc;
 }
-static int w_probe_done(shcl_doc *e, int ok) { shcl_free(e); return ok; }
-int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_int(e, "v", 1, v)); }
-int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_float(e, "v", 1, v)); }
-int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_bool(e, "v", 1, v)); }
-int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_string(e, "v", 1, s, slen)); }
-int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) { if (!shcl_exists(d, path, plen)) return shcl_set_literal(d, path, plen, text, tlen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_literal(e, "v", 1, text, tlen)); }
-int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_datetime(e, "v", 1, dt)); }
-int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_raw(e, "v", 1, content, clen, info, ilen)); }
-int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_int_array(e, "v", 1, v, n)); }
-int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_float_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_float_array(e, "v", 1, v, n)); }
-int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_bool_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_bool_array(e, "v", 1, v, n)); }
-int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_string_array(d, path, plen, v, lens, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_string_array(e, "v", 1, v, lens, n)); }
-int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_datetime_array(e, "v", 1, v, n)); }
+int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_int(e, "v", 1, v); }
+int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_float(e, "v", 1, v); }
+int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_bool(e, "v", 1, v); }
+int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_string(e, "v", 1, s, slen); }
+int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) { if (!shcl_exists(d, path, plen)) return shcl_set_literal(d, path, plen, text, tlen); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_literal(e, "v", 1, text, tlen); }
+int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_datetime(e, "v", 1, dt); }
+int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_raw(e, "v", 1, content, clen, info, ilen); }
+int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_int_array(e, "v", 1, v, n); }
+int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_float_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_float_array(e, "v", 1, v, n); }
+int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_bool_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_bool_array(e, "v", 1, v, n); }
+int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_string_array(d, path, plen, v, lens, n); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_string_array(e, "v", 1, v, lens, n); }
+int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_datetime_array(e, "v", 1, v, n); }
 
 // --- Layered loading: overlay a higher-priority document onto a lower one ----
 
@@ -5065,7 +5078,7 @@ shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { ret
    arithmetic. A cap diagnostic is an error, so shcl_error_count answers
    whether a Strict load would have failed; the parsed part stays readable. */
 shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements, size_t max_diags) { return do_parse(text, len, s, max_nodes, max_elements, max_diags); }
-void shcl_free(shcl_doc *d) { if (!d) return; free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
+void shcl_free(shcl_doc *d) { if (!d) return; shcl_free(d->probe_doc); free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
 void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
 void shcl_compact(shcl_doc *d) {
 	if (!d) return;
@@ -5085,6 +5098,7 @@ void shcl_compact(shcl_doc *d) {
 	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before));
 	n->strictness = d->strictness;
 	n->lost = d->lost;
+	n->probe_doc = d->probe_doc;
 	// Swap the rebuilt document in and give the old storage back.
 	shcl_doc old = *d;
 	*d = *n;

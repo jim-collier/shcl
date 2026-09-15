@@ -552,6 +552,12 @@ pub struct Document {
 	// every lookup scans the parent's children, so a flat document read or
 	// written key by key was quadratic.
 	index: std::sync::OnceLock<Box<NameIndex>>,
+	// Set only on the document a default form checks values against, never on
+	// one a caller holds: set_value stops once the value is judged, so a probe
+	// is never written. Built on the first default form that finds its path
+	// already there.
+	probe: bool,
+	probe_doc: Option<Box<Document>>,
 }
 
 /// The first child of each (parent, name), chained on to the next same-named
@@ -3058,6 +3064,8 @@ impl Parser {
 			orphans,
 			lost: self.lost,
 			index: std::sync::OnceLock::new(),
+			probe: false,
+			probe_doc: None,
 		}
 	}
 }
@@ -4589,6 +4597,9 @@ impl Document {
 		if !value_reads_back(&value) {
 			return false;
 		}
+		if self.probe {
+			return true;
+		}
 		match self.place(path) {
 			Some(node) => {
 				self.arena[node].value = value;
@@ -4859,12 +4870,21 @@ impl Document {
 	// A path that already resolves writes nothing and reports what a write
 	// there would: the path's verdict, so a wildcard is refused whether or not
 	// its slots happen to resolve, and the value's, which the same setter gives
-	// on an empty document.
+	// on the probe document.
 	fn set_default(&mut self, path: &str, set: impl Fn(&mut Document, &str) -> bool) -> bool {
 		if !self.exists(path) {
 			return set(self, path);
 		}
-		self.write_reason(path) == WriteReason::Writable && set(&mut Document::new(), "v")
+		if self.write_reason(path) != WriteReason::Writable {
+			return false;
+		}
+		let probe = self.probe_doc.get_or_insert_with(|| {
+			Box::new(Document {
+				probe: true,
+				..Document::new()
+			})
+		});
+		set(probe, "v")
 	}
 	/// `set_int` only when the path has no node yet.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
