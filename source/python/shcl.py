@@ -5922,7 +5922,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			leaf = one.arena[leaf].children[0]
 		if leaf == ROOT:
 			continue
-		found = []
+		found: list[Diagnostic] = []
 		one._v_node(cons[i], leaf, found)
 		bad += [
 			Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
