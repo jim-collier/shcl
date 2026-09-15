@@ -136,12 +136,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Sites: `install-dev.bash:264`, `:267`, `:295`.
 		- Opened: 20260909-101900
 
-	- 🔘 Item 21: a failed pull strands uncommitted work in a stash, and the next run reports success.
-		- Reproduced twice in `n8git_backup-and-publish`. With a dirty tree and a divergent upstream the script stashes, `git pull --ff-only` fails, and the error trap exits with the stash pushed and the tree now clean. The next run finds a clean tree, so it never pops, commits the merge, pushes, and prints "Done." at rc 0 with the work still in `stash@{0}`. A second failure adds `stash@{1}` and only the newest would ever be popped.
-		- Note: both trigger conditions are the normal case on this box. dev moves under you mid-task because the publish stage pushes, and in-flight working-tree edits are routine.
-		- Note: the fix belongs in the canonical copy under the synced tree as well, patched in place rather than by overwriting, since other projects' copies carry their own customizations.
-		- Opened: 20260909-102000
-
 	- 🔘 Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
 		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
 		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
@@ -171,12 +165,6 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half cannot fail at all, and it never checks that the harness it built adopted the locale.
 		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
 		- Opened: 20260909-102700
-
-	- 🔘 Item 29: an environment variable reaches an arithmetic context in the copied rotation script and executes a command.
-		- Reproduced. `GFS_KEEP_FREQUENT='x[$(touch FILE)]' gfs_rotate DIR log txt` runs the substitution. Bash expands a command substitution inside an array subscript in arithmetic evaluation, which is the recorded `[[ VAR -eq 1 ]]` trap in a different spelling.
-		- Note: all six `GFS_KEEP_*` variables reach `((...))` the same way. The script is copied into every project, so the fix belongs in the canonical copy too.
-		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
-		- Opened: 20260909-102800
 
 	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
 		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
@@ -583,6 +571,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-101300
 		- Closed: 20260910-095333
 
+	- ✅ Item 21: a failed pull strands uncommitted work in a stash, and the next run reports success.
+		- Reproduced twice in `n8git_backup-and-publish`. With a dirty tree and a divergent upstream the script stashes, `git pull --ff-only` fails, and the error trap exits with the stash pushed and the tree now clean. The next run finds a clean tree, so it never pops, commits the merge, pushes, and prints "Done." at rc 0 with the work still in `stash@{0}`. A second failure adds `stash@{1}` and only the newest would ever be popped.
+		- Fixed: a failed pull puts the stashed work back before stopping, and a run refuses to start while an earlier run's `auto-stash` is still in the stash list.
+		- Fixed: the canonical copy and every project copy under the dev tree got the same two blocks, patched in place. The `convert-base-v1b` copy still pulls with `--rebase`, so its block aborts the rebase before restoring.
+		- Pinned by: `shell-regress.bash`, which publishes into a scratch remote: a diverged pull over a dirty tree must exit 1 with the edit back in the tree, and a clean tree over an old `auto-stash` must exit 1. The old script fails both.
+		- Note: both trigger conditions are the normal case on this box. dev moves under you mid-task because the publish stage pushes, and in-flight working-tree edits are routine.
+		- Note: the fix belongs in the canonical copy under the synced tree as well, patched in place rather than by overwriting, since other projects' copies carry their own customizations.
+		- Opened: 20260909-102000
+		- Closed: 20260915-112859
+
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
 		- Cause: the scan matches `warning`, `rustsec-`, `vulnerab`, `unmaintained`, `yanked` and `error[`. Only rustc's bracketed error-code form is an error spelling; a gcc error, a shellcheck finding, a failed test and the pipeline's own abort line all pass through.
@@ -603,6 +601,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Pinned by: `shell-regress.bash` rows for both gates, one with a marker moved ahead by `--file` and one with a graph whose sidecar kept its old role. Each fails on the old scripts. A second look must still say SEEN, so neither gate can pass by always reporting.
 		- Opened: 20260909-102300
 		- Closed: 20260914-191700
+
+	- ✅ Item 29: an environment variable reaches an arithmetic context in the copied rotation script and executes a command.
+		- Reproduced. `GFS_KEEP_FREQUENT='x[$(touch FILE)]' gfs_rotate DIR log txt` runs the substitution. Bash expands a command substitution inside an array subscript in arithmetic evaluation, which is the recorded `[[ VAR -eq 1 ]]` trap in a different spelling.
+		- Fixed: a `GFS_KEEP_*` value that is not a plain count gets its default, with a note on stderr. Same block in the canonical copy and every project copy.
+		- Pinned by: `shell-regress.bash`, one payload per variable. The old script ran all six.
+		- Note: all six `GFS_KEEP_*` variables reach `((...))` the same way. The script is copied into every project, so the fix belongs in the canonical copy too.
+		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
+		- Note: a caller under `set -u` never ran the payload, since the unbound name stops it first. This project's callers all set it; the library cannot count on that.
+		- Opened: 20260909-102800
+		- Closed: 20260915-112859
 
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.

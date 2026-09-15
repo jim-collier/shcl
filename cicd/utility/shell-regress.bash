@@ -913,6 +913,57 @@ pub="${repoDir}/cicd/utility/n8git_backup-and-publish"
 [[ "$(grep -cE 'git config user\.(name|email)[^|]*\|\|' "${pub}" || true)" == 2 ]] || fBad "n8git_backup-and-publish reads the git identity without a fallback"
 grep -qE 'sshHost="\$\(git remote get-url origin[^)]*\|\| true\)"' "${pub}" || fBad "n8git_backup-and-publish assigns sshHost without a fallback"
 
+##	20260909 item 29: a GFS_KEEP_* value reached arithmetic, where bash runs a
+##	command substitution hidden in an array subscript. The payload has no space,
+##	since the period counts are word-split before they reach arithmetic, and the
+##	subshell drops nounset, which stops the substitution at an unbound name. A
+##	file from 2024 gives every period, the year included, one that has ended.
+gfsLib="${repoDir}/cicd/utility/include/gfs-rotate.bash"
+mkdir -p "${tmpDir}/gfs"
+for n in 20240101 20260101 20260102 20260103; do : > "${tmpDir}/gfs/log_${n}-120000.txt"; done
+for v in GFS_KEEP_FREQUENT GFS_KEEP_HOURLY GFS_KEEP_DAILY GFS_KEEP_WEEKLY GFS_KEEP_MONTHLY GFS_KEEP_YEARLY; do
+	# shellcheck source=/dev/null
+	( set +u; source "${gfsLib}"; export "${v}=x[\$(>${tmpDir}/gfs-ran-${v})]"; gfs_rotate "${tmpDir}/gfs" log txt ) >/dev/null 2>&1 || true
+	[[ ! -e "${tmpDir}/gfs-ran-${v}" ]] || fBad "gfs-rotate ran a command held in ${v}"
+done
+
+##	20260909 item 21: a failed pull left the uncommitted work in a stash, and the
+##	next run found a clean tree and published without it at exit 0. Runs in a
+##	scratch remote with a stub rar; the gate's own git environment is cleared
+##	first, or the sandbox commands would reach the real repository.
+if command -v git >/dev/null 2>&1; then
+	out="$(
+		unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_CONFIG_COUNT
+		export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+		sb="${tmpDir}/publish"
+		mkdir -p "${sb}/bin" "${sb}/a" "${sb}/b"
+		printf '#!/bin/sh\nexit 0\n' > "${sb}/bin/rar"; chmod +x "${sb}/bin/rar"
+		fClone(){ git clone -q "${sb}/remote.git" "$1" 2>/dev/null; git -C "$1" config user.name t; git -C "$1" config user.email t@t.invalid ;}
+		fCommit(){ echo "$3" > "$1/$2"; git -C "$1" add "$2"; git -C "$1" commit -qm "$2" ;}
+		## The stub rar first, then the system dirs and git's own. PATH itself is
+		## not read here: an earlier row sets it in a subshell, and shellcheck
+		## flags any later read.
+		gitBin="$(dirname "$(command -v git)")"
+		fPublish(){ (cd "$1" && PATH="${sb}/bin:${gitBin}:/usr/bin:/bin" GIT_BACKUP_AND_PUBLISH_QUIET=1 GIT_BACKUP_AND_PUBLISH_NOBACKUP=1 "${BASH}" "${pub}" >/dev/null 2>&1) && echo 0 || echo 1 ;}
+		git init -q --bare -b main "${sb}/remote.git"
+		fClone "${sb}/a/github"; fCommit "${sb}/a/github" f 1; git -C "${sb}/a/github" push -q -u origin HEAD 2>/dev/null
+		fClone "${sb}/other"; fCommit "${sb}/other" g 2; git -C "${sb}/other" push -q 2>/dev/null
+		## Diverged from upstream, with an uncommitted edit on top.
+		fCommit "${sb}/a/github" h 3; echo dirty >> "${sb}/a/github/f"
+		rc="$(fPublish "${sb}/a/github")"
+		stashed="$(git -C "${sb}/a/github" stash list | wc -l)"
+		git -C "${sb}/a/github" diff --quiet && dirty=0 || dirty=1
+		## Up to date, clean, with an earlier run's stash still held.
+		fClone "${sb}/b/github"; echo x >> "${sb}/b/github/f"; git -C "${sb}/b/github" stash push -q -m auto-stash
+		rc2="$(fPublish "${sb}/b/github")"
+		echo "${rc} ${stashed// /} ${dirty} ${rc2}"
+	)" || true
+	read -r pullRc pullStashed pullDirty leftRc <<< "${out:-x x x x}"
+	[[ "${pullRc}" == 1 ]] || fBad "n8git_backup-and-publish exited ${pullRc} after a failed pull"
+	[[ "${pullStashed}" == 0 && "${pullDirty}" == 1 ]] || fBad "n8git_backup-and-publish left the work in a stash after a failed pull (stashes ${pullStashed}, tree dirty ${pullDirty})"
+	[[ "${leftRc}" == 1 ]] || fBad "n8git_backup-and-publish published over an earlier run's auto-stash"
+fi
+
 ##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so
 ##	at one MiB the runtime's own footprint failed a healthy tree. Run the gate
 ##	small, which is exactly the size a developer shrinks it to.
