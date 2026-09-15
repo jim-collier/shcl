@@ -312,8 +312,9 @@ size_t shcl_line(shcl_doc *d, const char *path, size_t plen);
 // consumer can tell a quoted plain string from a bare word that happens to
 // spell a reserved one - `mode: "on"` against `mode: on`. 0 for anything that
 // is not one scalar element (empty, a raw block, an array, an unresolved or
-// ambiguous path). Sits beside shcl_line rather than in the read structs for
-// the same reason the raw text does: C keeps those two fields wide.
+// ambiguous path). A written value counts as quoted when a save would quote
+// it. Sits beside shcl_line rather than in the read structs for the same
+// reason the raw text does: C keeps those two fields wide.
 int shcl_quoted(shcl_doc *d, const char *path, size_t plen);
 
 // The field name at a path exactly as the author spelled it (case unfolded,
@@ -1566,6 +1567,7 @@ static ShclStr strip_common(ShclStr line, ShclStr common) {
 static ShclStr quote_text(ShclArena *a, ShclStr t);
 static ShclStr quote_double(ShclArena *a, ShclStr t);
 static ShclStr emit_element(ShclArena *a, const ShclElement *e);
+static ShclElement new_element(ShclStr text);
 static ShclStr escape_name(ShclArena *a, ShclStr name);
 static int index_shape(ShclStr body);
 
@@ -2716,7 +2718,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			} else {
 				ShclValue disc; memset(&disc, 0, sizeof disc); disc.kind = V_CELL;
 				ShclElement *e = (ShclElement *)arena_alloc(a, sizeof(ShclElement));
-				e->text = s_keep(a, P->src, seg->sel.value); e->quoted = 0;
+				*e = new_element(s_keep(a, P->src, seg->sel.value));
 				disc.els = e; disc.nels = 1;
 				cur = select_or_create(P, cur, seg->name, seg->name_src, disc, line);
 			}
@@ -3719,7 +3721,7 @@ static void w_choose_fence(ShclStr content, unsigned char *fc, size_t *fl) {
 
 static ShclValue w_cell1(ShclArena *a, ShclStr text) {
 	ShclValue v; memset(&v, 0, sizeof v); v.kind = V_CELL;
-	ShclElement *e = (ShclElement *)arena_alloc(a, sizeof(ShclElement)); e->text = text; e->quoted = 0;
+	ShclElement *e = (ShclElement *)arena_alloc(a, sizeof(ShclElement)); *e = new_element(text);
 	v.els = e; v.nels = 1; return v;
 }
 // Inline-array value; the empty array is an empty value (reads back Empty).
@@ -3727,7 +3729,7 @@ static ShclValue w_array(ShclArena *a, const ShclStr *texts, size_t n) {
 	if (n == 0) return v_empty();
 	ShclValue v; memset(&v, 0, sizeof v); v.kind = V_CELL;
 	ShclElement *els = (ShclElement *)arena_alloc(a, n * sizeof(ShclElement));
-	for (size_t i = 0; i < n; i++) { els[i].text = texts[i]; els[i].quoted = 0; }
+	for (size_t i = 0; i < n; i++) els[i] = new_element(texts[i]);
 	v.els = els; v.nels = n; return v;
 }
 
@@ -4081,18 +4083,29 @@ int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const sh
 	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 
-int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) { if (!shcl_exists(d, path, plen)) return shcl_set_literal(d, path, plen, text, tlen); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_float_array(d, path, plen, v, n); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_bool_array(d, path, plen, v, n); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_string_array(d, path, plen, v, lens, n); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
-int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime_array(d, path, plen, v, n); return shcl_write_reason_(d, path, plen) == SHCL_W_WRITABLE; }
+/* A default form writes only where nothing is yet. Where something is, it
+   writes nothing and reports what a write there would: the path's verdict,
+   then the value's, which the same setter gives on an empty document. NULL
+   means the path alone refuses. */
+static shcl_doc *w_default_probe(shcl_doc *d, const char *path, size_t plen) {
+	if (shcl_write_reason_(d, path, plen) != SHCL_W_WRITABLE) return NULL;
+	shcl_doc *e = shcl_new();
+	if (!e) SHCL_OOM();
+	return e;
+}
+static int w_probe_done(shcl_doc *e, int ok) { shcl_free(e); return ok; }
+int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_int(e, "v", 1, v)); }
+int shcl_set_float_default(shcl_doc *d, const char *path, size_t plen, double v) { if (!shcl_exists(d, path, plen)) return shcl_set_float(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_float(e, "v", 1, v)); }
+int shcl_set_bool_default(shcl_doc *d, const char *path, size_t plen, int v) { if (!shcl_exists(d, path, plen)) return shcl_set_bool(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_bool(e, "v", 1, v)); }
+int shcl_set_string_default(shcl_doc *d, const char *path, size_t plen, const char *s, size_t slen) { if (!shcl_exists(d, path, plen)) return shcl_set_string(d, path, plen, s, slen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_string(e, "v", 1, s, slen)); }
+int shcl_set_literal_default(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) { if (!shcl_exists(d, path, plen)) return shcl_set_literal(d, path, plen, text, tlen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_literal(e, "v", 1, text, tlen)); }
+int shcl_set_datetime_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime(d, path, plen, dt); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_datetime(e, "v", 1, dt)); }
+int shcl_set_raw_default(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen) { if (!shcl_exists(d, path, plen)) return shcl_set_raw(d, path, plen, content, clen, info, ilen); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_raw(e, "v", 1, content, clen, info, ilen)); }
+int shcl_set_int_array_default(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_int_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_int_array(e, "v", 1, v, n)); }
+int shcl_set_float_array_default(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_float_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_float_array(e, "v", 1, v, n)); }
+int shcl_set_bool_array_default(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_bool_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_bool_array(e, "v", 1, v, n)); }
+int shcl_set_string_array_default(shcl_doc *d, const char *path, size_t plen, const char *const *v, const size_t *lens, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_string_array(d, path, plen, v, lens, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_string_array(e, "v", 1, v, lens, n)); }
+int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) { if (!shcl_exists(d, path, plen)) return shcl_set_datetime_array(d, path, plen, v, n); shcl_doc *e = w_default_probe(d, path, plen); return e && w_probe_done(e, shcl_set_datetime_array(e, "v", 1, v, n)); }
 
 // --- Layered loading: overlay a higher-priority document onto a lower one ----
 
@@ -4568,12 +4581,7 @@ static int is_data_format(ShclArena *a, const ShclElement *e) {
 	return 0;
 }
 // Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
-// One addition: an author-quoted element keeps its quotes unless the text reads as
-// one of SHCL's own data formats - quoting those is just spelling (readers type the
-// value either way), but quoting a plain string is the escape and must survive
-// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-static ShclStr emit_element(ShclArena *a, const ShclElement *e) {
-	ShclStr t = e->text;
+static int needs_quotes(ShclStr t) {
 	int needs = (t.n == 0);
 	if (!needs) {
 		size_t i = 0;
@@ -4589,8 +4597,22 @@ static ShclStr emit_element(ShclArena *a, const ShclElement *e) {
 		if (is_ws(f) || is_ws(l)) needs = 1;
 	}
 	if (!needs) { ShclFence f = fence_open(t); if (f.ok) needs = 1; }
-	if (!needs && e->quoted && !is_data_format(a, e)) needs = 1;
+	return needs;
+}
+// One addition to minimal quoting: an author-quoted element keeps its quotes unless
+// the text reads as one of SHCL's own data formats - quoting those is just spelling
+// (readers type the value either way), but quoting a plain string is the escape and
+// must survive canonicalization. This clause only ever adds quoting, so a bare emit
+// stays safe.
+static ShclStr emit_element(ShclArena *a, const ShclElement *e) {
+	ShclStr t = e->text;
+	int needs = needs_quotes(t) || (e->quoted && !is_data_format(a, e));
 	return needs ? quote_text(a, t) : t;
+}
+// An element no source spelled. It counts as quoted when canonical output will
+// quote it, so a read gives the same answer before a save as after one.
+static ShclElement new_element(ShclStr text) {
+	ShclElement e; e.text = text; e.quoted = needs_quotes(text); return e;
 }
 /* Emit a stored (escape-resolved) name in a spelling that reads back as the
    same name: bare when it can be, else double-quoted with the escapes

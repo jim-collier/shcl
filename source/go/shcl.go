@@ -180,7 +180,8 @@ func (r WriteReason) String() string {
 // check the schema cannot express can still cite the line. Quoted is true
 // when the read's single scalar element was quoted in the source - the escape
 // hatch that lets a downstream language reserve `@null` while `"@null"` stays
-// a plain string. Arrays, raw blocks, and empties leave it false.
+// a plain string. Arrays, raw blocks, and empties leave it false. A written
+// value counts as quoted when a save would quote it.
 type Read[T any] struct {
 	Value  T
 	Status Status
@@ -2384,7 +2385,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int, inden
 			if found, ok := p.findByValue(cur, seg.name, seg.sel.value, seg.sel.quoted); ok {
 				cur = found
 			} else {
-				disc := value{kind: vCell, els: []element{{text: seg.sel.value}}}
+				disc := value{kind: vCell, els: []element{newElement(seg.sel.value)}}
 				cur = p.selectOrCreate(cur, seg.name, seg.nameSrc, disc, line)
 			}
 			if isLast && !v.isEmpty() {
@@ -3747,14 +3748,9 @@ func SuppressDeclaredReopens(schema *Document, diags []Diagnostic) []Diagnostic 
 	return kept
 }
 
-// emitElement uses minimal quoting: bare unless a reserved character (or
+// needsQuotes reports minimal quoting: bare unless a reserved character (or
 // lookalike hazard) forces it.
-// One addition: an author-quoted element keeps its quotes unless the text reads as
-// one of SHCL's own data formats - quoting those is just spelling (readers type the
-// value either way), but quoting a plain string is the escape and must survive
-// canonicalization. This clause only ever adds quoting, so a bare emit stays safe.
-func emitElement(e *element) string {
-	t := e.text
+func needsQuotes(t string) bool {
 	needs := t == ""
 	if !needs {
 		for _, c := range t {
@@ -3783,13 +3779,27 @@ func emitElement(e *element) string {
 			needs = true
 		}
 	}
-	if !needs && e.quoted && !isDataFormat(e) {
-		needs = true
-	}
-	if needs {
+	return needs
+}
+
+// emitElement adds one thing to minimal quoting: an author-quoted element keeps
+// its quotes unless the text reads as one of SHCL's own data formats - quoting
+// those is just spelling (readers type the value either way), but quoting a
+// plain string is the escape and must survive canonicalization. This clause
+// only ever adds quoting, so a bare emit stays safe.
+func emitElement(e *element) string {
+	t := e.text
+	if needsQuotes(t) || (e.quoted && !isDataFormat(e)) {
 		return quoteText(t)
 	}
 	return t
+}
+
+// newElement builds an element no source spelled. It counts as quoted when
+// canonical output will quote it, so a read gives the same answer before a
+// save as after one.
+func newElement(text string) element {
+	return element{text: text, quoted: needsQuotes(text)}
 }
 
 // isDataFormat reports whether the text reads as an int, float, bool, or
@@ -4396,7 +4406,7 @@ func literalValue(text string) (value, bool) {
 }
 
 func cellOf(text string) value {
-	return value{kind: vCell, els: []element{{text: text}}}
+	return value{kind: vCell, els: []element{newElement(text)}}
 }
 
 // chooseFence picks a backtick fence long enough that no content line closes it.
@@ -4421,7 +4431,7 @@ func arrayCell(texts []string) value {
 	}
 	els := make([]element, len(texts))
 	for i, t := range texts {
-		els[i] = element{text: t}
+		els[i] = newElement(t)
 	}
 	return value{kind: vCell, els: els}
 }
@@ -4891,31 +4901,33 @@ func (d *Document) SetDateTimeArray(path string, v []DateTime) bool {
 }
 
 // Default (only-if-absent) forms - the "emit defaults" half of the Writer.
-// A path that already resolves reports what a write there would, so a
-// wildcard is refused whether or not its slots happen to resolve.
+// A path that already resolves writes nothing and reports what a write there
+// would: the path's verdict, so a wildcard is refused whether or not its slots
+// happen to resolve, and the value's, which the same setter gives on an empty
+// document.
+
+// setDefault runs set on the path when nothing is there yet, and otherwise
+// answers with the path's verdict and the value's.
+func (d *Document) setDefault(path string, set func(*Document, string) bool) bool {
+	if !d.Exists(path) {
+		return set(d, path)
+	}
+	return d.WriteReason(path) == Writable && set(New(), "v")
+}
 
 // SetIntDefault is SetInt only when path has no node yet.
 func (d *Document) SetIntDefault(path string, v int64) bool {
-	if !d.Exists(path) {
-		return d.SetInt(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetInt(p, v) })
 }
 
 // SetFloatDefault is SetFloat only when path has no node yet.
 func (d *Document) SetFloatDefault(path string, v float64) bool {
-	if !d.Exists(path) {
-		return d.SetFloat(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetFloat(p, v) })
 }
 
 // SetBoolDefault is SetBool only when path has no node yet.
 func (d *Document) SetBoolDefault(path string, v bool) bool {
-	if !d.Exists(path) {
-		return d.SetBool(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetBool(p, v) })
 }
 
 // SetLiteral binds text at path as value syntax rather than as data: "80, 443"
@@ -4933,74 +4945,47 @@ func (d *Document) SetLiteral(path, text string) bool {
 
 // SetLiteralDefault is SetLiteral only when path has no node yet.
 func (d *Document) SetLiteralDefault(path, text string) bool {
-	if !d.Exists(path) {
-		return d.SetLiteral(path, text)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetLiteral(p, text) })
 }
 
 // SetStringDefault is SetString only when path has no node yet.
 func (d *Document) SetStringDefault(path, v string) bool {
-	if !d.Exists(path) {
-		return d.SetString(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetString(p, v) })
 }
 
 // SetDateTimeDefault is SetDateTime only when path has no node yet.
 func (d *Document) SetDateTimeDefault(path string, v DateTime) bool {
-	if !d.Exists(path) {
-		return d.SetDateTime(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetDateTime(p, v) })
 }
 
 // SetRawDefault is SetRaw only when path has no node yet.
 func (d *Document) SetRawDefault(path, content, info string) bool {
-	if !d.Exists(path) {
-		return d.SetRaw(path, content, info)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetRaw(p, content, info) })
 }
 
 // SetIntArrayDefault is SetIntArray only when path has no node yet.
 func (d *Document) SetIntArrayDefault(path string, v []int64) bool {
-	if !d.Exists(path) {
-		return d.SetIntArray(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetIntArray(p, v) })
 }
 
 // SetFloatArrayDefault is SetFloatArray only when path has no node yet.
 func (d *Document) SetFloatArrayDefault(path string, v []float64) bool {
-	if !d.Exists(path) {
-		return d.SetFloatArray(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetFloatArray(p, v) })
 }
 
 // SetBoolArrayDefault is SetBoolArray only when path has no node yet.
 func (d *Document) SetBoolArrayDefault(path string, v []bool) bool {
-	if !d.Exists(path) {
-		return d.SetBoolArray(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetBoolArray(p, v) })
 }
 
 // SetStringArrayDefault is SetStringArray only when path has no node yet.
 func (d *Document) SetStringArrayDefault(path string, v []string) bool {
-	if !d.Exists(path) {
-		return d.SetStringArray(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetStringArray(p, v) })
 }
 
 // SetDateTimeArrayDefault is SetDateTimeArray only when path has no node yet.
 func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
-	if !d.Exists(path) {
-		return d.SetDateTimeArray(path, v)
-	}
-	return d.WriteReason(path) == Writable
+	return d.setDefault(path, func(e *Document, p string) bool { return e.SetDateTimeArray(p, v) })
 }
 
 // ---------------------------------------------------------------------------

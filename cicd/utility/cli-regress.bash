@@ -114,6 +114,7 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 ## migrate rewrites it. The sugar file is copied fresh for every run of a row
 ## that names %W%, since a rewrite is the thing being tested.
 printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
+printf 'srv["1,000"].port: 1\n' > "${tmpDir}/selcomma.shcl"
 printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 ## A default on a path whose last segment selects by value. A value after that
 ## selector is ignored, so generation used to write a line that failed its own
@@ -146,7 +147,8 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ##	instance whose discriminator holds an '=', %Q% one whose discriminator holds
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
-##	%BA% a bracket array, %W% a fresh copy of the selector-sugar file,
+##	%BA% a bracket array, %SQ% a selector whose discriminator needs quotes,
+##	%W% a fresh copy of the selector-sugar file,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone,
@@ -234,6 +236,11 @@ rows=(
 	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 0\n|-"
 	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x: a=b\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
+	## 20260909 item 13: a value built by a setter or a selector read as
+	## unquoted, so quoted thousands were BadType until a save and reload.
+	'set-quoted-thousands|get --int --set=a=1,000 %F% a|-|0|1000|-'
+	"set-selector-thousands|get --int --set=x[\"1,000\"].y=1 %F% x|-|0|1000|-"
+	'selector-thousands|get --int %SQ% srv|-|0|1000|-'
 	## 3.0: bracket text after the colon is one outcome, kept verbatim. The
 	## 2.x selector sugar is that shape now too, and migrate is what carries
 	## a file written with it across.
@@ -366,6 +373,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
 	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
 	argv="${argv//%BA%/${tmpDir}/brarray.shcl}"
+	argv="${argv//%SQ%/${tmpDir}/selcomma.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	freshCopy=0

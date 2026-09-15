@@ -744,8 +744,14 @@ def main():
 	for v in (math.inf, -math.inf, math.nan):
 		if sdoc.set_float("f", v) or sdoc.set_float_default("f", v) or sdoc.set_float_array("f", [1.0, v]):
 			raise SystemExit(f"float {v} was written")
+		# A default form on a path that is already there writes nothing, and
+		# still refuses what the plain setter would.
+		if sdoc.set_float_default("z", v) or sdoc.set_float_array_default("z", [1.0, v]):
+			raise SystemExit(f"float {v} passed a default form on a present path")
 	if not sdoc.set_float("f", 2.5) or sdoc.get_float("f") != 2.5:
 		raise SystemExit("a finite float was refused")
+	if not sdoc.set_float_default("z", 2.5) or sdoc.get_float("z") != 0:
+		raise SystemExit("a finite float default on a present path was refused or written")
 	DT = shcl.ShclDateTime
 	bad_dts = [
 		DT(),                                                  # nothing written
@@ -762,6 +768,8 @@ def main():
 	for dt in bad_dts:
 		if sdoc.set_datetime("d", dt) or sdoc.set_datetime_default("d", dt) or sdoc.set_datetime_array("d", [DT(date=(2026, 1, 1)), dt]):
 			raise SystemExit(f"datetime {dt} was written")
+		if sdoc.set_datetime_default("z", dt) or sdoc.set_datetime_array_default("z", [DT(date=(2026, 1, 1)), dt]):
+			raise SystemExit(f"datetime {dt} passed a default form on a present path")
 	ok_dt = DT(date=(2026, 1, 2), time=(3, 4, 5), frac="60", zone=("offset", -90))
 	if not sdoc.set_datetime("d", ok_dt) or str(sdoc.get_datetime("d")) != str(ok_dt):
 		raise SystemExit("a valid datetime was refused or read back differently")
