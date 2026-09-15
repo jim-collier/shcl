@@ -6859,12 +6859,16 @@ func genDefaultText(v string) string {
 // parent gets materialized by another live line is generated too, in dotted
 // form - otherwise the file would fail the very schema that produced it - and
 // remaining wildcard or `[#N]` paths (which cannot be materialized) are listed
-// in a trailing comment block. The output always loads clean and validates
+// in a trailing comment block. A path whose last segment selects by value is
+// written without that selector when it has a `default`, since a value after
+// the selector would be ignored: `env[prod]` with `default: prod` is
+// `env: prod`. The output always loads clean and validates
 // clean against its schema, except a repeat lower bound of 2+ (identical
 // generated lines would merge, so the shortfall is reported). The promise is
-// checked against the finished text, so a schema whose own `default` breaks its
-// field's constraints is a fault (V097) instead of a starter config that fails
-// the first time it is checked. A footer naming
+// checked against the finished text, both its load and its validation, so a
+// line that does not load, or a schema whose own `default` breaks its field's
+// constraints, is a fault (V097) instead of a starter config that fails the
+// first time it is checked. A footer naming
 // the format and pointing at the spec is written last unless noBanner; the
 // flag is negative so leaving it alone writes the footer. faults != nil =
 // schema faults (V09x), same as Validate / check --schema.
@@ -7036,8 +7040,17 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// A name carrying a newline has no verbatim spelling on a binding line;
 		// the segment renderer escapes it, so such a path goes through there
 		// whether or not it was filled.
+		// A value after a last-segment selector is ignored, so a default there
+		// goes on the bare path: the line materializes the instance, and
+		// validation below decides whether the default names the one selected.
+		last := c.segs[len(c.segs)-1].sel
+		selectsByValue := c.defaultText != nil && last != nil && last.kind == selByValue
 		path := c.path
-		if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
+		if selectsByValue {
+			segs := append([]segment(nil), c.segs...)
+			segs[len(segs)-1].sel = nil
+			path = genPathText(segs, parentValues)
+		} else if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
 			path = genPathText(c.segs, parentValues)
 		}
 		if emitted[path] {
@@ -7140,9 +7153,22 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// V007 for a repeat lower bound of 2+: generating that many identical
 	// lines merges them into one. A lower bound of 1 is a must-exist path
 	// like any other, so its V007 is a fault.
+	// The load comes first, in the order check --schema prints: a line that
+	// does not load is refused even when validation happens to pass without it.
 	text := b.String()
+	gdoc := Parse(text)
 	var bad []Diagnostic
-	for _, d := range Parse(text).Validate(schema) {
+	for _, d := range gdoc.diags {
+		if d.Severity == SeverityError {
+			bad = append(bad, Diagnostic{
+				Line:     0,
+				Severity: SeverityError,
+				Code:     "V097",
+				Message:  "generated text does not load: " + d.Code + " " + d.Message,
+			})
+		}
+	}
+	for _, d := range gdoc.Validate(schema) {
 		if d.Severity == SeverityError && !(d.Code == "V007" && v007Sanctioned(d.Message)) {
 			bad = append(bad, Diagnostic{
 				Line:     0,

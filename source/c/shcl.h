@@ -265,11 +265,15 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // empty value); optional paths are commented out; wildcard paths are listed in a
 // trailing comment block. Prose the generator writes is `##` and a commented-out
 // setting is `# `, so the two read apart; both are ordinary comments to the
-// language, and nothing reads them back. The output validates clean against the
-// schema that produced it, checked against the finished text, so a schema whose
-// own `default` breaks its field's constraints is a fault (V097) instead of a
-// starter config that fails the first time it is checked; the faults land on
-// the schema document's diagnostics. A footer naming the format and pointing at the spec is
+// language, and nothing reads them back. A path whose last segment selects by
+// value is written without that selector when it has a `default`, since a value
+// after the selector would be ignored: `env[prod]` with `default: prod` is
+// `env: prod`. The output loads clean and validates clean against the
+// schema that produced it, both checked against the finished text, so a line
+// that does not load, or a schema whose own `default` breaks its field's
+// constraints, is a fault (V097) instead of a starter config that fails the
+// first time it is checked; the faults land on the schema document's
+// diagnostics. A footer naming the format and pointing at the spec is
 // written last unless no_banner; the flag is negative so passing 0 writes the
 // footer. *ok is set to 1 on success, 0 if the schema has faults (V09x) - then
 // the returned string is empty and nothing was kept. Bytes live in the schema's
@@ -7026,7 +7030,18 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// A name carrying a newline has no verbatim spelling on a binding line;
 		// the segment renderer escapes it, so such a path goes through there
 		// whether or not it was filled.
-		ShclStr path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, &pv) : c->path;
+		// A value after a last-segment selector is ignored, so a default there
+		// goes on the bare path: the line materializes the instance, and
+		// validation below decides whether the default names the one selected.
+		int selects_by_value = c->has_default && c->segs.len && c->segs.data[c->segs.len - 1].sel.tag == SEL_VALUE;
+		ShclStr path;
+		if (selects_by_value) {
+			ShclVecSeg segs = {0, 0, 0};
+			for (size_t k = 0; k < c->segs.len; k++) ShclVecSeg_push(a, &segs, c->segs.data[k]);
+			ShclSelector *last = &segs.data[segs.len - 1].sel;
+			last->tag = SEL_NONE; last->value = s_empty(); last->index = 0; last->quoted = 0;
+			path = gen_path_text(a, &segs, &pv);
+		} else path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, &pv) : c->path;
 		uint64_t ph = fnv_str(1469598103934665603ull, path);
 		int dup = 0;
 		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);
@@ -7137,8 +7152,21 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   like any other, so its V007 is a fault. */
 	{
 		shcl_doc *self_ = shcl_parse(s.p, s.n);
+		size_t nbad = 0;
+		/* The load comes first, in the order `check --schema` prints: a line that
+		   does not load is refused even when validation happens to pass without it. */
+		for (size_t i = 0; self_ && i < self_->diags.len; i++) {
+			const ShclDiag *dg = &self_->diags.data[i];
+			if (dg->sev != SHCL_SEV_ERROR) continue;
+			ShclSB m = {0, 0, 0};
+			sb_puts(a, &m, "generated text does not load: ");
+			sb_puts(a, &m, dg->code); sb_putc(a, &m, ' '); sb_putS(a, &m, dg->message);
+			/* the diag outlives this call and self_: its text must leave both */
+			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+			nbad++;
+		}
 		shcl_validation *v = self_ ? shcl_validate(self_, schema) : NULL;
-		size_t nv = v ? shcl_validation_count(v) : 0, nbad = 0;
+		size_t nv = v ? shcl_validation_count(v) : 0;
 		for (size_t i = 0; i < nv; i++) {
 			const char *code = shcl_validation_code(v, i);
 			if (shcl_validation_severity(v, i) != SHCL_SEV_ERROR) continue;
