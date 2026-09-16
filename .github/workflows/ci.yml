@@ -2,11 +2,10 @@
 ## stays in the local pipeline: cicd/cicd.bash. One definition of "passing" -
 ## this just runs the engine's --ci mode.
 ##
-## Not on dev pushes. Everything bound for dev is gated locally already: a full
-## run records the trees it passes, and the pre-push hook runs the gate on any
-## other, so a hosted run per dev push was the same gate a third time at half an
-## hour each. main still gets one, pull requests do, and
-## `gh workflow run ci --ref dev` starts one by hand.
+## Not on dev pushes. A branch is built and tested before it merges there, so a
+## hosted run per dev push was the same gate again at half an hour each. main
+## still gets one, pull requests do, and `gh workflow run ci --ref dev` starts
+## one by hand.
 name: ci
 
 on:

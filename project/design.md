@@ -563,9 +563,9 @@ The responsibility is split rather than duplicate the pipeline:
 
 - The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on pushes to `main`, on pull requests, and by hand. Minimal permissions, cancels superseded runs, times out.
 
-- `dev` is gated locally, not by the hosted workflow. The pre-push hook runs `cicd.bash --ci` on a commit bound for `main`, and on a plain commit bound for `dev`, and skips one whose tree a run already passed. Each run that gets through the tests stage records the tree it tested, unless it ran `--quick`, `--no-fmt` or `--no-lint`, or skipped a missing tool. Before this, one change to `dev` went through a full local run, then the same gate again in the hook, then about half an hour of hosted CI.
+- `dev` is not gated, by the hook or by the hosted workflow. The pre-push hook runs `cicd.bash --ci` on a commit bound for `main`, and skips one whose tree a run already passed. Each run that gets through the tests stage records the tree it tested, unless it ran `--quick`, `--no-fmt` or `--no-lint`, or skipped a missing tool. Before this, one change to `dev` went through a full local run, then the same gate again in the hook, then about half an hour of hosted CI.
 	- A tree hash, not a commit hash. The publish stage commits after the tests run, and a `--no-ff` merge makes a new commit holding the same files.
-	- A merge pushed to `dev` skips the gate whatever its tree. Its branch was built and tested before the merge, and the tree skip only covered the case where `dev` had not moved since. `main` still gates every commit.
+	- Gating `dev` was dropped on 2026-09-16. Work merges there several times a day, and a ten-minute wait on each merge only re-ran what the branch had already passed. Building and testing before the merge is the check that counts there. `main` still gates every commit.
 	- Making the hook opt-in was rejected, since nothing would then gate a commit that never went through a run. So was keeping hosted runs on `dev` behind a `[skip ci]` marker, which would have to be typed on nearly every push.
 	- The cost: a failure only the runner shows, such as a tool its image lacks or a Windows-only defect, now waits for the next push to `main`. `gh workflow run ci --ref dev` gets a hosted run sooner.
 

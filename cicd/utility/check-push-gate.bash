@@ -4,9 +4,11 @@
 ##		Check the pre-push hook's skip for a tree a gate already passed, on a
 ##		throwaway repository with the gate stubbed out. The tree green-tree.bash
 ##		computes has to be the one a commit of the working copy gets, a recorded
-##		tree has to let the hook through without the gate, and anything else
-##		still has to run it. A skip that fires when it should not is a push that
-##		reaches dev untested, and nothing downstream would say so.
+##		tree has to let the hook through without the gate, and a push to main
+##		with nothing recorded still has to run it. A skip that fires when it
+##		should not is a push that reaches main untested, and nothing downstream
+##		would say so. Only main is gated, so every other ref is checked for the
+##		gate not running at all.
 ##	Syntax:
 ##		check-push-gate.bash
 ##	Exit: 0 = all checks pass, 1 = a check failed (named), 2 = cannot set up.
@@ -114,46 +116,48 @@ printf 'six\n' > "${repo}/d.txt"
 git -C "${repo}" add d.txt && git -C "${repo}" commit -q -m six
 sha="$(git -C "${repo}" rev-parse HEAD)"
 
-fPush dev "${sha}"
-((hookRc == 0 && ran == 1)) || fail "a commit nothing recorded, pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
-export STUB_RC=1; fPush dev "${sha}"; unset STUB_RC
+fPush main "${sha}"
+((hookRc == 0 && ran == 1)) || fail "a commit nothing recorded, pushed to main: exit ${hookRc}, gate ran ${ran} time(s)"
+export STUB_RC=1; fPush main "${sha}"; unset STUB_RC
 ((hookRc == 1)) || fail "a red gate did not refuse the push (exit ${hookRc})"
 fPush feature "${sha}"
 ((hookRc == 0 && ran == 0)) || fail "a feature branch push: exit ${hookRc}, gate ran ${ran} time(s)"
+fPush dev "${sha}"
+((hookRc == 0 && ran == 0)) || fail "a commit nothing recorded, pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
 
 "${helper}" record "${repo}" "$(git -C "${repo}" rev-parse 'HEAD^{tree}')" || fail "record refused a clean checkout"
-fPush dev "${sha}"
-((hookRc == 0 && ran == 0)) || fail "a recorded tree, pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
-[[ "${hookOut}" == *"not running it again"* ]] || fail "the hook let a recorded tree through without saying so: ${hookOut}"
 fPush main "${sha}"
 ((hookRc == 0 && ran == 0)) || fail "a recorded tree, pushed to main: exit ${hookRc}, gate ran ${ran} time(s)"
-export SHCL_GATE_RERUN=1; fPush dev "${sha}"; unset SHCL_GATE_RERUN
+[[ "${hookOut}" == *"not running it again"* ]] || fail "the hook let a recorded tree through without saying so: ${hookOut}"
+export SHCL_GATE_RERUN=1; fPush main "${sha}"; unset SHCL_GATE_RERUN
 ((hookRc == 0 && ran == 1)) || fail "SHCL_GATE_RERUN=1 on a recorded tree: exit ${hookRc}, gate ran ${ran} time(s)"
 
 ## A checkout from before the helper existed has none, which reads as not passed.
 mv "${helper}" "${helper}.off"
-fPush dev "${sha}"
+fPush main "${sha}"
 mv "${helper}.off" "${helper}"
 ((hookRc == 0 && ran == 1)) || fail "with the helper missing: exit ${hookRc}, gate ran ${ran} time(s)"
 
-## A --no-ff merge of a branch that passed, onto a dev that has not moved since,
-## has the branch's tree.
+## A --no-ff merge of a branch that passed, onto a branch that has not moved
+## since, has the branch's tree.
 git -C "${repo}" checkout -q -b topic
 printf 'seven\n' > "${repo}/d.txt"
 git -C "${repo}" commit -q -am seven
 "${helper}" record "${repo}" "$(git -C "${repo}" rev-parse 'HEAD^{tree}')" || fail "record refused the topic branch"
 git -C "${repo}" checkout -q dev
 git -C "${repo}" merge -q --no-ff -m "Merge topic" topic
-fPush dev "$(git -C "${repo}" rev-parse HEAD)"
+fPush main "$(git -C "${repo}" rev-parse HEAD)"
 ((hookRc == 0 && ran == 0)) || fail "a merge of a branch that passed: exit ${hookRc}, gate ran ${ran} time(s)"
 
-## One more commit on dev: a tree nobody ran, so the gate runs.
+## One more commit: a tree nobody ran, so main gates it and dev does not.
 printf 'eight\n' > "${repo}/d.txt"
 git -C "${repo}" commit -q -am eight
-fPush dev "$(git -C "${repo}" rev-parse HEAD)"
+fPush main "$(git -C "${repo}" rev-parse HEAD)"
 ((hookRc == 0 && ran == 1)) || fail "a new tree after a recorded merge: exit ${hookRc}, gate ran ${ran} time(s)"
+fPush dev "$(git -C "${repo}" rev-parse HEAD)"
+((hookRc == 0 && ran == 0)) || fail "a new tree pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
 
-## A merge nobody ran: dev takes it on sight, main still gates it.
+## A merge nobody ran, the everyday case: dev takes it, main gates it.
 git -C "${repo}" checkout -q -b topic2
 printf 'nine\n' > "${repo}/d.txt"
 git -C "${repo}" commit -q -am nine
@@ -165,10 +169,10 @@ fPush dev "${merged}"
 fPush main "${merged}"
 ((hookRc == 0 && ran == 1)) || fail "a merge pushed to main: exit ${hookRc}, gate ran ${ran} time(s)"
 
-(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree and a merge to dev skip the gate, and every other push still runs it"
+(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, only a push to main runs it, and a red gate refuses"
 exit "${rc}"
 
 
 ##	History:
 ##		- 2026-09-14 JC: Created.
-##		- 2026-09-16 JC: A merge pushed to dev skips the gate.
+##		- 2026-09-16 JC: Only a push to main is gated.

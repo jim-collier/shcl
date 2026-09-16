@@ -126,15 +126,15 @@ Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/ci
 
 The pipeline fast-forwards from the remote before it builds anything, so what it tests is what you would push. It stops and says so if your branch and its upstream have both moved. `--no-sync` skips that.
 
-There is also a `pre-push` hook that runs the gate for you, but only when the push would move `main` or `dev` - feature branches push straight through. `install-dev.bash` turns it on; to do it by hand:
+There is also a `pre-push` hook that runs the gate for you, but only when the push would move `main`. Everything else pushes straight through, `dev` and feature branches alike. `install-dev.bash` turns it on; to do it by hand:
 
 ```sh
 git config core.hooksPath cicd/hooks
 ```
 
-It skips the gate for a commit whose files a run already passed. Every `cicd.bash` run that gets through the tests stage without `--quick`, `--no-fmt`, `--no-lint` or a skipped tool records the tree it tested. So the push at the end of a full run goes straight out, and so does a `--no-ff` merge of a branch that passed onto a `dev` that has not moved since. `SHCL_GATE_RERUN=1` runs the gate anyway, and `git push --no-verify` or `SHCL_SKIP_HOOK=1` gets past it when you need to.
+It skips the gate for a commit whose files a run already passed. Every `cicd.bash` run that gets through the tests stage without `--quick`, `--no-fmt`, `--no-lint` or a skipped tool records the tree it tested. So the push at the end of a full run goes straight out, and so does a `--no-ff` merge of a branch that passed onto a `main` that has not moved since. `SHCL_GATE_RERUN=1` runs the gate anyway, and `git push --no-verify` or `SHCL_SKIP_HOOK=1` gets past it when you need to.
 
-GitHub CI runs on pushes to `main`, on pull requests, and by hand from the Actions tab. Pushes to `dev` do not start it, since the hook has gated them already.
+GitHub CI runs on pushes to `main`, on pull requests, and by hand from the Actions tab. Pushes to `dev` do not start it, and nothing gates `dev`, so run `cicd/cicd.bash --ci` on your own box before you merge there.
 
 ### Toolchains
 
