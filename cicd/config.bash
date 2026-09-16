@@ -133,6 +133,9 @@ LINT_EXTRA=(
 	## TOOL_PINS above is copied by hand into ci.yml; this fails the stage when
 	## the two disagree, instead of hosted CI going red days later.
 	'cicd/utility/check-pins.bash'
+	## The C++ veneer has to keep up with the C calls it wraps, or list why not.
+	## It fell a whole writer behind before anything checked.
+	'cicd/utility/check-veneer.bash'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go ./...'
 	'GOMAXPROCS="${CPU_CAP}" govulncheck -C source/go/cmd ./...'
 	'RAYON_NUM_THREADS="${CPU_CAP}" cargo deny --manifest-path source/rust/Cargo.toml --all-features check'
@@ -149,6 +152,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/check-pins.bash
 	cicd/utility/check-push-gate.bash
 	cicd/utility/check-readme.bash
+	cicd/utility/check-veneer.bash
 	cicd/utility/check-wheel.bash
 	cicd/utility/cli-regress.bash
 	cicd/utility/comparison/compare.bash

@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #ifndef SHCL_NO_FILE_IO
 #include <sys/stat.h>
@@ -99,9 +100,15 @@ int main() {
 	auto nums = qd.read_int_array("nums");
 	CHECK(nums.slots.size() == 3 && nums.slots[0] == shcl::Status::Good && nums.slots[1] == shcl::Status::BadType);
 	CHECK(qd.read_int("a").slots.empty()); // scalar reads carry no slots
-	auto when = qd.read_datetime_array("when");
+	auto when = qd.read_datetime_array_str("when");
 	CHECK(when.value.size() == 2 && when.value[0] == "2026-08-02" && when.slots[1] == shcl::Status::BadType);
+	auto whenDt = qd.read_datetime_array("when");
+	CHECK(whenDt.value.size() == 2 && whenDt.value[0].str() == "2026-08-02" && whenDt.slots[1] == shcl::Status::BadType);
 	CHECK(std::string(shcl::to_string(shcl::Status::BadType)) == "BadType");
+	CHECK(shcl::status_code(shcl::Status::Good) == 0 && shcl::status_code(shcl::Status::Multiple) == 5);
+	CHECK(shcl::strictness_from_arg("STRICT") == shcl::Strictness::Strict && shcl::strictness_from_arg("1") == shcl::Strictness::Loose);
+	CHECK(!shcl::strictness_from_arg("4") && !shcl::strictness_from_arg(""));
+	CHECK(shcl::format_f64(0.1) == "0.1" && shcl::format_f64(-2.5) == "-2.5");
 
 	// The rest of the surface, item by item: strictness, strict_failed, paths,
 	// authored_name, the raw pair, the float/bool arrays, and the typed get
@@ -135,6 +142,20 @@ int main() {
 	CHECK(doc.get_or<double>("nope", 1.25) == 1.25);
 	CHECK(doc.get_or<bool>("on", false) == true);
 	CHECK(doc.get_or<bool>("nope", true) == true);
+	// The rest of the convenience tier, which C leaves out because its reads
+	// borrow memory and the veneer's copy it.
+	CHECK(doc.get_or<std::vector<std::string>>("tags", {}) == std::vector<std::string>({"red", "green", "blue"}));
+	CHECK(doc.get_or<std::vector<int64_t>>("tags", {7}) == std::vector<int64_t>({7}));
+	CHECK(qd.get_or<std::vector<double>>("nums", {}).empty()); // a bad slot is not Good
+	CHECK(doc.get_or<std::vector<bool>>("nope", {true}) == std::vector<bool>({true}));
+	auto oneDay = shcl::Document::parse("d: 2026-08-02\nds: 2026-08-02, 2026-08-03\n");
+	auto fallbackDay = oneDay.read_datetime("d").value;
+	CHECK(oneDay.get_or<shcl::Datetime>("d", shcl::Datetime()).str() == "2026-08-02");
+	CHECK(oneDay.get_or<shcl::Datetime>("nope", fallbackDay).str() == "2026-08-02");
+	auto days = oneDay.get_or<std::vector<shcl::Datetime>>("ds", {});
+	CHECK(days.size() == 2 && days[1].str() == "2026-08-03");
+	CHECK(rawDoc.get_raw_or("blk", "") == "select 1" && rawDoc.get_raw_info_or("blk", "") == "sql");
+	CHECK(rawDoc.get_raw_or("missing", "fb") == "fb" && rawDoc.get_raw_info_or("missing", "fb") == "fb");
 
 	// Schema validation rides through the veneer: a conforming doc is clean, a
 	// violation carries its stable V-code, and a key-level schema fault still
@@ -231,6 +252,101 @@ int main() {
 	CHECK(target.str() == outlives.value.str());
 	CHECK(moved.value.str() == "2026-08-02T10:20:30Z");
 
+	// Writes, each read back through the veneer. A document from a parse could
+	// not be written at all before the veneer had setters.
+	{
+		auto w = shcl::Document::parse("port: 8080\n");
+		CHECK(w.set_int("port", 9090) && w.get_or<int64_t>("port", 0) == 9090);
+		CHECK(w.set_float("ratio", 0.25) && w.get_or<double>("ratio", 0) == 0.25);
+		CHECK(!w.set_float("inf", std::numeric_limits<double>::infinity()) && !w.exists("inf"));
+		CHECK(w.set_bool("on", true) && w.get_or<bool>("on", false));
+		CHECK(w.set_string("name", "a, b") && w.read_string("name").value == "a, b");
+		CHECK(w.set_raw("q", "select 1", "sql") && w.get_raw_or("q", "") == "select 1" && w.get_raw_info_or("q", "") == "sql");
+		CHECK(!w.set_raw("q2", "x", "c#") && !w.exists("q2"));
+		CHECK(w.set_int_array("ports", {80, 443}) && w.read_int_array("ports").value == std::vector<int64_t>({80, 443}));
+		CHECK(w.set_float_array("fs", {1.5, 2}) && w.read_float_array("fs").value == std::vector<double>({1.5, 2}));
+		CHECK(w.set_bool_array("flags", {true, false, true}) && w.read_bool_array("flags").value == std::vector<bool>({true, false, true}));
+		CHECK(w.set_string_array("tags", {"red", "a,b", ""}) && w.read_string_array("tags").value == std::vector<std::string>({"red", "a,b", ""}));
+		CHECK(w.set_literal("lit", "80, 443 # two") && w.read_int_array("lit").value == std::vector<int64_t>({80, 443}));
+		CHECK(!w.set_literal("lit2", "\"open") && !w.exists("lit2"));
+		auto stamps = shcl::Document::parse("t: 2026-08-02T10:20:30.5Z, 2026-09-01\n").read_datetime_array("t");
+		CHECK(stamps.ok() && stamps.value.size() == 2);
+		CHECK(w.set_datetime("when", stamps.value[0]) && w.read_datetime_str("when").value == "2026-08-02T10:20:30.5Z");
+		CHECK(w.set_datetime_array("whens", stamps.value) && w.read_datetime_array_str("whens").value == std::vector<std::string>({"2026-08-02T10:20:30.5Z", "2026-09-01"}));
+		CHECK(!w.set_datetime("never", shcl::Datetime()) && !w.set_datetime_array("nevers", {stamps.value[1], shcl::Datetime()}));
+		CHECK(w.set_empty("blank") && w.read_string("blank").status == shcl::Status::Empty);
+		CHECK(w.set_comment("port", "the port") && w.to_canonical().find("# the port\nport: 9090\n") != std::string::npos);
+		CHECK(!w.set_comment("port", "two\nlines"));
+		CHECK(!w.set_int("a[*]", 1) && w.write_reason("a[*]") == shcl::WriteReason::Wildcard);
+		CHECK(w.remove("blank") == 1 && !w.exists("blank") && w.remove("blank") == 0);
+
+		// A default form leaves a present field alone and still says whether the
+		// value could have been written there.
+		CHECK(w.set_int_default("port", 1) && w.get_or<int64_t>("port", 0) == 9090);
+		CHECK(!w.set_float_default("ratio", std::numeric_limits<double>::infinity()) && w.get_or<double>("ratio", 0) == 0.25);
+		CHECK(w.set_int_default("d.i", 1) && w.set_float_default("d.f", 0.5) && w.set_bool_default("d.b", false));
+		CHECK(w.set_string_default("d.s", "x") && w.set_literal_default("d.l", "1, 2") && w.set_raw_default("d.r", "body", ""));
+		CHECK(w.set_datetime_default("d.t", stamps.value[1]) && w.set_int_array_default("d.ia", {1}) && w.set_float_array_default("d.fa", {1.5}));
+		CHECK(w.set_bool_array_default("d.ba", {true}) && w.set_string_array_default("d.sa", {"s"}) && w.set_datetime_array_default("d.ta", stamps.value));
+		CHECK(w.set_string_default("d.s", "y") && w.get_or<std::string>("d.s", "") == "x");
+
+		// All of it survives a save and a reload.
+		auto back = shcl::Document::parse(w.to_canonical());
+		CHECK(back.to_canonical() == w.to_canonical() && back.error_count() == 0);
+		CHECK(back.get_or<int64_t>("d.i", 0) == 1 && back.get_or<double>("d.f", 0) == 0.5 && !back.get_or<bool>("d.b", true));
+		CHECK(back.get_or<std::vector<int64_t>>("d.l", {}) == std::vector<int64_t>({1, 2}) && back.get_raw_or("d.r", "") == "body");
+		CHECK(back.get_or<std::vector<std::string>>("tags", {}) == std::vector<std::string>({"red", "a,b", ""}));
+		CHECK(back.read_datetime_array_str("d.ta").value == w.read_datetime_array_str("whens").value);
+	}
+
+	// The tokenizer, as `shcl tokens` shows a line.
+	{
+		shcl::Document t;
+		shcl::Tokens tok;
+		const std::string line = "srv[\"a b\"].port: 80, '', , x # note";
+		t.tokenize(line, ':', false, shcl::Rules::Current, tok);
+		CHECK(tok.segments.size() == 2 && !tok.fault_at && !tok.capped);
+		CHECK(tok.segments[0].selector && tok.segments[0].selector->quote == shcl::Quote::Double);
+		CHECK(line.substr(tok.segments[0].selector->start, tok.segments[0].selector->end - tok.segments[0].selector->start) == "a b");
+		CHECK(line.substr(tok.segments[1].name.start, tok.segments[1].name.end - tok.segments[1].name.start) == "port");
+		CHECK(!tok.segments[1].selector && tok.sep && line[*tok.sep] == ':');
+		CHECK(tok.comment && line[*tok.comment] == '#');
+		CHECK(line.substr(tok.value_start, tok.value_end - tok.value_start) == "80, '', , x");
+		// Four pieces, and the empty bare one is not an element.
+		CHECK(tok.elements.size() == 4 && tok.elements[1].quote == shcl::Quote::Single && tok.element_count() == 3);
+		t.tokenize_value(line, *tok.sep + 1, shcl::Rules::Current, tok);
+		CHECK(tok.segments.empty() && tok.elements.size() == 4 && tok.comment && line[*tok.comment] == '#');
+		t.tokenize("*.port", '=', true, shcl::Rules::Current, tok);
+		CHECK(tok.segments.size() == 2 && tok.segments[0].star && !tok.sep);
+		t.tokenize("a[b: 1", ':', false, shcl::Rules::Current, tok);
+		CHECK(tok.fault_at && std::string(tok.fault_why) == "unterminated selector");
+		tok.cap = 1;
+		t.tokenize("a: 1, 2, 3", ':', false, shcl::Rules::Current, tok);
+		CHECK(tok.capped && tok.cap == 1 && !tok.fault_at && tok.fault_why == nullptr);
+	}
+
+	// The hints a schema disavows, dropped from a parsed document by hand.
+	{
+		auto reps = shcl::Document::parse("host: a\nhost: b\n");
+		auto count = [](const shcl::Document &d, const char *code) { std::size_t n = 0; for (const auto &g : d.diagnostics()) if (g.code == code) n++; return n; };
+		CHECK(count(reps, "H001") == 1);
+		shcl::Document::suppress_declared_repeats(shcl::Document::parse("field: host\n\trepeat: 0, 5\n"), reps);
+		CHECK(count(reps, "H001") == 0);
+		auto parts = shcl::Document::parse("s: a\n\tx: 1\nt: 1\ns: a\n\ty: 2\n");
+		CHECK(count(parts, "H002") == 1);
+		shcl::Document::suppress_declared_reopens(shcl::Document::parse("field: s\n\treopen: true\nfield: s.x\nfield: s.y\nfield: t\n"), parts);
+		CHECK(count(parts, "H002") == 0);
+	}
+
+	// The C handle, for a call the veneer leaves out, on a document the veneer
+	// loaded. A moved-from Document holds none.
+	{
+		auto viaC = shcl::Document::parse("port: 1\n");
+		CHECK(shcl_set_int(viaC.c(), "port", 4, 2) == 1 && viaC.get_or<int64_t>("port", 0) == 2);
+		auto taken = std::move(viaC);
+		CHECK(!viaC && viaC.c() == nullptr && taken.c() != nullptr);
+	}
+
 #ifndef SHCL_NO_FILE_IO
 	// The file tier through the veneer: the load status, the strictness form,
 	// the lost count, and a save gate whose refusal is a value the caller can
@@ -263,6 +379,9 @@ int main() {
 		CHECK(lost.save_file(f) == shcl::Document::SaveResult::Refused);
 		CHECK(lost.save_file_lossy(f) == shcl::Document::SaveResult::Ok);
 		CHECK(strict.save_file(dir + "/nope/t.shcl") == shcl::Document::SaveResult::Failed);
+		CHECK(shcl::Document::write_file_atomic(f, "not: a save\n") && shcl::Document::read_file(f) == std::string("not: a save\n"));
+		CHECK(shcl::Document::write_file_atomic(f, "") && shcl::Document::read_file(f) == std::string());
+		CHECK(!shcl::Document::write_file_atomic(dir + "/nope/t.shcl", "x"));
 		std::remove(f.c_str());
 		rmdir(dir.c_str());
 	}
@@ -272,27 +391,30 @@ int main() {
 	// loop on one long-lived Document stays flat instead of climbing until the
 	// Document is destroyed.
 	{
-		const std::string t = "ports: 80, 443, 8080\n";
-		shcl_doc *raw = shcl_parse(t.data(), t.size());
-		shcl::Document held(raw);   // takes ownership; raw stays valid alongside
+		auto held = shcl::Document::parse("ports: 80, 443, 8080\n");
 		for (int i = 0; i < 20000; i++) {
 			auto r = held.read_int_array("ports");
 			CHECK(r.status == shcl::Status::Good && r.value.size() == 3);
 			if (r.status != shcl::Status::Good) break;
 		}
 		std::size_t held_bytes = 0;
-		for (const ShclBlock *b = raw->reads.head; b; b = b->next) held_bytes += b->used;
+		for (const ShclBlock *b = held.c()->reads.head; b; b = b->next) held_bytes += b->used;
 		CHECK(held_bytes <= 4096);
 		// The canonical text is a read result too. 200 copies of a 30 KB
 		// document held at once would be 6 MB; released per call it is one.
 		std::string big;
 		for (int i = 0; i < 2000; i++) big += "key" + std::to_string(i) + ": value" + std::to_string(i) + "\n";
-		shcl_doc *rawBig = shcl_parse(big.data(), big.size());
-		shcl::Document heldBig(rawBig);
+		auto heldBig = shcl::Document::parse(big);
 		for (int i = 0; i < 200; i++) CHECK(heldBig.to_canonical().size() == big.size());
 		held_bytes = 0;
-		for (const ShclBlock *b = rawBig->reads.head; b; b = b->next) held_bytes += b->used;
+		for (const ShclBlock *b = heldBig.c()->reads.head; b; b = b->next) held_bytes += b->used;
 		CHECK(held_bytes <= 2 * big.size());
+		// The tokenizer's spans are read memory as well.
+		shcl::Tokens tok;
+		for (int i = 0; i < 20000; i++) held.tokenize("ports: 80, 443, 8080", ':', false, shcl::Rules::Current, tok);
+		held_bytes = 0;
+		for (const ShclBlock *b = held.c()->reads.head; b; b = b->next) held_bytes += b->used;
+		CHECK(held_bytes <= 4096 && tok.elements.size() == 3);
 	}
 
 	if (fails) { std::fprintf(stderr, "veneer: %d failure(s)\n", fails); return 1; }
