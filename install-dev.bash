@@ -109,7 +109,7 @@ fi
 ## a worktree .git is a file.
 setup_hooks() {
 	git -C "${clone_dir}" config core.hooksPath cicd/hooks
-	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
+	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main, and a plain commit to dev)"
 	## The gate runs for minutes while git already holds the ssh session open;
 	## without keepalives GitHub drops it and the push dies of SIGPIPE after a
 	## green gate. Only set when nothing is configured, so a chosen key stays.

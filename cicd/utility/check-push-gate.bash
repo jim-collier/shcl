@@ -153,9 +153,22 @@ git -C "${repo}" commit -q -am eight
 fPush dev "$(git -C "${repo}" rev-parse HEAD)"
 ((hookRc == 0 && ran == 1)) || fail "a new tree after a recorded merge: exit ${hookRc}, gate ran ${ran} time(s)"
 
-(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, and every other push still runs it"
+## A merge nobody ran: dev takes it on sight, main still gates it.
+git -C "${repo}" checkout -q -b topic2
+printf 'nine\n' > "${repo}/d.txt"
+git -C "${repo}" commit -q -am nine
+git -C "${repo}" checkout -q dev
+git -C "${repo}" merge -q --no-ff -m "Merge topic2" topic2
+merged="$(git -C "${repo}" rev-parse HEAD)"
+fPush dev "${merged}"
+((hookRc == 0 && ran == 0)) || fail "a merge pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
+fPush main "${merged}"
+((hookRc == 0 && ran == 1)) || fail "a merge pushed to main: exit ${hookRc}, gate ran ${ran} time(s)"
+
+(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree and a merge to dev skip the gate, and every other push still runs it"
 exit "${rc}"
 
 
 ##	History:
 ##		- 2026-09-14 JC: Created.
+##		- 2026-09-16 JC: A merge pushed to dev skips the gate.
