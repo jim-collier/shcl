@@ -1149,15 +1149,16 @@ n="$(fScanTabEre "${tmpDir}/scanbait.bash" | wc -l)"
 ##	(`refuse` in each binding). An arm that counted or pushed by hand is the
 ##	shape nine review items took, one arm at a time, so no arm may. The scan
 ##	lifts the funnel by its first line and the next function start, wants
-##	every increment and dead push inside it, and allows one outside: the
-##	merge's, which sums a layer's count into the base.
+##	every increment and dead push inside it, and allows two outside: the
+##	merge's, which sums a layer's count into the base, and migrate's `st.lost`,
+##	which counts 2.x bindings in a text rewrite and never reaches a document.
 ##	The patterns ride the environment: awk's -v unescapes its value, so `\(`
 ##	would reach the regex as a bare `(`.
 fScanFunnel(){   ## fScanFunnel FILE FUNNEL-REGEX NEXT-FN-REGEX WRITE-REGEX -> "inside outside"
 	fn="$2" nx="$3" wr="$4" awk '
 		$0 ~ ENVIRON["fn"] { in_fn = 1; next }
 		in_fn && $0 ~ ENVIRON["nx"] { in_fn = 0 }
-		$0 ~ ENVIRON["wr"] && $0 !~ /over(\.|->)_?lost/ { if (in_fn) ni++; else { no++; print FILENAME ":" NR ": " $0 > "/dev/stderr" } }
+		$0 ~ ENVIRON["wr"] && $0 !~ /(over|st)(\.|->)_?lost/ { if (in_fn) ni++; else { no++; print FILENAME ":" NR ": " $0 > "/dev/stderr" } }
 		END { print ni + 0, no + 0 }
 	' "$1"
 }
