@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl_compact()` in the C binding, and `compact()` on the C++ veneer: the write-side counterpart to `shcl_reads_release`. A write lands in the document's bump arena and the value it replaced stays there until `shcl_free`, so a process rewriting one field once a second grew by a few megabytes a day with no way to give it back. Compaction rebuilds the document into fresh arenas holding only what it now contains, diagnostics, lost count and strictness included, so a save or a strict gate afterwards reads the same. Optional; a write-once consumer never needs it.
 
+- The C++ veneer can write. It had no setters, so a document it loaded could be merged and saved but not changed. It now has the rest of the C API: the setters and their `_default` forms, `set_literal`, `set_comment`, `set_empty` and `remove`, the tokenizer, both hint suppressors, `write_file_atomic`, `format_f64`, `strictness_from_arg` and `status_code`. `c()` hands back the C handle for anything the veneer leaves out, and `get_or<T>` covers datetimes and arrays, with `get_raw_or` and `get_raw_info_or` beside it, since the veneer copies every result and the reason C stops at the value types does not apply.
+
 - `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
 
 - An allocation failure no longer ends the process in the C binding. A parse and a validate give back everything they held and return NULL, `shcl_load_file` follows its parse, and the C++ veneer's `Document` tests false. A document retains several times its input size, so a config file that read fine could still exhaust the arena - which turned a config problem into the application quitting. Everywhere else, on a document already built, the new `SHCL_OOM()` hook is the answer: the default is still the CLI's print-and-exit-70, and a consumer whose process is not the library's to end defines its own before the implementation.
@@ -30,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` on the CLI. Removal and the set-if-absent family were reachable only through a tab-separated ops script on stdin, which is awkward to write in a shell and easy to get wrong; scalar sets had been given an option form for exactly that reason. All five spellings share one ordered list, so two touching the same path resolve in the order given. Raw blocks still go in through the ops script.
 
-- `get_raw_info` and `get_raw_info_or` in Rust, Go and Python (`GetRawInfo`/`GetRawInfoOr` in Go). A raw block's info-string was the one typed read with no convenience tier, so reading it meant dropping to the status tier while every other type had the short form - and the CLI had carried `--rawinfo` all along. C and the C++ veneer keep the status tier alone, as they do for every read handing back borrowed memory.
+- `get_raw_info` and `get_raw_info_or` in Rust, Go and Python (`GetRawInfo`/`GetRawInfoOr` in Go). A raw block's info-string was the one typed read with no convenience tier, so reading it meant dropping to the status tier while every other type had the short form - and the CLI had carried `--rawinfo` all along. C keeps the status tier alone, as it does for every read handing back borrowed memory. The C++ veneer has both now.
 
 - A `DateTime` alias beside `Datetime` in Rust and Python, so the capitalization a consumer tries first still compiles.
 
@@ -39,6 +41,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
 ### Changed
+
+- The C++ veneer's `read_datetime_array` returns `Read<std::vector<Datetime>>`, the structured values every other binding's array read returns, and the text form moves to `read_datetime_array_str`. That matches the scalar pair 2.0.0 settled. Code comparing the elements to strings stops compiling rather than changing meaning.
 
 - `init` writes its own prose as `##` and a commented-out setting as `# `. A starter config is mostly comment, and one `#` for both left the reader sorting prose from settings by eye. Nothing keys on the difference: to the language both are ordinary comments, and a config author may write one with any number of `#` and any spacing.
 

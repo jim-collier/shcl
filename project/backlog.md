@@ -280,21 +280,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
 		- Opened: 20260909-110100
 
-- 🔘 The C++ veneer keeps its C handle private, so a C++ caller can't reach any C call the veneer leaves out.
-	- Note: a document loaded or parsed through the veneer can't be written at all, since the veneer has no setters. The only way to write is to parse through C, keep that pointer, and go on using it after handing it to `Document`. The veneer's own smoke test does exactly that.
-	- Note: a `c()` accessor, like the one `Datetime` has, is the whole change.
-	- Note: a C result read through that handle doesn't survive the next veneer read on the same document, so the accessor's comment has to say so.
-	- Related: the next item brings the veneer level with C. This one is the stopgap until then.
-	- Opened: 20260916-141855
-
-- 🔘 The C++ veneer is not level with the C binding. It has none of the setters, so it can load, merge and save a document but not change a value in it.
-	- Note: also missing are tokenize, the declared-repeat and declared-reopen suppressors, the atomic file write, float formatting, and the strictness and status-code helpers. The Rust reference has most of these too.
-	- Note: nothing decided this. The veneer began as a typed read layer and grew one request at a time. Set-literal left it out on 2026-08-04 only because it had no setters to sit beside.
-	- Note: C's convenience tier skips raw, raw-info, datetime and array reads because those hand back borrowed memory. The veneer copies every result, so that reason doesn't carry over. The line and quoted flags the other bindings put on a read result are the same question. Both need a call before code.
-	- Note: a gate should fail when a public C call has no veneer counterpart and no listed reason. Nothing checks it now, which is how the gap grew.
-	- Note: the style guide keeps the veneer a thin wrapper over the C core, not a second parser. Wrappers that call straight through still fit that.
-	- Opened: 20260916-141855
-
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
 	- Opened: 20260914-145320
@@ -2854,6 +2839,29 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ The C++ veneer keeps its C handle private, so a C++ caller can't reach any C call the veneer leaves out.
+	- Note: a document loaded or parsed through the veneer can't be written at all, since the veneer has no setters. The only way to write is to parse through C, keep that pointer, and go on using it after handing it to `Document`. The veneer's own smoke test does exactly that.
+	- Note: a `c()` accessor, like the one `Datetime` has, is the whole change.
+	- Note: a C result read through that handle doesn't survive the next veneer read on the same document, so the accessor's comment has to say so.
+	- Related: the next item brings the veneer level with C. This one is the stopgap until then.
+	- Fixed: `Document::c()` hands back the handle, and its comment carries the mixing rule. The smoke test uses it in place of the kept raw pointer.
+	- Opened: 20260916-141855
+	- Closed: 20260916-145336
+
+- ✅ The C++ veneer is not level with the C binding. It has none of the setters, so it can load, merge and save a document but not change a value in it.
+	- Note: also missing are tokenize, the declared-repeat and declared-reopen suppressors, the atomic file write, float formatting, and the strictness and status-code helpers. The Rust reference has most of these too.
+	- Note: nothing decided this. The veneer began as a typed read layer and grew one request at a time. Set-literal left it out on 2026-08-04 only because it had no setters to sit beside.
+	- Note: C's convenience tier skips raw, raw-info, datetime and array reads because those hand back borrowed memory. The veneer copies every result, so that reason doesn't carry over. The line and quoted flags the other bindings put on a read result are the same question. Both need a call before code.
+	- Note: a gate should fail when a public C call has no veneer counterpart and no listed reason. Nothing checks it now, which is how the gap grew.
+	- Note: the style guide keeps the veneer a thin wrapper over the C core, not a second parser. Wrappers that call straight through still fit that.
+	- Decided: the veneer has the whole convenience tier. `get_or<T>` covers datetimes and arrays, and raw and raw-info get named calls, since both are strings to a template.
+	- Decided: `Read<T>` gets no line or quoted field, as in C. Filling them would look the path up twice more on every read, and `line()` and `quoted()` already answer both.
+	- Decided: `read_datetime_array` returns `Datetime` values and the text form moves to `read_datetime_array_str`, matching the scalar pair. A datetime array setter can then take what the read hands back.
+	- Fixed: `shcl.hpp` has all 27 writes, the tokenizer, both suppressors, `write_file_atomic`, `format_f64`, `strictness_from_arg` and `status_code`. `Document()` calls `shcl_new` and `Read::ok()` calls `shcl_status_ok`, so six `shcl_get_*` calls are the only ones it reaches another way.
+	- Pinned by: `check-veneer.bash` in the lint stage, watched to fail, and new checks in `veneer_smoke.cpp`.
+	- Opened: 20260916-141855
+	- Closed: 20260916-145336
 
 - ✅ A push to dev ran the whole gate again, then half an hour of hosted CI, even right after a full local run had passed the same files.
 	- Decided: the pre-push hook skips a commit whose tree a run already passed. Hosted CI runs on pushes to `main`, on pull requests, and by hand, and no longer on `dev`.
