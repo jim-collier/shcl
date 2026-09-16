@@ -27,7 +27,9 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 
 ## Conventions
 
-In each section, items are listed approximately from newest to oldest. Inside Done and Canceled, loose items come first and code-review rounds after, each run newest first. "Approximately" is meant: items closed in the same week are often grouped by topic instead, which reads better than exact date order and is not worth unpicking. (Tip: use a clipboard or macro manager to make using these emojis easier.)
+In each section, items are listed approximately from newest to oldest. Inside Done and Canceled, loose items come first and code-review rounds after, each run newest first.
+
+Statii:
 
 - 🔘 Not started
 
@@ -41,13 +43,31 @@ In each section, items are listed approximately from newest to oldest. Inside Do
 
 - 🚫 Canceled
 
-Sub-bullets under an item lead with what they are, so an item can be read by skimming the prefixes. The vocabulary: `Reproduced:` what was actually seen, `Cause:` why, `Decided:` a call that had to be made before code, `Fixed:` what changed, `Pinned by:` what now fails if it comes back, `Left alone:` what was looked at and deliberately not touched, `Measured:` one headline number, `Note:` anything else. Finding text written when the item was filed keeps whatever shape it was filed in.
+To make using these icons easier if desired, add them to a clipboard or key macro manager. (This format is "temporary" anyway [albeit for a while now], until we switch over to nano-git-db for the minor stuff, and GitHub Issues for the bigger stuff.)
 
-A fix said to be in all four bindings names the function that carries the rule in each. "In all four" on its own cannot be checked by anyone reading later.
+Sub-bullets under an item lead with what they are, so an item can be read by skimming the prefixes.
 
-Every item carries the date it was opened and, once settled, the date it closed. An item found and closed in one pass has no separate opened date. A deferred item keeps only its opened date: deferring is a decision to come back, not a settlement, so there is nothing to stamp closed - which is why a canceled item carries both and a deferred one does not.
+- `Reproduced:` what was actually seen
 
-A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and every property have run green on the tree that merges. The next review starts from the closing round's coverage-gaps list, not from the code that round changed. Every review filed the day after a merge refiled the fix's rough edges as new bugs, which spends a round on what a second reading of the same diff would have said.
+- `Cause:` why
+
+- `Decided:` a call that had to be made before code
+
+- `Fixed:` what changed
+
+- `Pinned by:` what now fails if it comes back
+
+- `Left alone:` what was looked at and deliberately not touched
+
+- `Measured:` a number
+
+- `Note:` anything else.
+
+A fix said to be in all four bindings has to name the function for each. "In all four" on its own can't be checked by anyone reading later.
+
+Each item should include the date it was opened and closed. If the open date is unknown, it says "n/a". A deferred item keeps only its opened date.
+
+Issues opened by automated code reviews should be grouped under a main bullet with YYYYmmDD, and each one should get programmer review for validity and accuracy.
 
 ## Backlog
 
@@ -55,7 +75,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260909:
 
-	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check cannot see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
+	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check can't see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
 
 	- Twenty-one of the defects are shapes all four bindings share. Six are gates that still report OK with the defect they exist for present. Nine reach the filesystem or an irreversible step.
 
@@ -82,7 +102,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
 		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
-		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration cannot tell the difference between "migrated" and "gave up".
+		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration can't tell the difference between "migrated" and "gave up".
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
@@ -113,7 +133,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
 		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
 		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
-		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` cannot see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
+		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` can't see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
 		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
 		- Opened: 20260909-102100
 
@@ -135,13 +155,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-102600
 
 	- 🔘 Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
-		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half cannot fail at all, and it never checks that the harness it built adopted the locale.
+		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
 		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
 		- Opened: 20260909-102700
 
-	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production cannot generate the label its own comment gives.
-		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it cannot generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
-		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that cannot express shipped behavior costs more than a typo.
+	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production can't generate the label its own comment gives.
+		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it can't generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
+		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that can't express shipped behavior costs more than a typo.
 		- Note: under `design.md` -> Lexical edges the `info-string` production is right to exclude `#`; the example beside it is what is wrong. The `%xEOF` half stands.
 		- Note: the example half is fixed with the rules code; the note now says ```` ```c# ```` labels the block `c`. The `%xEOF` half is still open.
 		- Opened: 20260909-103100
@@ -161,7 +181,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-103400
 
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
-		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that cannot be nonzero.
+		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
 		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
 		- `--uninstall` deletes every file in `code/` and `scripts/` (bash) or the whole subtrees (ps1), then prints that it removed what the installer laid down. `README.md:382` says "and nothing else".
 		- An interrupted install leaves `.shcl.new` or `.shcl.exe.new`; neither uninstall removes it, and both then tell the user the directory holds files the installer did not put there.
@@ -334,7 +354,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Closed: 20260914-191849
 
 - ✅ The round went out green locally and red on the hosted runner: gcc 13 rejected what gcc 14 and 15 accept.
-	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator cannot see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
+	- Reproduced: `apply_op`'s array branches allocate a slot array and fill only the first `an`, and at `an` of zero the setter is handed slots nothing wrote. The callee reads none of them, but a compiler that inlines the allocator can't see that and calls them uninitialized. gcc 13 says so under `-Werror`; 12, 14, 15 and clang do not.
 	- Cause: nothing in the array branches changed this round. Inlining did, because the round added a function beside them, and the warning is inlining-dependent.
 	- Fixed: all four array branches zero their slots. Every compiler on this box now builds the C surface clean.
 	- Pinned by a new gate, `check-c-compilers.bash`, which builds `main.c` and the runner with every gcc and clang present rather than only the default. The old gate used one compiler, which is why the local run could be green while the hosted one was not.
@@ -372,7 +392,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Cause: `staticcheck`, `govulncheck` and `cargo-deny` went into `LINT_EXTRA` and `TOOL_PINS` in the 20260819 round, but nothing was ever added to `ci.yml` to install them. The lint stage aborted at exit 127 about a minute in, so every run since has been red while the local gate stayed green. That is exactly how it went unnoticed.
 	- Fixed by installing all three at their pinned versions. `cargo-deny` comes as a prebuilt binary with a sha256 pin, the same treatment `shellcheck` already gets: building it from source costs minutes and pulls a dependency tree the gate has no reason to compile.
 	- `cargo-zigbuild` is still missing there and stays that way - it only feeds the cross stage, which `--ci` skips, so it is a warning and not a failure.
-	- Second cause behind the same red, found once the first was cleared. The Go toolchain was `stable`, which had rolled to 1.27. staticcheck carries its own type checker that cannot read export data from a Go newer than the release it was cut against. Pinned to the 1.26 series in both jobs; move it when the staticcheck pin moves.
+	- Second cause behind the same red, found once the first was cleared. The Go toolchain was `stable`, which had rolled to 1.27. staticcheck carries its own type checker that can't read export data from a Go newer than the release it was cut against. Pinned to the 1.26 series in both jobs; move it when the staticcheck pin moves.
 	- Opened: n/a
 	- Closed: 20260821-121316
 
@@ -403,7 +423,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- A second face of the same bug, and the one that showed first. The emitter works around the pair by writing the block's fence on the name's line (`blk: ```info`), and the value half of that line is comment-split on reparse. So an info string containing `#` comes back as a trailing comment and the fence loses it outright. That half is content loss, not just instability.
 	- Fixed: merge adopts the parser's empty-fill rule, so a merge and a parse of the two layers run together produce the same document. The fill is limited to a raw block, which is the limit of the parser's own rule; an unmatched valued instance still appends, as a parse of the same two lines does. Case 056 pins both halves.
 	- The info-string half needed no separate fix: with the pair folded, the emitter never reaches the same-line-fence spelling for it, so the `#` survives. Pinned in the same case.
-	- Raise the soak in the pipeline, or at least run a long one before a cut: the short gate cannot see this class. Related to Code review 20260817 item 29.
+	- Raise the soak in the pipeline, or at least run a long one before a cut: the short gate can't see this class. Related to Code review 20260817 item 29.
 	- Opened: 20260818-163310
 	- Closed: 20260818-183513
 
@@ -414,7 +434,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Cheap to settle now: the whole file tier is unreleased, so either answer is free today and a behavior change later.
 	- Settled the second way: a new file is created at `0666 & ~umask`, like anything else a person runs. 0600 would be a surprise the caller never asked for and could not see. A config that needs to be private needs that from the umask or an explicit chmod, not from a library quietly deciding.
 	- Fixed in all four bindings by choosing the temp file's create mode from whether the target already exists, rather than by chmod'ing afterwards. An existing target still gets a private temp and its own mode copied on, so nothing about the case the privacy was for changed.
-	- Verified: pinned in all four runners rather than `crosscheck.bash`: the CLI cannot create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask.
+	- Verified: pinned in all four runners rather than `crosscheck.bash`: the CLI can't create a file at all (`set --write` on a missing FILE is an error), so the path is library-only and no CLI comparison can reach it. The fixture compares against a file made by the language's own ordinary create, so it states the rule without hard-coding a umask.
 	- Spec says it now, in the file-tier paragraph beside the rest of the save's mechanics.
 	- Opened: 20260820-075114
 	- Closed: 20260820-120244
@@ -442,7 +462,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Opened: 20260804-143741
 	- Closed: 20260804-151804
 
-- ✅ The PowerShell wrapper's sourced `shcl` cannot be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
+- ✅ The PowerShell wrapper's sourced `shcl` can't be fed an op script on stdin. It is a function, so it forwards arguments but not pipeline input: `$ops | shcl set --write f.shcl` drops the ops and the CLI then blocks on console stdin until it is killed. The Bash wrapper pipes fine, so the two wrappers are not at parity, and `set` is the only subcommand that reads stdin.
 	- Workaround, now in the README, is to pipe to the binary instead, resolved as `Get-Command shcl -CommandType Application` - plain `Get-Command shcl` returns the sourced function, whose `.Source` is empty. Callers should not need to know that.
 	- Not crosscheck-visible: the wrappers are forwarders and deliberately sit outside `BINDING_CLIS`, so nothing in the pipeline exercises this.
 	- Fixed: `shcl` forwards `$input` to the binary, but only when `$MyInvocation.ExpectingInput` says something was piped. The guard matters - forwarding an empty `$input` would hand the binary a closed stdin, so a bare `shcl set f.shcl` would read zero ops instead of the console.
@@ -461,7 +481,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - ✅ A strict parse hands back nothing usable.
 	- Reported from TradeClanker. The Go parse returned a nil document beside the error, so the natural `doc, err :=` followed by `doc.Diagnostics()` panicked.
 	- Cause: the error value did carry the full diagnostics list, but the message was only a count, so the obvious path hid every line and code it was already holding.
-	- Fixed both ways, in all four bindings. The failure now carries the parsed document, and the message names the first three diagnostics with line and code. Go returns the document non-nil beside the error, so the natural path cannot panic.
+	- Fixed both ways, in all four bindings. The failure now carries the parsed document, and the message names the first three diagnostics with line and code. Go returns the document non-nil beside the error, so the natural path can't panic.
 	- Opened: n/a
 	- Closed: 20260802-120213
 
@@ -536,9 +556,9 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: `literal_value` hands the text to `tokenize_value` with `from=0`, which applies the line-start comment rule to what is actually a value half.
 		- Note: `spec.md:87` says `a:#x` is the value `#x`, and `spec.md:95` says a `#` with no whitespace before it is content. Hex colors, URL fragments and CSS ids all take this shape, and no refusal channel fires.
 		- Sites: `lib.rs:4309`, `shcl.go:4341`, `shcl.py:430`, `shcl.h:4006`.
-		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule cannot reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
+		- Fixed: one `value_half` per binding (`valueHalf` in Go, `_value_half` in Python) builds the line the text describes - the value behind a colon - and scans from after it, so the tokenizer's line-start rule can't reach a value half. `literal_value` and `value_reads_back` both go through it. The second was right only because the emitter quotes every element holding a `#`; relaxing that quoting later would have made it refuse valid values.
 		- Pinned by: corpus `044-write-literal` gains a leading `#`, a `#` mid-value and a trailing one, and a `cli-regress` row takes the same value through `--set-literal`. All four fail the case with the fix backed out.
-		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they cannot place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
+		- Left alone: `reads_same` and `gen_selector_text` pass the same `from=0`. Both are conservative there rather than wrong - they quote a spelling they can't place, and 2.x could not produce a bare piece holding a `#` at all - so changing them would move emitted bytes for nothing.
 		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-100600
 		- Closed: 20260909-151500
@@ -598,7 +618,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-101400
 		- Closed: 20260915-145757
 
-	- ✅ Item 16: the 64-character temp-name cap is counted in codepoints, so a filename well inside the byte limit still cannot be rewritten.
+	- ✅ Item 16: the 64-character temp-name cap is counted in codepoints, so a filename well inside the byte limit still can't be rewritten.
 		- Reproduced in all four. A basename of 60 emoji plus `.shcl` is 245 bytes, under `NAME_MAX`, and `fmt --write` on it exits 8 with "File name too long". The temp name's byte length ranges 69 to 261 where the header says the cut makes it fixed.
 		- Note: the pinning row `cli-regress.bash:227` uses an ASCII name, so the cap has never been exercised where it fails.
 		- Site: `shcl.h:6239-6244` and the same cut in the other three.
@@ -644,7 +664,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Pinned by: `shell-regress.bash`, one payload per variable. The old script ran all six.
 		- Note: all six `GFS_KEEP_*` variables reach `((...))` the same way. The script is copied into every project, so the fix belongs in the canonical copy too.
 		- Site: `cicd/utility/include/gfs-rotate.bash:79-81`, used at `:130` and `:141`.
-		- Note: a caller under `set -u` never ran the payload, since the unbound name stops it first. This project's callers all set it; the library cannot count on that.
+		- Note: a caller under `set -u` never ran the payload, since the unbound name stops it first. This project's callers all set it; the library can't count on that.
 		- Opened: 20260909-102800
 		- Closed: 20260915-112859
 
@@ -678,16 +698,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - Code review 20260905:
 
 	- A from-scratch pass, aimed first at what the 20260904 round changed and then at ground its coverage list named as unread. The parser was driven from a generator written off `grammar.abnf` rather than off the other bindings, with two oracles no earlier round has used: a legal document must load with no error diagnostics, and a line whose intended element list is known must read back as that list. Also run: fixpoint and read-preservation over 3,000 structural documents, 1,500 merge pairs, the normative strictness table in full, the raw-block indent rule against known bodies, the parse caps at library level, the windows builds of rust, go and C under wine, the two wrappers against the binary, and an A/B of every workload against the pre-round build. Five defects here, four enhancements under Features and enhancements. Every item was reproduced on this box.
-	- All five defects are shapes every binding shares, so the four-way check cannot see any of them. Three of the five are a scanner disagreeing with the path scanner about where a field line's parts begin and end, and two of those three are the quote rule specifically - the one the last round fixed in three call sites and left in two. That is the round's one structural observation: the rule was fixed per call site rather than once.
+	- All five defects are shapes every binding shares, so the four-way check can't see any of them. Three of the five are a scanner disagreeing with the path scanner about where a field line's parts begin and end, and two of those three are the quote rule specifically - the one the last round fixed in three call sites and left in two. That is the round's one structural observation: the rule was fixed per call site rather than once.
 	- The last round cost nothing measurable. Rust, Go and C are flat on parse, bulk writes, absent defaults, bulk reads, `check --schema`, merge, a 300-layer fold and `paths`, against the pre-round build at the same optimization level. Go's merge peak RSS moves about 10% run to run in both builds, which is its collector, not the round.
 
-	- ✅ Item 1: a document written with the documented `field:[disc]` sugar cannot be saved, and fails `check`.
+	- ✅ Item 1: a document written with the documented `field:[disc]` sugar can't be saved, and fails `check`.
 		- Reproduced in all four. `base:[Boston]` on a line of its own reports `E019 bracket array syntax` and counts one lost, so `check` exits 6, a Strict load fails, and `fmt --write` and `set --write` refuse at exit 7. Nothing is lost: `--lossy` writes `base: Boston`, the reads are unchanged, and the result is the same document the no-colon spelling produces.
 		- Cause: `looks_like_bracket_array` reads the sugar colon as the field's own separator, so the selector that follows looks like bracket text. The colon-less spelling `base[Boston]` takes the `E015` repair path instead and loses nothing.
 		- Note: the spec says "the `:` before a selector is optional sugar, so `field[disc]` and `field:[disc]` are the same", and `grammar.abnf` says it again on the `segment` rule. Two spellings the documents call identical get different codes and different save outcomes.
 		- Note: half of this is a regression from 20260904 item 3. Before that fix `"a:b":[x]` and `srv[db:5432].x:[y]` were `E015` and wrote clean at exit 0; both are `E019` and refuse at exit 7 now. The bare `base:[Boston]` spelling has behaved this way since `E019` arrived.
 		- Note: corpus `089` pins `x: [a].y: [1, 2]`, which is a real bracket array after a sugar colon, so it does not cover this and does not have to change.
-		- Decision needed: `E019` cannot tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
+		- Decision needed: `E019` can't tell a bracket array from selector sugar, because they are spelled the same. It does not have to: count lost only where something is really dropped. A comma in the brackets changes the value's reading, a numeric or `*` body already drops the line under its own code, and `[x]` reads exactly as `x` does.
 		- Decided: the comma decides. `E019` is an error that counts lost when the brackets hold an unquoted comma, since that is where two elements fold into one string; otherwise it is a hint under the same code (the `E022` precedent) and counts nothing, so `check` exits 0, a strict load passes and the rewrite goes through. Recorded in `design.md` under Saving a file, and on the `E019` row of the spec.
 		- Fixed: the bracket-array site in all four bindings splits the bracket body on unquoted commas and picks the level by the count.
 		- Pinned by: corpus `106-bracket-sugar` (four sugar shapes, a strict load, the reads, lost 0) and five `cli-regress` rows: a bracket array at `check` exit 6 and `fmt --write` exit 7, the sugar file at `check` exit 0 in both strictnesses and `fmt --write` exit 0 on a fresh copy per binding. Corpus `089` is unchanged, since every line there carries a comma. The case and the three sugar rows fail on the old code in every binding.
@@ -738,7 +758,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - Code review 20260904:
 
 	- A from-scratch adversarial pass over ground the earlier rounds recorded as unread: the parser judged against `grammar.abnf` and the spec rather than against the other bindings; the C validator body and `shcl_load_and_validate`; `SHCL_OOM` under a failing allocator for the writer, merge and generator; the reference's write side judged against the spec; the Go and Python read, coercion, datetime and validation bodies judged against the spec; the merge and generator items the last two rounds listed as not reached; the shell completions, the two wrappers and the documents against each other; the gates nobody had injected into; and every fix of the last two rounds, including what those fixes cost. Thirty-two defects here, twenty-one enhancements under Features and enhancements. Every item below was reproduced on this box, with two stated exceptions: item 32 reproduces as a shape rather than as a failure, and items 24 and 32 were reproduced as their own source lines under the script's shell options rather than by running the publish stage.
-	- Nineteen of the defects are shapes all four bindings share, so the four-way check cannot see any of them. Three are C only. Six are gates, fixtures or documents that assert less than they claim. Item 1 is the round's worst: the recovery path the C header tells an embedder to use turns an allocation failure into a hang that cannot be interrupted.
+	- Nineteen of the defects are shapes all four bindings share, so the four-way check can't see any of them. Three are C only. Six are gates, fixtures or documents that assert less than they claim. Item 1 is the round's worst: the recovery path the C header tells an embedder to use turns an allocation failure into a hang that can't be interrupted.
 	- The last two rounds cost nothing measurable except one deliberate trade. Rust, Go and Python are flat on parse, fmt, bulk writes, absent defaults, bulk reads, `check --schema`, `init` and merge. The C parse of a 20 MiB document is 2-7% slower because a parse now gives back its scratch arena instead of leaving it, and the memory that buys is real: `check --schema` peak RSS down 19%, merge down 13%.
 
 	- ✅ Item 1: an allocation failure inside the lazy name-index build leaves the document in a state where the next lookup never returns.
@@ -800,8 +820,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-170500
 		- Closed: 20260905-092040
 
-	- ✅ Item 7: the index-rebuild timing test cannot reliably fail on the defect it names, and Python's copy can never fail.
-		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it cannot fail on any machine.
+	- ✅ Item 7: the index-rebuild timing test can't reliably fail on the defect it names, and Python's copy can never fail.
+		- Reproduced by backing the fix out: the Rust test passed on two of five runs, with the churned side landing either side of the bound. Go fails by under 2x. Python's fixture is 20000 churn iterations and 50 merges where Rust and Go use 100000 and 200, so the whole cost of the defect is about 52 ms against a 250 ms constant term - it can't fail on any machine.
 		- Cause: widening the constant from 25 to 250 ms for a shared runner made the constant larger than the defect. The factor was meant to be what catches it; the constant now absorbs the whole thing.
 		- Note: the C copy is still at +25 and does bite, by 12%. On windows it does not run at all - the clock-coarseness guard needs a fresh side over 20 ms and windows measures it at 0.1.
 		- Note: a count is the right measure here, not a clock. The defect is how many nodes were walked, which is exact.
@@ -828,7 +848,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-170800
 		- Closed: 20260905-093007
 
-	- ✅ Item 10: the bash completion cannot see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
+	- ✅ Item 10: the bash completion can't see the `--opt=VALUE` form at all, so the spelling every document uses loses the FILE slot.
 		- Reproduced in an interactive bash over a pty. `shcl check --strictness=<TAB>` offers nothing, and `shcl check --strictness=standard al<TAB>` offers nothing where `alpha.shcl` belongs. The space form works.
 		- Cause: `COMP_WORDBREAKS` contains `=`, so bash has already split the word into three before `_shcl` runs, and the file calls neither `_init_completion` nor `_get_comp_words_by_ref` to re-join them. The four `=VALUE` arms are dead code, and the value is then counted as a positional, which is what eats the FILE slot.
 		- Note: the zsh completion is right here - it uses `compset -P` and zsh does not split on `=`.
@@ -947,7 +967,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 23: `check-c-compilers.bash` reports OK with a single compiler and never reads `SHCL_GATE_STRICT`.
 		- Reproduced: with gcc-12 to gcc-15 and clang hidden from `PATH`, the gate prints "OK: 5 build(s) across 1 compiler(s)" and exits 0 under `SHCL_GATE_STRICT=1`.
-		- Cause: the compiler list is whatever `command -v` finds, with no floor, and the script does not read the flag three other gates do. The engine's own comment says "A gate that quietly skips what it cannot run is a gate that stops checking when a runner loses a tool. The gates read this and fail on a skip instead".
+		- Cause: the compiler list is whatever `command -v` finds, with no floor, and the script does not read the flag three other gates do. The engine's own comment says "A gate that quietly skips what it can't run is a gate that stops checking when a runner loses a tool. The gates read this and fail on a skip instead".
 		- Note: the disagreement it exists for is real. Removing the `-Wclobbered` suppression around `do_parse` makes gcc-12 and gcc-13 refuse the file while 14, 15, clang and this box's default `cc` all build it clean.
 		- Fixed: under `SHCL_GATE_STRICT` the sweep needs two versioned gccs and clang before it builds anything, and says what it found otherwise; off the gate it checks what is installed and names it, as before.
 		- Pinned by: `shell-regress.bash`, the gate run against a PATH holding one gcc. The old script reports OK there.
@@ -1034,7 +1054,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - Code review 20260902:
 
 	- A fresh adversarial pass started from scratch, aimed at ground no earlier round had read: the C writer, resolver, generator and file tier; the generator bodies in all four bindings; the reference's read, coercion, datetime and validation code judged against the spec rather than against the other bindings; the CLI against its own help and man page; the Go and Python writers and file tiers; the merge code at library level; every gate under fault injection; and the windows builds run under wine. Twenty-eight defects here, seventeen enhancements under Features and enhancements. Everything marked confirmed was reproduced on this box; the two marked plausible rest on vendor documentation or a library-level probe in one binding.
-	- Eighteen of the defects are shapes all four bindings share, so the four-way check cannot see them. Four are C or C++ only. Three are gates or fixtures that assert less than they claim. The fix round before this one (20260901b) cost nothing measurable: parse, fmt, bulk read, bulk write, absent defaults and float writes are unchanged against `b85ee1d`, and the did-you-mean workload went from 24 s to 0.09 s. A thousand structurally generated documents (bad dedents, fences and `*` lines at bad columns, content beneath skipped lines, bracket arrays, mixed indent) agree four-way and hold every fixpoint and write-gate property, so the E012/E013 change from that round held up.
+	- Eighteen of the defects are shapes all four bindings share, so the four-way check can't see them. Four are C or C++ only. Three are gates or fixtures that assert less than they claim. The fix round before this one (20260901b) cost nothing measurable: parse, fmt, bulk read, bulk write, absent defaults and float writes are unchanged against `b85ee1d`, and the did-you-mean workload went from 24 s to 0.09 s. A thousand structurally generated documents (bad dedents, fences and `*` lines at bad columns, content beneath skipped lines, bracket arrays, mixed indent) agree four-way and hold every fixpoint and write-gate property, so the E012/E013 change from that round held up.
 
 	- ✅ Item 1: the reference CLI's `get --float` and the Rust generator's annotation line never got the round-half-even rule, so the distributed CLI prints a tie differently from the other three.
 		- Reproduced: `f: 1125899906842624.2` through `get --float` prints `...624.3` from the reference and `...624.2` from Go, Python and C; same on `--array`, and same digit in `init`'s `# float, <lo>-<hi>` and `one of:` text for a tie-valued bound. The `set` path is right in all four, which is what 20260901b item 10 verified.
@@ -1080,7 +1100,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 6: a valued live parent whose default is a bare integer is selected as `[8]`, which the scanner reads as an index, so `init` exits 6.
 		- Reproduced in all four. `field: num` required `default: 8` plus `field: "num[*].v"` required generates `num: 8` / `num[8].v:`, which loads with `E003 no instance 8 of 'num'`; `init` reports V097. Same with `default: "8"` (emitted bare by the data-format rule) and with `type: int`. `[007]` and `[+3]` fail the same way.
 		- Cause: `gen_selector_text` quotes only a default holding `[`, `]`, `\` or a newline; the spec's index rule (`[0]` bare numeric is an index, `["2020"]` quoted is a value) is not applied.
-		- Fixed: the selector text quotes a default whose trimmed spelling the scanner would read as a selector of its own - all digits with an optional sign, the same with a leading `#`, or a bare `*` - beside the bracket and backslash cases it already quoted. Each binding asks its own scanner's number parser, so the four cannot drift.
+		- Fixed: the selector text quotes a default whose trimmed spelling the scanner would read as a selector of its own - all digits with an optional sign, the same with a leading `#`, or a bare `*` - beside the bracket and backslash cases it already quoted. Each binding asks its own scanner's number parser, so the four can't drift.
 		- Pinned by corpus `082` (`default: 8` under a wildcard child, and a `*` default beside it). All four refused the schema before.
 		- Opened: 20260902-170500
 		- Closed: 20260902-201500
@@ -1093,7 +1113,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260902-170600
 		- Closed: 20260902-201500
 
-	- ✅ Item 8: a stdout that cannot be written is reported as success by three CLIs, and as 120 by the fourth.
+	- ✅ Item 8: a stdout that can't be written is reported as success by three CLIs, and as 120 by the fourth.
 		- Reproduced: `fmt f.shcl > /dev/full` exits 0 with an empty stderr in Rust, Go and C; Python exits 120 with an interpreter message. Same for `check`, `get` and `set`. The help and man page say 8 for a stream that could not be written.
 		- Cause: the reference's `out!`/`outln!` treat every write error as a broken pipe and exit 0 (on unix SIGPIPE is restored, so EPIPE never reaches the branch and every error that does is not a broken pipe); Go drops `fmt.Print` results; C never checks `ferror(stdout)`; Python never flushes inside `main`.
 		- Fixed: every stdout write in all four goes through one pair of helpers that exit 8 with the OS message on a write error, and the buffered tail is flushed before the exit code is returned so a failure there is caught too. A broken pipe stays the quiet exit. The C CLI also points a standard stream that was closed before the start at the null device, which the other three runtimes already do - without it every write failed with EBADF and the next file opened landed on the closed descriptor.
@@ -1101,10 +1121,10 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260902-170700
 		- Closed: 20260902-213000
 
-	- ✅ Item 9: the reference aborts with nothing on stdout when stderr cannot be written.
+	- ✅ Item 9: the reference aborts with nothing on stdout when stderr can't be written.
 		- Reproduced: `fmt bad.shcl 2>/dev/full` on a document with one diagnostic exits 134 (SIGABRT) with an empty stdout; Go and C exit 0 with the document; Python exits 120 with nothing. A single hint is enough, since every loading subcommand prints its diagnostics.
 		- Cause: `eprintln!` panics on a write error and the release profile has `panic = "abort"`, so the abort lands before `out!` has printed anything. A closed stderr is fine (EBADF is discarded); a full or failing one is not.
-		- Decided: a diagnostic that cannot be printed is dropped. There is nowhere to report the failure, the document on stdout is still good, and the exit code already carries the outcome - Go and C did this already.
+		- Decided: a diagnostic that can't be printed is dropped. There is nowhere to report the failure, the document on stdout is still good, and the exit code already carries the outcome - Go and C did this already.
 		- Fixed: the reference's diagnostics go through an `errln!` that ignores the write result, and Python's stderr is wrapped so a failed write is dropped instead of raising.
 		- Pinned by a `cli-regress` row that runs `fmt` on a document with a diagnostic, stderr on a full device, and requires the canonical text on stdout at exit 0. The reference exited 101 and Python 120 before, both with an empty stdout.
 		- Opened: 20260902-170800
@@ -1188,7 +1208,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced in all four. `field: "srv[#1].port"` required (alone or beside a live `field: srv`) exits 6 with `V097 required path missing`; same for a 513-segment required path and for `field: "\"a\nb\""` required. The spec's trailing-block sentence lists all three as "collected into a trailing comment block", and its self-check sentence requires the output to validate, and a must-exist path in the trailing block can never satisfy both.
 		- Cause: `unwritable` sends them to the trailing block and the self-check then reports the missing path. The newline clause is also stale on its own: names resolve escapes since 2026-08-18, `emit_name` spells a newline as `\n`, and `gen_path_text` already goes through it, so the path is writable.
 		- Decided: refuse, naming the path. The trailing block can never satisfy a must-exist path, so the self-check's "required path missing" points a reader at the generated config when the problem is the schema line. A `repeat` lower bound of 2 or more keeps its documented shortfall and still generates.
-		- Fixed: a must-exist path that cannot be written is a `V097` fault carrying the path, in all four, before anything is emitted. The newline clause is gone from the unwritable test - only a newline inside a selector is unwritable now - and a path whose text holds one renders through the segment renderer, which escapes it.
+		- Fixed: a must-exist path that can't be written is a `V097` fault carrying the path, in all four, before anything is emitted. The newline clause is gone from the unwritable test - only a newline inside a selector is unwritable now - and a path whose text holds one renders through the segment renderer, which escapes it.
 		- Pinned by a `cli-regress` row (`field: "srv[#1].port"` required, message and exit) and corpus `082`, whose schema now carries a quoted escaped name. All four gave the old message before.
 		- Note: a literal newline in a schema path is unreachable from a file - a schema value holding one is an unterminated quote - so the newline half of the fix is defensive and has no case of its own. Its old clause never fired either, which is why the escaped spelling already worked.
 		- Opened: 20260902-171800
@@ -1203,7 +1223,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260903-013000
 
 	- ✅ Item 21: `shcl_generate` keeps the output of a V097-failing call in the schema's arena, and a succeeding call's output can never be released.
-		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` cannot reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.
+		- Reproduced: 1000 calls on a schema whose default fails its own constraint grow the heap by 21.9 KB per call while returning nothing, and leave 1001 copies of the same diagnostic on the schema; 1000 succeeding calls grow it by one output each, and `shcl_reads_release` can't reclaim them because the output goes to `schema->arena`, not `schema->reads`. The header's own comment says everything but the returned bytes dies inside the call.
 		- Cause: the output is copied into the schema arena before the self-check, and the failure path returns empty without reclaiming it; faults are appended to the schema on every call.
 		- Fixed: the self-check runs on the private-arena text and the bytes are copied into the schema's read arena only on success, so a refusal keeps nothing and a caller can reclaim what it got. V096 and V097 come from nowhere else, so any left on the schema are dropped before generating - the list describes this call. The header says both, `shcl_reads_release` lists generation, and the veneer's `generate()` releases first like every other copying wrapper.
 		- Measured: 200 refused calls grow the schema by 19.5 KB of diagnostic text (it was 49 KB plus 200 stacked diagnostics), and 200 succeeding calls with a release between leave the document exactly as it started (it grew 6.4 KB).
@@ -1211,9 +1231,9 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260902-172000
 		- Closed: 20260903-015000
 
-	- ✅ Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which cannot reproduce them.
+	- ✅ Item 22: `shcl.hpp` tells the veneer user to recover generation faults by validating an empty document, which can't reproduce them.
 		- Reproduced: `validate(empty, schema)` after a failed `generate()` gives `V002`, never the `V097` the generator recorded. V096 and V097 are generation-only codes. The C CLI made the same mistake and was fixed in the 20260830b round; the veneer comment kept the old recipe.
-		- Fixed: the comment says to read `diagnostics()` on the schema after the call, and says why validating cannot answer it.
+		- Fixed: the comment says to read `diagnostics()` on the schema after the call, and says why validating can't answer it.
 		- Pinned by `check-docs.bash`, which refuses the old sentence, and by `veneer_smoke.cpp`, which requires the V097 to be on the schema and absent from validating an empty document against it.
 		- Opened: 20260902-172100
 		- Closed: 20260903-020000
@@ -1223,7 +1243,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: `parse_num2` takes one or two digits, the zone and meridiem arms trim before matching, and the combined-separator scan trims around it; same functions in all four.
 		- Decided: list them. Every one is a spelling a person writes by hand and none can be misread, so tightening would turn working configs into `BadType` for nothing - against the forgiving-parser stance the rest of the language takes. The whitelist claim is what was wrong, not the code.
 		- Fixed: spec text only. The datetime section names the tolerances (a one-digit hour, month or day; a lower-case `z` or `t`; whitespace before the meridiem or zone; a run of spaces as the combined separator) and says what is still refused inside a value.
-		- Pinned by corpus `007`: six tolerance rows read Good and the two separator shapes read BadType, so the set cannot drift either way.
+		- Pinned by corpus `007`: six tolerance rows read Good and the two separator shapes read BadType, so the set can't drift either way.
 		- Opened: 20260902-172200
 		- Closed: 20260903-021500
 
@@ -1257,7 +1277,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 28: the windows publish's durability claim rests on a flag Microsoft documents as unsupported, and "attributes" in the carry-over claim is broader than what `ReplaceFile` preserves.
 		- Plausible: `design.md`'s file-tier decision says Windows has no directory sync and `ReplaceFile` is asked to write through instead; the Go comment says the flag means "do not return until the change is on the disk". Microsoft's `ReplaceFileW` reference lists `REPLACEFILE_WRITE_THROUGH` as "This value is not supported", and its preserve list (creation time, short name, object id, DACLs, security attributes, encryption, compression, named streams) does not include the basic attributes. Under wine, hidden and system are lost across a `set --write` in all three bindings; only read-only, which the code handles by hand, survives. Real NTFS could not be checked here.
-		- Decided: carry them. Losing hidden on a saved config is a change the author never asked for and cannot prevent except by re-setting it after every write, so the attributes are re-applied rather than the promise narrowed.
+		- Decided: carry them. Losing hidden on a saved config is a change the author never asked for and can't prevent except by re-setting it after every write, so the attributes are re-applied rather than the promise narrowed.
 		- Fixed: all four re-apply hidden and system to the target after the publish, alongside the read-only restore that was already there. Go does it through two more hooks in `shcl_windows.go`, so `shcl.go` stays droppable on its own. The wording in `design.md`, `spec.md` and the four publish comments now says security attributes and named streams, says the basic attributes are re-applied by hand, and says the WRITE_THROUGH flag is documented as unsupported so durability rests on the file's own flush.
 		- Pinned by the windows save fixture in all four runners: a file marked hidden and system is saved and must come back with both. Rust, Go and C fail it on the old code under wine; Python's runs on the hosted job, where windows Python is.
 		- Opened: 20260902-172700
@@ -1266,7 +1286,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - Code review 20260901b:
 
 	- The areas the 20260901 round recorded as not reached: the C parser and emitter read line by line, Go's validation walk, Python's validator, `v_suggest`, a full run under mingw and wine, the installers and packaging, `--layer` and merge semantics, and the three tooling scripts nobody had opened. Twenty-three defects here, the rest under Features and enhancements. Everything below was reproduced, not read off the code.
-	- Nine of the defects are shapes all four bindings share, so the four-way check cannot see them. Seven are C or C++ only, which it also cannot see. Four were found only by running the windows builds; two are the release tooling.
+	- Nine of the defects are shapes all four bindings share, so the four-way check can't see them. Seven are C or C++ only, which it also can't see. Four were found only by running the windows builds; two are the release tooling.
 
 	- ✅ Item 1: a line refused with `E012` does not hold its indent level, so what was written under it re-parents, and a refused fence line's body is parsed as live bindings.
 		- Reproduced in all four bindings. `d: 3` written under a refused `c: 2` becomes a child of the level above it, where the spec's `E018` row says it is skipped with the line it sits under. The 20260829 fix that added `E018` covered the `E014` and `E021` arms and missed all three `E012` arms.
@@ -1368,14 +1388,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260901-191200
 		- Closed: 20260902-140000
 
-	- ✅ Item 14: the C runner's Windows read-only fixture cannot see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
+	- ✅ Item 14: the C runner's Windows read-only fixture can't see a leftover temp file, because it skips every dotfile and the temp name starts with a dot.
 		- Reproduced: a planted `.ro.shcl.tmp999.0` passes the fixture. The other three runners count it.
 		- Fixed: the fixture skips only `.` and `..` when counting what the write left behind, so a leftover dot-named temp counts like it does in the other three runners.
 		- Pinned by planting `.ro.shcl.tmp999.0` in the fixture's directory: the old filter counted nothing, the new one fails the fixture.
 		- Opened: 20260901-191300
 		- Closed: 20260902-140000
 
-	- ✅ Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary cannot run.
+	- ✅ Item 15: the `.deb` and `.rpm` declare no dependencies, so they install cleanly on a system where the binary can't run.
 		- Reproduced with the pipeline's own packages: lintian reports undeclared ELF prerequisites and the rpm lists no requires. The binary needs glibc 2.34 and libgcc; on Debian 11 or RHEL 8 the package installs and `shcl` dies with a loader error, which is exactly what the installer's glibc check exists to prevent.
 		- Also from the same lintian run: no copyright file, no changelog, an unknown `License` field. Cheap to close together.
 		- Fixed: the packages declare what the binary links against, read off the binary at build time: its newest `GLIBC_` symbol version is the glibc floor (`libc6 (>= 2.34)` and `glibc >= 2.34` on x86_64, 2.30 on arm64), and `libgcc-s1` / `libgcc` join only when `libgcc_s` is in the dynamic section (x86_64 only; arm64 links it statically). The deb also carries `/usr/share/doc/shcl/copyright` (the license) and `changelog.gz`. lintian's two errors and the prerequisites warning are gone; the `License` field warning is nfpm's own and stays.
@@ -1444,7 +1464,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - Code review 20260901:
 
 	- A fresh adversarial pass, run from scratch rather than from the previous rounds' notes, and aimed at what the three merges of 20260901 changed plus the ground the 20260830b round recorded as unreached. Six defects here, three enhancements under Features and enhancements. Everything below was reproduced, not read off the code.
-	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it cannot see. The sixth is C-only, which it also cannot see.
+	- The four-way check proves the bindings agree, so five of the six are shapes all four share and it can't see. The sixth is C-only, which it also can't see.
 	- Closing the round: the fuzz that feeds the four-way check builds half its inputs from line-level shapes now (duplicate keys with children, a refused line with content beneath it, bracket arrays, mixed and staircase indent, comments at every depth, stacked elements against fields, a BOM, an open quote), where before it only mutated corpus text character by character. A second property runs a write over that soup and checks the result is still a formatter fixpoint. 20,000 iterations of each pass, and a 500-document dump agrees across the four bindings on 6,402 comparisons.
 
 	- ✅ Item 1: colon-less lines at a constant indent make the parse quadratic, and no cap stops it.
@@ -1452,7 +1472,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: a line that fails to scan is retained as trivia on the pending list, and `hang_deeper_pending` walks that whole list on every line that reaches it. Nothing ever claims the entries, because only a binding line drains them, so the list grows by one per line and every line rewalks it.
 		- The same line count with a binding line between each bad one runs in 0.05 s against 7.92 s, which is what pins the cause to the pending list rather than the stack or the diagnostics.
 		- Only equal indent is affected: bad lines at increasing depth hang on their blocks and drain, and finish in 0.04 s.
-		- `ParseLimited` gives a consumer no defense here. No nodes and no elements are built, so neither cap ever fires. The one shape a caller cannot bound is the one that costs the most.
+		- `ParseLimited` gives a consumer no defense here. No nodes and no elements are built, so neither cap ever fires. The one shape a caller can't bound is the one that costs the most.
 		- Reachable by accident, not just by malice: pointing the CLI at a text file that is not SHCL is the whole reproducer.
 		- Arrived with the 20260817 round's change to retain malformed lines as trivia. The retention is right; walking the list per line is what costs.
 		- Fixed: each pending entry remembers the shortest incoming indent it was already checked against, and a stack of marks records how far the list is settled at each indent. A hang check pops the marks above its own indent and walks only the entries they covered, so an entry is rewalked only when a shallower line arrives, and a shallower line can only arrive as many times as the indent is long. 40k bad lines: 7.6 s to 0.08 s in the reference, and linear in all four bindings, including the alternating-indent and sawtooth shapes that a max-indent shortcut alone would have left quadratic.
@@ -1461,7 +1481,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260901-160000
 
 	- ✅ Item 2: the element cap is applied after the array is built, so it bounds nothing.
-		- Spec says the caps exist because bounding the bytes read cannot bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
+		- Spec says the caps exist because bounding the bytes read can't bound what a load allocates, and that only counting what the parse builds can. The inline spelling builds the whole array first and refuses the line afterwards, so the peak is whatever the text asked for.
 		- Measured: 9 MB of input as one over-cap array peaks at 256 MB with a cap of 8, against 257 MB with no cap at all. The cap saves 0.3%.
 		- In C the memory is not even a peak. 12 MB of input as one refused array leaves 108.5 MB held for the document's lifetime. The same 12 MB as a plain string value that is kept costs 11.7 MB, which is what rules out ordinary parse overhead.
 		- The stacked spelling is worse than useless. Its cap is enforced correctly, per element, before the push - but every refused line emits a diagnostic, and the diagnostics cost more than the elements they refuse: 15 MB of input peaks at 510 MB with the cap set and 254 MB with it off. Setting the cap doubles the memory.
@@ -1473,7 +1493,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260901-140100
 		- Closed: 20260901-163000
 
-	- ✅ Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` cannot give it back.
+	- ✅ Item 3: in C, `shcl_paths` grows the document on every call and `shcl_reads_release` can't give it back.
 		- The header states the invariant this breaks. `scratch` is documented as "reset on entry to each resolve, so read-only use of a long-lived document stays flat", and `shcl_reads_release` names `shcl_paths` in the list of calls whose results it gives back, for "a process polling the same document in a loop... so the memory does not climb".
 		- Measured on a 180-path document, with `shcl_reads_release` called between every pass: 11.4 KB per call, 557 MB over 50,000 calls. All of it comes back at `shcl_free`, so it is unbounded growth for the document's lifetime rather than a leak past it.
 		- Cause: `shcl_paths` puts its walk stack and dedup set in `d->scratch` and never resets it. Every other read resets scratch on entry, at the path lookup - and `shcl_paths` takes no path, so it misses the one reset that would cover it.
@@ -1491,19 +1511,19 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Every one of them returns true, so `WriteReason` says the write applied.
 		- The CLI is inconsistent with itself about this. Its datetime op validates the text through the reader's own parser and refuses a bad one; the float op ten lines away parses with the language's own float reader, which takes `inf` and `nan`, and writes them.
 		- All four bindings agree, and the C rendering matches the reference byte for byte on all fourteen, so this is shared logic and not a parity break.
-		- Fixed: `SetFloat` and its array form refuse a non-finite value; `SetDateTime` and its array form render the struct and parse it back, and refuse unless the fields come back equal. Both return false and bind nothing, the way `SetRaw` already did for an info-string it cannot spell. The CLI's float ops (`float`, `float-default`, `float-array`, and the default array) refuse `inf`, `nan` and a literal past the double range in all four bindings. Spec: the setter contract names the refusal.
+		- Fixed: `SetFloat` and its array form refuse a non-finite value; `SetDateTime` and its array form render the struct and parse it back, and refuse unless the fields come back equal. Both return false and bind nothing, the way `SetRaw` already did for an info-string it can't spell. The CLI's float ops (`float`, `float-default`, `float-array`, and the default array) refuse `inf`, `nan` and a literal past the double range in all four bindings. Spec: the setter contract names the refusal.
 		- Pinned by a runner fixture in all four bindings (three non-finite floats through the scalar, default and array setters; ten datetime shapes through the same three; a valid value still writes and reads back equal; the document is byte-identical after every refusal) and by corpus 029's `write-bad.ops`, which gained `1e400`, `INF`, `nan`, `-inf`, `infinity`, an array holding `inf` and a default of `nan`. Those first three were in `write.ops` with `inf`/`NaN` as the expected output, from the 20260725 round's parity fix; that round's item 3 carries a note. Fails on the old code in all four (Rust 2 tests, Go 2, Python 14 lines, C 29).
 		- The C `dt_clamp` fixture still hands the setter its worst-case struct: the render into the fixed buffer happens before the value is judged, so the clamp is still exercised, and the setter is now expected to refuse.
 		- Opened: 20260901-140300
 		- Closed: 20260901-173000
 
 	- ✅ Item 5: `init` emits a starter config that `check --schema` rejects, with nothing said, when a repeat lower bound is 1.
-		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which cannot be auto-satisfied because identical generated lines would merge.
+		- Generation promises its output validates clean against the schema that produced it, with one documented exception: a repeat lower bound of 2 or more, which can't be auto-satisfied because identical generated lines would merge.
 		- The self-check filters out every `V007` instead of only that case, so a lower bound of 1 slips through as well. A lower bound of 1 is a must-exist path, which generation is supposed to satisfy.
 		- Reproduced in all four bindings on two schemas that differ in one word. With `required: yes` on `"srv[*].port"`, generation fails loudly with `V097`. With `repeat: 1` on the same path, `init` exits 0, emits `srv: web` and `srv.port:`, and the very next `check --schema` on that file exits 6.
 		- The generated pair does not mean what it looks like: `srv: web` and `srv.port:` are two instances of `srv`, one carrying the discriminator and the other carrying the port, so the wildcard finds an instance with no port. That is the outcome the dotted-form rule exists to prevent - a live line materializes the parent, but the dotted line then targets a different instance than the one it created.
 		- Six of 700 generated schemas hit it; the other 43 failures in that set are the documented 2-or-more case.
-		- Fixed, in two parts. The generator now selects a valued live parent by its value: `srv: web` is followed by `srv[web].port:`, which lands on the instance the first line made, and a concrete child (`srv.host`) gets the same treatment, since `srv.host:` under `srv: web` was two instances as well. A default that would end or escape the selector (`]`, `[`, a backslash) is spelled quoted; the selector matches on the escaped display, so it still finds the bare value. And the self-check lets through only a `V007` whose lower bound is 2 or more, read off the message's `not in LO..HI`, so `repeat: 1` on a path generation cannot satisfy (a nameless `*` path) faults the schema the way `required` already did. Spec: the dotted-form rule names the selector.
+		- Fixed, in two parts. The generator now selects a valued live parent by its value: `srv: web` is followed by `srv[web].port:`, which lands on the instance the first line made, and a concrete child (`srv.host`) gets the same treatment, since `srv.host:` under `srv: web` was two instances as well. A default that would end or escape the selector (`]`, `[`, a backslash) is spelled quoted; the selector matches on the escaped display, so it still finds the bare value. And the self-check lets through only a `V007` whose lower bound is 2 or more, read off the message's `not in LO..HI`, so `repeat: 1` on a path generation can't satisfy (a nameless `*` path) faults the schema the way `required` already did. Spec: the dotted-form rule names the selector.
 		- Of the six schemas, the `srv[*].port` shape now generates a config that passes its own schema; the five with `repeat: 1` on a `*` field fault with `V097`. The 700 schemas produce byte-identical stdout, stderr and exit codes across the four bindings; the 46 remaining self-schema failures are all the sanctioned lower bound of 2 or 3.
 		- Found on the way: the C CLI reported a schema that does not build by validating an empty document, which added that document's own `V002`/`V007` to the fault list. `shcl_generate` records its build faults on the schema document now, like the other generation faults, and the CLI prints those.
 		- Pinned by corpus `073-init-parent-value` (valued parent with a wildcard child and a concrete child, a quoted default, a `]` in a default, an optional parent, a bare parent; fails on the old code in all four runners, which also check the output against its own schema), and by three `cli-regress` rows: `repeat: 1` on `*` exits 6 with `V097 ... not in 1..1`, `repeat: 2` generates, and a build fault reports `V091` with no `V002` beside it. The last one needed a negative stderr form in the harness.
@@ -1531,7 +1551,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced: file `b: 1, 2` over a block `b:` with `a: 2` under it, ops `int b.a 2` then `empty b`. The write emits `a: 2` twice; `fmt` on that output collapses it back to one.
 		- Cause: the fold moves the loser's children onto the survivor and stops. The parser's own late-duplicate fold is depth-first for exactly this reason; the writer's path is not.
 		- No value is lost, since a reload merges the pair. What breaks is the promise that a write leaves a canonical file, so a "fmt changes nothing" gate fails right after a legitimate edit.
-		- All four bindings, and the cross-binding check cannot see it. Fold the moved children after the merge, the shape the parser already uses.
+		- All four bindings, and the cross-binding check can't see it. Fold the moved children after the merge, the shape the parser already uses.
 		- Fixed: the writer folds depth-first now, the shape the parser already used. Only a node that just received children is rechecked, so the cost stays with the fold.
 		- Pinned by corpus case `062-write-fold-deep`, which fails on all four bindings without the change.
 		- Opened: 20260830-140346
@@ -1573,7 +1593,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Either fault the schema at build time with a new V09x, or comment the offending line out and say why. The doc comment has to match whichever is chosen.
 		- Decided: fault the schema. A default outside its own field's constraints is an error in the schema, and saying so is more use to the author than quietly commenting the field out.
 		- Fixed with a new `V097`. Generation now checks its finished text against the schema that produced it rather than trusting each branch, so the doc comment's promise is enforced instead of assumed, and any future defect of the same class is caught with it. `V007` stays exempt, being the documented repeat-lower-bound shortfall.
-		- The C CLI could not report it at first: on a generation fault it rebuilt the fault list by validating an empty document, which cannot reproduce a fault the generator found. It now prints the diagnostics the generator recorded, and keeps the empty-document trick for build faults that leave none.
+		- The C CLI could not report it at first: on a generation fault it rebuilt the fault list by validating an empty document, which can't reproduce a fault the generator found. It now prints the diagnostics the generator recorded, and keeps the empty-document trick for build faults that leave none.
 		- Pinned by the `init-bad-default` row in `cli-regress.bash`, across all four bindings.
 		- Opened: 20260830-140346
 		- Closed: 20260830-191500
@@ -1603,14 +1623,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Rust saturates, so here it is only a wrong answer. The same shape in C is an out-of-range float-to-int conversion, which is undefined behavior, and this is the file the other three mirror.
 		- The low end is already exact. Compare against the exact bound.
 		- Fixed: the top bound is 2^63 itself and the compare is strict, in all four. The low end was already exact and is unchanged.
-		- Behavior change: `9223372036854775807.0` now reads BadType at loose. There is no double that holds i64 max, so the float path cannot honestly produce it; the plain decimal spelling still reads exactly.
+		- Behavior change: `9223372036854775807.0` now reads BadType at loose. There is no double that holds i64 max, so the float path can't honestly produce it; the plain decimal spelling still reads exactly.
 		- Pinned by corpus case `067-i64-float-bound`.
 		- Opened: 20260830-140346
 		- Closed: 20260830-215127
 
 	- ✅ Item 8: the Windows setup build fails outright on any prerelease version.
 		- The installer script writes a four-integer version field straight from the package version. A version like `2.1.0-alpha.1` produces something the tool rejects, and it exits nonzero.
-		- The packaging script runs under `errexit`, so that failure kills the whole release stage. A prerelease cut cannot get past it.
+		- The packaging script runs under `errexit`, so that failure kills the whole release stage. A prerelease cut can't get past it.
 		- Never exercised: the version field went in after the last prerelease, so no prerelease has been cut since. The installers still offer a dev channel, so this is live workflow.
 		- Fix: reuse the digit-splitting the Rust build script already does for the same field, pass the quad separately, and leave the display strings on the full version.
 		- Fixed: the packaging script derives the four-integer field the way the Rust build script does and passes it separately, so the display strings keep the full version. A release version gives the same quad as before.
@@ -1643,7 +1663,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- The installer guards the identical read with a version test that short-circuits first. The wrapper never got that treatment, though the comment above it shows the 5.1 case was considered.
 		- Fix: put the version test first.
 		- Fixed: the version test comes first and short-circuits, matching the installer.
-		- Pinned by a scan in `shell-regress.bash`: every `$IsWindows` read in the wrapper has to sit behind that test. It cannot be exercised from a 7.x session, because `$PSVersionTable` is read-only and cannot be shadowed even locally.
+		- Pinned by a scan in `shell-regress.bash`: every `$IsWindows` read in the wrapper has to sit behind that test. It can't be exercised from a 7.x session, because `$PSVersionTable` is read-only and can't be shadowed even locally.
 		- Opened: 20260830-140346
 		- Closed: 20260830-215127
 
@@ -1711,7 +1731,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260830:
 
-	- A second pass over the same directives one day after the last round, aimed first at the code that round changed and then at the whole repo. Items 1 to 23 are here; 24 to 52 are under Done - Features and enhancements. Most of the defects are shared by all four bindings, which is the class the cross-binding check cannot see.
+	- A second pass over the same directives one day after the last round, aimed first at the code that round changed and then at the whole repo. Items 1 to 23 are here; 24 to 52 are under Done - Features and enhancements. Most of the defects are shared by all four bindings, which is the class the cross-binding check can't see.
 
 	- ✅ Item 1: `remove` leaves the name index stale, so a removed node keeps answering reads.
 		- Reproduced: `a: 1` / `b: 2`, then `remove a`: `exists("a")` is still true and `read_int("a")` still gives 1. A `set_int_default("a", 3)` after the remove writes nothing.
@@ -1783,7 +1803,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
-	- ✅ Item 11: Python's `set_float` accepts an int and writes it digit for digit, so a value above 2^53 becomes text the reference cannot produce.
+	- ✅ Item 11: Python's `set_float` accepts an int and writes it digit for digit, so a value above 2^53 becomes text the reference can't produce.
 		- `set_float("x", 9007199254740993)` writes exactly that; the reference writes `9007199254740992`. A huge int writes hundreds of digits where the reference writes `inf`.
 		- Convert to float first, and decide what an int too large for a float should do.
 		- Opened: 20260830-093632
@@ -1820,7 +1840,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260830-124432
 
 	- ✅ Item 18: the C CLI loses the reason on a read failure and on a temp-file failure.
-		- A directory gives `dir: read error` (the reference names the error); a missing parent dir loses the "cannot create temporary file" context.
+		- A directory gives `dir: read error` (the reference names the error); a missing parent dir loses the "can't create temporary file" context.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
@@ -1854,14 +1874,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - Code review 20260829:
 
-	- Standards pass over the whole repo (code style, performance, the pipeline, docs, the front page, the installers) plus an adversarial read of all four bindings and the installers. Unlike the 20260819 round this one did turn up correctness defects, most of them shared by all four bindings, which is exactly the class the cross-binding check cannot see. Items 1 to 25 are here; 26 to 68 are under Done - Features and enhancements.
+	- Standards pass over the whole repo (code style, performance, the pipeline, docs, the front page, the installers) plus an adversarial read of all four bindings and the installers. Unlike the 20260819 round this one did turn up correctness defects, most of them shared by all four bindings, which is exactly the class the cross-binding check can't see. Items 1 to 25 are here; 26 to 68 are under Done - Features and enhancements.
 
 	- ✅ Item 1: a skipped binding line drops out of the indent stack, so its children re-parent and its next sibling is lost.
 		- Reproduced: `a:` / `\tb[#5]: x` / `\t\tc: 1` / `\td[9]: q` / `\t\te: 2`. Line 2 is skipped (E014), then `c: 1` and `e: 2` attach to `a`, and line 4 gets E012 instead of the E003 it should get.
 		- Cause: only a successful bind pushes its indent level. A skipped line leaves nothing for its children to hang from.
 		- Shared by all four bindings, so the crosscheck agrees on the wrong answer. Needs a corpus case with the fix.
 		- Fixed: a skipped line now holds its indent level, so what was written under it is skipped with it (`E018`, new) and the next sibling binds where it should. Corpus case 057.
-		- Case 057 was widened later to a whole subtree: a grandchild under a skipped line, under both the dropped and the retained-as-trivia spelling, plus `children` and `paths` rows so enumeration cannot hand back a name a read then refuses. Backing the skip out re-parents the grandchild with its parent, which the earlier one-level rows did not see.
+		- Case 057 was widened later to a whole subtree: a grandchild under a skipped line, under both the dropped and the retained-as-trivia spelling, plus `children` and `paths` rows so enumeration can't hand back a name a read then refuses. Backing the skip out re-parents the grandchild with its parent, which the earlier one-level rows did not see.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
@@ -1869,7 +1889,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced: set a raw body of `  a` / `  b`, save, load, read it back: `a` / `b`. Interior relative indent survives; a leading indent every line shares does not.
 		- Cause: emit adds the block indent, load strips the common indent of all body lines rather than just the fence's own indent.
 		- An indented SQL or YAML snippet is the headline raw-block use, so this is not a corner. All four bindings agree.
-		- Fix is a spec decision: strip only up to the fence line's indent (the CommonMark rule), or have `set_raw` refuse a body it cannot spell.
+		- Fix is a spec decision: strip only up to the fence line's indent (the CommonMark rule), or have `set_raw` refuse a body it can't spell.
 		- Fixed: by a spec change: the nesting stripped from a raw body is the closing fence's own indent (the opening line's when the block never closes), so a shared body indent is content and survives a reload. The emitter no longer special-cases an all-blank body. Cases 053 and 055 updated, 058 added.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
@@ -1895,25 +1915,25 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
-	- ✅ Item 6: `--set` splits at the first `=`, so a selector holding one cannot be addressed.
-		- `--set 'x[a=b].c=1'` fails with `cannot write x[a`. Values holding `=` are fine.
+	- ✅ Item 6: `--set` splits at the first `=`, so a selector holding one can't be addressed.
+		- `--set 'x[a=b].c=1'` fails with `can't write x[a`. Values holding `=` are fine.
 		- Split at the first `=` outside quotes and brackets, and say so in the help text.
 		- Fixed: PATH ends at the first `=` outside quotes and brackets. The help text and the man page say so.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
 	- ✅ Item 7: a dangling symlink is replaced by a regular file, except in Python, which writes through it.
-		- Rust, Go and C fall back to the given path when the link cannot be resolved, so the link becomes a file. Python resolves the link anyway and creates the target.
+		- Rust, Go and C fall back to the given path when the link can't be resolved, so the link becomes a file. Python resolves the link anyway and creates the target.
 		- Two defects: the spec promises a link is written through, and the four bindings do not leave the same file tree behind.
 		- Fixed: Rust, Go and C follow a dangling link by hand and create the file where it points. The spec says so and the crosscheck has a fixture.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
 	- ✅ Item 8: the save contract differs by platform and by binding around read-only files, mode bits and ownership.
-		- On Windows a read-only target cannot be rewritten (the reference copies the target's mode onto the temp file before publishing, and ReplaceFile refuses a read-only destination). On POSIX the same file is rewritten at exit 0.
+		- On Windows a read-only target can't be rewritten (the reference copies the target's mode onto the temp file before publishing, and ReplaceFile refuses a read-only destination). On POSIX the same file is rewritten at exit 0.
 		- The reference likely leaves its read-only temp file behind on Windows, because the delete does not clear the attribute first. Go's does.
 		- The reference copies the full mode (setuid, setgid, sticky included); Go copies the permission bits only.
-		- The spec's list of what a save cannot preserve names hard links, ACLs, xattrs and labels, but not ownership, sticky directories or read-only files.
+		- The spec's list of what a save can't preserve names hard links, ACLs, xattrs and labels, but not ownership, sticky directories or read-only files.
 		- Pick one rule for each, document it, and pin the Windows case in the hosted windows job.
 		- Fixed: decided and written down. The whole mode is copied, setuid, setgid and sticky included. A read-only file is rewritten on every platform; Windows clears the attribute for the publish and sets it back after, publish failure included. The spec lists ownership, sticky directories and read-only files with the rest. Windows fixture in every runner, run by the hosted windows job.
 		- Opened: 20260829-071126
@@ -2079,21 +2099,21 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260817-204524
 		- Closed: 20260818-113345
 
-	- ✅ Item 5: a setter accepts a path it cannot write back.
+	- ✅ Item 5: a setter accepts a path it can't write back.
 		- Reproduced: setting a value under a quoted segment containing a newline succeeds, and produces a document that no longer parses. Reading the value back gives not-found and the file reports two errors.
 		- All four bindings. The generator already rejects this exact case; the writer's own path check does not.
 		- Worse, the reload counts nothing as lost, so the new save gate does not refuse - which is precisely the class of loss the gate was added for.
 		- Fix: reject a newline or carriage return in a segment at the write check, so nothing is created. A carriage return alone is the same class.
 		- Fixed in all four, for a segment name and for a by-value selector - the selector stores the path text raw, so it bypassed the escaping the ordinary setters already do. The escaped spelling is a different path and still writes fine.
 		- A carriage return turned out not to be the same class: it round-trips intact, so rejecting it would be a behavior change with no defect behind it. Only the line break is refused.
-		- Verified: pinned by the write-reason fixture in all four runners rather than the corpus: an ops line is line-based and cannot carry a raw newline. Same reason the reason-code list is spelled out in the spec instead.
+		- Verified: pinned by the write-reason fixture in all four runners rather than the corpus: an ops line is line-based and can't carry a raw newline. Same reason the reason-code list is spelled out in the spec instead.
 		- Opened: 20260817-204524
 		- Closed: 20260818-114245
 
 	- ✅ Item 6: values with unusual whitespace at the edges are silently truncated on reload.
 		- Cause: the emitter decides whether to quote from a fixed short list of characters, but the parser trims values against the full unicode whitespace set. Anything in the gap has no spelling that survives a round trip.
 		- Reproduced across the gap: a value ending in a carriage return, a non-breaking space, a vertical tab, or any of the unicode spaces comes back shortened. Same loss through arrays and through comments. Plain spaces and tabs are fine - they are on the list.
-		- All four bindings. The writer fuzzer cannot see it: its character set contains none of these.
+		- All four bindings. The writer fuzzer can't see it: its character set contains none of these.
 		- Fix: also quote when the first or last character is whitespace by the same definition the parser trims by. Edge-only on purpose - quoting on interior whitespace would move bytes for documents that round-trip fine today.
 		- Fixed in all four exactly that way; every existing case still matches byte for byte, so nothing moved. Checked first that all four already agree on which characters count as whitespace - they do, or the fix itself would have split them.
 		- Verified: case 052 pins it through the writer, where the loss was reachable: an author-quoted value already survived, so only a written one showed it.
@@ -2117,9 +2137,9 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- All four clis. Same for formatting in place.
 		- The library grew a save gate for exactly this in the round just finished. The clis neither call it nor consult the count behind it.
 		- design.md justifies the current behavior on the grounds that someone sees the diagnostics on stderr. At the default strictness they see nothing at all, so either the code or that sentence has to change.
-		- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two cannot disagree about what is safe.
+		- Fix: print the load's errors to stderr on an in-place write, and refuse when anything was dropped unless an override flag is passed - mirroring the library so the two can't disagree about what is safe.
 		- Fixed exactly that way in all four clis, with `--lossy` as the override. The mirroring is literal: the write now calls the library's own save rather than the raw atomic write, so there is one copy of the rule, not five. Only the refusal's wording is the cli's, since the override a user has is a flag rather than a function name.
-		- The whole load's diagnostics go out, not just the errors, so what an in-place write reports and what `check` reports on the same file cannot drift apart.
+		- The whole load's diagnostics go out, not just the errors, so what an in-place write reports and what `check` reports on the same file can't drift apart.
 		- `--lossy` on its own is a usage error: it would read as protection the command never had.
 		- Retained malformed lines do not trip it, since they survive the rewrite, so the refusal fires only where content would actually be deleted.
 		- design.md's justifying sentence was the false half and is rewritten; the spec and the readme now state the refusal.
@@ -2152,20 +2172,20 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260818-124653
 
 	- ✅ Item 11: the python file tier raises where it promises a status.
-		- A path containing a null byte raises out of both load and save, which their own docstrings say cannot happen. The catch lists two exception types and the one that actually fires is a third.
+		- A path containing a null byte raises out of both load and save, which their own docstrings say can't happen. The catch lists two exception types and the one that actually fires is a third.
 		- The reference returns unreadable and an error respectively, so a consumer porting the four-case handling gets an exception on python and a status everywhere else.
 		- Fix: add the missing type to both catch clauses.
 		- Fixed. The save half raised from the path resolution before any i/o, so that call is what got the guard rather than a catch clause.
-		- Verified: pinned in the python runner only, not the shared fixture: a C path string cannot carry a NUL at all, so there is nothing to compare against.
+		- Verified: pinned in the python runner only, not the shared fixture: a C path string can't carry a NUL at all, so there is nothing to compare against.
 		- Opened: 20260817-204524
 		- Closed: 20260818-124653
 
-	- ✅ Item 12: python accepts an integer the other bindings cannot express.
+	- ✅ Item 12: python accepts an integer the other bindings can't express.
 		- Cause: Python has no fixed integer width, and the setter adds no range check, so a value beyond the 64-bit range writes happily and then reads back as bad-type - by every binding, including python itself.
 		- The cli already range-checks in the same situation. The library does not.
 		- Fix: range-check in the integer setters and return false, which is the failure channel they already have.
 		- Fixed in the scalar and array setters; the only-if-absent forms delegate to those, so all four are covered. The style guide already listed unbounded int as a banned shortcut - the rule existed, the setter just never applied it.
-		- Verified: pinned in the python runner, including both in-range edges so the check cannot drift inward.
+		- Verified: pinned in the python runner, including both in-range edges so the check can't drift inward.
 		- Opened: 20260817-204524
 		- Closed: 20260818-124653
 
@@ -2196,7 +2216,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- New and unreleased, so settling it is free now and expensive after the cut. Pick one: resolve the escapes, or correct the spec and the three comments to say quotes only.
 		- Settled the second way: the docs were the wrong half. Names are never escape-processed anywhere - the spec's escape rule is a value rule, and a name is stored, compared, emitted and enumerated in its escaped spelling. Resolving in this one call would hand back a string that no longer names the node.
 		- Five comments, not three: rust, go, python, c and the c++ veneer. Spec corrected to say so explicitly, so the next reader does not re-open it.
-		- Verified: pinned in all four runners, so a later pass cannot quietly flip it back.
+		- Verified: pinned in all four runners, so a later pass can't quietly flip it back.
 		- What this exposed has its own item, filed below: two names that differ only in escaping are different names, where the equivalent two values are the same string.
 		- Opened: 20260817-204524
 		- Closed: 20260818-124653
@@ -2204,7 +2224,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 16: small defects, batched.
 		- Python's merge docstring sits below the first statement, so it is an inert expression and the method has no documentation at all - the one method whose override rule most needs explaining.
 		- Go's error-count doc comment was split by an insertion, so the count function is undocumented and the lost-line count renders under the wrong name on the package page.
-		- Go flattens the underlying i/o error to text in three places, so a caller cannot tell a permission failure from a full disk without matching on the message. The fix is to wrap.
+		- Go flattens the underlying i/o error to text in three places, so a caller can't tell a permission failure from a full disk without matching on the message. The fix is to wrap.
 		- Go's cli asserts the parse error's type without the checked form. Unreachable today, but it is the top-level error path.
 		- The reference carries a dead byte-order-mark branch, with a comment describing behavior that only exists at the sibling site. Harmless, but it reads as a live invariant and will be copied.
 		- The c++ header uses two standard types without including their headers, and declares one status out-parameter uninitialized.
@@ -2298,14 +2318,14 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 10: one write operation is spelled differently by the reference.
 		- Reproduced: `datetime-array-default` is rejected by the reference and accepted by the other three.
 		- Write output and exit codes are supposed to match everywhere. No test case uses this operation, which is why it went unnoticed.
-		- Fixed: the reference accepts it like the others. The vocabulary was then checked verb by verb across all four, and a test line for it was added so the gap cannot reopen.
+		- Fixed: the reference accepts it like the others. The vocabulary was then checked verb by verb across all four, and a test line for it was added so the gap can't reopen.
 		- Opened: 20260803-111610
 		- Closed: 20260803-131801
 
 	- ✅ Item 11: writing in place with layers overwrites the file with the merged result.
 		- Reproduced: formatting with a lower layer and `--write` folds that layer's contents permanently into the top file, which defeats the point of layering.
 		- Help text says layering prints the merged document; it doesn't mention what `--write` then does.
-		- Fixed: the combination is refused, like other option pairs that cannot both hold.
+		- Fixed: the combination is refused, like other option pairs that can't both hold.
 		- Opened: 20260803-111610
 		- Closed: 20260803-131801
 
@@ -2420,8 +2440,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Reproduced: a config at mode 600 comes back at the umask default, which on a normal box means world-readable. Config files are exactly where secrets sit, so this is the one that matters.
 		- Reproduced: a symlinked config is replaced by a regular file. The link breaks, the real file behind it keeps the old content, and the edit appears to vanish. Dotfile managers make this a common layout.
 		- Reproduced: hard links break the same way - the other name keeps the old content.
-		- Fixed: all four bindings resolve the path through symlinks before choosing the temp directory and the rename target, then copy the original's mode onto the temp file. Mode copying is best effort, so a filesystem that cannot carry it still completes the write.
-		- Note: hard links cannot survive a rename at all. Atomicity matters more, so that one is a documented limitation rather than a fix.
+		- Fixed: all four bindings resolve the path through symlinks before choosing the temp directory and the rename target, then copy the original's mode onto the temp file. Mode copying is best effort, so a filesystem that can't carry it still completes the write.
+		- Note: hard links can't survive a rename at all. Atomicity matters more, so that one is a documented limitation rather than a fix.
 		- Verified: the differential harness gained an in-place-write dimension comparing the tree a write leaves behind (mode, symlink, link count, content), which pins all three cases across the bindings.
 		- Opened: 20260726-112941
 		- Closed: 20260726-115207
@@ -2436,7 +2456,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 3: the fuzz run is documented as deterministic but is not reproducible.
 		- Cause: the mutation PRNG is fixed-seed, but its seed inputs come back from the corpus directory in whatever order the filesystem gives. That order decides every mutation.
-		- Reproduced: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal. A failing case also cannot be re-run, which is the main thing a fuzz gate is for.
+		- Reproduced: the cross-binding comparison count moves by a few hundred between runs on an unchanged tree, which makes the number useless as a regression signal. A failing case also can't be re-run, which is the main thing a fuzz gate is for.
 		- Fixed: the seed list is sorted before use.
 		- Verified: two runs on the same tree now produce an identical input set.
 		- Opened: n/a
@@ -2450,7 +2470,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: n/a
 		- Closed: 20260726-115207
 
-	- ✅ Item 5: hosted CI cannot install its own pinned lint toolchain.
+	- ✅ Item 5: hosted CI can't install its own pinned lint toolchain.
 		- Cause: the tool pins carry the Cppcheck binary's version, and the workflow installed that same string as a package version. No such package exists, so every hosted run failed at setup within seconds.
 		- Note: the wheel bundles a Cppcheck two major versions ahead of its own package number, which is what made the two look interchangeable.
 		- Note: only the hosted gate was affected. The local pipeline probes the installed binary, so it stayed green, which is why this went unnoticed from the day the pins were added.
@@ -2541,7 +2561,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: the generator only consults `required`; `repeat` with a lower bound of 1 or more is ignored entirely.
 		- Cause: a wildcard `required` bites whenever some other live path materializes the wildcard's parent.
 		- The project's own corpus golden fails against its own schema, so the two newest features contradict each other on the fixture that is supposed to pin them.
-		- Fixed in all four generators: fields with a `repeat` lower bound of 1+ generate live like `required`, and a must-exist wildcard whose parent gets materialized by another live line is generated in dotted form under that instance. Generated output now validates clean against its own schema (asserted by every runner; the one documented exception is a repeat lower bound of 2+, which cannot be auto-satisfied). Case 026's golden regenerated.
+		- Fixed in all four generators: fields with a `repeat` lower bound of 1+ generate live like `required`, and a must-exist wildcard whose parent gets materialized by another live line is generated in dotted form under that instance. Generated output now validates clean against its own schema (asserted by every runner; the one documented exception is a repeat lower bound of 2+, which can't be auto-satisfied). Case 026's golden regenerated.
 		- Opened: 20260725-152141
 		- Closed: 20260725-171744
 
@@ -2599,7 +2619,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260725-152141
 		- Closed: 20260725-170306
 
-	- ✅ Item 17: `check --schema` cannot tell a schema line number from a document line number.
+	- ✅ Item 17: `check --schema` can't tell a schema line number from a document line number.
 		- Cause: both files' diagnostics interleave in one list with nothing marking which file a line belongs to.
 		- `init` already prefixes `schema line N`, so the same fault renders two ways in two commands.
 		- Fixed with the cheap half: the stderr prose spells `schema line N` for `V090`-`V093` (whose numbers are schema-file lines per the code table) in all four CLIs; the compared stdout keeps the uniform form since the code already names the space. The structural `source`/`column` fields stay future work.
@@ -2714,7 +2734,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260718-165550
 		- Closed: 20260721-104508
 
-	- ✅ Item 15: crosscheck cannot see trailing-newline differences.
+	- ✅ Item 15: crosscheck can't see trailing-newline differences.
 		- Cause: command substitution strips them before compare, so a binding that drops or doubles the final newline passes green.
 		- Fixed: capture helpers append a trailing sentinel so `$()` has nothing to strip; a dropped or doubled final newline is now a divergence.
 		- Opened: 20260718-165550
@@ -2814,7 +2834,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - ✅ A `#` right after a carriage return had no spelling `migrate` could reach.
 	- Reproduced: `my<CR>#sery: 1` binds `my` under 2.x - the `#` cut the line, and the trim then took the carriage return off the end of the name half. Here the name ends at the carriage return, which is then an unexpected character, so `migrate` left the line, the load reported `E014`, and the path was gone at exit 0.
 	- Narrowed first: only a carriage return diverges. Every other control character before a `#` was `E014` under 2.x too, so nothing was bound then either, and those lines are already the recorded "a line 2.x could not read comes through as written" case.
-	- Decided: `migrate` drops the run. The carriage return is a byte 2.x itself discarded before it bound anything, so dropping it loses nothing the old reading kept, and `migrate` already edits outside the tree wherever the two rule sets disagree - it inserts a space before a `#`, re-quotes pieces, and takes the colon out of the selector sugar. Leaving it would have meant a binding disappearing while the text survived, which the exit code cannot report, since a retained line counts nothing lost.
+	- Decided: `migrate` drops the run. The carriage return is a byte 2.x itself discarded before it bound anything, so dropping it loses nothing the old reading kept, and `migrate` already edits outside the tree wherever the two rule sets disagree - it inserts a space before a `#`, re-quotes pieces, and takes the colon out of the selector sugar. Leaving it would have meant a binding disappearing while the text survived, which the exit code can't report, since a retained line counts nothing lost.
 	- Fixed in all four: `cr_run_to_comment` (`crRunToComment` in Go, `_cr_run_to_comment` in Python) names the run, the 2.x tokenizer steps over one that runs into a `#`, and the comment fixup replaces the whole run with a single space instead of only inserting one. A line whose leading run is such a run is the comment 2.x read it as. The value half already migrated correctly and is unchanged.
 	- Pinned by corpus case `115-cr-before-comment`, which carries the shape after a name, after a selector, in a value, and as a whole line. `check-migrate.bash` no longer skips the shape, and fails on four documents without the fix.
 	- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
@@ -2885,7 +2905,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Note: after the funnel item, before the setter item. Written to the 3.0 rules from the start, since no 2.x release is coming: a tokenizer that reproduces the 2.x edge cases only to have them cut would be work thrown away. The 3.0 item below is done with this one.
 	- Fixed: one tokenizer per binding, taking text and a separator and handing back spans: per segment a name and an optional selector body with how each was quoted, the separator, the value and its elements, the comment, or the fault that makes the line malformed. The parser's dispatch, the path scanner behind every lookup and setter, `SetLiteral`, `SetRaw`'s info check and the CLI's `--set` split read those spans; the seven scanners are deleted. A 2.x flag on the same tokenizer is what `migrate` reads with.
 	- Fixed: elements are stored as the logical string they spell, since the escape rule now depends on how a piece was quoted and the tokenizer is the only thing that knows. Reads hand the text back as is, and the emitter picks the spelling.
-	- Decided: an element cap stops the scan rather than counting after it, so a capped parse still never builds the array it refuses. And an unterminated quote in a field name stays `E014`: a bare name cannot carry a quote, so there is nothing literal to keep.
+	- Decided: an element cap stops the scan rather than counting after it, so a capped parse still never builds the array it refuses. And an unterminated quote in a field name stays `E014`: a bare name can't carry a quote, so there is nothing literal to keep.
 	- Pinned by: a `tokens` subcommand on every CLI, compared four ways by `crosscheck.bash` over the corpus and the fuzz soup; a generator in the reference that builds lines from the grammar with their spans known and asserts the tokenizer returns exactly those; `check-docs.bash` on the style guide's sentence; and a `shell-regress.bash` scan that refuses a quote-state variable outside the tokenizer in any binding.
 	- Measured: the release reference parses a 17 MB document 10% faster and formats it 9% faster than before. Python is 11 to 15% slower on a parse, since the value half now walks bytes in a Python loop; inside its own perf-gate ratio.
 	- Found on the way: a carriage return sitting before a fence line's comment ended the emitted fence line, and the next load stripped it. The value end takes a CR off with the blanks now, the way the old content trim did.
@@ -2904,12 +2924,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Fixed: the outcome table is in `design.md` under Load outcomes, one row per load-time code; the spec's code table points at it.
 	- Found on the way: a raw fence with no parent field (`E006`) was the one skipped line that never held its level, so a line written deeper than it bound to the root. It holds it now; changelog Changed, corpus `059` extended.
 	- The merge's carry of a retained line stays as item 5 of the 20260904 round left it. The funnel is now the only thing that makes one, and a retained line never begins with `#`, so telling it from a comment by its first character is exact rather than a guess.
-	- Pinned by: a fuzz property in the reference (the lost count equals the number of dropped and value-dropped diagnostics by the table, and every retained line's text comes back in the canonical output); the crosscheck's save gate now runs over the fuzz soup as well as the corpus, so a port that counts differently diverges on the in-place write; and a `shell-regress.bash` scan that lifts each binding's funnel and refuses any lost-count increment or dead-level push outside it. The `E020` remainder is left to the existing cap fixtures, since its line number cannot say which lines were unread.
+	- Pinned by: a fuzz property in the reference (the lost count equals the number of dropped and value-dropped diagnostics by the table, and every retained line's text comes back in the canonical output); the crosscheck's save gate now runs over the fuzz soup as well as the corpus, so a port that counts differently diverges on the in-place write; and a `shell-regress.bash` scan that lifts each binding's funnel and refuses any lost-count increment or dead-level push outside it. The `E020` remainder is left to the existing cap fixtures, since its line number can't say which lines were unread.
 	- Opened: 20260906-090943
 	- Closed: 20260907-190729
 
 - ✅ `install-dev.bash --hooks-only`, and a gate over its hook setup.
-	- The hook setup was the one piece of that script nothing exercised: the toolchain installs in front of it cannot run in a gate. Noted as still ungated when the test-gap round closed.
+	- The hook setup was the one piece of that script nothing exercised: the toolchain installs in front of it can't run in a gate. Noted as still ungated when the test-gap round closed.
 	- Fixed: `--hooks-only` skips the toolchain and just points git at the tracked hooks. Useful on its own for a box that already has the tools, and it makes the tail runnable. An explicit `--dir` wins over in-clone detection under it, so it can be aimed at any clone.
 	- Pinned by: `check-install-dev.bash`, on a throwaway local clone - both configs set, a second run changes nothing, a chosen `core.sshCommand` survives, the in-clone path works, and a directory that is not a clone is refused.
 	- Opened: 20260901-114703
@@ -2933,7 +2953,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Those rounds closed 120 items between them and left three corpus cases behind, so most fixes had nothing pinning them and a later round kept re-finding the same classes.
 	- Two corpus cases for defects a corpus can carry: a `set_int_default` after a `remove` (the stale name index), and a `set_raw` info string holding an unquoted `#`. Both fail on all four bindings with their fix backed out.
 	- The set-id bits joined the file-tier fixture in all four runners: a mode applied before the data lets the kernel clear setuid and setgid.
-	- `cli-regress.bash` pins eleven CLI behaviors the corpus structurally cannot reach - closed stdin and stdout, `-` named twice on one command line, a carriage return ending an ops line, the shape of an op-script error, whether a read failure still names its cause, and a document nested to the depth cap. Every row runs against all four bindings and is matched against a fixed expectation, not against the other bindings.
+	- `cli-regress.bash` pins eleven CLI behaviors the corpus structurally can't reach - closed stdin and stdout, `-` named twice on one command line, a carriage return ending an ops line, the shape of an op-script error, whether a read failure still names its cause, and a document nested to the depth cap. Every row runs against all four bindings and is matched against a fixed expectation, not against the other bindings.
 	- `perf-gate.bash` times bulk writes and absent-path defaults against the same binding's parse-only baseline, so it carries no wall-clock constant. The two superlinear write regressions of the last fortnight came in at 15x and 160x over budget.
 	- `shell-regress.bash` covers the wrappers, the one-liner's scope hygiene, and scans every errexit script for the trap that has now bit four times: a `grep` in an assigned command substitution with no `|| true`.
 	- All three gates are in the test stage, so `--ci` and the hosted gate run them.
@@ -2966,10 +2986,10 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - ✅ Cut what a document costs in memory, and what Python costs in time.
 	- The gate above is the first thing to measure either. A large document cost tens of times its own size in memory in every binding, C the worst.
 	- Done: the multiplier roughly halved in every binding. Three shared cuts. The parser's accelerator maps key on hashes and verify against the tree instead of storing built key strings. Comment trivia moved behind a per-node pointer most nodes never allocate. The authored name and source value spellings are stored only when they differ from what the node already holds.
-	- Done: C got three more of its own, taking it from the heaviest binding to the second lightest. The node vector and map slots moved out of the bump arena, which cannot reclaim a doubling. Strings slice one retained copy of the input instead of duplicating each piece. The repeated-leaf hint pass stopped leaving its dead bookkeeping in the document arena.
+	- Done: C got three more of its own, taking it from the heaviest binding to the second lightest. The node vector and map slots moved out of the bump arena, which can't reclaim a doubling. Strings slice one retained copy of the input instead of duplicating each piece. The repeated-leaf hint pass stopped leaving its dead bookkeeping in the document arena.
 	- Every binding also got faster.
 	- Python's time half moved only a little. The cost is spread across the interpreter's per-line work with no single hot spot left, so a real cut would mean restructuring the parser away from the reference's structure. Left there deliberately: the Python CLI exists for the differential check and stays well inside its gate ceiling.
-	- Done: the largedoc gate's memory ceilings were lowered to match, so the gains cannot silently regress.
+	- Done: the largedoc gate's memory ceilings were lowered to match, so the gains can't silently regress.
 	- Verified: confirmed independently by the format comparison below, which measured the reference on four document kinds and put a number on the time half too. Its published numbers predated this work and were refreshed by the rerun item below.
 	- Opened: 20260819-100700
 	- Closed: 20260821-150025
@@ -2987,7 +3007,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Packaging follows: the .deb and .rpm need a man dir and a completions dir, and the installer needs somewhere to put them for a user-target install.
 	- Done: `source/man/shcl.1` covers every subcommand, option, write op and exit code, with the per-subcommand ownership the help only hints at. No version string in it, so the release bump is still eight files.
 	- Done: `source/completions/shcl.bash` and `source/completions/_shcl` carry the CLI's own option table, one arm per subcommand, spelled identically in both files. They complete values for `--strictness` and `--on-bad`, files for `--schema`/`--layer` and the FILE slot, and nothing for a PATH - no filename there could ever be right.
-	- Done: `cicd/utility/check-completions.bash` diffs the CLI's table against both completion files and fails the lint stage on any disagreement, so an option added to one cannot drift from the others.
+	- Done: `cicd/utility/check-completions.bash` diffs the CLI's table against both completion files and fails the lint stage on any disagreement, so an option added to one can't drift from the others.
 	- Done: the .deb and .rpm install the man page and both completions into the distribution's own directories, so they work with nothing to configure. The installer symlinks the man page into the target's man1 dir and leaves the completions under the install dir with the line to paste for each shell - the reasoning is in `design.md`. Uninstall removes both, and the man symlink only when it points back into the install dir.
 	- Done: the man page and completions ride in the signed drop-in payload, so nothing unverified is installed. A payload from before they existed installs what it has and says so.
 	- Opened: 20260818-165540
@@ -3018,16 +3038,16 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- Closed: 20260820-075114
 
 - ✅ Windows saves go through `ReplaceFile`, and POSIX saves sync the directory.
-	- A move publishes a new file, so on Windows the destination's ACLs, attributes and named streams were left behind on every save. `ReplaceFile` exists for this exact step and carries them onto the replacement. It needs a destination and fails rather than skip a merge it cannot do, so a create or a failure falls back to the replacing move, never worse than before.
-	- Done: all four bindings, none of them taking a dependency for it: the reference declares the one function it needs, C already had `windows.h`, Python goes through `ctypes`. Go could not, since `shcl.go` promises to work when copied out on its own and cannot name a windows-only symbol - so the publish step became a hook and a small windows-only file swaps it in. Compiled, vetted and staticchecked in the cross stage, which is the only place that sees `GOOS=windows` at all.
-	- Separately, the `fsync` on the file only ever promised the contents; the move is a directory change. All four now sync the directory after it, so a power cut cannot lose the publish and leave the old content. Best effort, POSIX-only.
+	- A move publishes a new file, so on Windows the destination's ACLs, attributes and named streams were left behind on every save. `ReplaceFile` exists for this exact step and carries them onto the replacement. It needs a destination and fails rather than skip a merge it can't do, so a create or a failure falls back to the replacing move, never worse than before.
+	- Done: all four bindings, none of them taking a dependency for it: the reference declares the one function it needs, C already had `windows.h`, Python goes through `ctypes`. Go could not, since `shcl.go` promises to work when copied out on its own and can't name a windows-only symbol - so the publish step became a hook and a small windows-only file swaps it in. Compiled, vetted and staticchecked in the cross stage, which is the only place that sees `GOOS=windows` at all.
+	- Separately, the `fsync` on the file only ever promised the contents; the move is a directory change. All four now sync the directory after it, so a power cut can't lose the publish and leave the old content. Best effort, POSIX-only.
 	- What still does not survive a save is written down rather than papered over - other hard links, POSIX ACLs, xattrs and SELinux labels among them. Spec and `design.md`.
 	- Opened: n/a
 	- Closed: 20260820-154417
 
 - ✅ `set --write` creates a FILE that does not exist yet.
 	- `--write` names the file the command produces, so refusing a missing one was an obstacle rather than a safeguard: the workaround was to `touch` it first, the same act with an extra step.
-	- Only `set --write`. `fmt --write` has nothing to format and still reports it missing, and a file that exists but cannot be read stays an error in both - the alternative is writing over something unread.
+	- Only `set --write`. `fmt --write` has nothing to format and still reports it missing, and a file that exists but can't be read stays an error in both - the alternative is writing over something unread.
 	- Done: all four CLIs, help text and man page moved together, and the four agree byte-for-byte on the create, both refusals and the unreadable case. Pinned in `crosscheck.bash` rather than a runner: this one is reachable from the CLI, and the tree compare covers the created file's mode as well.
 	- Opened: n/a
 	- Closed: 20260820-154417
@@ -3041,7 +3061,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - ✅ Hand-edited configs are structurally safe across a round trip.
 	- From nemo-anywhere, their strongest ask: a malformed line was diagnosed and dropped, so a stray typo plus one settings change equaled a silently vanished hand-written line on write-back.
-	- Done, all four bindings, split by what is provably safe. Content-malformed lines (unreadable at any position) are retained as inert trivia and re-emitted in place, still diagnosed. Lines the parser could read but not apply (bad indent, unusable selector, depth cap, dropped list elements) cannot be made inert, since re-emitted they could parse as live content. Those count into a new `LostCount()`, and `SaveFile` refuses while it is nonzero, with `SaveFileLossy` as the explicit override.
+	- Done, all four bindings, split by what is provably safe. Content-malformed lines (unreadable at any position) are retained as inert trivia and re-emitted in place, still diagnosed. Lines the parser could read but not apply (bad indent, unusable selector, depth cap, dropped list elements) can't be made inert, since re-emitted they could parse as live content. Those count into a new `LostCount()`, and `SaveFile` refuses while it is nonzero, with `SaveFileLossy` as the explicit override.
 	- Verified: the fuzzer caught the one retention hole (a BOM-led line, rewritten by the file-start strip) - those count as lost. Long soak green.
 	- Goldens 004 and 013 now keep their malformed lines; new case 049 pins retention in and out of blocks; fixtures in every runner. Spec (Diagnostics + File tier) and `design.md` updated. CLI `--write` behavior was left unchanged at the time, on the grounds that the stderr diagnostics are visible.
 		- Superseded by Code review 20260817 item 8: the CLI `--write` now consults the save gate and refuses a rewrite that would drop a line unless `--lossy` is passed.
@@ -3050,7 +3070,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 - ✅ File tier: `LoadFile`/`SaveFile` with a four-way status, atomic save.
 	- From nemo-anywhere: every consumer that persists a config re-implemented the same load/save dance and repeated the same mistakes - absent confused with unreadable, torn writes.
-	- Done, all four bindings + veneer. Load never fails (usable document plus Clean / HadErrors / NotFound / Unreadable status). Save writes canonical text through the atomic temp-and-rename that moved from the CLIs into the libraries, so the CLIs now call the same code and cannot drift. C guards the tier behind `SHCL_NO_FILE_IO` so the core stays free of file I/O.
+	- Done, all four bindings + veneer. Load never fails (usable document plus Clean / HadErrors / NotFound / Unreadable status). Save writes canonical text through the atomic temp-and-rename that moved from the CLIs into the libraries, so the CLIs now call the same code and can't drift. C guards the tier behind `SHCL_NO_FILE_IO` so the core stays free of file I/O.
 	- Verified: fixture in every runner (missing file, directory, broken file, save round-trip); spec gained a File tier section; decision recorded in `design.md`.
 	- Opened: n/a
 	- Closed: 20260817-120726
@@ -3119,7 +3139,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 - ✅ A generated config file said nothing about what format it was in, so whoever opened it next had no way to find the syntax.
 	- Done: `shcl init` ends the file with a short comment footer naming the format and linking its home page and spec, after a blank line. `--no-banner` leaves it out, and `generate` takes the same flag in every binding plus the C++ veneer.
 	- The flag is negative so the footer is what a caller gets by saying nothing - the opt-out is the thing that has to be asked for.
-	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it cannot be misread as a claim over the config it sits in.
+	- The `Legal` line names SHCL as its subject ("SHCL is Copyright ...") rather than opening with the copyright, so it can't be misread as a claim over the config it sits in.
 	- Verified: the footer is output, so it is a byte-for-byte cross-binding contract like the annotation line. The three init goldens carry it; each runner also generates with the flag set and checks the result is the golden minus the footer, so the flag costs no extra goldens.
 	- Opened: n/a
 	- Closed: 20260804-092009
@@ -3560,7 +3580,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260904-174400
 		- Closed: 20260908-130000
 
-	- ✅ Item 47: a file whose basename runs past about 241 characters cannot be rewritten, and the cut-off moves with the pid.
+	- ✅ Item 47: a file whose basename runs past about 241 characters can't be rewritten, and the cut-off moves with the pid.
 		- Measured with a 7-digit pid: basenames of 240 and 241 characters save, 242 and 243 fail at exit 8 with no temp left behind. All eight attempts use the same length, so they fail together.
 		- Note: the failure is safe but not deterministic - a name in that band saves on a machine with a short pid and fails on one with a long pid. A fixed-width temp stem removes the band.
 		- Fixed: the temp name borrows at most the first 64 characters of the target's, in all four (`write_file_atomic` in the reference, Go and Python, `shcl_write_file_atomic` in C). Width is fixed, so the band is gone and the same name behaves the same on every machine.
@@ -3609,7 +3629,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- `check-c-compilers.bash` builds only at `-O2`, while the class it exists for is optimization-dependent - `win-runners.bash` sweeps five levels for that exact reason.
 		- Two output helpers spell the blank-line test `[[ VAR -eq 0 ]]`, and `n8git_backup-and-publish` carries a dead helper reading `${!i}` with no default. Shapes to retire, not live faults.
 		- Note: the sweep for the recorded bash traps found no `((n++))` anywhere and every glob loop guarded, so this is what is left.
-		- Fixed: `fWriteSums` ends on an `if` rather than an `&&` list, so an empty artifact directory cannot take the run down through the ERR trap.
+		- Fixed: `fWriteSums` ends on an `if` rather than an `&&` list, so an empty artifact directory can't take the run down through the ERR trap.
 		- Fixed: the three `sed ... | head -1` pipelines address the line and quit inside sed, so there is no early-quitting reader under pipefail.
 		- Fixed: `check-install-dev.bash` guards its own `--unset`, which exits 5 on an absent key and was hiding the three checks after it.
 		- Fixed: `cli-regress.bash` reads `SHCL_GATE_STRICT` - a missing `/dev/full` is a failure under the gate and a skip outside it, the way the other four gates read it. `shell-regress.bash`'s list of gates that must keep reading the variable names it now.
@@ -3632,7 +3652,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- The enhancement half of the round whose defects are under Bugs. Gate soundness, spec sentences the code needs, and library-level shapes no document rules on.
 
 	- ✅ Item 29: `perf-gate.bash` passes a CLI that fails every workload instantly.
-		- A stub that prints a usage error and exits 1 gets `OK: within 3x their own parse baseline`; the timer discards the exit status and nothing checks that the workload did anything. Today's workloads do run (an uncapped `edit_distance` blows the suggest budget by 20x), so the gate measures what it says and cannot tell when it stops. Require exit 0 (6 for `suggest`) and a non-empty stdout of the expected size per run.
+		- A stub that prints a usage error and exits 1 gets `OK: within 3x their own parse baseline`; the timer discards the exit status and nothing checks that the workload did anything. Today's workloads do run (an uncapped `edit_distance` blows the suggest budget by 20x), so the gate measures what it says and can't tell when it stops. Require exit 0 (6 for `suggest`) and a non-empty stdout of the expected size per run.
 		- Fixed: every timed run checks its exit code (0 for a write workload, 6 for the two that check a document with diagnostics) and that stdout carries at least the lines the work would produce - the key count for a write, two for a check. A run that did neither is a failure rather than a fast one.
 		- Pinned by the gate itself against a stub that prints a usage error and exits 1: it reported OK before and names the failing run now.
 		- Opened: 20260902-172800
@@ -3660,7 +3680,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260902-173100
 		- Closed: 20260903-062000
 
-	- ✅ Item 33: `tests/cli_pipe.rs` cannot see the `out!`-to-`println!` regression on Linux, and its header does not say so.
+	- ✅ Item 33: `tests/cli_pipe.rs` can't see the `out!`-to-`println!` regression on Linux, and its header does not say so.
 		- With the macros' quiet exit replaced by a panic and `reset_sigpipe` kept, the test passes on Linux because SIGPIPE ends the process first; only the windows job pins the macros. A one-line note in the test header, so nobody reads the linux pass as covering 20260901b item 11.
 		- Fixed: the header says it - a green run on linux says nothing about the macros.
 		- Note: a comment carries no test of its own, and nothing else here is worth pinning; the four `cli-regress` rows added for 20260902 item 8 are what actually exercises the failure branch on linux.
@@ -3695,7 +3715,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Fixed: the rebuild walks from the root in all four. Chains keep file order, since a chain is one parent's same-named children and each parent's are appended in its own list order.
 		- Measured: 200 rebuild-and-read cycles behind 100000 set-and-remove pairs took 68 ms in C and take 2.6 ms; the same shape in the reference went from 269 ms to 3 ms.
 		- Pinned by a fixture in all four runners: the same document timed with and without the churn, bounded by a ratio rather than a wall-clock constant. All four fail it on the old code.
-		- Note: the chain array is still sized by the arena, which is a fill the walk cannot avoid; the bound is loose enough to leave that alone and tight enough to catch the walk.
+		- Note: the chain array is still sized by the arena, which is a fill the walk can't avoid; the bound is loose enough to leave that alone and tight enough to catch the walk.
 		- Opened: 20260902-173600
 		- Closed: 20260903-090000
 
@@ -3716,7 +3736,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 40: two library-level parity points in the file tier and the Go writer.
 		- Rust alone writes through a trailing `/` on a regular-file path (`save_file("f/")` succeeds where POSIX refuses `open("f/")`); Go refuses `f/` but writes `f/.`; Python refuses both. Go's `SetString` of a string that is not UTF-8 stores U+FFFD per bad byte and reports success, so the value does not read back verbatim; return false from the string setters on invalid input, or say so in the Go doc comment.
-		- Decided: refuse in both cases. A document is not a directory, and a value that cannot read back verbatim is what every other setter already refuses.
+		- Decided: refuse in both cases. A document is not a directory, and a value that can't read back verbatim is what every other setter already refuses.
 		- Fixed: all four refuse a path that ends in a separator or whose last component is `.` or `..`, before the path is resolved; the spec's save section says so. Go's `SetString` and `SetStringArray` refuse text that is not valid UTF-8.
 		- Pinned by a save fixture in all four runners (three directory-shaped spellings refused, the file unchanged, the plain path still saving) and a Go test for the UTF-8 refusal. The reference took `f/` and Go took `f/.`; Python and C already refused both, which the fixture now holds them to.
 		- Opened: 20260902-173900
@@ -3747,12 +3767,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260902-174200
 		- Closed: 20260903-152000
 
-	- ✅ Item 44: the C CLI's "cannot create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
+	- ✅ Item 44: the C CLI's "can't create temporary file" phase wording is decided by `_waccess`, which on Windows reports every existing directory writable.
 		- The C library reports errno alone and the CLI guesses the phase from `_waccess(dir, 2)`; on real Windows an ACL-protected directory gets the bare errno where Rust and Go name the temp-create phase. Cosmetic under wine, which follows the unix mode bits. Record the failing phase in the library's write, or probe with an exclusive create.
 		- Decided: probe. Recording the phase means an out-parameter or a per-thread last-error on a call that returns errno today, which is API growth for a message; creating a file is what the write itself does, so it answers for the platform it is on.
 		- Fixed: the CLI creates a uniquely named file in the target's directory and removes it, instead of asking `access`. Only on the failure path.
 		- Pinned by a `cli-regress` row: a file in a directory with no write permission must name the temp-create phase in all four.
-		- Note: the row cannot fail on the old C here - `access(dir, W_OK)` is right on linux, and it is `_waccess` on windows that answers yes for every existing directory. Said plainly rather than papered over; the hosted windows job runs the row, but an ACL-protected directory is not something the runner can be given portably.
+		- Note: the row can't fail on the old C here - `access(dir, W_OK)` is right on linux, and it is `_waccess` on windows that answers yes for every existing directory. Said plainly rather than papered over; the hosted windows job runs the row, but an ACL-protected directory is not something the runner can be given portably.
 		- Opened: 20260902-174300
 		- Closed: 20260903-160000
 
@@ -3768,7 +3788,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Present before this round's changes. The merge fuzz property covers it, and the gate's own 200,000 iterations reach it - but the seed set carries the corpus, so this round's new cases shifted the sequence and moved the shape into range. The quick run stops at 20,000 and never sees it.
 		- Reproduced with a base of one refused line (a name carrying a vertical tab, kept as trivia) and a layer whose trailing comment sits inside a stacked element's raw body. The layer and its own canonical form emit the same text, so the fixpoint property holds for the layer alone; they disagree about where the comment is attached, and only a merge shows it. The base's trivia comes out before the layer's comment one way and after it the other.
 		- Base `t<VT>o: 5`, layer `*<tab>```` / `  line1` / `  #` / `` `` ``. Direct gives `line1: / # / t<VT>o: 5`; through the canonical form, `line1: / t<VT>o: 5 / #`.
-		- Cause: a comment trailing a field at the field's own indent is kept as that field's, and a document's own trailing comment is kept separately and emitted after everything. For a top-level field the two are spelled the same - column zero - so a reload cannot tell them apart, and a merge, where the field's comment travels with the field and the document's is appended, puts them in different orders. An error-repaired document is what makes the two spellings meet: the field was written indented and ended up at the top level.
+		- Cause: a comment trailing a field at the field's own indent is kept as that field's, and a document's own trailing comment is kept separately and emitted after everything. For a top-level field the two are spelled the same - column zero - so a reload can't tell them apart, and a merge, where the field's comment travels with the field and the document's is appended, puts them in different orders. An error-repaired document is what makes the two spellings meet: the field was written indented and ended up at the top level.
 		- Fixed: a comment trailing a top-level field is the document's. One written deeper than its field still belongs to the field, since that has an indent to come back to. All four bindings.
 		- Pinned by corpus `087`, which every binding failed before the change, and by the merge fuzz property that found it - clean over 200,000 iterations now, where it failed at 44,208.
 		- Opened: 20260904-025000
@@ -3837,7 +3857,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 30: `E003` is reachable from a file after all, and the spec, the backlog and the corpus all say it is not.
 		- `a[5].b: 2` with one `a` reports it in all four. The spec's "unreachable" reasoning covers only the `[#N]` spelling; the bare `[N]` index is documented and reaches it. Reword the row and add a corpus row.
-		- Fixed: the code row says which spelling cannot reach it and which does, instead of telling a reader the code never fires.
+		- Fixed: the code row says which spelling can't reach it and which does, instead of telling a reader the code never fires.
 		- Pinned by corpus `086` (a bare index past the end, and a valid one beside it) and by `check-docs.bash`, which refuses the old wording.
 		- Opened: 20260901-192900
 		- Closed: 20260903-224500
@@ -3845,20 +3865,20 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 31: the hosted windows job runs one of the three C memory tests.
 		- `oom_recover.c`, the setjmp unwind and the most platform-sensitive test in the suite, and `mem_bounds.c` are built on Linux only. Both pass under wine, so it is two lines in `win-runners.bash`.
 		- Fixed: `win-runners.bash` builds and runs `mem_bounds.c` there. `oom_recover.c` was held off that job at the time because it crashed on a real windows host; item 48 fixed the crash and put it on, swept across five optimization levels.
-		- The index-rebuild check is a ratio against a fresh document, and it went wrong two ways once it ran off this box. Windows counts whole milliseconds, so the fresh side reads one tick or none and the ratio rests on nothing; it is skipped now where the clock cannot resolve that side, the way it is already skipped under a sanitizer. And the constant term was tight enough that a shared runner's descheduling crossed it, so all four bindings' copies carry a wider one - the factor is what catches the defect, which is orders rather than a fraction. Every allocation bound in the file still runs on windows.
+		- The index-rebuild check is a ratio against a fresh document, and it went wrong two ways once it ran off this box. Windows counts whole milliseconds, so the fresh side reads one tick or none and the ratio rests on nothing; it is skipped now where the clock can't resolve that side, the way it is already skipped under a sanitizer. And the constant term was tight enough that a shared runner's descheduling crossed it, so all four bindings' copies carry a wider one - the factor is what catches the defect, which is orders rather than a fraction. Every allocation bound in the file still runs on windows.
 		- Pinned by the two new rows. The ratio still catches an index rebuild that walks every node the document ever held, unchanged.
 		- Opened: 20260901-193000
 		- Closed: 20260903-231500
 
 	- ✅ Item 32: two `cli-regress` rows are Linux-only and nothing says so.
-		- A directory as the input expects "is a directory"; Windows says access denied, invalid function or permission denied depending on the binding, because none of the three stats the path first. The closed-stdin row cannot be judged under wine at all. Either give the rows a per-platform expectation or report the directory case from a stat.
+		- A directory as the input expects "is a directory"; Windows says access denied, invalid function or permission denied depending on the binding, because none of the three stats the path first. The closed-stdin row can't be judged under wine at all. Either give the rows a per-platform expectation or report the directory case from a stat.
 		- Decided: stat the path. A per-platform expectation would only have written down four spellings of the same thing, and the four CLIs disagreed with each other on Linux too - `Is a directory (os error 21)`, `read PATH: is a directory`, `[Errno 21] Is a directory: 'PATH'` and `PATH: Is a directory`.
 		- Fixed: all four CLIs answer `PATH: Is a directory` before the open, on every platform.
 		- Pinned by the `read-dir-names-error` row, which now expects that one line anchored rather than a loose match on three words. The closed-stdin row says in a comment that it is POSIX-only, since closing fd 0 has no windows equivalent.
 		- Opened: 20260901-193100
 		- Closed: 20260903-234500
 
-	- ✅ Item 33: three windows behaviors that wine cannot show and the hosted job should verify.
+	- ✅ Item 33: three windows behaviors that wine can't show and the hosted job should verify.
 		- Go's CLI likely exits 8 on a closed stdin on real Windows where Rust and C exit 0, because only the Go runtime on Linux reopens closed standard fds. The C file tier passes paths over 260 characters through unprefixed where Rust and Go add the long-path prefix. The C file tier on Windows does not resolve a symlinked target, so a save through a link may replace the link. None of the three could be exercised under wine.
 		- Decided: all three are defects, not just gaps in what is checked, so each was fixed rather than only pinned.
 		- Fixed, stdin: a stdin nothing is attached to reads as an empty document in all four CLIs. Windows reports a handle the shell closed as an invalid handle or an invalid function rather than as end of input, and all three windows CLIs exited 8 on it - not only Go.
@@ -3875,7 +3895,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Fixed, program files: a system install reads `ProgramW6432` when it is set, which is only where it differs from `ProgramFiles`.
 		- Fixed, tag picker: the three fields are split out of the response before they are read, so a release on one line works the same as a pretty-printed one.
 		- Fixed, 5.1 stderr: the smoke run drops the Stop preference for the call and puts it straight back.
-		- Pinned by four `shell-regress` blocks. The uninstall one runs the shipped function against a directory the calling shell cannot read and the command it runs can, which is what privilege buys and needs no root. The tag picker gets the same fixture with its whitespace removed. The program files line is evaluated in a pwsh with both variables set, then with only one. The 5.1 rule is source order, since the throw needs a 5.1 that cannot be run here.
+		- Pinned by four `shell-regress` blocks. The uninstall one runs the shipped function against a directory the calling shell can't read and the command it runs can, which is what privilege buys and needs no root. The tag picker gets the same fixture with its whitespace removed. The program files line is evaluated in a pwsh with both variables set, then with only one. The 5.1 rule is source order, since the throw needs a 5.1 that can't be run here.
 		- Opened: 20260901-193300
 		- Closed: 20260904-011500
 
@@ -3895,21 +3915,21 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 37: neither installer notices a different `shcl` shadowing the one it just installed.
 		- The receipt line runs the installed link directly, never what `shcl` resolves to on PATH. On Windows the user PATH entry is appended after the machine PATH, so a setup.exe install shadows every later user install permanently.
 		- Fixed: both installers ask what `shcl` resolves to and name the other copy when it is not the one just written.
-		- Note: on windows a user install cannot be put ahead of a machine one - windows reads the machine entries first - so saying which copy wins is the whole of what an installer can do there without rewriting someone else's PATH.
+		- Note: on windows a user install can't be put ahead of a machine one - windows reads the machine entries first - so saying which copy wins is the whole of what an installer can do there without rewriting someone else's PATH.
 		- Pinned by a `shell-regress` block over the three answers (ours, someone else's, none at all) and a source check that the PowerShell side asks the same question.
 		- Opened: 20260901-193600
 		- Closed: 20260904-014500
 
 	- ✅ Item 38: `install.ps1 -Uninstall -Target system` over a setup.exe install guts it and leaves the Add/Remove Programs entry pointing at nothing, and the reverse leaves a stale version there.
 		- Both write the same directory. When `uninstall.exe` is present, run it or say to.
-		- Fixed: an uninstall that finds `uninstall.exe` in the directory refuses and points at it, rather than deleting the files under a registration it cannot remove. An install over one says the Add/Remove entry still names the version the setup put there.
+		- Fixed: an uninstall that finds `uninstall.exe` in the directory refuses and points at it, rather than deleting the files under a registration it can't remove. An install over one says the Add/Remove entry still names the version the setup put there.
 		- Pinned by source order in `shell-regress`, the way the smoke-run placement is: the whole script refuses to run off windows, so nothing here can reach that branch.
 		- Opened: 20260901-193700
 		- Closed: 20260904-015000
 
 	- ✅ Item 39: a read-only HOME fails after both downloads, with two raw `mkdir` errors.
 		- The plan step could probe the nearest existing parent for writability before spending the downloads.
-		- Fixed: the three destinations are probed before anything is fetched, each by walking up to whatever exists, and the refusal names the directory that cannot be written. A sudo install skips the probe, since root is what writes there.
+		- Fixed: the three destinations are probed before anything is fetched, each by walking up to whatever exists, and the refusal names the directory that can't be written. A sudo install skips the probe, since root is what writes there.
 		- Pinned by a `shell-regress` block over the walk-up and a read-only home, plus a source-order check that the probe precedes the first download.
 		- Opened: 20260901-193800
 		- Closed: 20260904-015500
@@ -3936,7 +3956,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 43: the flamegraph drops 35 to 60% of the profiled CPU time and the report does not say so.
 		- The sampler's library blocklist drops any sample whose leaf is inside libc rather than truncating it, so allocation, copying and write time are invisible and every percentage is over the survivors. Today's graph kept 930 of about 1600 samples. Print the expected count beside the kept one at least.
-		- Decided: the blocklist stays. It keeps the signal handler out of libc's own unwinder, which is what it is for; what it cannot do is go unsaid.
+		- Decided: the blocklist stays. It keeps the signal handler out of libc's own unwinder, which is what it is for; what it can't do is go unsaid.
 		- Fixed: the profiler writes the kept and expected counts beside the SVG, and the report leads with them and with what the missing samples were. Measured on a fresh run: 762 of about 1194.
 		- Pinned by `shell-regress` rows over a graph with the counts beside it and one without, plus a check that the profiler still records them.
 		- Opened: 20260901-194200
@@ -3971,7 +3991,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 7: a float literal past the double range reads as infinity, at `Good`.
 		- `1e400` reads as `inf` and exits 0, in all four bindings. So does `1e309` and `1.8e308`. The negative spellings give `-inf`.
 		- Not a spec violation - the float section states no range - which is why this is here rather than under Bugs.
-		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double cannot hold.
+		- It does contradict the reasoning behind the 20260830b decision on the loose float-to-int read, which stopped saturating at 2^63 because no double holds that value and the path could not honestly produce it. The same sentence applies to a float literal the double can't hold.
 		- It also feeds item 4: read the value, write it back unchanged, and the field no longer reads.
 		- Done: the float reader refuses a non-finite parse result in all four bindings, at every strictness, so `1e400` is `BadType` like any text that is not a number. Underflow (`1e-400`) still reads as zero, and the largest double still reads. Spec: the float section states the range. Changelog entry under Changed, since a read that answered now refuses.
 		- Pinned by corpus `074-float-range`: scalar, array and loose-currency spellings at three strictness levels, plus the largest double and an underflow. Fails on the old code in all four runners.
@@ -4046,13 +4066,13 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Additive: repeatable options joining the ordered edit list the set option already uses.
 		- Fixed: `--remove=PATH`, `--set-default=PATH=VALUE` and `--set-literal-default=PATH=TEXT` in all four CLIs. All five spellings share one ordered list, so two touching the same path resolve in the order given, and they are valid on the same subcommands `--set` already was.
 		- Note: removing nothing is not an error, matching the ops script's `remove`.
-		- Also: the `--write cannot be combined with` refusal names the option actually given rather than always saying `--set`, and the help's subcommand lists for `--layer` and `--set` read "all but check/init" - they had gone stale when item 19 added two subcommands.
+		- Also: the `--write can't be combined with` refusal names the option actually given rather than always saying `--set`, and the help's subcommand lists for `--layer` and `--set` read "all but check/init" - they had gone stale when item 19 added two subcommands.
 		- Pinned by eight `cli-regress.bash` rows covering each spelling, a default that must not clobber, ordering within the list, the ephemeral form on a read, the `--write` refusal and an empty path. 32 of 136 checks fail without the code.
 		- Opened: 20260830-140346
 		- Closed: 20260831-093000
 
 	- ✅ Item 22: exit 1 is still the catch-all for usage, I/O and an unwritable path, a week after 7 was carved out.
-		- Exit 7 was created on the argument that a script could not tell "pass the lossy flag or fix the file" from "the command line is wrong". The same argument applies to a setter that cannot write, and was not applied.
+		- Exit 7 was created on the argument that a script could not tell "pass the lossy flag or fix the file" from "the command line is wrong". The same argument applies to a setter that can't write, and was not applied.
 		- Reproduced, all exit 1: an unknown flag, a missing file, a wildcard path, and an index selector naming no instance. Three different remedies, one code.
 		- The prose already distinguishes them, so the information exists and only the code throws it away. The write-reason vocabulary names six causes in every binding for exactly this purpose.
 		- Convention is against the current split: usage errors sharing a code with I/O is unusual.
@@ -4122,7 +4142,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- The loader inserts a path on every call and the listing calls every loader, so the search path grows a duplicate each time.
 		- Internal tooling, not shipped code.
 		- Fixed: all four. A non-numeric or non-positive ITERS is the usage line at exit 2, the listing catches any loader failure rather than only a missing import, and the shcl loader only pushes its path when it is not already there.
-		- Pinned in `shell-regress.bash`, whose purpose already covers the tooling the corpus cannot reach: three bad ITERS spellings and a duplicate-path check. Seven checks fail without the fix.
+		- Pinned in `shell-regress.bash`, whose purpose already covers the tooling the corpus can't reach: three bad ITERS spellings and a duplicate-path check. Seven checks fail without the fix.
 		- Opened: 20260830-140346
 		- Closed: 20260831-123000
 
@@ -4158,7 +4178,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: the item's premise was wrong. C tests `fclose`, Python's close sits inside the try whose handler turns a failure into a failed save, and Rust checks the `sync_all` that is the only thing it can check on a `File`.
 		- Note: Go alone dropped it, so this is a parity fix rather than the per-binding deviation the item assumed.
 		- Fixed: the close's error becomes the save's error when nothing earlier failed. Without it a write error surfacing only at close would publish a truncated temp file over the target.
-		- Nothing new proves this one, and that is worth saying plainly: a close that fails after a successful fsync needs a filesystem this box cannot produce, and faking one would test the fake. What it rests on is the other three bindings already behaving this way.
+		- Nothing new proves this one, and that is worth saying plainly: a close that fails after a successful fsync needs a filesystem this box can't produce, and faking one would test the fake. What it rests on is the other three bindings already behaving this way.
 		- Opened: 20260830-140346
 		- Closed: 20260831-131500
 
@@ -4266,7 +4286,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- The bash installer runs the version check from the temp directory first, precisely so a binary that will not start never becomes an install.
 		- On PowerShell 7.4 and later a nonzero exit from that line throws under the script's own error preference, giving a success message followed by an exception, with the install left in place.
 		- Read, not reproduced, since no failing binary was available.
-		- Fixed: the smoke run happens from the temp dir before anything is written, matching the Linux installer, and its output is captured with the exit status tested rather than called bare. The line at the end now prints what that run already produced, so a failing binary cannot reach a success message.
+		- Fixed: the smoke run happens from the temp dir before anything is written, matching the Linux installer, and its output is captured with the exit status tested rather than called bare. The line at the end now prints what that run already produced, so a failing binary can't reach a success message.
 		- Pinned in `shell-regress.bash` as a source-order check: the smoke run must appear before the publish, and must test `$LASTEXITCODE`. Running the real installer needs a network and a release, so order is what can honestly be asserted here.
 		- Opened: 20260830-140346
 		- Closed: 20260831-172000
@@ -4289,7 +4309,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260831-175000
 
 	- ✅ Item 47: the spec tables a load-time code no file can produce.
-		- The block is introduced as the load-time codes so a gate can key on them. The selector code cannot fire from a file, because the marker opens a comment before the selector is read.
+		- The block is introduced as the load-time codes so a gate can key on them. The selector code can't fire from a file, because the marker opens a comment before the selector is read.
 		- Both spellings that should produce it report the empty-selector code instead. No corpus case pins it, and the backlog reached the same conclusion earlier.
 		- A gate keyed on it can never fire. Note it as unreachable from a file, or drop the row.
 		- Decided: noted rather than dropped. The row stays, since the code is real in the source's message-to-code mapping, but it now says it is unreachable and why, so nobody keys a gate on it.
@@ -4399,7 +4419,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260830-124432
 
 	- ✅ Item 26: stderr diagnostics still come in three forms, and 20260829 item 59 was only half applied.
-		- `check` and `init` print schema faults without the code, so a script cannot key on `V091`. A strict-load failure prints each diagnostic twice (once as a line, again in the summary). Four messages carry a `shcl:` prefix and the rest do not.
+		- `check` and `init` print schema faults without the code, so a script can't key on `V091`. A strict-load failure prints each diagnostic twice (once as a line, again in the summary). Four messages carry a `shcl:` prefix and the rest do not.
 		- One line form everywhere, and one prefix rule.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
@@ -4409,7 +4429,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
-	- ✅ Item 28: a `set_raw` test asserts on a document parsed before the refused writes, so the assertion cannot fail.
+	- ✅ Item 28: a `set_raw` test asserts on a document parsed before the refused writes, so the assertion can't fail.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
@@ -4474,7 +4494,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260830-124432
 
 	- ✅ Item 37: exit code 1 covers both "add `--lossy`" and "file missing", and `init`'s exit 6 is in no table.
-		- A script gating a rewrite cannot tell the refusal apart. Decision: a code of its own, and a table entry for `init`.
+		- A script gating a rewrite can't tell the refusal apart. Decision: a code of its own, and a table entry for `init`.
 		- Decided: the refusal has its own exit code, 7. Help, man page, README, wrappers and design.md carry it, along with exit 6's init clause.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
@@ -4491,7 +4511,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
 
-	- ✅ Item 40: completion drift the checker cannot see.
+	- ✅ Item 40: completion drift the checker can't see.
 		- Neither file offers `--about` or `--donate`; the zsh file offers no top-level options at all and claims to be line for line the bash one.
 		- Opened: 20260830-093632
 		- Closed: 20260830-124432
@@ -4664,7 +4684,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 39: nine load-time diagnostic codes are pinned by no corpus case or unit test.
 		- E003 to E007 and E009 to E012 appear nowhere in the corpus or the test files. Item 1 lived in that gap. One case per code.
-		- Fixed: cases 057 to 061 pin E004 to E007, E009 to E012 and the new E018. E003 cannot come from a file (the `#` of `[#N]` always opens a comment there), so there is nothing to pin.
+		- Fixed: cases 057 to 061 pin E004 to E007, E009 to E012 and the new E018. E003 can't come from a file (the `#` of `[#N]` always opens a comment there), so there is nothing to pin.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
 
@@ -4763,7 +4783,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260829-093755
 
 	- ✅ Item 55: C tidy.
-		- gcc 15 at a stricter level reports one sign conversion, one cast that drops const, and three shadowed locals in the test runner; cppcheck lists 22 pointers that could be const. The 64-byte datetime buffer is a bare literal in five places. The one-letter string typedef cannot be searched for.
+		- gcc 15 at a stricter level reports one sign conversion, one cast that drops const, and three shadowed locals in the test runner; cppcheck lists 22 pointers that could be const. The 64-byte datetime buffer is a bare literal in five places. The one-letter string typedef can't be searched for.
 		- Fixed: clean under gcc 15's stricter set, the const pointers made const, `SHCL_DT_BUF` for the datetime buffers, and the alias is `Str`.
 		- Opened: 20260829-071126
 		- Closed: 20260829-093755
@@ -4854,7 +4874,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 2: installer output and dev-channel resolution.
 		- Done: all three install scripts now open and close with a blank line and put one between output sections.
 		- The dev channel listed one release and took it, and the API orders that list by publish date - so a maintenance release cut on an older line would win. Both installers now list up to 100 and take the highest version, with a final outranking its own pre-releases.
-		- Done: `install-dev.bash` confirms the same way `install.bash` does (try the terminal read, treat "cannot ask" as abort) and accepts "yes". `install.ps1` consults `PROCESSOR_ARCHITEW6432` and turns the progress bar off for the downloads.
+		- Done: `install-dev.bash` confirms the same way `install.bash` does (try the terminal read, treat "can't ask" as abort) and accepts "yes". `install.ps1` consults `PROCESSOR_ARCHITEW6432` and turns the progress bar off for the downloads.
 		- Opened: n/a
 		- Closed: 20260822-115416
 
@@ -4903,7 +4923,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: nothing in the repo embeds a resource, and there is no icon file to embed. The cross-built exe gets the generic shell icon, and its properties panel is blank where a version, description and copyright belong.
 		- Affects both Windows targets and the setup that carries them.
 		- Done: a build script writes the resource and hands it to whichever resource compiler is present, so both Windows binaries now carry the icon and a filled-in properties panel - product name, description, version, company and copyright.
-		- The version comes from `Cargo.toml` through the build environment, so it cannot drift and the release bump still touches the same eight files.
+		- The version comes from `Cargo.toml` through the build environment, so it can't drift and the release bump still touches the same eight files.
 		- No new dependency, and nothing is required: a build with no resource compiler around warns and carries on rather than failing.
 		- The setup gets the same icon and its own metadata.
 		- `assets/shcl.ico` is built from `assets/icon.png`, the project mark. Seven sizes from 16 up to 256; the four letters stay readable at the smallest.
@@ -5044,7 +5064,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260819-132623
 
 	- ✅ Item 21: the Windows installer has no help switch.
-		- The Linux one answers `--help`. The Windows one relies on the comment block at the top of the file, which the documented one-liner cannot reach - it pipes the script straight into the shell, so there is nothing left to ask for help about.
+		- The Linux one answers `--help`. The Windows one relies on the comment block at the top of the file, which the documented one-liner can't reach - it pipes the script straight into the shell, so there is nothing left to ask for help about.
 		- Everything else in both installers matches: signature checked before any checksum, idempotent, states its plan and asks, detects the architecture, and uninstalls only what it laid down.
 		- Done: `-Help` prints the options and exits. Written into the script rather than left to the comment block, because the documented one-liner pipes the script into the shell and leaves nothing to ask about.
 		- Done: README lists it alongside the others.
@@ -5062,8 +5082,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- All three are free to fix now and expensive after the cut, because the whole file tier is unreleased.
 		- Fixed in all four plus the veneer, one channel per language: `SaveError::Refused`/`Io` in the reference, a `*SaveRefused` error in go, `SaveRefused`/`SaveFailed` raised from a `SaveError` base in python, and `SHCL_SAVE_OK`/`REFUSED`/`FAILED` in c. The header now states the gate and names the lossy call as its override.
 		- The four CLIs stopped sniffing `lost_count() > 0` to guess which failure they were looking at and branch on the value. Output is byte-identical.
-		- The veneer's `save_file` returned a bool, which folded the same two cases, so it returns the result type now - and gained `save_file_lossy`, since a refusal it cannot override is a dead end. The rest of item 21's veneer list closed under item 21.
-		- Verified: new shared fixture in all four runners: the gate answers before any i/o, so a lost document saved to an unwritable path still reports the refusal, and a clean one reports the write failure. Nothing here is visible on stdout, so the corpus cannot see it.
+		- The veneer's `save_file` returned a bool, which folded the same two cases, so it returns the result type now - and gained `save_file_lossy`, since a refusal it can't override is a dead end. The rest of item 21's veneer list closed under item 21.
+		- Verified: new shared fixture in all four runners: the gate answers before any i/o, so a lost document saved to an unwritable path still reports the refusal, and a clean one reports the write failure. Nothing here is visible on stdout, so the corpus can't see it.
 		- Opened: 20260817-204524
 		- Closed: 20260818-142148
 
@@ -5103,7 +5123,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 21: inventory gaps between the bindings.
 		- Go is missing all five array forms of the status tier, so it offers three tiers for scalars and two for arrays.
-		- C and c++ cannot read the quoted flag at all. This round changed the formatter specifically so a consumer can tell a reserved word from a quoted plain string, and half the bindings cannot make that distinction.
+		- C and c++ can't read the quoted flag at all. This round changed the formatter specifically so a consumer can tell a reserved word from a quoted plain string, and half the bindings can't make that distinction.
 		- The c++ veneer has only half the new file tier: no lost count, no lossy save, no strictness form, and its array reads drop the per-slot statuses. A user whose save returns false has no route to the reason without dropping to the raw pointer the veneer exists to hide.
 		- Go's load status is the only enum in the package with no text form, so logging one prints a number.
 		- All additive. Should go in the same cut as the tier.
@@ -5119,9 +5139,9 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Cause: the spec calls the three on-bad modes the canonical API everywhere and even names python's spelling for it. It exists only as a cli flag; no library has it.
 		- The two existing tiers already cover two of the three modes as described. Only the spec is wrong.
 		- Fix: describe the tiers as built, and mark the per-slot substitution behavior cli-only. Do it before the cut so the published spec matches the published api.
-		- Fixed that way, in the spec's core-call section and the six other places that referred to on-bad as a per-call parameter. The mode is now stated as which tier you call: the full tier is Flag, the convenience tier is Default, and Error has no library form at all. A read that cannot reach a value is a normal outcome here, so a caller who wants a throw raises on the status themselves.
+		- Fixed that way, in the spec's core-call section and the six other places that referred to on-bad as a per-call parameter. The mode is now stated as which tier you call: the full tier is Flag, the convenience tier is Default, and Error has no library form at all. A read that can't reach a value is a normal outcome here, so a caller who wants a throw raises on the status themselves.
 		- Per-slot substitution is marked cli-only for the same reason it exists there: a shell caller has no slot list to inspect.
-		- design.md's three accessor bullets said the same thing and were rewritten with it, so the decision and the spec cannot drift apart again.
+		- design.md's three accessor bullets said the same thing and were rewritten with it, so the decision and the spec can't drift apart again.
 		- Opened: 20260817-204524
 		- Closed: 20260818-153553
 
@@ -5150,7 +5170,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Parsing via the standard trait and printing a document are the first two things a rust user tries. Printing a status today ends up in user-facing messages as debug output.
 		- All additive, none of it structural, so the parity rule is untouched.
 		- All five done. `Clone` is a derive and correct for free: the arena is index-based, so cloning the vector copies the whole tree with no reference to fix up - pinned by editing a clone and checking the original.
-		- `FromStr` carries `Infallible` as its error, not a load error, because parsing at Standard genuinely cannot fail - a malformed line is a diagnostic. The fallible load is still `parse_with` at Strict.
+		- `FromStr` carries `Infallible` as its error, not a load error, because parsing at Standard genuinely can't fail - a malformed line is a diagnostic. The fallible load is still `parse_with` at Strict.
 		- `format_f64` is a wrapper over rust's own Display, which already spells floats the way the contract requires. The two setter sites call it now, so the rule has one home rather than a `format!` at each.
 		- Verified: Rust-only fixture, deliberately: nothing here is new behavior, and the other three already export the same capabilities under their own names.
 		- Opened: 20260817-204524
@@ -5159,7 +5179,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 27: performance, six items.
 		- The new author-quoting clause runs four full coercions per quoted element on every emit. Emitting a quoted document costs about three times the same document bare, and it falls on formatting, the command most likely to run on a large file. A cheap first-character test or a cached classification removes it.
 		- Every setter scans the path and walks the tree twice: the write check does both, throws them away, and the caller redoes them. One of each would do.
-		- C routes every per-line temporary into the permanent document arena, so parse memory is many times the input and cannot be reclaimed, several times the reference's on the same file. There is already a scratch arena for exactly this; parsing does not use it.
+		- C routes every per-line temporary into the permanent document arena, so parse memory is many times the input and can't be reclaimed, several times the reference's on the same file. There is already a scratch arena for exactly this; parsing does not use it.
 		- C's emit-path format probe allocates into the document arena too, so each save retains about four times the output size. A long-running program that saves periodically grows without bound.
 		- Go decodes to a rune slice and back in three string helpers on hot paths, where every character it matches is ascii. Several times the cost of the byte-loop equivalent, and the binding uses noticeably more memory than the reference.
 		- Python calls a per-character predicate from the path scanner and the emitter. It is the top entry by self time in a parse-and-emit profile at about a fifth of the total; a character-set membership test cuts about a tenth off the whole run.
@@ -5177,7 +5197,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 28: cli and installer polish, batched.
 		- Every read failure is silent at the default mode: a wrong type, a typo'd path and a missing value all give an empty result, a meaningful exit code, and nothing on stderr. The error-mode message is good and is not what anyone gets by default. Printing it to stderr regardless would leave stdout byte-identical.
 		- `set` with a file and no ops flag blocks on stdin at a terminal with no prompt and no output, which reads as a hang.
-		- `check` is the only subcommand that rejects the layer and set options, so the merged document a program will actually load cannot be validated directly. The pipe workaround is clean but not obvious.
+		- `check` is the only subcommand that rejects the layer and set options, so the merged document a program will actually load can't be validated directly. The pipe workaround is clean but not obvious.
 		- No man page and no shell completions, while deb, rpm and an installer are published. The help documents which options exist but not which subcommand each belongs to.
 		- The installer fetches and installs a source archive with no checksum and no signature, right after correctly verifying the binary, and marks a script from it executable. The signed sums file has no entry for it.
 		- There is no uninstall path at all, and the success message does not say how to undo the install.
@@ -5209,9 +5229,9 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260819-084518
 
 	- ✅ Item 29: the gaps that let this round through.
-		- The cross-binding check cannot see any defect the four bindings share, and most of the bugs above are exactly that kind. The corpus is the only thing that can catch them, and only if a case has the form.
+		- The cross-binding check can't see any defect the four bindings share, and most of the bugs above are exactly that kind. The corpus is the only thing that can catch them, and only if a case has the form.
 		- The cross-compile stage builds the rust binary only, so the c binding's windows branches have never been compiled here. That is how item 2 got in.
-		- The python lint and type gates run at defaults with no configuration, and the module has no type hints - so the type gate analyzes almost nothing and cannot fail. Turning on checking of unannotated bodies shows a real misuse trap immediately.
+		- The python lint and type gates run at defaults with no configuration, and the module has no type hints - so the type gate analyzes almost nothing and can't fail. Turning on checking of unannotated bodies shows a real misuse trap immediately.
 		- Nothing is built for a 32-bit target, so the size arithmetic there is unverified. (Moot - see the cancellation below.)
 		- The writer fuzzer's character set contains no carriage return and no unusual whitespace, which is why item 6 survived.
 		- Python exports its own imports and one internal constant, because the module declares no public list.
@@ -5220,8 +5240,8 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- ✅ The writer fuzzer's character set gained the carriage return and six unusual whitespace characters - the gap that let the edge-whitespace truncation through. It found something immediately: a long soak on the new set found a raw block whose all-whitespace body grows by one indent level on every `fmt`, filed above.
 		- ✅ The cross stage runs cross-compile checks as well as artifact builds: the C library and CLI for Windows through mingw, and the library with file I/O compiled out. Neither had ever been built here, which is how the Windows regression reached dev.
 		- ✅ The deep soak is written down where it will be seen (`cicd/config.bash`, beside the gate) with the command and the reason. The gate itself was raised once the two fixpoint bugs it found were fixed. Both needed that depth to show up at all, so a gate below it could not see the class that produced them.
-		- 🚫 Canceled: a 32-bit build. 32-bit is not a target, so there is nothing to verify. The whole line traces to one observation: C's `decode_cps` sizes an allocation as `(m+1) * sizeof(size_t)` unchecked, which only overflows where `size_t` is 32 bits, and then only past a gigabyte of input. On every supported target that arithmetic is 64-bit and cannot overflow at any input size the parser will accept.
-		- ✋ Standing, not fixable by a gate: the cross-binding check cannot see a defect all four bindings share. Only the corpus can, and only if a case has the form. Both bugs filed this round are exactly that kind, and both were found by the fuzzer rather than the differential. That is the practical answer: widen the fuzzer, and add a corpus case whenever it finds something.
+		- 🚫 Canceled: a 32-bit build. 32-bit is not a target, so there is nothing to verify. The whole line traces to one observation: C's `decode_cps` sizes an allocation as `(m+1) * sizeof(size_t)` unchecked, which only overflows where `size_t` is 32 bits, and then only past a gigabyte of input. On every supported target that arithmetic is 64-bit and can't overflow at any input size the parser will accept.
+		- ✋ Standing, not fixable by a gate: the cross-binding check can't see a defect all four bindings share. Only the corpus can, and only if a case has the form. Both bugs filed this round are exactly that kind, and both were found by the fuzzer rather than the differential. That is the practical answer: widen the fuzzer, and add a corpus case whenever it finds something.
 		- Opened: 20260817-204524
 		- Closed: 20260818-170931
 
@@ -5342,7 +5362,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 	- ✅ Item 28: size, node count and array length limits.
 		- The depth cap closed the crash class. The rest is additive API that can be added later without breaking anything, and a consuming program can bound input size itself before calling parse.
 		- The size half came first: `read_file(path, max_bytes)` caps the read in all four bindings.
-		- Measured: a 4.3 MB document of one-line fields holds 252 MB resident, about 59x, so the byte cap alone cannot bound a load. That is what reopened the deferred half.
+		- Measured: a 4.3 MB document of one-line fields holds 252 MB resident, about 59x, so the byte cap alone can't bound a load. That is what reopened the deferred half.
 		- Decided: the caps are the caller's, not constants - `parse_limited(text, strictness, max_nodes, max_elements)` in every binding and the C++ veneer, 0 = uncapped. At the node cap the parse stops with one `E020` and the unparsed remainder counts as lost; an over-long array is refused whole (`E021`), never truncated. The depth cap keeps its skip-and-continue recovery; reasons in design.md.
 		- Fixed: all four bindings plus the veneer, byte-identical diagnostics.
 		- Pinned by: a parse_limited fixture in all four runners plus a veneer smoke line - cap crossing and its line number, lost accounting, the last-line cross, the one-line overshoot, both array spellings, strict failure carrying the document.
@@ -5416,7 +5436,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260725-182548
 
 	- ✅ Item 31: `paths()` exists only in the reference.
-		- Go, Python and C consumers handed an unknown document cannot enumerate it; `Count` and `Instances` both require knowing the path already.
+		- Go, Python and C consumers handed an unknown document can't enumerate it; `Count` and `Instances` both require knowing the path already.
 		- Straight violation of the guide's "same function inventory" rule on a public method, and about 20 lines per port.
 		- Fixed: `Paths()`/`paths()`/`shcl_paths` (and the veneer's `paths()`) now exist in every binding, mirroring the reference's walk (file order, deduplicated, bare-name-safe segments only); a shared fixture is pinned in all four native runners.
 		- Opened: 20260725-152141
@@ -5437,7 +5457,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Closed: 20260725-180134
 
 	- ✅ Item 34: Python's public `get_*` raises a private-named `_StatusError`.
-		- A caller cannot catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
+		- A caller can't catch it without reaching into a private name, so in practice they will write a bare `except Exception`.
 		- Fixed: the class is public `StatusError` now (docstring included), so callers can catch it by name.
 		- Opened: 20260725-152141
 		- Closed: 20260725-180134
@@ -5541,7 +5561,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 
 	- ✅ Item 22: `--on-bad=error` messages are bare enum names.
 		- Reproduced: `app.name: BadType` - no value, no requested type, no file, no suggested fix. Stderr is not contract, so this is free to improve.
-		- Done in all four CLIs: `shcl: cannot read <path> as <type>: <reason> (in <file>)`, where a BadType names the offending raw value (`value "$1200" is not a valid int`), and NotFound/Empty/Multiple get a plain-English reason. Array reads say `<type> array`. Stderr, so not crosscheck-pinned.
+		- Done in all four CLIs: `shcl: can't read <path> as <type>: <reason> (in <file>)`, where a BadType names the offending raw value (`value "$1200" is not a valid int`), and NotFound/Empty/Multiple get a plain-English reason. Array reads say `<type> array`. Stderr, so not crosscheck-pinned.
 		- Opened: 20260718-165550
 		- Closed: 20260721-125256
 
@@ -5651,12 +5671,12 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Opened: 20260909-103600
 		- Closed: 20260910-081017
 
-	- 🚫 Item 40: the one shape `migrate` cannot handle is not named by the load, though design.md says it is.
+	- 🚫 Item 40: the one shape `migrate` can't handle is not named by the load, though design.md says it is.
 		- Reproduced in all four. A fence label holding a whitespace-`#` reads `sql #note` under 2.x and `sql` now, and `check` says `ok (0 diagnostic(s))`. Corpus `068`'s own `expected-diags.txt` pins that silence.
-		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they cannot find.
-		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that cannot fail.
+		- Note: `design.md:108` says the load names it. Nothing does, so the one case a user is told to handle by hand is the one they can't find.
+		- Note: `perf-gate.bash`'s "did not do the work" guard is two lines, and a regression on a shared path inflates its own budget - filed here because it is the same class, a check that can't fail.
 		- Canceled: churn on a subtle design interpretation. Under the rules settled in `design.md` under Lexical edges the comment rule is 2.x's, so there is no such shape.
-		- Note: a narrower form of the shape does exist. The pinned 2.x build ran a fence label to the end of the line, so any `#` in one reads differently now, spaced or not. It has no spelling, so the load still cannot name it; the spec's Migrating section and `design.md` say so, and `check-migrate.bash` skips it by name with corpus `068` asserted.
+		- Note: a narrower form of the shape does exist. The pinned 2.x build ran a fence label to the end of the line, so any `#` in one reads differently now, spaced or not. It has no spelling, so the load still can't name it; the spec's Migrating section and `design.md` say so, and `check-migrate.bash` skips it by name with corpus `068` asserted.
 		- Opened: 20260909-103900
 		- Closed: 20260910-081017
 
@@ -5680,7 +5700,7 @@ A fix round is not finished until the full soak (`SHCL_FUZZ_ITERS=200000`) and e
 		- Users arrive from libraries that decode a whole document into a typed structure in one call, and that is the comparison a reviewer makes.
 		- It does not conflict with "values are typed by the reader": a field's declared type is the reader's requested type, applied in bulk.
 		- The real cost is parity: it is per-binding machinery with no reference structure to mirror. Decide it either way, but record the decision in design.md so it reads as a choice rather than an omission.
-		- Declined because the reference cannot implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product is. Hand-written reflection instead gives each binding its own machinery with nothing to mirror, the parity rule inverted.
+		- Declined because the reference can't implement it: a derive-based decoder needs a proc-macro, which is a second crate, and one file per binding with no dependencies is what the product is. Hand-written reflection instead gives each binding its own machinery with nothing to mirror, the parity rule inverted.
 		- Doing it in only the two languages where it is cheap would be worse than not doing it: the same config would load two different ways depending on the language, which is the one thing the crosscheck exists to prevent.
 		- Recorded in `design.md` -> Consumer API, so it reads as a choice rather than an omission. Reversible; the reasoning is what would have to change, not the code.
 		- Opened: 20260817-204524
