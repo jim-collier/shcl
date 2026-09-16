@@ -1578,6 +1578,7 @@ static ShclStr quote_double(ShclArena *a, ShclStr t);
 static ShclStr emit_element(ShclArena *a, const ShclElement *e);
 static ShclElement new_element(ShclStr text);
 static ShclStr escape_name(ShclArena *a, ShclStr name);
+static ShclStr diag_name(ShclArena *a, ShclStr name);
 static int index_shape(ShclStr body);
 
 /* One edit to a line: replace start..end with the text. */
@@ -2690,7 +2691,7 @@ static void skip_under_dead(ShclParser *P, size_t line, ShclStr indent) {
    both come here, same discipline as h001_head. */
 static ShclStr h002_head(ShclArena *a, ShclStr name) {
 	ShclSB s = {0};
-	sb_puts(a, &s, "merged with '"); sb_putS(a, &s, name); sb_puts(a, &s, "' at ");
+	sb_puts(a, &s, "merged with '"); sb_putS(a, &s, diag_name(a, name)); sb_puts(a, &s, "' at ");
 	return sb_S(&s);
 }
 static size_t reent_get(const ShclParser *P, size_t node) {
@@ -2742,7 +2743,7 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 				cur = select_or_create(P, cur, seg->name, seg->name_src, disc, line);
 			}
 			if (is_last && !v_is_empty(&value)) {
-				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
+				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, diag_name(P->line, seg->name)); sb_puts(P->line, &m, "' ignored");
 				p_refuse(P, line, "E002", sb_S(&m), out_kind(OUT_VALUE_DROPPED), indent);
 			}
 			break;
@@ -2757,13 +2758,13 @@ static int attach_path(ShclParser *P, size_t parent, ShclSegment *segs, size_t n
 			}
 			if (found != (size_t)-1) cur = found;
 			else {
-				ShclSB m = {0}; sb_puts(P->line, &m, "no instance "); sb_put_u64(P->line, &m, seg->sel.index); sb_puts(P->line, &m, " of '"); sb_putS(P->line, &m, seg->name); sb_putc(P->line, &m, '\'');
+				ShclSB m = {0}; sb_puts(P->line, &m, "no instance "); sb_put_u64(P->line, &m, seg->sel.index); sb_puts(P->line, &m, " of '"); sb_putS(P->line, &m, diag_name(P->line, seg->name)); sb_putc(P->line, &m, '\'');
 				p_refuse(P, line, "E003", sb_S(&m), out_kind(OUT_DROPPED), indent); return 0;
 			}
 			/* Same as the value selector: the instance is already chosen, so a
 			   trailing value has nowhere to bind. */
 			if (is_last && !v_is_empty(&value)) {
-				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, seg->name); sb_puts(P->line, &m, "' ignored");
+				ShclSB m = {0}; sb_puts(P->line, &m, "value after selector on '"); sb_putS(P->line, &m, diag_name(P->line, seg->name)); sb_puts(P->line, &m, "' ignored");
 				p_refuse(P, line, "E002", sb_S(&m), out_kind(OUT_VALUE_DROPPED), indent);
 			}
 			break;
@@ -2939,10 +2940,11 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
    set is frozen.) */
 static ShclStr h001_head(ShclArena *a, ShclStr name) {
 	ShclSB s = {0};
+	ShclStr shown = diag_name(a, name);
 	sb_putc(a, &s, '\'');
-	sb_putS(a, &s, name);
+	sb_putS(a, &s, shown);
 	sb_puts(a, &s, "' repeats as a bare leaf - did you mean '");
-	sb_putS(a, &s, name);
+	sb_putS(a, &s, shown);
 	sb_puts(a, &s, ": ");
 	return sb_S(&s);
 }
@@ -4663,6 +4665,23 @@ static ShclStr escape_name(ShclArena *a, ShclStr name) {
 	return sb_S(&b);
 }
 static ShclStr emit_name(ShclArena *a, ShclStr name) { return escape_name(a, name); }
+/* A field name for a diagnostic message: spelled the way the emitter would
+   write it, so a name carrying a line break, a dot or a quote cannot pose as
+   something it is not - a raw `a.b` reads exactly like `a` nesting `b`, and a
+   raw line break splits one diagnostic across two. CR is escaped here and not
+   in escape_name, because the name parse has no `\r` escape to read back. */
+static ShclStr diag_name(ShclArena *a, ShclStr name) {
+	ShclStr q = escape_name(a, name);
+	size_t i = 0;
+	while (i < q.n && q.p[i] != '\r') i++;
+	if (i == q.n) return q;
+	ShclSB b = {0};
+	for (i = 0; i < q.n; i++) {
+		if (q.p[i] == '\r') sb_puts(a, &b, "\\r");
+		else sb_putc(a, &b, q.p[i]);
+	}
+	return sb_S(&b);
+}
 
 // ---------------------------------------------------------------------------
 // The write side's one rule: what is written has to read back
@@ -5367,7 +5386,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 				default_at = kids.data[ki];
 			}
 		} else {
-			v_diag(a, faults, kid->line, "V090", v_msg3(a, "unknown schema key '", kid->name, "'"));
+			v_diag(a, faults, kid->line, "V090", v_msg3(a, "unknown schema key '", diag_name(a, kid->name), "'"));
 		}
 	}
 	c.required = required > 0;
@@ -5481,7 +5500,7 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 				continue;
 			}
 			if (v_frag_get(def, name)) {
-				v_diag(a, faults, node->line, "V094", v_msg3(a, "bad schema fragment '", name, "': duplicate"));
+				v_diag(a, faults, node->line, "V094", v_msg3(a, "bad schema fragment '", diag_name(a, name), "': duplicate"));
 				continue;
 			}
 			ShclVFrag fr; fr.name = name; memset(&fr.fields, 0, sizeof fr.fields);
@@ -5494,15 +5513,15 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 					else def->paths_complete = 0;
 				} else {
 					ShclSB s = {0, 0, 0};
-					sb_puts(a, &s, "bad schema fragment '"); sb_putS(a, &s, name);
-					sb_puts(a, &s, "': unknown key '"); sb_putS(a, &s, kid->name); sb_puts(a, &s, "'");
+					sb_puts(a, &s, "bad schema fragment '"); sb_putS(a, &s, diag_name(a, name));
+					sb_puts(a, &s, "': unknown key '"); sb_putS(a, &s, diag_name(a, kid->name)); sb_puts(a, &s, "'");
 					v_diag(a, faults, kid->line, "V094", sb_S(&s));
 				}
 			}
 			cmap_put(a, &def->fmap, cmap_hash(name, s_empty()), def->frags.len);
 			ShclVecVFrag_push(a, &def->frags, fr);
 		} else {
-			v_diag(a, faults, node->line, "V090", v_msg3(a, "unknown schema key '", node->name, "'"));
+			v_diag(a, faults, node->line, "V090", v_msg3(a, "unknown schema key '", diag_name(a, node->name), "'"));
 		}
 	}
 	// Every mount must name a declared fragment; cycles (self or mutual) are
@@ -5512,7 +5531,7 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 		for (size_t i = 0; i < list->len; i++) {
 			const ShclVCons *c = &list->data[i];
 			if (c->inherits.n && !v_frag_get(def, c->inherits)) {
-				v_diag(a, faults, c->inherits_line, "V095", v_msg3(a, "unknown schema fragment '", c->inherits, "'"));
+				v_diag(a, faults, c->inherits_line, "V095", v_msg3(a, "unknown schema fragment '", diag_name(a, c->inherits), "'"));
 				def->paths_complete = 0;
 			}
 		}
@@ -5579,7 +5598,7 @@ static void v_suggest(ShclArena *a, ShclArena *tmp, const ShclVecS *names, ShclS
 	}
 	if (have) {
 		sb_puts(a, msg, "; did you mean '");
-		sb_putS(a, msg, best_name);
+		sb_putS(a, msg, diag_name(a, best_name));
 		sb_puts(a, msg, "'?");
 	}
 }
@@ -5998,7 +6017,7 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 		ShclStr chain = sb_S(&cb);
 		ShclSB sb2 = {0, 0, 0};
 		if (pshown.n) { sb_putS(a, &sb2, pshown); sb_putc(a, &sb2, '.'); }
-		sb_putS(a, &sb2, node->name);
+		sb_putS(a, &sb2, diag_name(a, node->name));
 		ShclStr shown = sb_S(&sb2);
 		int found = 0;
 		{

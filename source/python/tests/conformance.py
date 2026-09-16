@@ -1600,6 +1600,16 @@ def main():
 	if key_calls[0]:
 		raise SystemExit(f"the source-attach guard built {key_calls[0]} value key(s) on 200 plain lines")
 
+	# The value fast path has to answer exactly what the byte loop does, at any
+	# offset public tokenize_value takes - including one mid-character, where
+	# the loop strides past a comma that bytes.find would have split on. U+00E9
+	# is two bytes, so offset 1 is its continuation byte and the comma is at 2.
+	nbtok = shcl.Tokens()
+	shcl.tokenize_value("é,", 1, shcl.Rules.CURRENT, nbtok)
+	nbspans = [(p.start, p.end) for p in nbtok.elements]
+	if nbspans != [(1, 3)]:
+		raise SystemExit(f"tokenize_value from a mid-character offset gave {nbspans}, want [(1, 3)]")
+
 	# The tokenizer's helpers are module level. Defined inside it they would
 	# be rebuilt, with a fresh cell each, once per document line.
 	for fn in (shcl.tokenize, shcl.tokenize_value, shcl._scan_piece):

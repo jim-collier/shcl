@@ -245,6 +245,8 @@ Consequences of the flat form, all verified against the current binary:
 
 The "did you mean `enabled`?" suggestion rides in the prose message, not the code. Edit-distance implementations would otherwise have to agree byte-for-byte across four bindings for a string that is explicitly per-binding voice.
 
+**A field name in a diagnostic is spelled the way the emitter would write it.** Pasting the stored name in raw let a name carrying a line break split one diagnostic across two lines, and printed a flat `a.b` exactly like `a` nesting `b` - the ambiguity `paths` output and `QuoteSegment` already avoid by quoting. Every site that names a field now goes through one helper, so the `H001` and `H002` suppressors still match the head their builder emitted. A carriage return is escaped for display only: the name parse has no `\r` escape to read back, so the emitter cannot write one.
+
 **A broken schema is reported against the schema.** Codes `V090+` cover schema faults (unknown constraint key, unusable type name), and their line numbers refer to the schema file.
 
 - Originally any fault suppressed data validation entirely; after consumer feedback we decided a fault must not mask real violations - the schema builder already drops a broken key or field individually, so the surviving constraints now check the document too, with the faults listed first.
