@@ -698,7 +698,7 @@ Notes:
 
 ## Migrating from 2.x
 
-The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read differently under them. `migrate FILE` rewrites such a file so the current parser reads the tree 2.x read. It touches only the spellings the two rule sets disagree on, and comments, blank lines, raw bodies and layout come through as written. `--write` puts the result back in place through the same save gate `fmt --write` uses.
+The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read differently under them. `migrate FILE` rewrites such a file so the current parser reads the tree 2.x read. It touches only the spellings the two rule sets disagree on, and comments, blank lines, raw bodies and layout come through as written. `--write` puts the result back in place through the same save gate `fmt --write` uses, and says how many lines it rewrote. `--check` prints nothing, names each line a rewrite would change as `FILE:LINE`, and exits 6 when there is one, so a directory of files can be checked without diffing each one.
 
 Most of the change is loud. A quote that never closes is `E017`, bracket text after a colon is `E019`, and a line the current rules cannot read at all is a malformed line. A file carrying one of those says so the first time it is loaded.
 

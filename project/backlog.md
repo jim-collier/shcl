@@ -181,12 +181,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
 
-	- 🔘 Item 41: there is no way to ask whether a file or a tree needs migrating, and `migrate --write` reports nothing either way.
-		- A user upgrading has a directory of files and no command that answers "which of these change meaning". `migrate FILE` prints the migrated text, so telling migrated from unchanged means diffing it yourself, and `migrate --write` prints nothing on success and nothing on a file it left alone.
-		- A `--check` mode that exits nonzero when the two readings differ, and names the lines, is the missing piece. The comparison already exists inside `migrate`.
-		- Related: bug items 2, 4 and 10 are all consequences of the same gap.
-		- Opened: 20260909-104000
-
 	- 🔘 Item 42: no `shcl explain CODE`, and a diagnostic says nothing about where to look a code up.
 		- `E019 bracket array syntax; an array is comma-separated, without brackets` is a good message, but a user who wants the rule has to know that `project/spec.md` has a table and that it lives on GitHub.
 		- The spec's own table is the text an `explain` subcommand would print, so this is mostly plumbing.
@@ -3482,6 +3476,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260909:
+
+	- ✅ Item 41: there is no way to ask whether a file or a tree needs migrating, and `migrate --write` reports nothing either way.
+		- A user upgrading has a directory of files and no command that answers "which of these change meaning". `migrate FILE` prints the migrated text, so telling migrated from unchanged means diffing it yourself, and `migrate --write` prints nothing on success and nothing on a file it left alone.
+		- A `--check` mode that exits nonzero when the two readings differ, and names the lines, is the missing piece. The comparison already exists inside `migrate`.
+		- Related: bug items 2, 4 and 10 are all consequences of the same gap.
+		- Decided: `migrate --check` prints nothing, names each line a rewrite would change, and exits 6 when there is one. 7 still wins when `migrate` could not finish. It can't be combined with `--write`. One FILE per run, so a tree is a shell loop.
+		- Fixed: the check is in the four CLIs, which compare the file with the migrated text line by line. `migrate --write` now says how many lines it rewrote.
+		- Fixed: the completion files never offered `--from-2x`, so `check-completions.bash` had been red on dev since it went in, and its option pattern dropped digits. Both are fixed.
+		- Pinned by: seven `cli-regress.bash` rows, `migrate-check-*` and `migrate-write-says`, watched to fail on a line number off by one, a missing exit 6 and a missing write report.
+		- Opened: 20260909-104000
+		- Closed: 20260916-160434
 
 - Code review 20260905:
 

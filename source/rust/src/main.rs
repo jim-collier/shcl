@@ -81,8 +81,9 @@ Usage:
   shcl paths [options] FILE              every field path in the document, one
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
-                                         rules (print it, or rewrite FILE in
-                                         place with --write)
+                                         rules (print it, rewrite FILE in place
+                                         with --write, or name the lines it
+                                         would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -134,6 +135,9 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
+  --check                                (migrate) print nothing, name each
+                                         line the rewrite would change on
+                                         stderr, and exit 6 when there is one
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -170,8 +174,8 @@ so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
-named more than once across FILE, --layer and --schema.
+without --write; --check with --write; --layer=- on 'set'; --array with --raw
+or --rawinfo; '-' named more than once across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides). migrate refuses a file that does not
@@ -182,9 +186,10 @@ each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides) or migrate left
-something behind, 8 a file or stream could not be read or written.
+5 multiple instances, 6 check failed, strict load failed, init's schema has
+faults, or migrate --check found a line to rewrite, 7 in-place write refused
+(--lossy overrides) or migrate left something behind, 8 a file or stream could
+not be read or written.
 ";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -340,6 +345,7 @@ struct Opts {
 	write: bool,
 	lossy: bool,
 	from_2x: bool,
+	check: bool,
 	no_banner: bool,
 	schema: Option<String>,
 	layers: Vec<String>,     // lower-priority layers, in listed order
@@ -403,6 +409,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		write: false,
 		lossy: false,
 		from_2x: false,
+		check: false,
 		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
@@ -446,6 +453,10 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--from-2x" => {
 				o.from_2x = true;
 				o.seen.push("--from-2x");
+			}
+			"--check" => {
+				o.check = true;
+				o.seen.push("--check");
 			}
 			"--no-banner" => {
 				o.no_banner = true;
@@ -603,7 +614,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
-		"migrate" => &["--write", "--lossy", "--from-2x"],
+		"migrate" => &["--write", "--lossy", "--from-2x", "--check"],
 		"tokens" => &[],
 		"count" | "instances" | "children" | "paths" => &[
 			"--strictness",
@@ -675,6 +686,10 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
 		errln!("--lossy is only meaningful with --write (see --help)");
+		return Err(1);
+	}
+	if o.check && o.write {
+		errln!("--check cannot be combined with --write (see --help)");
 		return Err(1);
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
@@ -1114,6 +1129,23 @@ fn do_fmt(o: &Opts) -> u8 {
 	0
 }
 
+/// The numbers of the lines migrate spells differently, counted from 1. The
+/// rewrite goes line for line and only appends, so line N of the input is line
+/// N of the output.
+fn rewritten_lines(before: &str, after: &str) -> Vec<usize> {
+	if before.is_empty() {
+		return Vec::new();
+	}
+	let before = before.strip_suffix('\n').unwrap_or(before);
+	before
+		.split('\n')
+		.zip(after.split('\n'))
+		.enumerate()
+		.filter(|(_, (a, b))| a != b)
+		.map(|(i, _)| i + 1)
+		.collect()
+}
+
 /// A 2.x file rewritten for the current rules. The rewrite is text to text;
 /// the load after it is for the diagnostics and the save gate, the same gate
 /// `fmt --write` goes through.
@@ -1146,7 +1178,7 @@ fn do_migrate(o: &Opts) -> u8 {
 			"{}: nothing to migrate: the file already names its format",
 			file
 		);
-		if !o.write {
+		if !o.write && !o.check {
 			out!("{}", m.text);
 		}
 		return 0;
@@ -1170,6 +1202,16 @@ fn do_migrate(o: &Opts) -> u8 {
 			rc = 7;
 		}
 	}
+	let rewritten = rewritten_lines(&text, &m.text);
+	if o.check {
+		for n in &rewritten {
+			errln!("{}:{}: migrate would rewrite this line", file, n);
+		}
+		if rc == 0 && !rewritten.is_empty() {
+			rc = 6;
+		}
+		return rc;
+	}
 	if o.write {
 		if rc != 0 {
 			errln!("{}: refusing to rewrite; nothing changed", file);
@@ -1184,7 +1226,10 @@ fn do_migrate(o: &Opts) -> u8 {
 			return 7;
 		}
 		return match write_file_atomic(file, &m.text) {
-			Ok(()) => 0,
+			Ok(()) => {
+				errln!("{}: migrated, {} line(s) rewritten", file, rewritten.len());
+				0
+			}
 			Err(e) => {
 				errln!("{}", e);
 				EXIT_IO

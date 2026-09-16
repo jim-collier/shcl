@@ -82,8 +82,9 @@ Usage:
   shcl paths [options] FILE              every field path in the document, one
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
-                                         rules (print it, or rewrite FILE in
-                                         place with --write)
+                                         rules (print it, rewrite FILE in place
+                                         with --write, or name the lines it
+                                         would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -135,6 +136,9 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
+  --check                                (migrate) print nothing, name each
+                                         line the rewrite would change on
+                                         stderr, and exit 6 when there is one
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -171,8 +175,8 @@ so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
-named more than once across FILE, --layer and --schema.
+without --write; --check with --write; --layer=- on 'set'; --array with --raw
+or --rawinfo; '-' named more than once across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides). migrate refuses a file that does not
@@ -183,9 +187,10 @@ each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides) or migrate left
-something behind, 8 a file or stream could not be read or written.
+5 multiple instances, 6 check failed, strict load failed, init's schema has
+faults, or migrate --check found a line to rewrite, 7 in-place write refused
+(--lossy overrides) or migrate left something behind, 8 a file or stream could
+not be read or written.
 """
 
 # About and donate are stdout, so they are byte-for-byte contracts across the
@@ -247,7 +252,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "check", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -264,6 +269,7 @@ class _Opts:
 		self.write = False
 		self.lossy = False
 		self.from_2x = False
+		self.check = False
 		self.no_banner = False
 		self.layers = []         # lower-priority layers, in listed order
 		self.sets = []           # final override layer: _SetOpt, in the order given
@@ -395,6 +401,9 @@ def parse_opts(argv):
 		elif a == "--from-2x":
 			o.from_2x = True
 			o.seen.append("--from-2x")
+		elif a == "--check":
+			o.check = True
+			o.seen.append("--check")
 		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 			if i >= len(argv):
@@ -551,7 +560,7 @@ def check_opts(cmd, o):
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
 	elif cmd == "migrate":
-		allowed = ("--write", "--lossy", "--from-2x")
+		allowed = ("--write", "--lossy", "--from-2x", "--check")
 	elif cmd == "tokens":
 		allowed = ()
 	elif cmd in ("count", "instances", "children", "paths"):
@@ -600,6 +609,9 @@ def check_opts(cmd, o):
 	# nothing and would read as protection the command never had.
 	if o.lossy and not o.write:
 		sys.stderr.write("--lossy is only meaningful with --write (see --help)\n")
+		return 1
+	if o.check and o.write:
+		sys.stderr.write("--check cannot be combined with --write (see --help)\n")
 		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
@@ -823,6 +835,16 @@ def do_fmt(o):
 	return 0
 
 
+def rewritten_lines(before, after):
+	# The numbers of the lines migrate spells differently, counted from 1. The
+	# rewrite goes line for line and only appends, so line N of the input is
+	# line N of the output.
+	if before == "":
+		return []
+	b = before[:-1] if before.endswith("\n") else before
+	return [i + 1 for i, (x, y) in enumerate(zip(b.split("\n"), after.split("\n"))) if x != y]
+
+
 def do_migrate(o):
 	# A 2.x file rewritten for the current rules. The rewrite is text to text;
 	# the load after it is for the diagnostics and the save gate, the same
@@ -848,7 +870,7 @@ def do_migrate(o):
 	# and nothing to write. Saying so beats printing the input back silently.
 	if m.current:
 		sys.stderr.write(f"{file}: nothing to migrate: the file already names its format\n")
-		if not o.write:
+		if not o.write and not o.check:
 			sys.stdout.write(m.text)
 		return 0
 	rc = 0
@@ -859,6 +881,13 @@ def do_migrate(o):
 		sys.stderr.write(f"{file}: {m.lost} line(s) bound a value under 2.x that nothing binds now: bracket text after the colon, which has no spelling here (--lossy overrides)\n")
 		if not o.lossy:
 			rc = 7
+	rewritten = rewritten_lines(text, m.text)
+	if o.check:
+		for n in rewritten:
+			sys.stderr.write(f"{file}:{n}: migrate would rewrite this line\n")
+		if rc == 0 and rewritten:
+			rc = 6
+		return rc
 	if o.write:
 		if rc != 0:
 			sys.stderr.write(f"{file}: refusing to rewrite; nothing changed\n")
@@ -870,6 +899,7 @@ def do_migrate(o):
 		if err is not None:
 			sys.stderr.write(err + "\n")
 			return EXIT_IO
+		sys.stderr.write(f"{file}: migrated, {len(rewritten)} line(s) rewritten\n")
 		return 0
 	sys.stdout.write(m.text)
 	return rc
