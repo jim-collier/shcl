@@ -671,9 +671,9 @@ TMP_NAME_BYTES = 64
 # - A value is split on unquoted commas, each piece trimmed.
 #
 # Under Rules.V2 the tokenizer reads the 2.x spellings instead, for migrate:
-# a backslash shields the next character in bare and single-quoted text, a
-# separator followed by `[` is the selector sugar, and an open quote swallows
-# the rest of the line.
+# a backslash shields the next character in bare and single-quoted value text,
+# a bare selector body still runs to its first `]`, a separator followed by `[`
+# is the selector sugar, and an open quote swallows the rest of the line.
 #
 # The scan runs over the UTF-8 bytes of the text, so every offset it records
 # is a byte offset - the offsets the other bindings record, and what the
@@ -982,7 +982,9 @@ def _scan_piece(s, pos, term, rules, comments):
 				while end > start and _is_wsp_byte(s[end - 1]):
 					end -= 1
 				return Piece(start, end, quote), n
-	shield = rules is Rules.V2
+	# 2.x shielded a backslash in value text only. A bare selector body ran to
+	# its first `]`, the same as now, so shielding one here would hide the `]`.
+	shield = rules is Rules.V2 and term == _B_COMMA
 	content_end = start
 	# The text came off str.encode, so it is valid UTF-8 and a whole-character
 	# step never passes the end: pos stays at most n without a clamp per byte.
@@ -1413,6 +1415,15 @@ def _migrate_spelling(logical, bare):
 	return _quote_text(logical)
 
 
+def _v2_bracket_array(body):
+	"""True when 2.x read this bare `[...]` body as the JSON-habit array rather
+	than a discriminator: more than one element, where a comma behind a
+	backslash was not one."""
+	tok = Tokens()
+	tokenize_value(body, 0, Rules.V2, tok)
+	return len(tok.elements) > 1
+
+
 def _value_edits(s, tok, edits):
 	"""The re-spellings a value's pieces need. Each piece is read the 2.x way
 	(escapes everywhere, an open quote kept whole, a quote at both ends making
@@ -1482,12 +1493,13 @@ def _migrate_line(rest, tok, fence):
 			if i == last and tok.sep is None:
 				if colon is not None:
 					# `name:[disc]` with nothing after it: 2.x read it as
-					# `name: disc`. A bare comma in there was refused as a
-					# bracket array, and an index or the wildcard was refused
-					# as a selector, so those stay as written. A bare body
-					# moves into a value, where a fence run opens a raw block
-					# and a leading `[` is bracket text, so the emitter spells it.
-					if not quoted and ("," in body or _index_shape(body) or body == "*"):
+					# `name: disc`. Two or more elements in there was refused
+					# as a bracket array - a comma behind a backslash was not
+					# one - and an index or the wildcard was refused as a
+					# selector, so those stay as written. A bare body moves
+					# into a value, where a fence run opens a raw block and a
+					# leading `[` is bracket text, so the emitter spells it.
+					if not quoted and (_v2_bracket_array(body) or _index_shape(body) or body == "*"):
 						return rest, fence
 					if logical != body:
 						spelling = _migrate_spelling(logical, False)

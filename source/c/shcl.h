@@ -1129,8 +1129,9 @@ static ShclStr value_display(ShclArena *a, const ShclValue *v) {
 //
 // Under SHCL_RULES_V2 the tokenizer reads the 2.x spellings instead, for
 // shcl_migrate: a backslash shields the next character in bare and
-// single-quoted text, a separator followed by `[` is the selector sugar, and
-// an open quote swallows the rest of the line.
+// single-quoted value text, a bare selector body still runs to its first `]`,
+// a separator followed by `[` is the selector sugar, and an open quote
+// swallows the rest of the line.
 //
 // The two span vectors grow in whatever arena the caller hands over - the
 // parser's scratch for a parse, the read arena for the public entry points -
@@ -1233,7 +1234,9 @@ static size_t scan_piece(ShclStr s, size_t pos, char term, ShclRules rules, int 
 			}
 		}
 	}
-	int shield = rules == SHCL_RULES_V2;
+	/* 2.x shielded a backslash in value text only. A bare selector body ran to
+	   its first `]`, the same as now, so shielding one here would hide the `]`. */
+	int shield = rules == SHCL_RULES_V2 && term == ',';
 	size_t content_end = start;
 	while (pos < s.n) {
 		unsigned char b = (unsigned char)s.p[pos];
@@ -1625,6 +1628,15 @@ static ShclStr migrate_spelling(ShclArena *a, ShclStr logical, int bare) {
 	return quote_text(a, logical);
 }
 
+/* True when 2.x read this bare `[...]` body as the JSON-habit array rather
+   than a discriminator: more than one element, where a comma behind a
+   backslash was not one. */
+static int v2_bracket_array(ShclArena *a, ShclStr body) {
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize_value(a, body, 0, SHCL_RULES_V2, &tok);
+	return tok.nelem > 1;
+}
+
 /* The re-spellings a value's pieces need. Each piece is read the 2.x way
    (escapes everywhere, an open quote kept whole, a quote at both ends making
    it quoted) and re-spelled only where the current rules would read the same
@@ -1681,12 +1693,13 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 			if (i == last && !tok->has_sep) {
 				if (has_colon) {
 					/* name:[disc] with nothing after it: 2.x read it as
-					   `name: disc`. A bare comma in there was refused as a
-					   bracket array, and an index or the wildcard was refused
-					   as a selector, so those stay as written. A bare body
-					   moves into a value, where a fence run opens a raw block
-					   and a leading `[` is bracket text, so the emitter spells it. */
-					if (!quoted && (memchr(body.p, ',', body.n) || index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
+					   `name: disc`. Two or more elements in there was refused
+					   as a bracket array - a comma behind a backslash was not
+					   one - and an index or the wildcard was refused as a
+					   selector, so those stay as written. A bare body moves
+					   into a value, where a fence run opens a raw block and a
+					   leading `[` is bracket text, so the emitter spells it. */
+					if (!quoted && (v2_bracket_array(a, body) || index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
 					ShclStr spelling;
 					if (!s_eq(logical, body)) spelling = migrate_spelling(a, logical, 0);
 					else if (quoted) spelling = s_trim_wsp(s_slice(rest, open + 1, close));
