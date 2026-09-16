@@ -655,6 +655,7 @@ The output, per schema field in schema order:
 	##
 	## This config file format is SHCL.
 	## "Simple Hierarchical Config Language"
+	##    Format   3
 	##    Home     https://github.com/jim-collier/shcl
 	##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
 	##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
@@ -702,6 +703,10 @@ The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read
 Most of the change is loud. A quote that never closes is `E017`, bracket text after a colon is `E019`, and a line the current rules cannot read at all is a malformed line. A file carrying one of those says so the first time it is loaded.
 
 The comment rule did not change. A `#` outside quotes opened a comment in 2.x and still does, so values and comments read the same on both sides.
+
+Which file it is looking at is the one thing `migrate` cannot read off the text. `p: 'C:\temp'` is spelled the same way under both rule sets and means two different things, so rewriting a 3.0 file would change what it says. The info block carries a `Format` line naming the format's major, and that is what decides. A file carrying it has nothing to migrate. A file without it keeps those spellings as written and exits 7, unless `--from-2x` says it really is 2.x. A file `migrate` rewrites is stamped with that line, plus a note saying where it came from, so a second run has the answer the first one did not. Only `migrate` reads the line; every other command treats it as the comment it is.
+
+Bracket text after the colon is the one line 2.x bound that nothing binds now, and there is no 3.0 spelling to move it to. `migrate` leaves the line and exits 7 rather than reporting success, so a scripted migration can tell "migrated" from "gave up"; `--lossy` accepts the loss on a rewrite.
 
 Two edges read differently, and `migrate` leaves both as written:
 

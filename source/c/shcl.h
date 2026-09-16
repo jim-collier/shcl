@@ -289,6 +289,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 	"##\n" \
 	"## This config file format is SHCL.\n" \
 	"## \"Simple Hierarchical Config Language\"\n" \
+	"##    Format   3\n" \
 	"##    Home     https://github.com/jim-collier/shcl\n" \
 	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" \
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n" \
@@ -452,11 +453,29 @@ void shcl_tokenize_value(shcl_doc *d, const char *text, size_t len, size_t from,
 // How many elements the value holds: a quoted piece counts even when empty
 // ("" is a real element), an empty bare slot does not.
 size_t shcl_tokens_element_count(const shcl_tokens *t);
+// The format major the info block names. It moves with the format, not with
+// the header: a file says which rule set it was written for, and nothing else
+// does. SHCL_FORMAT_LINE_HEAD is what shcl_migrate matches to find the line,
+// so a later major can still read an older file's number.
+#define SHCL_FORMAT_MAJOR 3
+#define SHCL_FORMAT_LINE_HEAD "##    Format   "
+#define SHCL_FORMAT_LINE "##    Format   3"
+#define SHCL_MIGRATED_LINE "##    Migrated from SHCL 2.x."
+
+// What shcl_migrate produced, and what it could not carry across. text is
+// malloc'd and NUL-terminated, the caller frees it, len is its length, and it
+// may hold NUL if the input did. current: the file already names its format,
+// so there was nothing to migrate and text is the input. ambiguous: pieces the
+// two rule sets read differently and nothing can decide between, left as
+// written; always 0 when from_v2 said the file is 2.x. lost: lines 2.x bound a
+// value on that nothing binds now - bracket text after the colon.
+typedef struct { char *text; size_t len; int current; size_t ambiguous; size_t lost; } shcl_migration;
+
 // Rewrite a document written under the 2.x lexical rules so this parser reads
 // the same tree; everything the two rule sets agree on comes through as
-// written. malloc'd and NUL-terminated, the caller frees it, *out_len (may be
-// NULL) gets the length. The result may hold NUL if the input did.
-char *shcl_migrate(const char *text, size_t len, size_t *out_len);
+// written. from_v2 says the file really is 2.x, which is the only thing that
+// can settle the spellings the two rule sets read differently.
+shcl_migration shcl_migrate(const char *text, size_t len, int from_v2);
 
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
 // The reverse of the reads. Each setter builds the canonical stored text for a
@@ -1642,7 +1661,10 @@ static int v2_bracket_array(ShclArena *a, ShclStr body) {
    (escapes everywhere, an open quote kept whole, a quote at both ends making
    it quoted) and re-spelled only where the current rules would read the same
    text as something else. */
-static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclVecEdit *edits) {
+/* The counters a line rewrite reports back, and the one thing it asks. */
+typedef struct { int from_v2; size_t ambiguous; size_t lost; } ShclMigrating;
+
+static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclVecEdit *edits, ShclMigrating *st) {
 	for (size_t i = 0; i < tok->nelem; i++) {
 		const ShclPiece *p = &tok->elements[i];
 		ShclStr raw = s_slice(text, p->start, p->end);
@@ -1651,13 +1673,17 @@ static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclV
 		if (p->quote == SHCL_QUOTE_NONE && !memchr(raw.p, '\\', raw.n) && raw.n) continue;
 		ShclStr logical = apply_escapes(a, raw);
 		if (reads_same(a, s_slice(text, ea, eb), quoted, logical)) continue;
+		/* A resolved escape is the one edit that turns on which rule set wrote
+		   the file: these bytes say one thing under 2.x and another here. An
+		   open quote or an empty slot reads alike either way, so it still goes. */
+		if (!s_eq(logical, raw) && !st->from_v2) { st->ambiguous++; continue; }
 		edit_push(a, edits, ea, eb, migrate_spelling(a, logical, !(quoted || p->quote == SHCL_QUOTE_OPEN)));
 	}
 }
 
 /* fence_on/ch/len: the block a child-indent or same-line fence opened, which
    the caller copies through until its close. */
-static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclTokens *tok, int *fence_on, unsigned char *fence_ch, size_t *fence_len) {
+static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclTokens *tok, int *fence_on, unsigned char *fence_ch, size_t *fence_len, ShclMigrating *st) {
 	if (rest.n == 0 || rest.p[0] == '#') return rest;
 	/* A child-indent fence: 2.x read the info string to the end of the line. */
 	ShclFence f = fence_open(rest);
@@ -1666,7 +1692,7 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 	if (rest.p[0] == '*' && rest.n > 1 && is_wsp((unsigned char)rest.p[1])) {
 		tokenize_value(ta, rest, 1, SHCL_RULES_V2, tok);
 		/* A bare comma was refused (E010), so there is nothing to carry. */
-		if (tok->nelem == 1) value_edits(a, rest, tok, &edits);
+		if (tok->nelem == 1) value_edits(a, rest, tok, &edits, st);
 	} else {
 		tokenize(ta, rest, ':', 0, SHCL_RULES_V2, tok);
 		if (tok->has_fault) return rest;
@@ -1674,8 +1700,10 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 		for (size_t i = 0; i < tok->nseg; i++) {
 			const ShclSegTok *seg = &tok->segments[i];
 			ShclStr name = s_slice(rest, seg->name.start, seg->name.end);
-			if (seg->name.quote == SHCL_QUOTE_SINGLE && !s_eq(apply_escapes(a, name), name))
-				edit_push(a, &edits, seg->name.start - 1, seg->name.end + 1, escape_name(a, apply_escapes(a, name)));
+			if (seg->name.quote == SHCL_QUOTE_SINGLE && !s_eq(apply_escapes(a, name), name)) {
+				if (st->from_v2) edit_push(a, &edits, seg->name.start - 1, seg->name.end + 1, escape_name(a, apply_escapes(a, name)));
+				else st->ambiguous++;
+			}
 			if (!seg->has_selector) continue;
 			const ShclPiece *sel = &seg->selector;
 			int quoted = piece_quoted(sel->quote);
@@ -1700,7 +1728,13 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 					   selector, so those stay as written. A bare body moves
 					   into a value, where a fence run opens a raw block and a
 					   leading `[` is bracket text, so the emitter spells it. */
-					if (!quoted && (v2_bracket_array(a, body) || index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
+					if (!quoted && (index_shape(body) || (body.n == 1 && body.p[0] == '*'))) return rest;
+					/* 2.x bound the bracket array, as one folded string. There
+					   is no spelling to move that to - a value beginning with
+					   `[` is bracket text now - so the binding goes, and the
+					   caller hears about it rather than reading exit 0. */
+					if (!quoted && v2_bracket_array(a, body)) { st->lost++; return rest; }
+					if (!s_eq(logical, body) && !st->from_v2) { st->ambiguous++; continue; }
 					ShclStr spelling;
 					if (!s_eq(logical, body)) spelling = migrate_spelling(a, logical, 0);
 					else if (quoted) spelling = s_trim_wsp(s_slice(rest, open + 1, close));
@@ -1715,16 +1749,20 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 				int spaced = colon > 0 && is_wsp((unsigned char)rest.p[colon - 1]) && is_wsp((unsigned char)rest.p[colon + 1]);
 				edit_push(a, &edits, colon, colon + 1 + (size_t)spaced, s_empty());
 			}
-			if (!s_eq(logical, body)) {
-				size_t ea = quoted ? sel->start - 1 : sel->start, eb = quoted ? sel->end + 1 : sel->end;
-				if (sel->quote != SHCL_QUOTE_DOUBLE) edit_push(a, &edits, ea, eb, migrate_spelling(a, logical, 0));
+			/* Double quotes already read alike on both sides, so only the other
+			   spellings turn on which rule set wrote the file. */
+			if (!s_eq(logical, body) && sel->quote != SHCL_QUOTE_DOUBLE) {
+				if (st->from_v2) {
+					size_t ea = quoted ? sel->start - 1 : sel->start, eb = quoted ? sel->end + 1 : sel->end;
+					edit_push(a, &edits, ea, eb, migrate_spelling(a, logical, 0));
+				} else st->ambiguous++;
 			}
 		}
 		if (tok->has_sep) {
 			/* A same-line fence: the info string ran to the end of the line. */
 			ShclFence vf = fence_open(s_slice(rest, tok->value_start, rest.n));
 			if (vf.ok) { *fence_on = 1; *fence_ch = vf.ch; *fence_len = vf.len; return s_splice(a, rest, &edits); }
-			value_edits(a, rest, tok, &edits);
+			value_edits(a, rest, tok, &edits, st);
 		}
 	}
 	return s_splice(a, rest, &edits);
@@ -1746,9 +1784,43 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    The output and the reused tokens live in `a`; the per-line temporaries go
    to `sc`, reset per line, so a large document costs its own size and not
    every line's scratch on top. */
-static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text) {
+/* The major a `##    Format   N` line names, or -1 when the document carries
+   none. Once the running value is past this major it stops accumulating: the
+   comparison below only asks which side of this major it falls, and that keeps
+   a line of many digits from overflowing. Only migrate reads this line. */
+static long format_version(ShclStr text) {
+	size_t headn = sizeof(SHCL_FORMAT_LINE_HEAD) - 1, start = 0;
+	for (size_t i = 0; i <= text.n; i++) {
+		if (i < text.n && text.p[i] != '\n') continue;
+		ShclStr line = trim_wsp_end(s_slice(text, start, i));
+		start = i + 1;
+		if (line.n <= headn || memcmp(line.p, SHCL_FORMAT_LINE_HEAD, headn) != 0) continue;
+		ShclStr n = s_slice(line, headn, line.n);
+		long v = 0; int ok = 1;
+		for (size_t k = 0; k < n.n; k++) {
+			if (!is_adigit((unsigned char)n.p[k])) { ok = 0; break; }
+			if (v <= SHCL_FORMAT_MAJOR) v = v * 10 + (n.p[k] - '0');
+		}
+		if (ok) return v;
+	}
+	return -1;
+}
+
+/* Which file this is cannot be read off the text: `p: 'C:\temp'` is one value
+   under 2.x and another under these rules, so rewriting a 3.0 file changes what
+   it says. So the version line decides. A file that names this format comes
+   back untouched; one that names an older format, or a caller passing from_v2,
+   gets the backslash re-spellings; anything else gets every other rewrite and
+   leaves those pieces alone, counted in st->ambiguous for the caller to refuse
+   over. A rewritten file is stamped with the version line, so the second run
+   has an answer the first one did not. */
+static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating *st, int *current) {
+	long version = format_version(text);
+	if (version >= SHCL_FORMAT_MAJOR) { *current = 1; return text; }
+	if (version >= 0) st->from_v2 = 1;
+	int changed = 0;
 	ShclSB out = {0};
-	sb_reserve(a, &out, text.n + 32);
+	sb_reserve(a, &out, text.n + 96);
 	if (text.n >= 3 && (unsigned char)text.p[0] == 0xEF && (unsigned char)text.p[1] == 0xBB && (unsigned char)text.p[2] == 0xBF) {
 		sb_put(a, &out, text.p, 3);
 		text = s_slice(text, 3, text.n);
@@ -1771,26 +1843,39 @@ static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text) {
 			ShclStr indent = leading_ws(body);
 			ShclStr rest_full = s_slice(body, indent.n, body.n);
 			ShclStr rest = trim_wsp_end(rest_full);
+			ShclStr migrated = migrate_line(a, sc, rest, &tok, &fence_on, &fence_ch, &fence_len, st);
+			if (!s_eq(migrated, rest)) changed = 1;
 			sb_putS(a, &out, indent);
-			sb_putS(a, &out, migrate_line(a, sc, rest, &tok, &fence_on, &fence_ch, &fence_len));
+			sb_putS(a, &out, migrated);
 			sb_putS(a, &out, s_slice(rest_full, rest.n, rest_full.n));
 			sb_putS(a, &out, cr);
 		}
 		start = i + 1;
 	}
+	/* Stamping a file whose ambiguous pieces were left alone would claim a
+	   migration that did not finish, and the next run would then skip it. A
+	   document that never closes its raw block has nowhere to put the line
+	   either: appended, it would be another line of the block's content. */
+	if (st->ambiguous == 0 && !fence_on) {
+		if (out.len && out.data[out.len - 1] != '\n') sb_putc(a, &out, '\n');
+		sb_puts(a, &out, SHCL_FORMAT_LINE); sb_putc(a, &out, '\n');
+		if (changed) { sb_puts(a, &out, SHCL_MIGRATED_LINE); sb_putc(a, &out, '\n'); }
+	}
 	return sb_S(&out);
 }
 
-char *shcl_migrate(const char *text, size_t len, size_t *out_len) {
+shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
 	ShclArena a, sc; memset(&a, 0, sizeof a); memset(&sc, 0, sizeof sc);
 	ShclStr in; in.p = text ? text : ""; in.n = len;
-	ShclStr r = migrate(&a, &sc, in);
-	char *out = (char *)malloc(r.n + 1);
-	if (!out) { arena_free(&a); arena_free(&sc); SHCL_OOM(); abort(); }
-	memcpy(out, r.p, r.n); out[r.n] = 0;
-	if (out_len) *out_len = r.n;
+	ShclMigrating st; st.from_v2 = from_v2; st.ambiguous = 0; st.lost = 0;
+	shcl_migration m; m.current = 0;
+	ShclStr r = migrate(&a, &sc, in, &st, &m.current);
+	m.ambiguous = st.ambiguous; m.lost = st.lost; m.len = r.n;
+	m.text = (char *)malloc(r.n + 1);
+	if (!m.text) { arena_free(&a); arena_free(&sc); SHCL_OOM(); abort(); }
+	memcpy(m.text, r.p, r.n); m.text[r.n] = 0;
 	arena_free(&a); arena_free(&sc);
-	return out;
+	return m;
 }
 
 // --- Path scanner (shared by file lines and accessor queries) ----------------

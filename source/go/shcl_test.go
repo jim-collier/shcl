@@ -572,7 +572,7 @@ func TestMigrateMatchesExpected(t *testing.T) {
 		if !c.hasMigrate {
 			continue
 		}
-		got := Migrate(c.input)
+		got := Migrate(c.input, true).Text
 		if got != c.expectedMigrate {
 			t.Errorf("%s: migrate output differs from expected-migrate.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedMigrate)
 		}
@@ -584,8 +584,8 @@ func TestMigrateMatchesExpected(t *testing.T) {
 
 func TestMigrateIsAFixpoint(t *testing.T) {
 	for _, c := range loadCases(t) {
-		once := Migrate(c.input)
-		if again := Migrate(once); again != once {
+		once := Migrate(c.input, true).Text
+		if again := Migrate(once, true).Text; again != once {
 			t.Errorf("%s: migrate changes its own output\ngot:\n%s\nwant:\n%s", c.name, again, once)
 		}
 	}

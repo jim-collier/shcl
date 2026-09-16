@@ -122,6 +122,17 @@ printf 'a: 1\nb: 2\n' > "${tmpDir}/two.shcl"
 printf 'ports: [80, 443]\n' > "${tmpDir}/brarray.shcl"
 printf 'srv["1,000"].port: 1\n' > "${tmpDir}/selcomma.shcl"
 printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
+## A value the two rule sets read differently: 2.x resolved the backslash and
+## these rules do not, and the bytes are the same either way, so a rewrite that
+## guesses damages whichever file it guessed wrong about. Copied fresh for the
+## rows that rewrite, the way the sugar file is.
+printf 'p: %s\n' "'C:\temp'" > "${tmpDir}/bsrc.shcl"
+## The bracket array again, for the rows that rewrite it. %BA% is shared, and a
+## migrate that stamps the file would leave the next binding nothing to do.
+printf 'ports: [80, 443]\n' > "${tmpDir}/brsrc.shcl"
+## A file that says which rules wrote it, which is the whole answer: there is
+## nothing to migrate and a second run must not touch it.
+printf 'p: 1\n##    Format   3\n' > "${tmpDir}/stamped.shcl"
 ## A default on a path whose last segment selects by value. A value after that
 ## selector is ignored, so generation used to write a line that failed its own
 ## check. One default contradicts the selector and one names it.
@@ -158,7 +169,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
 ##	%BA% a bracket array, %SQ% a selector whose discriminator needs quotes,
-##	%W% a fresh copy of the selector-sugar file,
+##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
+##	whose value reads differently under the two rule sets, %BW% a fresh copy of
+##	the bracket array, %V3% a file that already names its format,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone,
@@ -267,8 +280,24 @@ rows=(
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
 	'sugar-check-strict|check --strictness=strict %W%|-|6|-|-'
 	'sugar-write-refused|fmt --write %W%|-|7|-|dropped 1 line'
-	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n|-'
+	'sugar-migrate|migrate %W%|-|0|base: Boston\n\tlat: 42\n##    Format   3\n##    Migrated from SHCL 2.x.\n|-'
 	'sugar-migrate-write|migrate --write %W%|-|0||-'
+	## 20260909 item 4: a 3.0 file spells a backslash value the same way a 2.x
+	## one does, so migrating on a guess changed a correct file at exit 0. The
+	## file has to say which rules wrote it, or the caller has to.
+	'migrate-ambiguous-refused|migrate %BS%|-|7|-|does not say which it was written for'
+	"migrate-ambiguous-kept|migrate %BS%|-|7|p: 'C:\\\\temp'\n|-"
+	'migrate-ambiguous-write-refused|migrate --write %BS%|-|7|-|refusing to rewrite'
+	'migrate-from-2x|migrate --from-2x %BS%|-|0|p: "C:\\temp"\n##    Format   3\n##    Migrated from SHCL 2.x.\n|-'
+	## A file that names its format has nothing to migrate, which is what stops
+	## the second run from rewriting the first run's output.
+	'migrate-stamped-noop|migrate %V3%|-|0|p: 1\n##    Format   3\n|nothing to migrate'
+	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
+	## Leaving the line is the decision; exiting 0 was the defect, since a
+	## scripted migration could not tell "migrated" from "gave up".
+	'migrate-lost-binding|migrate %BA%|-|7|-|bound a value under 2.x that nothing binds now'
+	'migrate-lost-write-refused|migrate --write %BW%|-|7|-|refusing to rewrite'
+	'migrate-lost-write-lossy|migrate --write --lossy %BW%|-|0|-|bound a value under 2.x'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
 	## 20260909 item 16.
@@ -354,7 +383,7 @@ rows=(
 	## A created file says what format it is. The block goes at the bottom, the
 	## edits above it, and --no-banner leaves it out. A file that is already
 	## there is never given one.
-	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
+	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Format   3\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
 	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
 	## 20260909 item 6: the create was decided before the wait on stdin, so a
 	## file made during the wait was replaced by the edits at exit 0.
@@ -399,10 +428,21 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
+	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1
 		argv="${argv//%W%/${tmpDir}/w.shcl}"
+	fi
+	freshBs=0
+	if [[ "${argv}" == *%BS%* ]]; then
+		freshBs=1
+		argv="${argv//%BS%/${tmpDir}/bs.shcl}"
+	fi
+	freshBw=0
+	if [[ "${argv}" == *%BW%* ]]; then
+		freshBw=1
+		argv="${argv//%BW%/${tmpDir}/bw.shcl}"
 	fi
 	freshCreate=0
 	if [[ "${argv}" == *%C%* ]]; then
@@ -449,6 +489,8 @@ for row in "${rows[@]}"; do
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
+		((freshBs)) && cp "${tmpDir}/bsrc.shcl" "${tmpDir}/bs.shcl"
+		((freshBw)) && cp "${tmpDir}/brsrc.shcl" "${tmpDir}/bw.shcl"
 		((freshLong)) && printf 'k: 1\n' > "${tmpDir}/${longName}"
 		((freshWide)) && printf 'k: 1\n' > "${tmpDir}/${wideName}"
 		((freshCreate)) && rm -f "${tmpDir}/created.shcl"

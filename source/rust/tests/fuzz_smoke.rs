@@ -230,14 +230,19 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 			"formatter not idempotent at iteration {} for mutated input:\n{}",
 			i, text
 		);
-		let m = migrate(&text);
-		assert_eq!(
-			migrate(&m),
-			m,
-			"migrate changes its own output at iteration {} for mutated input:\n{}",
-			i,
-			text
-		);
+		// Both answers to "was this file written for 2.x" have their own set of
+		// rewrites, and each has to settle after one pass.
+		for from_v2 in [true, false] {
+			let m = migrate(&text, from_v2).text;
+			assert_eq!(
+				migrate(&m, from_v2).text,
+				m,
+				"migrate changes its own output at iteration {} (from-2x {}) for mutated input:\n{}",
+				i,
+				from_v2,
+				text
+			);
+		}
 	}
 }
 

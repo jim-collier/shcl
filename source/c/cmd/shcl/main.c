@@ -64,7 +64,7 @@ static const char *HELP =
 	"                                         out)\n"
 	"  shcl paths [options] FILE              every field path in the document, one\n"
 	"                                         per line\n"
-	"  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current\n"
+	"  shcl migrate [options] FILE            rewrite a 2.x file for the current\n"
 	"                                         rules (print it, or rewrite FILE in\n"
 	"                                         place with --write)\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
@@ -113,6 +113,11 @@ static const char *HELP =
 	"                                         even when the load dropped lines this\n"
 	"                                         write would delete; without it the\n"
 	"                                         write refuses and nothing is changed\n"
+	"  --from-2x                              (migrate) the file was written for\n"
+	"                                         2.x, so rewrite the spellings the two\n"
+	"                                         rule sets read differently; without\n"
+	"                                         it those are left alone and migrate\n"
+	"                                         exits 7\n"
 	"  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default\n"
 	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
@@ -153,15 +158,17 @@ static const char *HELP =
 	"named more than once across FILE, --layer and --schema.\n"
 	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
 	"once per run. An in-place write also refuses when the load dropped content the\n"
-	"rewrite would delete (--lossy overrides).\n"
+	"rewrite would delete (--lossy overrides). migrate refuses a file that does not\n"
+	"say which rules it was written for, when the two readings differ (--from-2x\n"
+	"says it is 2.x), and reports a 2.x binding it cannot carry.\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
 	"\n"
 	"Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 check failed, strict load failed, or init's schema\n"
-	"has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream\n"
-	"could not be read or written.\n";
+	"has faults, 7 in-place write refused (--lossy overrides) or migrate left\n"
+	"something behind, 8 a file or stream could not be read or written.\n";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
@@ -205,6 +212,7 @@ typedef struct {
 	shcl_strictness strictness;
 	int write;
 	int lossy;
+	int from_2x;
 	int no_banner;
 	const char *schema;       // NULL if unset
 	const char **layers; int nlayers; // lower-priority layers, in listed order (unbounded)
@@ -689,23 +697,41 @@ static int do_migrate(const Opts *o) {
 	}
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return EXIT_IO;
-	size_t mlen; char *migrated = shcl_migrate(text, len, &mlen);
-	shcl_doc *d = xdoc(shcl_parse_with(migrated, mlen, o->strictness));
+	shcl_migration m = shcl_migrate(text, len, o->from_2x);
+	shcl_doc *d = xdoc(shcl_parse_with(m.text, m.len, o->strictness));
 	int rc = strict_gate(d);
-	if (rc) { shcl_free(d); free(migrated); free(text); return rc; }
+	if (rc) { shcl_free(d); free(m.text); free(text); return rc; }
 	say_diagnostics_from("", d);
+	// The file says it was written for these rules, so there is nothing to do
+	// and nothing to write. Saying so beats printing the input back silently.
+	if (m.current) {
+		fprintf(stderr, "%s: nothing to migrate: the file already names its format\n", file);
+		if (!o->write) fwrite(m.text, 1, m.len, stdout);
+		shcl_free(d); free(m.text); free(text);
+		return 0;
+	}
+	if (m.ambiguous) {
+		fprintf(stderr, "%s: %zu value(s) read one way under 2.x and another under these rules, and the file does not say which it was written for; left as written (--from-2x rewrites them)\n", file, m.ambiguous);
+		rc = 7;
+	}
+	if (m.lost) {
+		fprintf(stderr, "%s: %zu line(s) bound a value under 2.x that nothing binds now: bracket text after the colon, which has no spelling here (--lossy overrides)\n", file, m.lost);
+		if (!o->lossy) rc = 7;
+	}
 	if (o->write) {
-		if (shcl_lost_count(d) != 0 && !o->lossy) {
+		if (rc) {
+			fprintf(stderr, "%s: refusing to rewrite; nothing changed\n", file);
+		} else if (shcl_lost_count(d) != 0 && !o->lossy) {
 			fprintf(stderr, "%s: refusing to rewrite: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
 			rc = 7;
-		} else if (!shcl_write_file_atomic(file, migrated, mlen)) {
+		} else if (!shcl_write_file_atomic(file, m.text, m.len)) {
 			int e = errno;
 			if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
 			else fprintf(stderr, "%s: %s\n", file, strerror(e));
 			rc = EXIT_IO;
 		}
-	} else fwrite(migrated, 1, mlen, stdout);
-	shcl_free(d); free(migrated); free(text);
+	} else fwrite(m.text, 1, m.len, stdout);
+	shcl_free(d); free(m.text); free(text);
 	return rc;
 }
 
@@ -1263,7 +1289,7 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
-	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->no_banner = 0; o->schema = NULL;
+	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
@@ -1280,6 +1306,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
 		else if (!strcmp(a, "--lossy")) { o->lossy = 1; opt_seen(o, "--lossy"); }
+		else if (!strcmp(a, "--from-2x")) { o->from_2x = 1; opt_seen(o, "--from-2x"); }
 		else if (!strcmp(a, "--no-banner")) { o->no_banner = 1; opt_seen(o, "--no-banner"); }
 		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
@@ -1344,7 +1371,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
-	static const char *migrate_ok[] = { "--write", "--lossy", NULL };
+	static const char *migrate_ok[] = { "--write", "--lossy", "--from-2x", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *none_ok[] = { NULL };
 	const char **allowed = none_ok;

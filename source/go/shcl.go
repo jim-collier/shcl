@@ -1568,6 +1568,77 @@ type openFence struct {
 	open   bool
 }
 
+// FormatMajor is the format major the info block names. It moves with the
+// format, not with the module: a file says which rule set it was written for,
+// and nothing else does.
+const FormatMajor = 3
+
+// FormatLineHead is the start of the block's version line, up to the number.
+// Migrate matches on this and reads the digits after it, so a later major can
+// still tell an older file from one of its own.
+const FormatLineHead = "##    Format   "
+
+// FormatLine is the whole version line, as the block spells it. A program
+// writing a config of its own emits GenBanner, which carries this; Migrate
+// appends this line on its own to a file it rewrote, since that file has no
+// block to add it to and inventing one would write bytes the document does
+// not hold.
+const FormatLine = "##    Format   3"
+
+// MigratedLine is written under FormatLine on a file Migrate actually changed.
+// It is a note for whoever opens the file; nothing reads it back.
+const MigratedLine = "##    Migrated from SHCL 2.x."
+
+// Migration is what Migrate produced, and what it could not carry across.
+type Migration struct {
+	Text string
+	// Current: the file already names its format, so there was nothing to
+	// migrate and Text is the input.
+	Current bool
+	// Ambiguous: pieces the two rule sets read differently and nothing can
+	// decide between, left as written. Always 0 when the caller said 2.x.
+	Ambiguous int
+	// Lost: lines 2.x bound a value on that nothing binds now - bracket text
+	// after the colon, which has no spelling here.
+	Lost int
+}
+
+// migrating carries the counters a line rewrite reports back, and the one
+// thing it asks.
+type migrating struct {
+	fromV2    bool
+	ambiguous int
+	lost      int
+}
+
+// formatVersion is the major a `##    Format   N` line names, if the document
+// carries one. More digits than fit is not a 2.x file either, so it reads as
+// this major and there is nothing to migrate. Only Migrate reads this line.
+func formatVersion(text string) (int, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		n, ok := strings.CutPrefix(trimEndWS(line), FormatLineHead)
+		if !ok || n == "" {
+			continue
+		}
+		digits := true
+		for i := 0; i < len(n); i++ {
+			if n[i] < '0' || n[i] > '9' {
+				digits = false
+				break
+			}
+		}
+		if !digits {
+			continue
+		}
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			return FormatMajor, true
+		}
+		return v, true
+	}
+	return 0, false
+}
+
 // Migrate rewrites a document written under the 2.x rules so this parser
 // reads the same tree. Each line is read with the 2.x tokenizer and
 // re-spelled only where the two rule sets disagree: a bare or single-quoted
@@ -1581,17 +1652,32 @@ type openFence struct {
 // could not read - comes through as written. One shape has no spelling here
 // at all: a fence label holding a `#`, which 2.x ran to the end of the line
 // and which now ends at the `#`.
-func Migrate(text string) string {
+// Which file this is cannot be read off the text: `p: 'C:\temp'` is one value
+// under 2.x and another under these rules, so rewriting a 3.0 file changes
+// what it says. So the version line decides. A file that names this format is
+// returned untouched; one that names an older format, or a caller passing
+// fromV2, gets the backslash re-spellings; anything else gets every other
+// rewrite and leaves those pieces alone, counted in Ambiguous for the caller
+// to refuse over. A rewritten file is stamped with the version line, so the
+// second run has an answer the first one did not.
+func Migrate(text string, fromV2 bool) Migration {
+	whole := text
 	bom := ""
 	if strings.HasPrefix(text, "\ufeff") {
 		bom = "\ufeff"
 		text = text[len(bom):]
 	}
+	version, hasVersion := formatVersion(text)
+	if hasVersion && version >= FormatMajor {
+		return Migration{Text: whole, Current: true}
+	}
+	st := migrating{fromV2: fromV2 || hasVersion}
 	var out strings.Builder
-	out.Grow(len(text) + 32)
+	out.Grow(len(text) + 96)
 	out.WriteString(bom)
 	var tok Tokens
 	var fence openFence
+	changed := false
 	for i, line := range strings.Split(text, "\n") {
 		if i > 0 {
 			out.WriteByte('\n')
@@ -1608,12 +1694,32 @@ func Migrate(text string) string {
 		indent := leadingWS(body)
 		restFull := body[len(indent):]
 		rest := trimEndWS(restFull)
+		migrated := migrateLine(rest, &tok, &fence, &st)
+		if migrated != rest {
+			changed = true
+		}
 		out.WriteString(indent)
-		out.WriteString(migrateLine(rest, &tok, &fence))
+		out.WriteString(migrated)
 		out.WriteString(restFull[len(rest):])
 		out.WriteString(cr)
 	}
-	return out.String()
+	// Stamping a file whose ambiguous pieces were left alone would claim a
+	// migration that did not finish, and the next run would then skip it. A
+	// document that never closes its raw block has nowhere to put the line
+	// either: appended, it would be another line of the block's content.
+	if st.ambiguous == 0 && !fence.open {
+		s := out.String()
+		if s != "" && !strings.HasSuffix(s, "\n") {
+			out.WriteByte('\n')
+		}
+		out.WriteString(FormatLine)
+		out.WriteByte('\n')
+		if changed {
+			out.WriteString(MigratedLine)
+			out.WriteByte('\n')
+		}
+	}
+	return Migration{Text: out.String(), Ambiguous: st.ambiguous, Lost: st.lost}
 }
 
 // edit is one edit to a line: replace start..end with the text.
@@ -1678,7 +1784,7 @@ func v2BracketArray(body string) bool {
 // read the 2.x way (escapes everywhere, an open quote kept whole, a quote at
 // both ends making it quoted) and re-spelled only where the current rules
 // would read the same text as something else.
-func valueEdits(text string, tok *Tokens, edits *[]edit) {
+func valueEdits(text string, tok *Tokens, edits *[]edit, st *migrating) {
 	for i := range tok.Elements {
 		p := &tok.Elements[i]
 		raw := text[p.Start:p.End]
@@ -1694,12 +1800,19 @@ func valueEdits(text string, tok *Tokens, edits *[]edit) {
 		if readsSame(text[a:b], quoted, logical) {
 			continue
 		}
+		// A resolved escape is the one edit that turns on which rule set wrote
+		// the file: these bytes say one thing under 2.x and another here. An
+		// open quote or an empty slot reads alike either way, so it still goes.
+		if logical != raw && !st.fromV2 {
+			st.ambiguous++
+			continue
+		}
 		spelling := migrateSpelling(logical, !(quoted || p.Quote == QuoteOpen))
 		*edits = append(*edits, edit{start: a, end: b, with: spelling})
 	}
 }
 
-func migrateLine(rest string, tok *Tokens, fence *openFence) string {
+func migrateLine(rest string, tok *Tokens, fence *openFence, st *migrating) string {
 	if rest == "" || strings.HasPrefix(rest, "#") {
 		return rest
 	}
@@ -1714,7 +1827,7 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 		TokenizeValue(rest, 1, RulesV2, tok)
 		// A bare comma was refused (E010), so there is nothing to carry.
 		if len(tok.Elements) == 1 {
-			valueEdits(rest, tok, &edits)
+			valueEdits(rest, tok, &edits, st)
 		}
 	} else {
 		Tokenize(rest, ':', false, RulesV2, tok)
@@ -1726,7 +1839,11 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 			seg := &tok.Segments[i]
 			name := rest[seg.Name.Start:seg.Name.End]
 			if seg.Name.Quote == QuoteSingle && applyEscapes(name) != name {
-				edits = append(edits, edit{start: seg.Name.Start - 1, end: seg.Name.End + 1, with: escapeName(applyEscapes(name))})
+				if st.fromV2 {
+					edits = append(edits, edit{start: seg.Name.Start - 1, end: seg.Name.End + 1, with: escapeName(applyEscapes(name))})
+				} else {
+					st.ambiguous++
+				}
 			}
 			sel := seg.Selector
 			if sel == nil {
@@ -1768,8 +1885,20 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 					// selector, so those stay as written. A bare body moves
 					// into a value, where a fence run opens a raw block and a
 					// leading `[` is bracket text, so the emitter spells it.
-					if !quoted && (v2BracketArray(body) || indexShape(body) || body == "*") {
+					if !quoted && (indexShape(body) || body == "*") {
 						return rest
+					}
+					// 2.x bound the bracket array, as one folded string. There
+					// is no spelling to move that to - a value beginning with
+					// `[` is bracket text now - so the binding goes, and the
+					// caller hears about it rather than reading exit 0.
+					if !quoted && v2BracketArray(body) {
+						st.lost++
+						return rest
+					}
+					if logical != body && !st.fromV2 {
+						st.ambiguous++
+						continue
 					}
 					var spelling string
 					if logical != body {
@@ -1791,13 +1920,17 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 				}
 				edits = append(edits, edit{start: colon, end: end})
 			}
-			if logical != body {
-				a, b := sel.Start, sel.End
-				if quoted {
-					a, b = sel.Start-1, sel.End+1
-				}
-				if sel.Quote != QuoteDouble {
+			// Double quotes already read alike on both sides, so only the other
+			// spellings turn on which rule set wrote the file.
+			if logical != body && sel.Quote != QuoteDouble {
+				if st.fromV2 {
+					a, b := sel.Start, sel.End
+					if quoted {
+						a, b = sel.Start-1, sel.End+1
+					}
 					edits = append(edits, edit{start: a, end: b, with: migrateSpelling(logical, false)})
+				} else {
+					st.ambiguous++
 				}
 			}
 		}
@@ -1807,7 +1940,7 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 				*fence = openFence{ch: ch, length: length, open: true}
 				return splice(rest, edits)
 			}
-			valueEdits(rest, tok, &edits)
+			valueEdits(rest, tok, &edits, st)
 		}
 	}
 	return splice(rest, edits)
@@ -7336,6 +7469,7 @@ const genMaxFields = 10000
 const GenBanner = "##\n" +
 	"## This config file format is SHCL.\n" +
 	"## \"Simple Hierarchical Config Language\"\n" +
+	"##    Format   3\n" +
 	"##    Home     https://github.com/jim-collier/shcl\n" +
 	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" +
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n" +

@@ -54,6 +54,7 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .SY shcl
 .B migrate
 .RB [ \-\-write | \-w ]
+.RB [ \-\-from\-2x ]
 .I FILE
 .YS
 .SY shcl
@@ -181,6 +182,12 @@ as an escape outside double quotes, a quote that never closed, and the
 selector sugar. Comments, blank lines, raw bodies and layout come through as
 written. The migrated text's diagnostics are printed, so a line the new rules
 refuse is named rather than silently kept.
+Which file it is looking at cannot be read off the text, so the info block's
+.B Format
+line decides: a file carrying it is left alone, and one without it keeps the
+spellings the two rule sets read differently and exits 7 unless
+.B \-\-from\-2x
+says it really is 2.x. A rewritten file is stamped with that line.
 .TP
 .B tokens
 Print each line's lexical spans, one line of output per input line: the indent
@@ -280,6 +287,14 @@ With
 .BR \-\-write ,
 rewrite even when the load dropped lines this write would delete. Without it
 the write refuses and nothing is changed.
+.TP
+.B \-\-from\-2x
+.RB ( migrate )
+The file really was written for 2.x, so rewrite the spellings the two rule
+sets read differently. Without it those are left as written and
+.B migrate
+exits 7, because the same bytes mean one thing under each rule set and
+nothing in the file says which one wrote it.
 .TP
 .BR \-\-strictness= loose | standard | strict
 .RB "(all but " init )
@@ -494,6 +509,27 @@ The comment rule did not change: a
 .B #
 outside quotes opened a comment in 2.x and still does.
 .PP
+Which file it is looking at is the one thing
+.B migrate
+cannot read off the text: a backslash value is spelled the same way under both
+rule sets and means two different things, so rewriting a 3.0 file would change
+what it says. The info block carries a
+.B Format
+line naming the format's major, and that decides. A file carrying it has
+nothing to migrate. A file without it keeps those spellings as written and
+exits 7, unless
+.B \-\-from\-2x
+says it really is 2.x. A file
+.B migrate
+rewrites is stamped with the line, so a second run has the answer the first
+one did not.
+.PP
+Bracket text after the colon is the one line 2.x bound that nothing binds now.
+.B migrate
+leaves it and exits 7 rather than reporting success;
+.B \-\-lossy
+accepts the loss on a rewrite.
+.PP
 Two edges read differently, and
 .B migrate
 leaves both as written. A fence label holding a
@@ -531,9 +567,13 @@ schema has faults.
 .TP
 .B 7
 An in-place write was refused because the load dropped content the rewrite
-would delete.
-.B \-\-lossy
-overrides.
+would delete
+.RB ( \-\-lossy
+overrides), or
+.B migrate
+left something behind: values it cannot decide between the two rule sets
+.RB ( \-\-from\-2x
+decides them), or a 2.x binding with no spelling here.
 .TP
 .B 8
 A file or stream could not be read or written \- it is missing, unreadable,

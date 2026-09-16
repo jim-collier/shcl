@@ -685,7 +685,7 @@ fn migrate_matches_expected() {
 				case.name
 			),
 		};
-		let got = migrate(&case.input);
+		let got = migrate(&case.input, true).text;
 		assert_eq!(
 			&got, want,
 			"{}: migrate output differs from expected-migrate.shcl",
@@ -703,9 +703,9 @@ fn migrate_matches_expected() {
 #[test]
 fn migrate_is_a_fixpoint() {
 	for case in load_cases() {
-		let once = migrate(&case.input);
+		let once = migrate(&case.input, true).text;
 		assert_eq!(
-			migrate(&once),
+			migrate(&once, true).text,
 			once,
 			"{}: migrate changes its own output",
 			case.name

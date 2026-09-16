@@ -81,7 +81,7 @@ Usage:
                                          out)
   shcl paths [options] FILE              every field path in the document, one
                                          per line
-  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
+  shcl migrate [options] FILE            rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
                                          place with --write)
   shcl tokens FILE                       each line's lexical spans, for seeing
@@ -130,6 +130,11 @@ Options (the subcommands each belongs to are in parentheses):
                                          even when the load dropped lines this
                                          write would delete; without it the
                                          write refuses and nothing is changed
+  --from-2x                              (migrate) the file was written for
+                                         2.x, so rewrite the spellings the two
+                                         rule sets read differently; without
+                                         it those are left alone and migrate
+                                         exits 7
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -170,15 +175,17 @@ without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
-rewrite would delete (--lossy overrides).
+rewrite would delete (--lossy overrides). migrate refuses a file that does not
+say which rules it was written for, when the two readings differ (--from-2x
+says it is 2.x), and reports a 2.x binding it cannot carry.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
-could not be read or written.
+has faults, 7 in-place write refused (--lossy overrides) or migrate left
+something behind, 8 a file or stream could not be read or written.
 """
 
 # About and donate are stdout, so they are byte-for-byte contracts across the
@@ -240,7 +247,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "no_banner", "schema", "layers", "sets", "args", "seen")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -256,6 +263,7 @@ class _Opts:
 		self.schema = None
 		self.write = False
 		self.lossy = False
+		self.from_2x = False
 		self.no_banner = False
 		self.layers = []         # lower-priority layers, in listed order
 		self.sets = []           # final override layer: _SetOpt, in the order given
@@ -384,6 +392,9 @@ def parse_opts(argv):
 		elif a == "--lossy":
 			o.lossy = True
 			o.seen.append("--lossy")
+		elif a == "--from-2x":
+			o.from_2x = True
+			o.seen.append("--from-2x")
 		elif a in ("--default", "--on-bad", "--strictness", "--schema", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 			i += 1
 			if i >= len(argv):
@@ -540,7 +551,7 @@ def check_opts(cmd, o):
 	elif cmd == "init":
 		allowed = ("--schema", "--no-banner")
 	elif cmd == "migrate":
-		allowed = ("--write", "--lossy")
+		allowed = ("--write", "--lossy", "--from-2x")
 	elif cmd == "tokens":
 		allowed = ()
 	elif cmd in ("count", "instances", "children", "paths"):
@@ -828,22 +839,40 @@ def do_migrate(o):
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
-	migrated = shcl.migrate(text)
-	doc, code = load_doc_from("", migrated, o.strictness)
+	m = shcl.migrate(text, o.from_2x)
+	doc, code = load_doc_from("", m.text, o.strictness)
 	if doc is None:
 		return code
 	say_diagnostics_from("", doc.diagnostics())
+	# The file says it was written for these rules, so there is nothing to do
+	# and nothing to write. Saying so beats printing the input back silently.
+	if m.current:
+		sys.stderr.write(f"{file}: nothing to migrate: the file already names its format\n")
+		if not o.write:
+			sys.stdout.write(m.text)
+		return 0
+	rc = 0
+	if m.ambiguous != 0:
+		sys.stderr.write(f"{file}: {m.ambiguous} value(s) read one way under 2.x and another under these rules, and the file does not say which it was written for; left as written (--from-2x rewrites them)\n")
+		rc = 7
+	if m.lost != 0:
+		sys.stderr.write(f"{file}: {m.lost} line(s) bound a value under 2.x that nothing binds now: bracket text after the colon, which has no spelling here (--lossy overrides)\n")
+		if not o.lossy:
+			rc = 7
 	if o.write:
+		if rc != 0:
+			sys.stderr.write(f"{file}: refusing to rewrite; nothing changed\n")
+			return rc
 		if doc.lost_count() != 0 and not o.lossy:
 			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
 			return 7
-		err = shcl.write_file_atomic(file, migrated)
+		err = shcl.write_file_atomic(file, m.text)
 		if err is not None:
 			sys.stderr.write(err + "\n")
 			return EXIT_IO
 		return 0
-	sys.stdout.write(migrated)
-	return 0
+	sys.stdout.write(m.text)
+	return rc
 
 
 def _span(p):
