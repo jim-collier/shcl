@@ -280,6 +280,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
 		- Opened: 20260909-110100
 
+- 🔘 The C++ veneer keeps its C handle private, so a C++ caller can't reach any C call the veneer leaves out.
+	- Note: a document loaded or parsed through the veneer can't be written at all, since the veneer has no setters. The only way to write is to parse through C, keep that pointer, and go on using it after handing it to `Document`. The veneer's own smoke test does exactly that.
+	- Note: a `c()` accessor, like the one `Datetime` has, is the whole change.
+	- Note: a C result read through that handle doesn't survive the next veneer read on the same document, so the accessor's comment has to say so.
+	- Related: the next item brings the veneer level with C. This one is the stopgap until then.
+	- Opened: 20260916-141855
+
+- 🔘 The C++ veneer is not level with the C binding. It has none of the setters, so it can load, merge and save a document but not change a value in it.
+	- Note: also missing are tokenize, the declared-repeat and declared-reopen suppressors, the atomic file write, float formatting, and the strictness and status-code helpers. The Rust reference has most of these too.
+	- Note: nothing decided this. The veneer began as a typed read layer and grew one request at a time. Set-literal left it out on 2026-08-04 only because it had no setters to sit beside.
+	- Note: C's convenience tier skips raw, raw-info, datetime and array reads because those hand back borrowed memory. The veneer copies every result, so that reason doesn't carry over. The line and quoted flags the other bindings put on a read result are the same question. Both need a call before code.
+	- Note: a gate should fail when a public C call has no veneer counterpart and no listed reason. Nothing checks it now, which is how the gap grew.
+	- Note: the style guide keeps the veneer a thin wrapper over the C core, not a second parser. Wrappers that call straight through still fit that.
+	- Opened: 20260916-141855
+
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
 	- Opened: 20260914-145320
