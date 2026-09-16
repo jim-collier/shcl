@@ -35,7 +35,7 @@ _shcl_opts() {
 		fmt)             echo '--write --lossy --strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
-		migrate)         echo '--write --lossy' ;;
+		migrate)         echo '--write --lossy --from-2x --check' ;;
 		tokens)          echo '' ;;
 		count|instances|children|paths) echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		*)               echo '' ;;

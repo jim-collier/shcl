@@ -89,8 +89,9 @@ Usage:
   shcl paths [options] FILE              every field path in the document, one
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
-                                         rules (print it, or rewrite FILE in
-                                         place with --write)
+                                         rules (print it, rewrite FILE in place
+                                         with --write, or name the lines it
+                                         would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl help | version                    this help, or the version (also
@@ -142,6 +143,9 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
+  --check                                (migrate) print nothing, name each
+                                         line the rewrite would change on
+                                         stderr, and exit 6 when there is one
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -178,8 +182,8 @@ so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
-named more than once across FILE, --layer and --schema.
+without --write; --check with --write; --layer=- on 'set'; --array with --raw
+or --rawinfo; '-' named more than once across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides). migrate refuses a file that does not
@@ -190,9 +194,10 @@ each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
-5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides) or migrate left
-something behind, 8 a file or stream could not be read or written.
+5 multiple instances, 6 check failed, strict load failed, init's schema has
+faults, or migrate --check found a line to rewrite, 7 in-place write refused
+(--lossy overrides) or migrate left something behind, 8 a file or stream could
+not be read or written.
 `
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -381,6 +386,7 @@ type opts struct {
 	write       bool
 	lossy       bool
 	from2x      bool
+	check       bool
 	noBanner    bool
 	schema      string
 	layers      []string // lower-priority layers, in listed order
@@ -543,6 +549,9 @@ func parseOpts(argv []string) (*opts, error) {
 		case a == "--from-2x":
 			o.from2x = true
 			o.seen = append(o.seen, "--from-2x")
+		case a == "--check":
+			o.check = true
+			o.seen = append(o.seen, "--check")
 		case a == "--no-banner":
 			o.noBanner = true
 			o.seen = append(o.seen, "--no-banner")
@@ -625,7 +634,7 @@ func checkOpts(cmd string, o *opts) int {
 	case "init":
 		allowed = []string{"--schema", "--no-banner"}
 	case "migrate":
-		allowed = []string{"--write", "--lossy", "--from-2x"}
+		allowed = []string{"--write", "--lossy", "--from-2x", "--check"}
 	case "tokens":
 		allowed = []string{}
 	case "count", "instances", "children", "paths":
@@ -686,6 +695,10 @@ func checkOpts(cmd string, o *opts) int {
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
 		fmt.Fprintln(os.Stderr, "--lossy is only meaningful with --write (see --help)")
+		return 1
+	}
+	if o.check && o.write {
+		fmt.Fprintln(os.Stderr, "--check cannot be combined with --write (see --help)")
 		return 1
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
@@ -1147,6 +1160,24 @@ func doFmt(o *opts) int {
 	return 0
 }
 
+// rewrittenLines numbers the lines migrate spells differently, counted from
+// 1. The rewrite goes line for line and only appends, so line N of the input
+// is line N of the output.
+func rewrittenLines(before, after string) []int {
+	if before == "" {
+		return nil
+	}
+	b := strings.Split(strings.TrimSuffix(before, "\n"), "\n")
+	a := strings.Split(after, "\n")
+	var lines []int
+	for i := 0; i < len(b) && i < len(a); i++ {
+		if b[i] != a[i] {
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
+}
+
 // doMigrate: a 2.x file rewritten for the current rules. The rewrite is text
 // to text; the load after it is for the diagnostics and the save gate, the
 // same gate `fmt --write` goes through.
@@ -1175,7 +1206,7 @@ func doMigrate(o *opts) int {
 	// and nothing to write. Saying so beats printing the input back silently.
 	if m.Current {
 		fmt.Fprintf(os.Stderr, "%s: nothing to migrate: the file already names its format\n", file)
-		if !o.write {
+		if !o.write && !o.check {
 			outs(m.Text)
 		}
 		return 0
@@ -1193,6 +1224,16 @@ func doMigrate(o *opts) int {
 			rc = 7
 		}
 	}
+	rewritten := rewrittenLines(text, m.Text)
+	if o.check {
+		for _, n := range rewritten {
+			fmt.Fprintf(os.Stderr, "%s:%d: migrate would rewrite this line\n", file, n)
+		}
+		if rc == 0 && len(rewritten) != 0 {
+			rc = 6
+		}
+		return rc
+	}
 	if o.write {
 		if rc != 0 {
 			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite; nothing changed\n", file)
@@ -1207,6 +1248,7 @@ func doMigrate(o *opts) int {
 			fmt.Fprintln(os.Stderr, err)
 			return exitIO
 		}
+		fmt.Fprintf(os.Stderr, "%s: migrated, %d line(s) rewritten\n", file, len(rewritten))
 		return 0
 	}
 	outs(m.Text)

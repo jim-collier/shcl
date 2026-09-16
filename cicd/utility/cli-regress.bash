@@ -298,6 +298,15 @@ rows=(
 	'migrate-lost-binding|migrate %BA%|-|7|-|bound a value under 2.x that nothing binds now'
 	'migrate-lost-write-refused|migrate --write %BW%|-|7|-|refusing to rewrite'
 	'migrate-lost-write-lossy|migrate --write --lossy %BW%|-|0|-|bound a value under 2.x'
+	## 20260909 item 41: telling a file that needs migrating from one that does
+	## not took a diff of the output, and --write said nothing either way.
+	'migrate-check-names|migrate --check %W%|-|6||w\.shcl:1: migrate would rewrite this line'
+	'migrate-check-clean|migrate --check %F%|-|0||!.'
+	'migrate-check-stamped|migrate --check %V3%|-|0||nothing to migrate'
+	'migrate-check-ambiguous|migrate --check %BS%|-|7||does not say which it was written for'
+	'migrate-check-from-2x|migrate --check --from-2x %BS%|-|6||bs\.shcl:1: migrate would rewrite'
+	'migrate-check-write|migrate --check --write %W%|-|1|-|--check cannot be combined with --write'
+	'migrate-write-says|migrate --write %W%|-|0||migrated, 1 line\(s\) rewritten'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
 	## 20260909 item 16.

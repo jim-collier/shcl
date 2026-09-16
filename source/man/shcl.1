@@ -53,7 +53,7 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .YS
 .SY shcl
 .B migrate
-.RB [ \-\-write | \-w ]
+.RB [ \-\-write | \-w | \-\-check ]
 .RB [ \-\-from\-2x ]
 .I FILE
 .YS
@@ -187,7 +187,11 @@ Which file it is looking at cannot be read off the text, so the info block's
 line decides: a file carrying it is left alone, and one without it keeps the
 spellings the two rule sets read differently and exits 7 unless
 .B \-\-from\-2x
-says it really is 2.x. A rewritten file is stamped with that line.
+says it really is 2.x. A rewritten file is stamped with that line, and
+.B \-\-write
+says how many lines it rewrote.
+.B \-\-check
+prints nothing and names each line a rewrite would change.
 .TP
 .B tokens
 Print each line's lexical spans, one line of output per input line: the indent
@@ -295,6 +299,14 @@ sets read differently. Without it those are left as written and
 .B migrate
 exits 7, because the same bytes mean one thing under each rule set and
 nothing in the file says which one wrote it.
+.TP
+.B \-\-check
+.RB ( migrate )
+Print nothing, and name on stderr each line the rewrite would change, as
+.IR FILE : LINE .
+Exits 6 when there is one and 0 when there is none, so a script can ask which
+files in a tree need migrating. It cannot be combined with
+.BR \-\-write .
 .TP
 .BR \-\-strictness= loose | standard | strict
 .RB "(all but " init )
@@ -561,9 +573,11 @@ Multiple instances matched where one was wanted.
 .TP
 .B 6
 .B check
-found errors, a strict load failed, or
+found errors, a strict load failed,
 .BR init 's
-schema has faults.
+schema has faults, or
+.B migrate \-\-check
+found a line to rewrite.
 .TP
 .B 7
 An in-place write was refused because the load dropped content the rewrite

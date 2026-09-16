@@ -40,7 +40,7 @@ fRustTable() {
 	| while read -r arm; do
 		[[ "${arm}" == *'=>'* && "${arm}" == *'"'* ]] || continue   ## skips the _ => &[] catch-all
 		names="$(grep -o '"[a-z]*"' <<<"${arm%%=>*}" | tr -d '"' | paste -sd'|' || true)"
-		opts="$(grep -o -- '--[a-z<>-]*' <<<"${arm#*=>}" | sort -u | paste -sd' ' || true)"
+		opts="$(grep -o -- '--[a-z0-9<>-]*' <<<"${arm#*=>}" | sort -u | paste -sd' ' || true)"
 		printf '%s\t%s\n' "${names}" "${opts}"
 	done
 }
@@ -79,8 +79,8 @@ fRustTop() {
 ## first, since rustfmt puts one name per line.
 fRustValOpts() {
 	sed -n '/^fn asked_for/,/^}/p' "${mainRs}" | tr '\n\t' '  ' | tr -s ' ' \
-	| { grep -oE '("--[a-z-]+" [|] )*"--[a-z-]+" => i [+]= 1' || true ;} \
-	| { grep -o '"--[a-z-]*"' || true ;} | tr -d '"' | sort -u | paste -sd' '
+	| { grep -oE '("--[a-z0-9-]+" [|] )*"--[a-z0-9-]+" => i [+]= 1' || true ;} \
+	| { grep -o '"--[a-z0-9-]*"' || true ;} | tr -d '"' | sort -u | paste -sd' '
 }
 
 ## The same list out of a completion file.
