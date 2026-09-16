@@ -80,7 +80,7 @@ Usage:
                                          out)
   shcl paths [options] FILE              every field path in the document, one
                                          per line
-  shcl migrate [--write|-w] FILE         rewrite a 2.x file for the current
+  shcl migrate [options] FILE            rewrite a 2.x file for the current
                                          rules (print it, or rewrite FILE in
                                          place with --write)
   shcl tokens FILE                       each line's lexical spans, for seeing
@@ -129,6 +129,11 @@ Options (the subcommands each belongs to are in parentheses):
                                          even when the load dropped lines this
                                          write would delete; without it the
                                          write refuses and nothing is changed
+  --from-2x                              (migrate) the file was written for
+                                         2.x, so rewrite the spellings the two
+                                         rule sets read differently; without
+                                         it those are left alone and migrate
+                                         exits 7
   --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
                                          standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
@@ -169,15 +174,17 @@ without --write; --layer=- on 'set'; --array with --raw or --rawinfo; '-'
 named more than once across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
-rewrite would delete (--lossy overrides).
+rewrite would delete (--lossy overrides). migrate refuses a file that does not
+say which rules it was written for, when the two readings differ (--from-2x
+says it is 2.x), and reports a 2.x binding it cannot carry.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, or init's schema
-has faults, 7 in-place write refused (--lossy overrides), 8 a file or stream
-could not be read or written.
+has faults, 7 in-place write refused (--lossy overrides) or migrate left
+something behind, 8 a file or stream could not be read or written.
 ";
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
@@ -332,6 +339,7 @@ struct Opts {
 	strictness: Strictness,
 	write: bool,
 	lossy: bool,
+	from_2x: bool,
 	no_banner: bool,
 	schema: Option<String>,
 	layers: Vec<String>,     // lower-priority layers, in listed order
@@ -394,6 +402,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		strictness: Strictness::Standard,
 		write: false,
 		lossy: false,
+		from_2x: false,
 		no_banner: false,
 		schema: None,
 		layers: Vec::new(),
@@ -433,6 +442,10 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			"--lossy" => {
 				o.lossy = true;
 				o.seen.push("--lossy");
+			}
+			"--from-2x" => {
+				o.from_2x = true;
+				o.seen.push("--from-2x");
 			}
 			"--no-banner" => {
 				o.no_banner = true;
@@ -590,7 +603,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		],
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
-		"migrate" => &["--write", "--lossy"],
+		"migrate" => &["--write", "--lossy", "--from-2x"],
 		"tokens" => &[],
 		"count" | "instances" | "children" | "paths" => &[
 			"--strictness",
@@ -1120,13 +1133,48 @@ fn do_migrate(o: &Opts) -> u8 {
 			return EXIT_IO;
 		}
 	};
-	let migrated = migrate(&text);
-	let doc = match load_from("", &migrated, o.strictness) {
+	let m = migrate(&text, o.from_2x);
+	let doc = match load_from("", &m.text, o.strictness) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
 	say_diagnostics_from("", doc.diagnostics());
+	// The file says it was written for these rules, so there is nothing to do
+	// and nothing to write. Saying so beats printing the input back silently.
+	if m.current {
+		errln!(
+			"{}: nothing to migrate: the file already names its format",
+			file
+		);
+		if !o.write {
+			out!("{}", m.text);
+		}
+		return 0;
+	}
+	let mut rc = 0;
+	if m.ambiguous != 0 {
+		errln!(
+			"{}: {} value(s) read one way under 2.x and another under these rules, and the file does not say which it was written for; left as written (--from-2x rewrites them)",
+			file,
+			m.ambiguous
+		);
+		rc = 7;
+	}
+	if m.lost != 0 {
+		errln!(
+			"{}: {} line(s) bound a value under 2.x that nothing binds now: bracket text after the colon, which has no spelling here (--lossy overrides)",
+			file,
+			m.lost
+		);
+		if !o.lossy {
+			rc = 7;
+		}
+	}
 	if o.write {
+		if rc != 0 {
+			errln!("{}: refusing to rewrite; nothing changed", file);
+			return rc;
+		}
 		if doc.lost_count() != 0 && !o.lossy {
 			errln!(
 				"{}: refusing to rewrite: the migrated text drops {} line(s)/value(s) on load (--lossy overrides)",
@@ -1135,7 +1183,7 @@ fn do_migrate(o: &Opts) -> u8 {
 			);
 			return 7;
 		}
-		return match write_file_atomic(file, &migrated) {
+		return match write_file_atomic(file, &m.text) {
 			Ok(()) => 0,
 			Err(e) => {
 				errln!("{}", e);
@@ -1143,8 +1191,8 @@ fn do_migrate(o: &Opts) -> u8 {
 			}
 		};
 	}
-	out!("{}", migrated);
-	0
+	out!("{}", m.text);
+	rc
 }
 
 /// Every line's spans, one line of output per input line: the indent

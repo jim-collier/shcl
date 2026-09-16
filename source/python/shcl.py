@@ -1337,7 +1337,49 @@ def _strip_common(line, common):
 # ---------------------------------------------------------------------------
 
 
-def migrate(text: str) -> str:
+class Migration:
+	"""What migrate produced, and what it could not carry across.
+
+	current: the file already names its format, so there was nothing to migrate
+	and text is the input. ambiguous: pieces the two rule sets read differently
+	and nothing can decide between, left as written; always 0 when the caller
+	said the file is 2.x. lost: lines 2.x bound a value on that nothing binds
+	now - bracket text after the colon, which has no spelling here."""
+
+	__slots__ = ("text", "current", "ambiguous", "lost")
+
+	def __init__(self, text, current=False, ambiguous=0, lost=0):
+		self.text = text
+		self.current = current
+		self.ambiguous = ambiguous
+		self.lost = lost
+
+
+class _Migrating:
+	"""The counters a line rewrite reports back, and the one thing it asks."""
+
+	__slots__ = ("from_v2", "ambiguous", "lost")
+
+	def __init__(self, from_v2):
+		self.from_v2 = from_v2
+		self.ambiguous = 0
+		self.lost = 0
+
+
+def _format_version(text):
+	"""The major a `##    Format   N` line names, if the document carries one.
+	Only migrate reads this line."""
+	for line in text.split("\n"):
+		head = _trim_wsp_end(line)
+		if not head.startswith(FORMAT_LINE_HEAD):
+			continue
+		n = head[len(FORMAT_LINE_HEAD):]
+		if n and all("0" <= c <= "9" for c in n):
+			return int(n)
+	return None
+
+
+def migrate(text: str, from_v2: bool) -> Migration:
 	"""Rewrite a document written under the 2.x rules so this parser reads the
 	same tree. Each line is read with the 2.x tokenizer and re-spelled only
 	where the two rule sets disagree: a bare or single-quoted piece whose
@@ -1350,14 +1392,29 @@ def migrate(text: str) -> str:
 	Everything else - comments, blank lines, raw bodies, layout, a line 2.x
 	could not read - comes through as written. One shape has no spelling
 	here at all: a fence label holding a `#`, which 2.x ran to the end of the
-	line and which now ends at the `#`."""
+	line and which now ends at the `#`.
+
+	Which file this is cannot be read off the text: `p: 'C:\\temp'` is one value
+	under 2.x and another under these rules, so rewriting a 3.0 file changes
+	what it says. So the version line decides. A file that names this format is
+	returned untouched; one that names an older format, or a caller passing
+	from_v2, gets the backslash re-spellings; anything else gets every other
+	rewrite and leaves those pieces alone, counted in ambiguous for the caller
+	to refuse over. A rewritten file is stamped with the version line, so the
+	second run has an answer the first one did not."""
+	whole = text
 	bom = ""
 	if text.startswith("\ufeff"):
 		bom = "\ufeff"
 		text = text[1:]
+	version = _format_version(text)
+	if version is not None and version >= FORMAT_MAJOR:
+		return Migration(whole, current=True)
+	st = _Migrating(from_v2 or version is not None)
 	out = [bom]
 	tok = Tokens()
 	fence = None
+	changed = False
 	for i, line in enumerate(text.split("\n")):
 		if i > 0:
 			out.append("\n")
@@ -1371,12 +1428,27 @@ def migrate(text: str) -> str:
 		indent = _leading_ws(body)
 		rest_full = body[len(indent):]
 		rest = _trim_wsp_end(rest_full)
+		migrated, fence = _migrate_line(rest, tok, fence, st)
+		if migrated != rest:
+			changed = True
 		out.append(indent)
-		migrated, fence = _migrate_line(rest, tok, fence)
 		out.append(migrated)
 		out.append(rest_full[len(rest):])
 		out.append(cr)
-	return "".join(out)
+	# Stamping a file whose ambiguous pieces were left alone would claim a
+	# migration that did not finish, and the next run would then skip it. A
+	# document that never closes its raw block has nowhere to put the line
+	# either: appended, it would be another line of the block's content.
+	if st.ambiguous == 0 and fence is None:
+		s = "".join(out)
+		if s and not s.endswith("\n"):
+			out.append("\n")
+		out.append(FORMAT_LINE)
+		out.append("\n")
+		if changed:
+			out.append(MIGRATED_LINE)
+			out.append("\n")
+	return Migration("".join(out), ambiguous=st.ambiguous, lost=st.lost)
 
 
 def _splice(s, edits):
@@ -1428,7 +1500,7 @@ def _v2_bracket_array(body):
 	return len(tok.elements) > 1
 
 
-def _value_edits(s, tok, edits):
+def _value_edits(s, tok, edits, st):
 	"""The re-spellings a value's pieces need. Each piece is read the 2.x way
 	(escapes everywhere, an open quote kept whole, a quote at both ends making
 	it quoted) and re-spelled only where the current rules would read the
@@ -1445,11 +1517,17 @@ def _value_edits(s, tok, edits):
 		logical = _apply_escapes(raw)
 		if _reads_same(s[a:b].decode("utf-8"), quoted, logical):
 			continue
+		# A resolved escape is the one edit that turns on which rule set wrote
+		# the file: these bytes say one thing under 2.x and another here. An
+		# open quote or an empty slot reads alike either way, so it still goes.
+		if logical != raw and not st.from_v2:
+			st.ambiguous += 1
+			continue
 		spelling = _migrate_spelling(logical, not (quoted or p.quote is Quote.OPEN))
 		edits.append((a, b, spelling.encode("utf-8")))
 
 
-def _migrate_line(rest, tok, fence):
+def _migrate_line(rest, tok, fence, st):
 	"""One line's content after its indent, re-spelled. Returns the text and
 	the fence a raw block it opened is closed by (None when it opened none)."""
 	if not rest or rest.startswith("#"):
@@ -1464,7 +1542,7 @@ def _migrate_line(rest, tok, fence):
 		tokenize_value(rest, 1, Rules.V2, tok)
 		# A bare comma was refused (E010), so there is nothing to carry.
 		if len(tok.elements) == 1:
-			_value_edits(s, tok, edits)
+			_value_edits(s, tok, edits, st)
 	else:
 		tokenize(rest, ":", False, Rules.V2, tok)
 		if tok.fault is not None:
@@ -1473,7 +1551,10 @@ def _migrate_line(rest, tok, fence):
 		for i, seg in enumerate(tok.segments):
 			name = s[seg.name.start:seg.name.end].decode("utf-8")
 			if seg.name.quote is Quote.SINGLE and _apply_escapes(name) != name:
-				edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8")))
+				if st.from_v2:
+					edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8")))
+				else:
+					st.ambiguous += 1
 			sel = seg.selector
 			if sel is None:
 				continue
@@ -1503,8 +1584,18 @@ def _migrate_line(rest, tok, fence):
 					# selector, so those stay as written. A bare body moves
 					# into a value, where a fence run opens a raw block and a
 					# leading `[` is bracket text, so the emitter spells it.
-					if not quoted and (_v2_bracket_array(body) or _index_shape(body) or body == "*"):
+					if not quoted and (_index_shape(body) or body == "*"):
 						return rest, fence
+					# 2.x bound the bracket array, as one folded string. There
+					# is no spelling to move that to - a value beginning with
+					# `[` is bracket text now - so the binding goes, and the
+					# caller hears about it rather than reading exit 0.
+					if not quoted and _v2_bracket_array(body):
+						st.lost += 1
+						return rest, fence
+					if logical != body and not st.from_v2:
+						st.ambiguous += 1
+						continue
 					if logical != body:
 						spelling = _migrate_spelling(logical, False)
 					elif quoted:
@@ -1518,19 +1609,23 @@ def _migrate_line(rest, tok, fence):
 				# spaced both sides, so `base : [x]` comes out `base [x]`.
 				spaced = colon > 0 and _is_wsp_byte(s[colon - 1]) and _is_wsp_byte(s[colon + 1])
 				edits.append((colon, colon + 1 + int(spaced), b""))
-			if logical != body:
-				if quoted:
-					a, b = sel.start - 1, sel.end + 1
-				else:
-					a, b = sel.start, sel.end
-				if sel.quote is not Quote.DOUBLE:
+			# Double quotes already read alike on both sides, so only the other
+			# spellings turn on which rule set wrote the file.
+			if logical != body and sel.quote is not Quote.DOUBLE:
+				if st.from_v2:
+					if quoted:
+						a, b = sel.start - 1, sel.end + 1
+					else:
+						a, b = sel.start, sel.end
 					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8")))
+				else:
+					st.ambiguous += 1
 		if tok.sep is not None:
 			# A same-line fence: the info string ran to the end of the line.
 			fo = _fence_open(s[tok.value[0]:].decode("utf-8"))
 			if fo is not None:
 				return _splice(s, edits).decode("utf-8"), (fo[0], fo[1])
-			_value_edits(s, tok, edits)
+			_value_edits(s, tok, edits, st)
 	return _splice(s, edits).decode("utf-8"), fence
 
 
@@ -6045,11 +6140,31 @@ GEN_BANNER = (
 	"##\n"
 	'## This config file format is SHCL.\n'
 	'## "Simple Hierarchical Config Language"\n'
+	"##    Format   3\n"
 	"##    Home     https://github.com/jim-collier/shcl\n"
 	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n"
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n"
 	"##\n"
 )
+
+# The format major the info block names. It moves with the format, not with the
+# package: a file says which rule set it was written for, and nothing else does.
+FORMAT_MAJOR = 3
+
+# The start of the block's version line, up to the number. migrate matches on
+# this and reads the digits after it, so a later major can still tell an older
+# file from one of its own.
+FORMAT_LINE_HEAD = "##    Format   "
+
+# The whole version line, as the block spells it. A program writing a config of
+# its own emits GEN_BANNER, which carries this; migrate appends this line on its
+# own to a file it rewrote, since that file has no block to add it to and
+# inventing one would write bytes the document does not hold.
+FORMAT_LINE = "##    Format   3"
+
+# Written under FORMAT_LINE on a file migrate actually changed. It is a note for
+# whoever opens the file; nothing reads it back.
+MIGRATED_LINE = "##    Migrated from SHCL 2.x."
 
 
 def _v007_sanctioned(message):

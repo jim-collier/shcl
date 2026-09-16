@@ -552,6 +552,7 @@ workers: 4
 ##
 ## This config file format is SHCL.
 ## "Simple Hierarchical Config Language"
+##    Format   3
 ##    Home     https://github.com/jim-collier/shcl
 ##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
@@ -569,7 +570,7 @@ An in-place write is the library's own save, with the same refusal (at its own e
 
 Two more verbs round out the CLI. `migrate` rewrites a file written for shcl 2.x under the 3.0 rules, touching only what the two read differently (a backslash outside double quotes, a quote that never closed, the old `name:[disc]` spelling) and leaving comments, blank lines and layout as they were; `--write` puts it back in place through the same gate. `tokens` prints each line as the parser reads it, span by span, for the times a line is refused and it is not obvious why.
 
-If you have files written for 2.x, run `migrate` over them once and read what comes back. Most of what changed at 3.0 is loud, and a file carrying it says so the first time it loads. A raw block's label is the quiet exception: one holding a `#` ran to the end of the line in 2.x and ends at the `#` now, and `migrate` cannot rewrite that, since a label has no quoting.
+If you have files written for 2.x, run `migrate --from-2x` over them once and read what comes back. The flag is not optional politeness: a backslash value is spelled the same way under both rule sets and means two different things, so without being told which rules wrote the file, `migrate` leaves those values alone and exits 7 rather than guessing and damaging a file that was already correct. What it rewrites it stamps, so running it twice is safe. Most of what changed at 3.0 is loud, and a file carrying it says so the first time it loads. A raw block's label is the quiet exception: one holding a `#` ran to the end of the line in 2.x and ends at the `#` now, and `migrate` cannot rewrite that, since a label has no quoting.
 
 `shcl help` covers the rest and `man shcl` says the same at more length, `shcl about` names the version, license and project home, and `shcl donate` points at the sponsors page. Tab completion for bash and zsh is included. To drive it from a script with typed helpers instead, there are [Bash](#bash) and [PowerShell](#powershell) wrappers.
 

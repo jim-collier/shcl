@@ -280,9 +280,12 @@ for caseDir in "$corpus"/*/; do
 	fCompare "fmt ${caseName}" fmt "$input"
 	# The lexical view and the 2.x rewrite: the tokenizer is the one reader
 	# of a line's parts, so its spans are the finest-grained parity there is,
-	# and migrate reads through the same tokenizer's 2.x flag.
+	# and migrate reads through the same tokenizer's 2.x flag. Both answers to
+	# "was this written for 2.x" are compared: they take different arms, and
+	# the default one refuses where the flag rewrites.
 	fCompare "tokens ${caseName}" tokens "$input"
 	fCompare "migrate ${caseName}" migrate "$input"
+	fCompare "migrate --from-2x ${caseName}" migrate --from-2x "$input"
 	# The save gate over real inputs: a case whose load dropped something must
 	# refuse the in-place write and leave the file byte-identical, and one that
 	# dropped nothing must rewrite it. Nothing else replays a corpus input
@@ -351,6 +354,7 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 		fCompare "fmt ${f##*/}" fmt "$f"
 		fCompare "tokens ${f##*/}" tokens "$f"
 		fCompare "migrate ${f##*/}" migrate "$f"
+		fCompare "migrate --from-2x ${f##*/}" migrate --from-2x "$f"
 		# The save gate over the soup as well: whether a load counted anything
 		# lost is the one parse result no read can show, and the corpus alone
 		# holds only the shapes somebody thought to pin.

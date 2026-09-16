@@ -158,7 +158,10 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	if fHasNul "${f}"; then nSkipped+=1; continue; fi
 	if ! fClean2x "${f}"; then nSkipped+=1; continue; fi
 	if fInfoHashLabel "${f}" || fCrMidLine "${f}"; then nSkipped+=1; continue; fi
-	"${newCli}" migrate "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
+	## Every document here is a 2.x file by construction, which is exactly what
+	## migrate cannot read off the text: without the flag it leaves the pieces
+	## the two rule sets disagree on and refuses.
+	"${newCli}" migrate --from-2x "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || true
 	old="$(fReadTree "${oldCli}" "${f}")"
 	want="$(fAge2xReads <<<"${old}")"
 	got="$(fReadTree "${newCli}" "${tmpDir}/migrated.shcl")"

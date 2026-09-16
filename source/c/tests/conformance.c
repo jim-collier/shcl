@@ -738,7 +738,8 @@ int main(int argc, char **argv) {
 		snprintf(path, sizeof path, "%s/%s/expected-migrate-diags.txt", corpus, names[ci]); size_t mgdlen; char *emigd = read_file(path, &mgdlen);
 		if (!emig != !emigd) fail(names[ci], "expected-migrate.shcl and expected-migrate-diags.txt must come as a pair");
 		else if (emig) {
-			size_t mn = 0; char *mt = shcl_migrate(input, ilen, &mn);
+			shcl_migration mm = shcl_migrate(input, ilen, 1);
+			size_t mn = mm.len; char *mt = mm.text;
 			if (mn != mglen || (mglen && memcmp(mt, emig, mglen) != 0)) fail(names[ci], "migrate output differs from expected-migrate.shcl");
 			shcl_doc *md = shcl_parse(mt, mn);
 			size_t mjl; char *mj = diag_text(md, &mjl);
@@ -747,9 +748,9 @@ int main(int argc, char **argv) {
 		}
 		free(emig); free(emigd);
 		{
-			size_t on = 0, tn = 0;
-			char *once = shcl_migrate(input, ilen, &on);
-			char *twice = shcl_migrate(once, on, &tn);
+			shcl_migration m1 = shcl_migrate(input, ilen, 1), m2 = shcl_migrate(m1.text, m1.len, 1);
+			size_t on = m1.len, tn = m2.len;
+			char *once = m1.text, *twice = m2.text;
 			if (tn != on || (on && memcmp(once, twice, on) != 0)) fail(names[ci], "migrate changes its own output");
 			free(twice); free(once);
 		}

@@ -91,21 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🛠️ Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
-		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
-		- Cause: the single-quoted-name re-spelling runs on text it has already migrated, since nothing marks a document as done and nothing tests whether the 2.x and 3.0 readings already agree.
-		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
-		- Decided: 2026-09-14. A version line in the SHCL comment block records the format's major version, and only `migrate` reads it. `migrate --write` appends it plus a line saying the file was migrated. A file with no version line gets option B: an ambiguous backslash re-spelling is left as written at exit 7 unless a flag says the file is 2.x.
-		- Fixed: the half where a second run changed `migrate`'s own output. A re-spelled piece holding a backslash is written in double quotes, which 2.x and 3.0 read alike, through `migrate_spelling` (Rust and C), `migrateSpelling` (Go) and `_migrate_spelling` (Python). The other half, a 3.0 file `migrate` did not write, is still open and needs its own design from the decision above.
-		- Pinned by: corpus `118-migrate-backslash-spelling` and `119-migrate-sugar-backslash`, a `migrate` fixpoint check over every case in all four runners and in the reference fuzz, and a second comparison in `check-migrate.bash` that reads the migrated text with the 2.x build. With the fix backed out, all four runners fail both cases, the fuzz fails at iteration 56, and `check-migrate.bash` reports 118.
-		- Opened: 20260909-100300
-
-	- 🔘 Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
-		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
-		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration can't tell the difference between "migrated" and "gave up".
-		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
-		- Opened: 20260909-100900
-
 	- 🔘 Item 20: `install-dev.bash` rewrites an unrelated repository's git config and switches its branch.
 		- Reproduced. `--dir` naming an existing git repository that is not shcl announces that it will clone, silently does not, then runs `git checkout dev` on that repository and overwrites its `core.hooksPath` and `core.sshCommand`. The victim repository's own hooks stop running with no sign of it.
 		- Cause: the clone is guarded by `[[ -e "${clone_dir}/.git" ]]`, which is true of any repository, and nothing afterwards checks that the directory is this project.
@@ -272,6 +257,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
 		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
+		- Done in part: the block carries a `Format` line naming the format's major, added with item 4, which needed it to tell a 3.0 file from a 2.x one. The spec-link half is still open.
 		- Opened: 20260909-105600
 
 	- 🔘 Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
@@ -493,7 +479,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -518,6 +504,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: a discriminator holding a backslash before a comma still loses its binding. It is filed as its own bug, below.
 		- Opened: 20260909-100200
 		- Closed: 20260914-162507
+
+	- ✅ Item 4: `migrate` is not idempotent, and a second run on an already-3.0 file changes values.
+		- Reproduced in all four, on this project's own conformance golden. `project/conformance/111-selector-backslash-pair/expected.shcl` is `fmt` output and holds `p: 'C:\temp'`. `migrate --write` rewrites it to `p: "C:\temp"`, and the value goes from `C:\temp` to `C:` plus a tab plus `emp`, because a backslash is literal in single quotes and an escape in double ones. Exit 0 both times. 1,094 of 13,656 documents tried are not a fixpoint.
+		- Cause: the single-quoted-name re-spelling runs on text it has already migrated, since nothing marks a document as done and nothing tests whether the 2.x and 3.0 readings already agree.
+		- Note: this is worse than a no-op wasted. Running `migrate` on a directory that holds a mix of 2.x and 3.0 files damages the 3.0 ones, and running it twice damages files the first run had just fixed.
+		- Decided: 2026-09-14. A version line in the SHCL comment block records the format's major version, and only `migrate` reads it. `migrate --write` appends it plus a line saying the file was migrated. A file with no version line gets option B: an ambiguous backslash re-spelling is left as written at exit 7 unless a flag says the file is 2.x.
+		- Fixed: the half where a second run changed `migrate`'s own output. A re-spelled piece holding a backslash is written in double quotes, which 2.x and 3.0 read alike, through `migrate_spelling` (Rust and C), `migrateSpelling` (Go) and `_migrate_spelling` (Python).
+		- Pinned by: corpus `118-migrate-backslash-spelling` and `119-migrate-sugar-backslash`, a `migrate` fixpoint check over every case in all four runners and in the reference fuzz, and a second comparison in `check-migrate.bash` that reads the migrated text with the 2.x build. With the fix backed out, all four runners fail both cases, the fuzz fails at iteration 56, and `check-migrate.bash` reports 118.
+		- Fixed: the other half, a 3.0 file `migrate` did not write. Which rule set wrote a file is not in its text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite, leaves those pieces as written and exits 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes the second run a no-op. `Migration` carries the counts back in all four, so the CLI refuses rather than reporting success.
+		- Pinned by: `cli-regress.bash` rows `migrate-ambiguous-refused`, `migrate-ambiguous-kept`, `migrate-ambiguous-write-refused`, `migrate-from-2x` and `migrate-stamped-noop`, across all four CLIs, and the veneer smoke test. The corpus migrate dimension passes `--from-2x`, since every case there is a 2.x file, and the goldens now carry the stamp. The reference fuzz checks the fixpoint under both answers. With the version check backed out, `p: 'C:\temp'` migrates to `p: "C:\temp"` at exit 0 again, which is the original report.
+		- Opened: 20260909-100300
+		- Closed: 20260916-140000
 
 	- ✅ Item 5: `shcl init` emits a starter config that fails its own `check` at exit 6.
 		- Reproduced in all four. A schema field whose path ends in a by-value selector with a default (`field: a[b]` with `type: string`, `required: yes`, `default: hello`) generates `a[b]: hello`. That is `E002 value after selector`, so `check` on the generated file exits 6, `fmt` rewrites the line to `a: b`, and `get 'a[b]'` answers `b`. The default is gone. 528 of 3,648 enumerated shapes hit it.
@@ -564,6 +562,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: the `parse_limited` test in all four runners, over both spellings, which fails without the fix.
 		- Opened: 20260909-101000
 		- Closed: 20260915-123300
+
+	- ✅ Item 10: a 2.x line that bound a value through `E019` loses the binding, and `migrate --write` still exits 0.
+		- Reproduced. `ports: [80, 443]` bound a value under 2.x; after migration the `ports` binding is gone. Leaving the line as written is a recorded decision and is not what is filed here; exiting 0 is.
+		- Note: this is the same failure mode the project closed one day earlier for the carriage-return case. A scripted migration can't tell the difference between "migrated" and "gave up".
+		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
+		- Fixed: the sugar arm asks the 2.x tokenizer whether the body was a bracket array and counts the binding it is about to drop, rather than lumping it in with the index and wildcard bodies 2.x bound nothing for either. `migrate` reports the count, and the CLI exits 7 in both modes, so a redirected print says so too; `--lossy` accepts the loss on a rewrite.
+		- Pinned by: `cli-regress.bash` rows `migrate-lost-binding`, `migrate-lost-write-refused` and `migrate-lost-write-lossy`, across all four CLIs. Corpus `123-migrate-sugar-shielded-comma` already carried the shape and pins the text. The write rows take a fresh copy per binding, since a rewrite that stamps the file leaves the next binding nothing to do.
+		- Note: `check-migrate.bash` cannot see this shape - its clean-under-2.x filter admits only codes that bind the line, and this one is `E019` - which is why the gate never reported it.
+		- Opened: 20260909-100900
+		- Closed: 20260916-140000
 
 	- ✅ Item 12: `_GNU_SOURCE` makes `shcl.h` impossible to compile.
 		- Reproduced. A translation unit that defines `_GNU_SOURCE` and includes the header fails with "conflicting types for 'splice'": the header's own `static ShclStr splice(...)` collides with glibc's `splice()`, which `<fcntl.h>` declares under that macro. The header includes `<fcntl.h>` itself, so no include order helps.

@@ -1445,6 +1445,42 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 // Migration: a 2.x document rewritten for the current lexical rules
 // ---------------------------------------------------------------------------
 
+/// What `migrate` produced, and what it could not carry across.
+pub struct Migration {
+	pub text: String,
+	/// The file already names its format, so there was nothing to migrate and
+	/// `text` is the input.
+	pub current: bool,
+	/// Pieces the two rule sets read differently and nothing can decide
+	/// between, left as written. Always 0 when the caller said the file is 2.x.
+	pub ambiguous: usize,
+	/// Lines 2.x bound a value on that nothing binds now: bracket text after
+	/// the colon, which has no 3.0 spelling to move to.
+	pub lost: usize,
+}
+
+/// The counters a line rewrite reports back, and the one thing it asks.
+struct Migrating {
+	from_v2: bool,
+	ambiguous: usize,
+	lost: usize,
+}
+
+/// The major a `##    Format   N` line names, if the document carries one.
+/// Digits that do not fit read as "newer than this", since whatever wrote them
+/// was not 2.x. Only `migrate` reads this line.
+fn format_version(text: &str) -> Option<u32> {
+	text.split('\n').find_map(|line| {
+		let n = line
+			.trim_end_matches(is_wsp)
+			.strip_prefix(FORMAT_LINE_HEAD)?;
+		// More digits than fit is not a 2.x file either, so it reads as this
+		// major and there is nothing to migrate.
+		(!n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+			.then(|| n.parse().unwrap_or(FORMAT_MAJOR))
+	})
+}
+
 /// Rewrite a document written under the 2.x rules so this parser reads the
 /// same tree. Each line is read with the 2.x tokenizer and re-spelled only
 /// where the two rule sets disagree: a bare or single-quoted piece whose
@@ -1458,16 +1494,40 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 /// could not read - comes through as written. One shape has no spelling
 /// here at all: a fence label holding a `#`, which 2.x ran to the end of the
 /// line and which now ends at the `#`.
-pub fn migrate(text: &str) -> String {
-	let (bom, text) = match text.strip_prefix('\u{feff}') {
+///
+/// Which file this is cannot be read off the text: `p: 'C:\temp'` is one value
+/// under 2.x and another under these rules, so rewriting a 3.0 file changes
+/// what it says. So the version line decides. A file that names this format is
+/// returned untouched; one that names an older format, or a caller passing
+/// `from_v2`, gets the backslash re-spellings; anything else gets every other
+/// rewrite and leaves those pieces alone, counted in `ambiguous` for the caller
+/// to refuse over. A rewritten file is stamped with the version line, so the
+/// second run has an answer the first one did not.
+pub fn migrate(text: &str, from_v2: bool) -> Migration {
+	let (bom, body_text) = match text.strip_prefix('\u{feff}') {
 		Some(t) => ("\u{feff}", t),
 		None => ("", text),
 	};
-	let mut out = String::with_capacity(text.len() + 32);
+	let version = format_version(body_text);
+	if version.is_some_and(|n| n >= FORMAT_MAJOR) {
+		return Migration {
+			text: text.to_string(),
+			current: true,
+			ambiguous: 0,
+			lost: 0,
+		};
+	}
+	let mut st = Migrating {
+		from_v2: from_v2 || version.is_some(),
+		ambiguous: 0,
+		lost: 0,
+	};
+	let mut out = String::with_capacity(body_text.len() + 96);
 	out.push_str(bom);
 	let mut tok = Tokens::default();
 	let mut fence: Option<(u8, usize)> = None;
-	for (i, line) in text.split('\n').enumerate() {
+	let mut changed = false;
+	for (i, line) in body_text.split('\n').enumerate() {
 		if i > 0 {
 			out.push('\n');
 		}
@@ -1483,12 +1543,34 @@ pub fn migrate(text: &str) -> String {
 		let indent = leading_ws(body);
 		let rest_full = &body[indent.len()..];
 		let rest = trim_wsp_end(rest_full);
+		let migrated = migrate_line(rest, &mut tok, &mut fence, &mut st);
+		changed |= migrated != rest;
 		out.push_str(indent);
-		out.push_str(&migrate_line(rest, &mut tok, &mut fence));
+		out.push_str(&migrated);
 		out.push_str(&rest_full[rest.len()..]);
 		out.push_str(cr);
 	}
-	out
+	// Stamping a file whose ambiguous pieces were left alone would claim a
+	// migration that did not finish, and the next run would then skip it. A
+	// document that never closes its raw block has nowhere to put the line
+	// either: appended, it would be another line of the block's content.
+	if st.ambiguous == 0 && fence.is_none() {
+		if !out.is_empty() && !out.ends_with('\n') {
+			out.push('\n');
+		}
+		out.push_str(FORMAT_LINE);
+		out.push('\n');
+		if changed {
+			out.push_str(MIGRATED_LINE);
+			out.push('\n');
+		}
+	}
+	Migration {
+		text: out,
+		current: false,
+		ambiguous: st.ambiguous,
+		lost: st.lost,
+	}
 }
 
 /// One edit to a line: replace `start..end` with the text.
@@ -1549,7 +1631,7 @@ fn v2_bracket_array(body: &str) -> bool {
 /// (escapes everywhere, an open quote kept whole, a quote at both ends
 /// making it quoted) and re-spelled only where the current rules would read
 /// the same text as something else.
-fn value_edits(text: &str, tok: &Tokens, edits: &mut Vec<Edit>) {
+fn value_edits(text: &str, tok: &Tokens, edits: &mut Vec<Edit>, st: &mut Migrating) {
 	for p in &tok.elements {
 		let raw = &text[p.start..p.end];
 		let quoted = matches!(p.quote, Quote::Single | Quote::Double);
@@ -1565,12 +1647,24 @@ fn value_edits(text: &str, tok: &Tokens, edits: &mut Vec<Edit>) {
 		if reads_same(&text[a..b], quoted, &logical) {
 			continue;
 		}
+		// A resolved escape is the one edit that turns on which rule set wrote
+		// the file: these bytes say one thing under 2.x and another here. An
+		// open quote or an empty slot reads alike either way, so it still goes.
+		if logical != raw && !st.from_v2 {
+			st.ambiguous += 1;
+			continue;
+		}
 		let spelling = migrate_spelling(&logical, !(quoted || p.quote == Quote::Open));
 		edits.push((a, b, spelling));
 	}
 }
 
-fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -> String {
+fn migrate_line(
+	rest: &str,
+	tok: &mut Tokens,
+	fence: &mut Option<(u8, usize)>,
+	st: &mut Migrating,
+) -> String {
 	if rest.is_empty() || rest.starts_with('#') {
 		return rest.to_string();
 	}
@@ -1585,7 +1679,7 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 		tokenize_value(rest, 1, Rules::V2, tok);
 		// A bare comma was refused (E010), so there is nothing to carry.
 		if tok.elements.len() == 1 {
-			value_edits(rest, tok, &mut edits);
+			value_edits(rest, tok, &mut edits, st);
 		}
 	} else {
 		tokenize(rest, b':', false, Rules::V2, tok);
@@ -1596,11 +1690,15 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 		for (i, seg) in tok.segments.iter().enumerate() {
 			let name = &rest[seg.name.start..seg.name.end];
 			if seg.name.quote == Quote::Single && apply_escapes(name) != name {
-				edits.push((
-					seg.name.start - 1,
-					seg.name.end + 1,
-					escape_name(&apply_escapes(name)),
-				));
+				if st.from_v2 {
+					edits.push((
+						seg.name.start - 1,
+						seg.name.end + 1,
+						escape_name(&apply_escapes(name)),
+					));
+				} else {
+					st.ambiguous += 1;
+				}
 			}
 			let Some(sel) = seg.selector else {
 				continue;
@@ -1635,8 +1733,20 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 					// selector, so those stay as written. A bare body moves
 					// into a value, where a fence run opens a raw block and a
 					// leading `[` is bracket text, so the emitter spells it.
-					if !quoted && (v2_bracket_array(body) || index_shape(body) || body == "*") {
+					if !quoted && (index_shape(body) || body == "*") {
 						return rest.to_string();
+					}
+					// 2.x bound the bracket array, as one folded string. There
+					// is no spelling to move that to - a value beginning with
+					// `[` is bracket text now - so the binding goes, and the
+					// caller hears about it rather than reading exit 0.
+					if !quoted && v2_bracket_array(body) {
+						st.lost += 1;
+						return rest.to_string();
+					}
+					if logical != body && !st.from_v2 {
+						st.ambiguous += 1;
+						continue;
 					}
 					let spelling = if logical != body {
 						migrate_spelling(&logical, false)
@@ -1654,14 +1764,18 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 				let spaced = c > 0 && is_wsp_byte(s[c - 1]) && is_wsp_byte(s[c + 1]);
 				edits.push((c, c + 1 + usize::from(spaced), String::new()));
 			}
-			if logical != body {
-				let (a, b) = if quoted {
-					(sel.start - 1, sel.end + 1)
-				} else {
-					(sel.start, sel.end)
-				};
-				if sel.quote != Quote::Double {
+			// Double quotes already read alike on both sides, so only the other
+			// spellings turn on which rule set wrote the file.
+			if logical != body && sel.quote != Quote::Double {
+				if st.from_v2 {
+					let (a, b) = if quoted {
+						(sel.start - 1, sel.end + 1)
+					} else {
+						(sel.start, sel.end)
+					};
 					edits.push((a, b, migrate_spelling(&logical, false)));
+				} else {
+					st.ambiguous += 1;
 				}
 			}
 		}
@@ -1671,7 +1785,7 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 				*fence = Some((ch, len));
 				return splice(rest, edits);
 			}
-			value_edits(rest, tok, &mut edits);
+			value_edits(rest, tok, &mut edits, st);
 		}
 	}
 	splice(rest, edits)
@@ -7127,11 +7241,31 @@ pub const GEN_BANNER: &str = "\
 ##
 ## This config file format is SHCL.
 ## \"Simple Hierarchical Config Language\"
+##    Format   3
 ##    Home     https://github.com/jim-collier/shcl
 ##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ";
+
+/// The format major the info block names. Bumped with the format, not with the
+/// crate: a file says which rule set it was written for, and nothing else.
+pub const FORMAT_MAJOR: u32 = 3;
+
+/// The start of the block's version line, up to the number. `migrate` matches
+/// on this and reads the digits after it, so a later major can still tell an
+/// older file from one of its own.
+pub const FORMAT_LINE_HEAD: &str = "##    Format   ";
+
+/// The whole version line, as the block spells it. A program writing a config
+/// of its own emits `GEN_BANNER`, which carries this; `migrate` appends this
+/// line on its own to a file it rewrote, since that file has no block to add
+/// it to and inventing one would write bytes the document does not hold.
+pub const FORMAT_LINE: &str = "##    Format   3";
+
+/// Written under `FORMAT_LINE` on a file `migrate` actually changed. It is a
+/// note for whoever opens the file; nothing reads it back.
+pub const MIGRATED_LINE: &str = "##    Migrated from SHCL 2.x.";
 
 /// Render parsed segments back as a dotted path, dropping wildcard selectors
 /// (a generated line targets the one instance it materializes) and quoting a

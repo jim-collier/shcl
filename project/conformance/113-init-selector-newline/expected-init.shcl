@@ -7,6 +7,7 @@ srv["a\nb"].port: 8080
 ##
 ## This config file format is SHCL.
 ## "Simple Hierarchical Config Language"
+##    Format   3
 ##    Home     https://github.com/jim-collier/shcl
 ##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.

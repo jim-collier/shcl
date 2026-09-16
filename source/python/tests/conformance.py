@@ -546,14 +546,14 @@ def main():
 	for case in cases:
 		if case["expected_migrate"] is None:
 			continue
-		got = shcl.migrate(case["input"])
+		got = shcl.migrate(case["input"], True).text
 		if got != case["expected_migrate"]:
 			fails.append(f"{case['name']}: migrate output differs from expected-migrate.shcl")
 		if _diag_text(got) != case["expected_migrate_diags"]:
 			fails.append(f"{case['name']}: migrated text's diagnostics differ from expected-migrate-diags.txt")
 	for case in cases:
-		once = shcl.migrate(case["input"])
-		if shcl.migrate(once) != once:
+		once = shcl.migrate(case["input"], True).text
+		if shcl.migrate(once, True).text != once:
 			fails.append(f"{case['name']}: migrate changes its own output")
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
