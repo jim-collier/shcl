@@ -106,10 +106,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
-	- 🔘 Item 17: `migrate`'s 2.x emulation shields a backslash inside a selector body; 2.x did not.
-		- Reproduced against the pinned 2.x build. Any bare selector ending in a backslash makes `migrate` bail, and with the sugar spelling the whole line's bindings disappear instead.
-		- Opened: 20260909-101600
-
 	- 🔘 Item 18: a field name holding a newline splits one diagnostic across two stderr lines.
 		- Reproduced in all four. `V001`, its did-you-mean suffix and `H001` embed a field name verbatim, so a machine reading stderr sees two diagnostics where there is one.
 		- Cause: `one_line` exists for this and is applied to every `V004` value and to neither of these.
@@ -195,12 +191,10 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
 		- Opened: 20260909-103800
 
-- 🔘 `migrate` leaves a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding is gone and `migrate --write` exits 0.
-	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` writes the line back unchanged, which is `E019` now, so `k` binds nothing, and `migrate --write` exits 0. The value spelling `k: a\,b` migrates to `k: "a\\,b"`, and `srv:[a\,b].name: 1` migrates to a selector that reads the same, so only the last-segment arm drops it.
-	- Cause: that arm bails when the raw body holds any comma. 2.x refused only a bare one, and a comma behind a backslash never made the brackets an array.
-	- Note: `migrateLine`, `_migrate_line` and `migrate_line` test the raw body the same way. Read, not run.
-	- Note: same arm as 20260909 item 3, and near item 17. Whatever item 17 settles about a backslash in a selector body, the pinned 2.x build bound this line.
-	- Opened: 20260914-150934
+- 🔘 The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
+	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.
+	- Note: this is a runner reporting OK with a whole dimension absent, so a case carrying no read coverage looks the same as one that does.
+	- Opened: 20260916-105829
 
 - 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
 	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
@@ -324,6 +318,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ `migrate` left a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding was gone and `migrate --write` exited 0.
+	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` wrote the line back unchanged, which is `E019` now, so `k` bound nothing, and `migrate --write` exited 0. The value spelling `k: a\,b` migrated correctly, so only the last-segment arm dropped it.
+	- Cause: that arm bailed when the raw body held any comma. 2.x refused only a bare one, and a comma behind a backslash never made the brackets an array.
+	- Fixed: the arm reads the body with the 2.x tokenizer and bails only on two or more elements, through `v2_bracket_array` (Rust and C), `v2BracketArray` (Go) and `_v2_bracket_array` (Python). One tokenizer answers the question the arm used to answer with a substring test.
+	- Pinned by: corpus `123-migrate-sugar-shielded-comma` in all four runners, which also pins that a real two-element bracket array is still left as written. With the fix backed out the migration dimension fails and names that case alone.
+	- Note: same arm as 20260909 item 3, and beside item 17, which is the other 2.x difference in a selector body.
+	- Opened: 20260914-150934
+	- Closed: 20260916-105829
 
 - ✅ `migrate` read a quoted discriminator with text after its closing quote as a value, where 2.x refused the line, so it wrote a binding 2.x never had.
 	- Reproduced in all four against the pinned 2.x build. 2.x reports `k:['C':x']` as `E014 unterminated selector` and binds nothing. `migrate` wrote `k: 'C':x'`, which loads as `E017`, at exit 0, and a second run rewrote that to `k: "C':x"`.
@@ -502,7 +505,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 17, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -636,6 +639,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the fix belongs in the canonical copy under the synced tree as well, patched in place rather than by overwriting, since other projects' copies carry their own customizations.
 		- Opened: 20260909-102000
 		- Closed: 20260915-112859
+
+	- ✅ Item 17: `migrate`'s 2.x emulation shields a backslash inside a selector body; 2.x did not.
+		- Reproduced against the pinned 2.x build. Any bare selector ending in a backslash makes `migrate` bail, and with the sugar spelling the whole line's bindings disappear instead.
+		- Cause: the 2.x bare-text shield was on for every piece the scan reads. 2.x shielded a backslash in value text only - its name-half scan ran a bare selector body to the first `]` - so the emulation ate the `]`, faulted the line, and handed it back as written with its value unmigrated.
+		- Fixed: the shield applies to a value piece only, in `scan_piece` (Rust and C), `scanPiece` (Go) and `_scan_piece` (Python). A bare selector body runs to its first `]` under both rule sets, so the line reads and the rest of it migrates.
+		- Pinned by: corpus `122-migrate-selector-backslash` in all four runners, and `check-migrate.bash`, which compares that case document by document since it is clean under 2.x. With the fix backed out the migration dimension fails and names that case alone, and the other dimensions stay green.
+		- Opened: 20260909-101600
+		- Closed: 20260916-105829
 
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.

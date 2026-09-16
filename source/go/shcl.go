@@ -715,9 +715,9 @@ const tmpNameBytes = 64
 //   - A value is split on unquoted commas, each piece trimmed.
 //
 // Under RulesV2 the tokenizer reads the 2.x spellings instead, for Migrate: a
-// backslash shields the next character in bare and single-quoted text, a
-// separator followed by `[` is the selector sugar, and an open quote swallows
-// the rest of the line.
+// backslash shields the next character in bare and single-quoted value text, a
+// bare selector body still runs to its first `]`, a separator followed by `[`
+// is the selector sugar, and an open quote swallows the rest of the line.
 
 // Quote is how a piece was quoted. QuoteOpen is a piece that began with a
 // quote and never closed with the matching quote as its last character: the
@@ -919,7 +919,9 @@ func scanPiece(s string, pos int, term byte, rules Rules, comments bool) (Piece,
 			}
 		}
 	}
-	shield := rules == RulesV2
+	// 2.x shielded a backslash in value text only. A bare selector body ran to
+	// its first `]`, the same as now, so shielding one here would hide the `]`.
+	shield := rules == RulesV2 && term == ','
 	contentEnd := start
 	for pos < len(s) {
 		b := s[pos]
@@ -1663,6 +1665,15 @@ func migrateSpelling(logical string, bare bool) string {
 	return quoteText(logical)
 }
 
+// v2BracketArray is true when 2.x read this bare `[...]` body as the JSON-habit
+// array rather than a discriminator: more than one element, where a comma
+// behind a backslash was not one.
+func v2BracketArray(body string) bool {
+	var tok Tokens
+	TokenizeValue(body, 0, RulesV2, &tok)
+	return len(tok.Elements) > 1
+}
+
 // valueEdits collects the re-spellings a value's pieces need. Each piece is
 // read the 2.x way (escapes everywhere, an open quote kept whole, a quote at
 // both ends making it quoted) and re-spelled only where the current rules
@@ -1751,12 +1762,13 @@ func migrateLine(rest string, tok *Tokens, fence *openFence) string {
 			if i == last && tok.Sep < 0 {
 				if colon >= 0 {
 					// `name:[disc]` with nothing after it: 2.x read it as
-					// `name: disc`. A bare comma in there was refused as a
-					// bracket array, and an index or the wildcard was refused
-					// as a selector, so those stay as written. A bare body
-					// moves into a value, where a fence run opens a raw block
-					// and a leading `[` is bracket text, so the emitter spells it.
-					if !quoted && (strings.Contains(body, ",") || indexShape(body) || body == "*") {
+					// `name: disc`. Two or more elements in there was refused
+					// as a bracket array - a comma behind a backslash was not
+					// one - and an index or the wildcard was refused as a
+					// selector, so those stay as written. A bare body moves
+					// into a value, where a fence run opens a raw block and a
+					// leading `[` is bracket text, so the emitter spells it.
+					if !quoted && (v2BracketArray(body) || indexShape(body) || body == "*") {
 						return rest
 					}
 					var spelling string

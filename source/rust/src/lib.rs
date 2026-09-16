@@ -699,8 +699,9 @@ const TMP_NAME_BYTES: usize = 64;
 //
 // Under `Rules::V2` the tokenizer reads the 2.x spellings instead, for
 // `migrate`: a backslash shields the next character in bare and single-quoted
-// text, a separator followed by `[` is the selector sugar, and an open quote
-// swallows the rest of the line.
+// value text, a bare selector body still runs to its first `]`, a separator
+// followed by `[` is the selector sugar, and an open quote swallows the rest
+// of the line.
 
 /// How a piece was quoted. `Open` is a piece that began with a quote and
 /// never closed with the matching quote as its last character: the whole
@@ -896,7 +897,9 @@ fn scan_piece(s: &[u8], mut pos: usize, term: u8, rules: Rules, comments: bool) 
 			}
 		}
 	}
-	let shield = rules == Rules::V2;
+	// 2.x shielded a backslash in value text only. A bare selector body ran to
+	// its first `]`, the same as now, so shielding one here would hide the `]`.
+	let shield = rules == Rules::V2 && term == b',';
 	let mut content_end = start;
 	while pos < s.len() {
 		let b = s[pos];
@@ -1533,6 +1536,15 @@ fn migrate_spelling(logical: &str, bare: bool) -> String {
 	}
 }
 
+/// True when 2.x read this bare `[...]` body as the JSON-habit array rather
+/// than a discriminator: more than one element, where a comma behind a
+/// backslash was not one.
+fn v2_bracket_array(body: &str) -> bool {
+	let mut tok = Tokens::default();
+	tokenize_value(body, 0, Rules::V2, &mut tok);
+	tok.elements.len() > 1
+}
+
 /// The re-spellings a value's pieces need. Each piece is read the 2.x way
 /// (escapes everywhere, an open quote kept whole, a quote at both ends
 /// making it quoted) and re-spelled only where the current rules would read
@@ -1617,12 +1629,13 @@ fn migrate_line(rest: &str, tok: &mut Tokens, fence: &mut Option<(u8, usize)>) -
 			if i == last && tok.sep.is_none() {
 				if let Some(c) = colon {
 					// `name:[disc]` with nothing after it: 2.x read it as
-					// `name: disc`. A bare comma in there was refused as a
-					// bracket array, and an index or the wildcard was refused
-					// as a selector, so those stay as written. A bare body
-					// moves into a value, where a fence run opens a raw block
-					// and a leading `[` is bracket text, so the emitter spells it.
-					if !quoted && (body.contains(',') || index_shape(body) || body == "*") {
+					// `name: disc`. Two or more elements in there was refused
+					// as a bracket array - a comma behind a backslash was not
+					// one - and an index or the wildcard was refused as a
+					// selector, so those stay as written. A bare body moves
+					// into a value, where a fence run opens a raw block and a
+					// leading `[` is bracket text, so the emitter spells it.
+					if !quoted && (v2_bracket_array(body) || index_shape(body) || body == "*") {
 						return rest.to_string();
 					}
 					let spelling = if logical != body {
