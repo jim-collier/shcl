@@ -1026,7 +1026,11 @@ def tokenize_value(text: str, from_: int, rules: Rules, out: Tokens) -> None:
 
 def _scan_value(s, from_, rules, out):
 	n = len(s)
-	if rules is Rules.CURRENT and not _VALUE_SLOW.search(s, from_):
+	# A from_ that is not a character boundary is not a place the byte loop
+	# would ever stop: it strides whole characters, so a comma inside a stride
+	# never splits there, while bytes.find would split on it. No in-tree caller
+	# does that, but tokenize_value is public, so fall through to the loop.
+	if rules is Rules.CURRENT and (from_ >= n or s[from_] & 0xC0 != 0x80) and not _VALUE_SLOW.search(s, from_):
 		# Fast path: with no quote and no `#` after the separator, every comma
 		# splits and every piece is bare, so the scan would only ever trim.
 		# bytes.find and strip run at C speed; the byte loop is the cost, and
@@ -1990,7 +1994,7 @@ class _Parser:
 				if is_last and not value.is_empty():
 					# `a.b[X]: v` - the discriminator is the value; a second
 					# value has nowhere unambiguous to go.
-					self._refuse(line, "E002", f"value after selector on '{seg.name}' ignored", OUT_VALUE_DROPPED, indent)
+					self._refuse(line, "E002", f"value after selector on '{_diag_name(seg.name)}' ignored", OUT_VALUE_DROPPED, indent)
 			elif sel is not None and sel[0] == "idx":
 				k = sel[1]
 				found = None
@@ -2004,12 +2008,12 @@ class _Parser:
 				if found is not None:
 					cur = found
 				else:
-					self._refuse(line, "E003", f"no instance {k} of '{seg.name}'", OUT_DROPPED, indent)
+					self._refuse(line, "E003", f"no instance {k} of '{_diag_name(seg.name)}'", OUT_DROPPED, indent)
 					return None
 				if is_last and not value.is_empty():
 					# Same as the value selector: the instance is already chosen,
 					# so a trailing value has nowhere to bind.
-					self._refuse(line, "E002", f"value after selector on '{seg.name}' ignored", OUT_VALUE_DROPPED, indent)
+					self._refuse(line, "E002", f"value after selector on '{_diag_name(seg.name)}' ignored", OUT_VALUE_DROPPED, indent)
 			elif sel is not None and sel[0] == "wild":
 				self._refuse(line, "E004", "wildcard selector is query-only", OUT_DROPPED, indent)
 				return None
@@ -4189,7 +4193,8 @@ class Document:
 			n, pchain, pshown = stack.pop()
 			node = self.arena[n]
 			chain = _chain_push(pchain, node.name)
-			shown = node.name if not pshown else pshown + "." + node.name
+			seg = _diag_name(node.name)
+			shown = seg if not pshown else pshown + "." + seg
 			if (
 				chain not in legal
 				and not _star_legal(star_pats, chain)
@@ -4243,6 +4248,15 @@ def _emit_name(name):
 	return _escape_name(name)
 
 
+def _diag_name(name):
+	# A field name for a diagnostic message: spelled the way the emitter would
+	# write it, so a name carrying a line break, a dot or a quote cannot pose as
+	# something it is not - a raw `a.b` reads exactly like `a` nesting `b`, and a
+	# raw line break splits one diagnostic across two. CR is escaped here and not
+	# in _escape_name, because the name parse has no `\r` escape to read back.
+	return _emit_name(name).replace("\r", "\\r")
+
+
 def quote_segment(name: str) -> str:
 	"""Quote one path segment so it can be spliced into a lookup path: a bare
 	name passes through, anything else comes back quoted and escaped in the
@@ -4258,7 +4272,8 @@ def _h001_head(name):
 	emitted - never a re-parse of free prose. (The leaf name cannot ride on
 	Diagnostic itself: consumers build Diagnostic literals, so its field set
 	is frozen.)"""
-	return f"'{name}' repeats as a bare leaf - did you mean '{name}: "
+	shown = _diag_name(name)
+	return f"'{shown}' repeats as a bare leaf - did you mean '{shown}: "
 
 
 def suppress_declared_repeats(schema: Document, diags: list[Diagnostic]) -> None:
@@ -4641,7 +4656,7 @@ def _disavowed_names(schema, pick):
 def _h002_head(name):
 	"""The single H002 wording site: the merge hint and the schema suppressor
 	both come here, same discipline as _h001_head."""
-	return f"merged with '{name}' at "
+	return f"merged with '{_diag_name(name)}' at "
 
 
 def suppress_declared_reopens(schema: Document, diags: list[Diagnostic]) -> None:
@@ -5497,7 +5512,7 @@ def _build_schema(schema):
 				_vdiag(faults, node.line, "V094", "bad schema fragment")
 				continue
 			if name in frags:
-				_vdiag(faults, node.line, "V094", f"bad schema fragment '{name}': duplicate")
+				_vdiag(faults, node.line, "V094", f"bad schema fragment '{_diag_name(name)}': duplicate")
 				continue
 			fcs = []
 			for k in schema.arena[f].children:
@@ -5509,15 +5524,15 @@ def _build_schema(schema):
 					else:
 						paths_complete = False
 				else:
-					_vdiag(faults, kid.line, "V094", f"bad schema fragment '{name}': unknown key '{kid.name}'")
+					_vdiag(faults, kid.line, "V094", f"bad schema fragment '{_diag_name(name)}': unknown key '{_diag_name(kid.name)}'")
 			frags[name] = fcs
 		else:
-			_vdiag(faults, node.line, "V090", f"unknown schema key '{node.name}'")
+			_vdiag(faults, node.line, "V090", f"unknown schema key '{_diag_name(node.name)}'")
 	# Every mount must name a declared fragment; cycles (self or mutual) are
 	# legal - expansion is demand-driven against a finite document.
 	for c in cons + [fc for fcs in frags.values() for fc in fcs]:
 		if c.inherits is not None and c.inherits not in frags:
-			_vdiag(faults, c.inherits_line, "V095", f"unknown schema fragment '{c.inherits}'")
+			_vdiag(faults, c.inherits_line, "V095", f"unknown schema fragment '{_diag_name(c.inherits)}'")
 			paths_complete = False
 	# One constraint per line in practice, so line order = file order.
 	faults.sort(key=lambda d: d.line)
@@ -5625,7 +5640,7 @@ def _parse_field(schema, f, faults):
 				c.default_text = _emit_value_inline(kid.value)
 				default_at = k
 		else:
-			_vdiag(faults, kid.line, "V090", f"unknown schema key '{kid.name}'")
+			_vdiag(faults, kid.line, "V090", f"unknown schema key '{_diag_name(kid.name)}'")
 	if required is not None:
 		c.required = required
 	# A raw block has no inline spelling, so a `default` that is one cannot reach
@@ -6261,4 +6276,4 @@ def _v_suggest(siblings, parent_chain, name):
 			best = (dist, s)
 	if best is None:
 		return ""
-	return f"; did you mean '{best[1]}'?"
+	return f"; did you mean '{_diag_name(best[1])}'?"

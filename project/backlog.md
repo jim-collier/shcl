@@ -106,18 +106,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: stands under the settled rules. Bracket text is the one line `migrate` leaves that 2.x bound, so this is where the nonzero exit is needed.
 		- Opened: 20260909-100900
 
-	- 🔘 Item 18: a field name holding a newline splits one diagnostic across two stderr lines.
-		- Reproduced in all four. `V001`, its did-you-mean suffix and `H001` embed a field name verbatim, so a machine reading stderr sees two diagnostics where there is one.
-		- Cause: `one_line` exists for this and is applied to every `V004` value and to neither of these.
-		- Note: a second facet - the path is joined with `.` from raw names, so a field named `a.b` prints indistinguishably from `a` nesting `b`.
-		- Opened: 20260909-101700
-
-	- 🔘 Item 19: Python's `tokenize_value` fast path is not exact when `from_` is not a character boundary.
-		- Reproduced at library level. `tokenize_value('e-acute,', 1, ...)` gives Python `[(1,2),(3,3)]` where the other three give `[(1,3)]`: the byte-find shortcut splits on a comma the byte loop strides over.
-		- Note: `style-guide.md:110` sanctions the deviation and says both shortcuts are exact. No in-tree caller reaches it, but `tokenize_value` is public in all four, so a consumer gets a different answer from Python.
-		- Site: `shcl.py:1041-1063`.
-		- Opened: 20260909-101800
-
 	- 🔘 Item 20: `install-dev.bash` rewrites an unrelated repository's git config and switches its branch.
 		- Reproduced. `--dir` naming an existing git repository that is not shcl announces that it will clone, silently does not, then runs `git checkout dev` on that repository and overwrites its `core.hooksPath` and `core.sshCommand`. The victim repository's own hooks stop running with no sign of it.
 		- Cause: the clone is guarded by `[[ -e "${clone_dir}/.git" ]]`, which is true of any repository, and nothing afterwards checks that the directory is this project.
@@ -505,7 +493,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 17, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 5, 7, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -647,6 +635,25 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: corpus `122-migrate-selector-backslash` in all four runners, and `check-migrate.bash`, which compares that case document by document since it is clean under 2.x. With the fix backed out the migration dimension fails and names that case alone, and the other dimensions stay green.
 		- Opened: 20260909-101600
 		- Closed: 20260916-105829
+
+	- ✅ Item 18: a field name holding a newline splits one diagnostic across two stderr lines.
+		- Reproduced in all four. `V001`, its did-you-mean suffix and `H001` embed a field name verbatim, so a machine reading stderr sees two diagnostics where there is one.
+		- Cause: `one_line` exists for this and is applied to every `V004` value and to neither of these.
+		- Note: a second facet - the path is joined with `.` from raw names, so a field named `a.b` prints indistinguishably from `a` nesting `b`.
+		- Fixed: one `diag_name` per binding (`diagName` in Go) spells a name the way the emitter would write it, which closes both facets at once - the quoted form escapes the line break, and a flat `a.b` comes out `"a.b"` where real nesting stays `a.b`. Every site that names a field goes through it: `V001` and its suggestion, `E002`, `E003`, `V090`, `V094`, `V095`, and the `H001` and `H002` heads. Calling it inside the two heads is what keeps each suppressor matching the head its builder emitted. `V092` is left as it was, since its key is a literal like `min` rather than user text.
+		- Note: a carriage return is escaped for display only. `escape_name` cannot carry one, because the name parse has no `\r` escape to read back, so an emitted `\r` would reload as a backslash and an `r`.
+		- Pinned by: `cli-regress.bash` rows `diag-name-line-break` and `diag-name-dotted`, against all four CLIs. Both go red with the speller backed out, showing the three-line hint and the ambiguous `x.y`. The corpus cannot pin either one: `expected-diags.txt` carries codes only, and the crosscheck drops stderr.
+		- Opened: 20260909-101700
+		- Closed: 20260916-125334
+
+	- ✅ Item 19: Python's `tokenize_value` fast path is not exact when `from_` is not a character boundary.
+		- Reproduced at library level. `tokenize_value('e-acute,', 1, ...)` gives Python `[(1,2),(3,3)]` where the other three give `[(1,3)]`: the byte-find shortcut splits on a comma the byte loop strides over.
+		- Note: `style-guide.md:110` sanctions the deviation and says both shortcuts are exact. No in-tree caller reaches it, but `tokenize_value` is public in all four, so a consumer gets a different answer from Python.
+		- Site: `shcl.py:1041-1063`.
+		- Fixed: the fast path is taken only when `from_` sits at a character boundary. The byte loop strides whole characters from wherever it starts, so a comma inside a stride never splits there, while `bytes.find` would split on it. An offset at or past the end still takes the fast path, which is where the empty tail is handled.
+		- Pinned by: a check in the Python runner, beside the other structural shortcut assertions, since no CLI path reaches this call. It fails with the guard backed out and names the wrong spans.
+		- Opened: 20260909-101800
+		- Closed: 20260916-125334
 
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.

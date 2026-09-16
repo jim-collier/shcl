@@ -2409,7 +2409,7 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int, inden
 			if isLast && !v.isEmpty() {
 				// `a.b[X]: v` - the discriminator is the value; a second
 				// value has nowhere unambiguous to go.
-				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name), outValueDropped, indent)
+				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", diagName(seg.name)), outValueDropped, indent)
 			}
 		case seg.sel != nil && seg.sel.kind == selByIndex:
 			found, ok := 0, false
@@ -2427,13 +2427,13 @@ func (p *parser) attachPath(parent int, segs []segment, v value, line int, inden
 			if ok {
 				cur = found
 			} else {
-				p.refuse(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, seg.name), outDropped, indent)
+				p.refuse(line, "E003", fmt.Sprintf("no instance %d of '%s'", seg.sel.index, diagName(seg.name)), outDropped, indent)
 				return 0, false
 			}
 			if isLast && !v.isEmpty() {
 				// Same as the value selector: the instance is already chosen,
 				// so a trailing value has nowhere to bind.
-				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", seg.name), outValueDropped, indent)
+				p.refuse(line, "E002", fmt.Sprintf("value after selector on '%s' ignored", diagName(seg.name)), outValueDropped, indent)
 			}
 		case seg.sel != nil:
 			p.refuse(line, "E004", "wildcard selector is query-only", outDropped, indent)
@@ -3283,13 +3283,24 @@ func QuoteSegment(name string) string {
 	return emitName(name)
 }
 
+// diagName is a field name for a diagnostic message: spelled the way the
+// emitter would write it, so a name carrying a line break, a dot or a quote
+// cannot pose as something it is not - a raw `a.b` reads exactly like `a`
+// nesting `b`, and a raw line break splits one diagnostic across two. CR is
+// escaped here and not in escapeName, because the name parse has no `\r`
+// escape to read back.
+func diagName(name string) string {
+	return strings.ReplaceAll(emitName(name), "\r", `\r`)
+}
+
 // h001Head is the single H001 wording site: the hint builder and the schema
 // suppressor both come here, so the suppressor matches the exact head the
 // builder emitted - never a re-parse of free prose. (The leaf name cannot
 // ride on Diagnostic itself: consumers build Diagnostic literals, so its
 // field set is frozen.)
 func h001Head(name string) string {
-	return fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: ", name, name)
+	shown := diagName(name)
+	return fmt.Sprintf("'%s' repeats as a bare leaf - did you mean '%s: ", shown, shown)
 }
 
 // SuppressDeclaredRepeats drops the H001 hints a schema disavows: a field
@@ -3734,7 +3745,7 @@ func disavowedNames(schema *Document, pick func(*constraint) bool) []string {
 // h002Head is the single H002 wording site: the merge hint and the schema
 // suppressor both come here, same discipline as h001Head.
 func h002Head(name string) string {
-	return fmt.Sprintf("merged with '%s' at ", name)
+	return fmt.Sprintf("merged with '%s' at ", diagName(name))
 }
 
 // SuppressDeclaredReopens drops the H002 hints a schema disavows: a section
@@ -6496,7 +6507,7 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 				continue
 			}
 			if _, dup := frags[name]; dup {
-				vdiag(&faults, node.line, "V094", fmt.Sprintf("bad schema fragment '%s': duplicate", name))
+				vdiag(&faults, node.line, "V094", fmt.Sprintf("bad schema fragment '%s': duplicate", diagName(name)))
 				continue
 			}
 			var fcs []constraint
@@ -6509,12 +6520,12 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 						pathsComplete = false
 					}
 				} else {
-					vdiag(&faults, kid.line, "V094", fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", name, kid.name))
+					vdiag(&faults, kid.line, "V094", fmt.Sprintf("bad schema fragment '%s': unknown key '%s'", diagName(name), diagName(kid.name)))
 				}
 			}
 			frags[name] = fcs
 		default:
-			vdiag(&faults, node.line, "V090", fmt.Sprintf("unknown schema key '%s'", node.name))
+			vdiag(&faults, node.line, "V090", fmt.Sprintf("unknown schema key '%s'", diagName(node.name)))
 		}
 	}
 	// Every mount must name a declared fragment; cycles (self or mutual) are
@@ -6524,7 +6535,7 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 			return
 		}
 		if _, ok := frags[c.inherits]; !ok {
-			vdiag(&faults, c.inheritsLine, "V095", fmt.Sprintf("unknown schema fragment '%s'", c.inherits))
+			vdiag(&faults, c.inheritsLine, "V095", fmt.Sprintf("unknown schema fragment '%s'", diagName(c.inherits)))
 			pathsComplete = false
 		}
 	}
@@ -6670,7 +6681,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 				defaultAt = k
 			}
 		default:
-			vdiag(faults, kid.line, "V090", fmt.Sprintf("unknown schema key '%s'", kid.name))
+			vdiag(faults, kid.line, "V090", fmt.Sprintf("unknown schema key '%s'", diagName(kid.name)))
 		}
 	}
 	// A raw block has no inline spelling, so a `default` that is one cannot reach
@@ -7964,9 +7975,10 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 		stack = stack[:len(stack)-1]
 		node := &d.arena[fr.node]
 		chain := chainPush(fr.chain, node.name)
-		shown := node.name
+		seg := diagName(node.name)
+		shown := seg
 		if fr.shown != "" {
-			shown = fr.shown + "." + node.name
+			shown = fr.shown + "." + seg
 		}
 		if !legal[chain] && !starLegal(starPats, chain) && !(hasMounts && chainLegal(cons, def.frags, chain)) {
 			hint := vSuggest(siblings, fr.chain, node.name)
@@ -8105,5 +8117,5 @@ func vSuggest(siblings map[string][]string, parentChain, name string) string {
 	if bestDist < 0 {
 		return ""
 	}
-	return fmt.Sprintf("; did you mean '%s'?", bestName)
+	return fmt.Sprintf("; did you mean '%s'?", diagName(bestName))
 }

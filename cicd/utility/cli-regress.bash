@@ -72,6 +72,12 @@ printf 'field: b\n\ttype: raw\n\tdefault: hello\n\trequired: yes\n' > "${tmpDir}
 ## A `desc` with a comma in it: the value is several elements, and the comment
 ## used to come out missing rather than carrying the sentence.
 printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.shcl"
+## A field name carrying a line break, and a flat name carrying a dot. Both used
+## to be pasted into the diagnostic exactly as stored, so one hint arrived as
+## three stderr lines and a flat name read just like nesting.
+printf '"a\\nb": 1\n"a\\nb": 2\n' > "${tmpDir}/nbname.shcl"
+printf '"x.y": 1\n' > "${tmpDir}/dotname.shcl"
+printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 ## A directory a write cannot create a temp file in. The phase is worth naming -
 ## it is the difference between "fix the file" and "fix its directory" - and the
 ## C CLI used to guess it from an access() that answers yes for every existing
@@ -158,7 +164,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	optional lines that each pass alone,
 ##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
-##	basename is 245 bytes of four-byte characters.
+##	basename is 245 bytes of four-byte characters,
+##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
+##	carrying a dot and a schema that declares it as nesting.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -249,6 +257,11 @@ rows=(
 	## 3.0: bracket text after the colon is one outcome, kept verbatim. The
 	## 2.x selector sugar is that shape now too, and migrate is what carries
 	## a file written with it across.
+	## One diagnostic is one line, and a name is spelled the way the emitter
+	## would write it. A line break in a name used to split one hint across
+	## three stderr lines, and a flat `x.y` printed the same as `x` nesting `y`.
+	'diag-name-line-break|check %NB%|-|0|line 2: Hint: H001\nok (1 diagnostic(s))\n|^line 2: Hint: H001 ."a\\nb". repeats'
+	'diag-name-dotted|check --schema=%SN% %DN%|-|6|line 1: Error: V001\nfailed: 1 diagnostic(s), 1 error(s)\n|unknown field ."x\.y".'
 	'bracket-array-check|check %BA%|-|6|line 1: Error: E019\nfailed: 1 diagnostic(s), 1 error(s)\n|-'
 	'bracket-array-write-kept|fmt --write %BA%|-|0||-'
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
@@ -381,6 +394,9 @@ for row in "${rows[@]}"; do
 	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
 	argv="${argv//%BA%/${tmpDir}/brarray.shcl}"
 	argv="${argv//%SQ%/${tmpDir}/selcomma.shcl}"
+	argv="${argv//%NB%/${tmpDir}/nbname.shcl}"
+	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
+	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	freshCopy=0

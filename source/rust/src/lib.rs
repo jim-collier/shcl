@@ -2323,7 +2323,7 @@ impl Parser {
 						self.refuse(
 							line,
 							"E002",
-							format!("value after selector on '{}' ignored", seg.name),
+							format!("value after selector on '{}' ignored", diag_name(&seg.name)),
 							Outcome::ValueDropped,
 							indent,
 						);
@@ -2344,7 +2344,7 @@ impl Parser {
 						self.refuse(
 							line,
 							"E003",
-							format!("no instance {} of '{}'", n, seg.name),
+							format!("no instance {} of '{}'", n, diag_name(&seg.name)),
 							Outcome::Dropped,
 							indent,
 						);
@@ -2356,7 +2356,7 @@ impl Parser {
 						self.refuse(
 							line,
 							"E002",
-							format!("value after selector on '{}' ignored", seg.name),
+							format!("value after selector on '{}' ignored", diag_name(&seg.name)),
 							Outcome::ValueDropped,
 							indent,
 						);
@@ -3423,6 +3423,15 @@ fn emit_name(name: &str) -> String {
 	escape_name(name)
 }
 
+/// A field name for a diagnostic message: spelled the way the emitter would
+/// write it, so a name carrying a line break, a dot or a quote cannot pose as
+/// something it is not - a raw `a.b` reads exactly like `a` nesting `b`, and a
+/// raw line break splits one diagnostic across two. CR is escaped here and not
+/// in `escape_name`, because the name parse has no `\r` escape to read back.
+fn diag_name(name: &str) -> String {
+	emit_name(name).replace('\r', "\\r")
+}
+
 /// Render a float the way the writer and the CLI do: shortest round-trip
 /// decimal, never scientific notation, `inf`/`-inf`/`NaN` spelled out. Rust's
 /// own Display already does exactly that, which is why this is a wrapper - the
@@ -3854,9 +3863,10 @@ fn sync_dir(dir: &std::path::Path) {
 /// Diagnostic itself: consumers build Diagnostic literals, so its field set
 /// is frozen.)
 fn h001_head(name: &str) -> String {
+	let shown = diag_name(name);
 	format!(
 		"'{}' repeats as a bare leaf - did you mean '{}: ",
-		name, name
+		shown, shown
 	)
 }
 
@@ -3899,7 +3909,7 @@ fn disavowed_names(schema: &Document, pick: impl Fn(&Constraint) -> bool) -> Vec
 /// The single H002 wording site: the merge hint and the schema suppressor
 /// both come here, same discipline as h001_head.
 fn h002_head(name: &str) -> String {
-	format!("merged with '{}' at ", name)
+	format!("merged with '{}' at ", diag_name(name))
 }
 
 /// Drop the H002 hints a schema disavows: a section whose entry declares
@@ -6260,7 +6270,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 						&mut faults,
 						node.line,
 						"V094",
-						format!("bad schema fragment '{}': duplicate", name),
+						format!("bad schema fragment '{}': duplicate", diag_name(&name)),
 					);
 					continue;
 				}
@@ -6278,7 +6288,11 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 							&mut faults,
 							kid.line,
 							"V094",
-							format!("bad schema fragment '{}': unknown key '{}'", name, kid.name),
+							format!(
+								"bad schema fragment '{}': unknown key '{}'",
+								diag_name(&name),
+								diag_name(&kid.name)
+							),
 						);
 					}
 				}
@@ -6289,7 +6303,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 					&mut faults,
 					node.line,
 					"V090",
-					format!("unknown schema key '{}'", other),
+					format!("unknown schema key '{}'", diag_name(other)),
 				);
 			}
 		}
@@ -6304,7 +6318,7 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 				&mut faults,
 				c.inherits_line,
 				"V095",
-				format!("unknown schema fragment '{}'", fr),
+				format!("unknown schema fragment '{}'", diag_name(fr)),
 			);
 			paths_complete = false;
 		}
@@ -6518,7 +6532,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				faults,
 				kid.line,
 				"V090",
-				format!("unknown schema key '{}'", other),
+				format!("unknown schema key '{}'", diag_name(other)),
 			),
 		}
 	}
@@ -7700,10 +7714,11 @@ impl Document {
 			let node = &self.arena[n];
 			let mut chain = pchain.clone();
 			chain_push(&mut chain, &node.name);
+			let seg = diag_name(&node.name);
 			let shown = if pshown.is_empty() {
-				node.name.clone()
+				seg
 			} else {
-				format!("{}.{}", pshown, node.name)
+				format!("{}.{}", pshown, seg)
 			};
 			let known = legal.contains(&chain)
 				|| star_legal(&star_pats, &chain)
@@ -7831,7 +7846,7 @@ fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: 
 		}
 	}
 	match best {
-		Some((_, n)) => format!("; did you mean '{}'?", n),
+		Some((_, n)) => format!("; did you mean '{}'?", diag_name(n)),
 		None => String::new(),
 	}
 }
