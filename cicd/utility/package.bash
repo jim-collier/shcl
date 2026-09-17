@@ -112,6 +112,7 @@ fCheckDeps(){
 		## listed too or removing the package leaves the directory behind.
 		local files; files="$(rpm -qlp "${stem}.rpm" 2>/dev/null)"
 		grep -qx '/usr/share/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/shcl"
+		grep -qx '/usr/share/doc/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/doc/shcl"
 	fi
 }
 

@@ -111,6 +111,28 @@ try {
 	& powershell -NoProfile -ExecutionPolicy Bypass -File $script -Dir $dir -Remove
 	Test-Check ($LASTEXITCODE -eq 0) 'setup remove exits 0'
 	Test-Check ((Get-RawPath $lm) -eq ($before -join ';')) 'setup remove restores the segments'
+	## The setup tells the user to fix PATH by hand only on a nonzero exit, and
+	## the script used to exit 0 on any failure. Two copies that must fail: one
+	## naming a key that is not there, and one opening the real key read-only so
+	## SetValue throws.
+	$shipped = [IO.File]::ReadAllText($script)
+	$keyText = "'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', `$true)"
+	if (-not $shipped.Contains($keyText)) { Write-Output 'winpath-regress: shclpath.ps1 no longer opens the key as expected'; exit 2 }
+	$broken = Join-Path ([IO.Path]::GetTempPath()) ('shclpath-fail-' + [IO.Path]::GetRandomFileName())
+	New-Item -ItemType Directory -Path $broken | Out-Null
+	try {
+		$noKey = Join-Path $broken 'nokey.ps1'
+		[IO.File]::WriteAllText($noKey, $shipped.Replace($keyText, "'SOFTWARE\shcl-winpath-regress-missing', `$true)"), [Text.UTF8Encoding]::new($true))
+		& powershell -NoProfile -ExecutionPolicy Bypass -File $noKey -Dir $dir
+		Test-Check ($LASTEXITCODE -ne 0) 'setup add fails on a missing key'
+		$readOnly = Join-Path $broken 'readonly.ps1'
+		[IO.File]::WriteAllText($readOnly, $shipped.Replace($keyText, $keyText.Replace('$true', '$false')), [Text.UTF8Encoding]::new($true))
+		& powershell -NoProfile -ExecutionPolicy Bypass -File $readOnly -Dir $dir
+		Test-Check ($LASTEXITCODE -ne 0) 'setup add fails when the write throws'
+		Test-Check ((Get-RawPath $lm) -eq ($before -join ';')) 'a failed setup add changes nothing'
+	} finally {
+		Remove-Item -Recurse -Force -LiteralPath $broken -ErrorAction SilentlyContinue
+	}
 } finally {
 	Restore-PathValue $lm $savedLm $savedLmKind
 	$lm.Close()

@@ -9,13 +9,26 @@
 ##
 ## Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. MIT License.
 param([string]$Dir, [switch]$Remove)
-$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
-$cur = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-$parts = @($cur -split ';' | Where-Object { $_ -ne '' })
-if ($Remove) {
-	$new = @($parts | Where-Object { $_ -ne $Dir }) -join ';'
-	if ($new -ne $cur) { $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString) }
-} elseif ($parts -notcontains $Dir) {
-	$key.SetValue('Path', (@($parts + $Dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+## Exit 1 on any failure, since the setup only tells the user to edit PATH by
+## hand when this exits nonzero. By default a missing key or a throwing
+## SetValue printed an error and still exited 0.
+$ErrorActionPreference = 'Stop'
+try {
+	$key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
+	if ($null -eq $key) { throw 'no Environment key' }
+	try {
+		$cur = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+		$parts = @($cur -split ';' | Where-Object { $_ -ne '' })
+		if ($Remove) {
+			$new = @($parts | Where-Object { $_ -ne $Dir }) -join ';'
+			if ($new -ne $cur) { $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString) }
+		} elseif ($parts -notcontains $Dir) {
+			$key.SetValue('Path', (@($parts + $Dir) -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+		}
+	} finally {
+		$key.Close()
+	}
+} catch {
+	[Console]::Error.WriteLine("shclpath.ps1: $_")
+	exit 1
 }
-$key.Close()
