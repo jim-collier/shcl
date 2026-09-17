@@ -91,14 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
-		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
-		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
-		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
-		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` can't see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
-		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
-		- Opened: 20260909-102100
-
 	- 🔘 Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
 		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
 		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
@@ -209,6 +201,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 52: the C sanitizer gate never runs the commands the last three rounds added.
 		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
 		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
+		- Note: that `mem_bounds.c` half was done with bug item 22.
 		- Opened: 20260909-105100
 
 	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
@@ -452,7 +445,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -646,6 +639,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the installers must match on main and dev, so the fix went to both.
 		- Opened: 20260909-101900
 		- Closed: 20260916-191604
+
+	- ✅ Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
+		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
+		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
+		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
+		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` can't see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
+		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
+		- Fixed: each value refusal resets scratch before it returns, in `w_set_marked`, `shcl_set_comment`, `shcl_set_literal`, `shcl_set_datetime` and `shcl_set_datetime_array`. The other three bindings have no scratch arena.
+		- Pinned by: a `mem_bounds.c` row making 400 refused one-MiB writes, a raw info string holding `#` and an unterminated literal, and reading the scratch arena. 839 MB before the fix, 4 MB after.
+		- Opened: 20260909-102100
+		- Closed: 20260916-191918
 
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.

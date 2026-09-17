@@ -168,6 +168,26 @@ int main(void) {
 	if (after > held + 4096) fail("a refused setter kept the value it encoded");
 	if (shcl_get_int_or(d, "a", 1, -1) != 1) fail("refused setter: the document changed");
 	shcl_free(d);
+
+	// The paths above are refused by the path, and w_place resets scratch. A
+	// value refusal is checked in scratch too, and used to leave it there.
+	d = shcl_parse("a: 1\n", 5);
+	size_t mib = 1024u * 1024;
+	memset(blob, 'x', mib);
+	blob[mib / 2] = '#';
+	char *lit = (char *)malloc(mib);
+	memset(lit, 'y', mib);
+	lit[0] = '"';
+	for (int i = 0; i < 200; i++) {
+		if (shcl_set_raw(d, "r", 1, "body", 4, blob, mib)) fail("refused setter: a raw info string holding # was accepted");
+		if (shcl_set_literal(d, "l", 1, lit, mib)) fail("refused setter: an unterminated literal was accepted");
+	}
+	size_t scap = 0;
+	for (const ShclBlock *b = d->scratch.head; b; b = b->next) scap += b->cap;
+	printf("mem_bounds: value refusals: scratch %zu bytes after 400 refused MiB values\n", scap);
+	if (scap > 64 * mib) fail("a value refusal kept its working set in scratch");
+	shcl_free(d);
+	free(lit);
 	free(blob);
 
 	// Generation used to copy its output into the schema's own arena before
