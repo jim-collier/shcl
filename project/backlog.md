@@ -113,18 +113,10 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 			- Note: left open for a call rather than coded around. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling shape this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings. Neither is a mechanical change.
 		- Opened: 20260909-104600
 
-	- 🔘 Item 48: `V005` and `V006` name neither the bound nor the offending value.
-		- A range failure says which field, not what it was or what it should have been, so a user reading a long report has to open the schema for each one.
-		- Opened: 20260909-104700
-
 	- 🔘 Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
 		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
 		- Related: bug item 37 is the stale reason given for the refusal.
 		- Opened: 20260909-104800
-
-	- 🔘 Item 50: Python's `Diagnostic` and `Read` print as object addresses where the other three print readably.
-		- `print(d.diagnostics()[0])` gives `<shcl.Diagnostic object at 0x...>`. A `__repr__` on each is the whole change, and Python is the binding where printing a value is how people debug.
-		- Opened: 20260909-104900
 
 	- 🔘 Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
 		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
@@ -150,10 +142,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 55: the spec says nothing about `migrate`.
 		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
 		- Opened: 20260909-105400
-
-	- 🔘 Item 56: the info block a created file gets has no blank line above it, where `init`'s has one.
-		- Cosmetic, but the two paths emit the same block and should agree.
-		- Opened: 20260909-105500
 
 	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
 		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
@@ -3522,6 +3510,32 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 48: `V005` and `V006` name neither the bound nor the offending value.
+		- A range failure says which field, not what it was or what it should have been, so a user reading a long report has to open the schema for each one.
+		- Decided: the message follows V004's shape, with the bound inserted: `value above max 10 at 'port': 99`. The value is the source text of the element that broke the bound, not the first element, so an array says which slot.
+		- Decided: a float bound is spelled through the shared float formatter, the one the generated annotation line uses, so `min: 1.0` reads as 1 in every binding and no libc gets a say.
+		- Fixed: the four int and float range arms in each binding. `position` (Rust), `firstIntBelow`/`firstIntAbove`/`firstFloatBelow`/`firstFloatAbove` replacing the `any*` predicates (Go), `_first_where` (Python), and `v_out_of_range` beside `v_not_allowed` (C).
+		- Pinned by: `cli-regress.bash` rows `range-max-names-value` and `range-min-names-bound`, watched to fail against the old wording. The `init-optional-bad-default` row carried the old text inside its V097 and was updated.
+		- Opened: 20260909-104700
+		- Closed: 20260917-170000
+
+	- ✅ Item 50: Python's `Diagnostic` and `Read` print as object addresses where the other three print readably.
+		- `print(d.diagnostics()[0])` gives `<shcl.Diagnostic object at 0x...>`. A `__repr__` on each is the whole change, and Python is the binding where printing a value is how people debug.
+		- Fixed: `__repr__` on both, in the shape the reference's derived Debug prints. `Read` spells its slots with `str()`, since a list's own repr would print `<Status.Good: 0>` beside a plain `Status.Good` for `.status`.
+		- Left alone: the other three bindings, which already print their fields.
+		- Pinned by: a check in `source/python/tests/conformance.py`, watched to fail with the `__repr__` removed.
+		- Opened: 20260909-104900
+		- Closed: 20260917-170000
+
+	- ✅ Item 56: the info block a created file gets has no blank line above it, where `init`'s has one.
+		- Cosmetic, but the two paths emit the same block and should agree.
+		- Cause: a created file is seeded with the block alone, so the blank line above it is the document's first, and the parse clears those on purpose - a document that kept one would not survive its own canonical form.
+		- Decided: put the blank back in the CLI, after the edits land, rather than changing the parse rule or taking `init`'s blank away. The spec already says the footer is separated by one blank line.
+		- Fixed: the create path in the four CLIs re-parses `head + "\n" + banner` before the save, so the saved text is still a formatter fixpoint and still goes through the save gate.
+		- Pinned by: the `create-info-block` row in `cli-regress.bash`, which asserts the created file's whole text.
+		- Opened: 20260909-105500
+		- Closed: 20260917-170000
 
 	- ✅ Item 46: `shcl.h` has no compile-time guard for the include-order trap it documents in a comment.
 		- Reproduced. A translation unit that includes `<stdio.h>` before the header, built `-std=c11`, fails with "implicit declaration of function 'readlink'" at `shcl.h:6538` and a page of the same for `lstat`, `fdopen` and the rest. Nothing in the cascade names include order.

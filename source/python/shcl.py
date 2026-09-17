@@ -132,6 +132,10 @@ class Diagnostic:
 		self.message = message
 		self.code = code          # stable machine code (E001.., H001..); the contract
 
+	# The reference derives Debug; print() is how Python gets debugged.
+	def __repr__(self) -> str:
+		return f"Diagnostic(line={self.line}, severity={self.severity}, message={self.message!r}, code={self.code!r})"
+
 
 class Read:
 	"""Value plus status plus the original raw text (when the path resolved).
@@ -159,6 +163,14 @@ class Read:
 		self.slots = slots if slots is not None else []
 		self.line = 0
 		self.quoted = False
+
+	# The reference derives Debug. Enum members are spelled with str(), since a
+	# list's repr would print the slots as <Status.Good: 0> beside a plain
+	# Status.Good for .status.
+	def __repr__(self) -> str:
+		slots = ", ".join(str(x) for x in self.slots)
+		return (f"Read(value={self.value!r}, status={self.status}, raw={self.raw!r}, "
+			f"slots=[{slots}], line={self.line}, quoted={self.quoted})")
 
 	def _at(self, line, quoted):
 		self.line = line
@@ -1211,6 +1223,15 @@ def _one_line(s):
 	# diagnostic is one line. A raw block's body is the value that made this
 	# necessary - it carries its own newlines.
 	return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def _first_where(xs, pred):
+	# The reference's Iterator::position, so a range diagnostic can name the
+	# value that broke the bound.
+	for i, x in enumerate(xs):
+		if pred(x):
+			return i
+	return -1
 
 
 def _apply_escapes(s):
@@ -4214,10 +4235,14 @@ class Document:
 					if v not in c.allowed[1]:
 						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
-			if c.min_i is not None and any(v < c.min_i for v in vals):
-				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
-			if c.max_i is not None and any(v > c.max_i for v in vals):
-				_vdiag(out, line, "V006", f"value above max at '{c.path}'")
+			if c.min_i is not None:
+				i = _first_where(vals, lambda v: v < c.min_i)
+				if i >= 0:
+					_vdiag(out, line, "V005", f"value below min {c.min_i} at '{c.path}': {_one_line(els[i].text)}")
+			if c.max_i is not None:
+				i = _first_where(vals, lambda v: v > c.max_i)
+				if i >= 0:
+					_vdiag(out, line, "V006", f"value above max {c.max_i} at '{c.path}': {_one_line(els[i].text)}")
 		elif base == "float":
 			vals = [_parse_float_text(e, self._strictness) for e in els]
 			if any(v is None for v in vals):
@@ -4228,10 +4253,14 @@ class Document:
 					if v not in c.allowed[1]:
 						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
 						break
-			if c.min_f is not None and any(v < c.min_f for v in vals):
-				_vdiag(out, line, "V005", f"value below min at '{c.path}'")
-			if c.max_f is not None and any(v > c.max_f for v in vals):
-				_vdiag(out, line, "V006", f"value above max at '{c.path}'")
+			if c.min_f is not None:
+				i = _first_where(vals, lambda v: v < c.min_f)
+				if i >= 0:
+					_vdiag(out, line, "V005", f"value below min {format_float(c.min_f)} at '{c.path}': {_one_line(els[i].text)}")
+			if c.max_f is not None:
+				i = _first_where(vals, lambda v: v > c.max_f)
+				if i >= 0:
+					_vdiag(out, line, "V006", f"value above max {format_float(c.max_f)} at '{c.path}': {_one_line(els[i].text)}")
 		elif base == "bool":
 			vals = [_parse_bool_text(e.text, self._strictness) for e in els]
 			if any(v is None for v in vals):

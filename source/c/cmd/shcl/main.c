@@ -1240,6 +1240,8 @@ static int do_set(Opts *o) {
 			start = i + 1;
 		}
 	}
+	// The re-parse below borrows its text, so both outlive write_back.
+	shcl_doc *nd = NULL; char *nt = NULL;
 	if (rc == 0) {
 		// "Create" was decided before the wait on stdin, so a file that turned up
 		// meanwhile is refused rather than replaced.
@@ -1247,10 +1249,28 @@ static int do_set(Opts *o) {
 			fprintf(stderr, "%s: file exists (it appeared while the edits were read)\n", file);
 			rc = EXIT_IO;
 		}
-		else if (o->write) rc = write_back(d, file, o);
+		else if (o->write) {
+			// The banner seeded an empty document, so the blank line above it
+			// was the document's first and the parse drops those on purpose.
+			// Put it back now that the edits sit above it, so a created file
+			// reads the way init's output does.
+			if (creating && !o->no_banner) {
+				shcl_str c = shcl_to_canonical(d);
+				size_t bl = strlen(SHCL_GEN_BANNER);
+				size_t hl = c.n > bl ? c.n - bl : 0;
+				if (hl > 0 && !memcmp(c.p + hl, SHCL_GEN_BANNER, bl)
+					&& !(hl >= 2 && c.p[hl - 1] == '\n' && c.p[hl - 2] == '\n')) {
+					nt = (char *)xrealloc(NULL, c.n + 1);
+					memcpy(nt, c.p, hl); nt[hl] = '\n'; memcpy(nt + hl + 1, SHCL_GEN_BANNER, bl);
+					nd = xdoc(shcl_parse_with(nt, c.n + 1, o->strictness));
+				}
+			}
+			rc = write_back(nd ? nd : d, file, o);
+		}
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}
-	free(ops); layered_free(&L); return rc;
+	if (nd) shcl_free(nd);
+	free(nt); free(ops); layered_free(&L); return rc;
 }
 
 static int do_check(const Opts *o) {

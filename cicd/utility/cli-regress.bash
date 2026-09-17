@@ -79,6 +79,10 @@ printf '"a\\nb": 1\n"a\\nb": 2\n' > "${tmpDir}/nbname.shcl"
 ## An indented malformed line behind a two-byte character, so the E014 column
 ## counts the indent and bytes rather than characters.
 printf 'a:\n\t"\303\251" x\n' > "${tmpDir}/colbytes.shcl"
+## An int-array whose second element breaks the max, and a float whose bound is
+## integral. A range diagnostic used to name the field and nothing else.
+printf 'field: ns\n\ttype: int-array\n\tmax: 10\nfield: fs\n\ttype: float-array\n\tmin: 1.0\n' > "${tmpDir}/range.shcl"
+printf 'ns: 5, 20, 3\nfs: 2.0, 0.5, 4.0\n' > "${tmpDir}/outofrange.shcl"
 printf '"x.y": 1\n' > "${tmpDir}/dotname.shcl"
 printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 ## A directory a write cannot create a temp file in. The phase is worth naming -
@@ -183,7 +187,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
 ##	carrying a dot and a schema that declares it as nesting, %CB% a malformed
-##	line indented and behind a non-ASCII name.
+##	line indented and behind a non-ASCII name, %SG%/%DG% a schema with an int
+##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -245,7 +250,7 @@ rows=(
 	'init-selector-default-consistent|init --no-banner --schema=%SC%|-|0|## any, required\na: b\n|-'
 	## Loose bug from 20260909 item 5: an optional field's bad default went out
 	## commented at exit 0.
-	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max at .port.'
+	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max 10 at .port.: 99'
 	## Retired 2026-09-17: a commented child of a commented valued parent now
 	## selects the parent's default, so the dotted `srv.port` this row expected
 	## became two instances once both lines were uncommented. The row below is
@@ -404,8 +409,9 @@ rows=(
 	'layer-base-diags-set|set --set=q=1 --layer=%F% %B%|-|0|-|E015 missing colon'
 	## A created file says what format it is. The block goes at the bottom, the
 	## edits above it, and --no-banner leaves it out. A file that is already
-	## there is never given one.
-	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Format   3\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
+	## there is never given one. 20260909 item 56: the blank line above the
+	## block, which init's output has and this one used to be missing.
+	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Format   3\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
 	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
 	## 20260909 item 35: set without --write took --no-banner and did nothing with
 	## it, where --lossy in the same spot was refused.
@@ -442,6 +448,13 @@ rows=(
 	'help-subcommand-flag|fmt --help|-|0|-|-'
 	'help-subcommand-unknown|help frmt|-|1|-|unknown command: frmt'
 	'help-too-many|help get set|-|1|-|usage: shcl help'
+	## 20260909 item 48: V005 and V006 named the field alone, so a long report
+	## made you open the schema for every range failure. The int row also pins
+	## that the element named is the one that broke the bound, not the first;
+	## the float row pins that the bound is spelled the way the annotation line
+	## spells it, so `min: 1.0` reads as 1.
+	'range-max-names-value|check --schema=%SG% %DG%|-|6|line 1: Error: V006\nline 2: Error: V005\nfailed: 2 diagnostic(s), 2 error(s)\n|V006 value above max 10 at .ns.: 20$'
+	'range-min-names-bound|check --schema=%SG% %DG%|-|6|-|V005 value below min 1 at .fs.: 0\.5$'
 )
 
 declare -i nRun=0 nBad=0
@@ -478,6 +491,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
 	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
+	argv="${argv//%SG%/${tmpDir}/range.shcl}"
+	argv="${argv//%DG%/${tmpDir}/outofrange.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"

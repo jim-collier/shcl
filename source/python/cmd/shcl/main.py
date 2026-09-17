@@ -1584,6 +1584,16 @@ def do_set(o):
 		if creating and os.path.exists(file):
 			sys.stderr.write(f"{file}: file exists (it appeared while the edits were read)\n")
 			return EXIT_IO
+		# The banner seeded an empty document, so the blank line above it was
+		# the document's first and the parse drops those on purpose. Put it
+		# back now that the edits sit above it, so a created file reads the
+		# way init's output does.
+		if creating and not o.no_banner:
+			text = doc.to_canonical()
+			if text.endswith(shcl.GEN_BANNER):
+				head = text[: -len(shcl.GEN_BANNER)]
+				if head and not head.endswith("\n\n"):
+					doc = shcl.Document.parse(head + "\n" + shcl.GEN_BANNER)
 		return write_back(doc, file, o)
 	sys.stdout.write(doc.to_canonical())
 	return 0

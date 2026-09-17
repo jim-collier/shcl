@@ -2016,6 +2016,19 @@ fn do_set(o: &Opts) -> u8 {
 			);
 			return EXIT_IO;
 		}
+		// The banner seeded an empty document, so the blank line above it was
+		// the document's first and the parse drops those on purpose. Put it
+		// back now that the edits sit above it, so a created file reads the
+		// way init's output does.
+		if creating && !o.no_banner {
+			let text = doc.to_canonical();
+			if let Some(head) = text.strip_suffix(GEN_BANNER)
+				&& !head.is_empty()
+				&& !head.ends_with("\n\n")
+			{
+				doc = Document::parse(&format!("{}\n{}", head, GEN_BANNER));
+			}
+		}
 		return write_back(&doc, file, o);
 	}
 	out!("{}", doc.to_canonical());

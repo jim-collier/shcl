@@ -1543,6 +1543,17 @@ def main():
 
 	setters_write_only_what_reads_back()
 
+	# Python-only: Diagnostic and Read used to print as object addresses, where
+	# the other three print their fields. Printing a value is how Python gets
+	# debugged, so the repr has to name them.
+	rdoc = shcl.Document.parse("a: 1\nbad line\n")
+	dtext = repr(rdoc.diagnostics()[0])
+	if "E014" not in dtext or "line=2" not in dtext or "0x" in dtext:
+		raise SystemExit(f"Diagnostic repr is not readable: {dtext}")
+	rtext = repr(rdoc.read_int("a"))
+	if "value=1" not in rtext or "Status.Good" not in rtext or "0x" in rtext:
+		raise SystemExit(f"Read repr is not readable: {rtext}")
+
 	# Both halves of a path can carry a line break and spell it \n: a name
 	# through the name escaper, a selector value through the value emitter. The
 	# selector was refused while elements were stored in their source spelling

@@ -48,6 +48,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `V005` and `V006` name the bound and the value that broke it, not just the field. A long report meant opening the schema for every range failure. The element named is the one that broke the bound, so an array says which slot.
+
+- Python's `Diagnostic` and `Read` print their fields instead of an object address. Printing a value is how Python gets debugged, and the other three bindings already printed readably.
+
+- A file `set --write` creates has a blank line above its info block, the way `init`'s output does. Both paths write the same block, so they should look the same.
+
 - The C++ veneer's `read_datetime_array` returns `Read<std::vector<Datetime>>`, the structured values every other binding's array read returns, and the text form moves to `read_datetime_array_str`. That matches the scalar pair 2.0.0 settled. Code comparing the elements to strings stops compiling rather than changing meaning.
 
 - `init` writes its own prose as `##` and a commented-out setting as `# `. A starter config is mostly comment, and one `#` for both left the reader sorting prose from settings by eye. Nothing keys on the difference: to the language both are ordinary comments, and a config author may write one with any number of `#` and any spacing.
