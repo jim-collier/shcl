@@ -6942,12 +6942,23 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// a binding line. A path deeper than a document may nest cannot be generated
 	// either: the line would draw E016 on the way back in. A newline in a name
 	// or a by-value selector is writable, since both are spelled escaped.
-	let unwritable = |c: &Constraint| {
-		c.segs.len() > MAX_DEPTH
-			|| c.segs
-				.iter()
-				.any(|s| matches!(s.selector, Some(Selector::ByIndex(_))) || s.star)
+	// The reason doubles as the predicate, so the refusal below can never name a
+	// path for a reason generation did not act on.
+	let why_unwritable = |c: &Constraint| -> &'static str {
+		if c.segs.len() > MAX_DEPTH {
+			return "nests past the depth cap";
+		}
+		for s in &c.segs {
+			if matches!(s.selector, Some(Selector::ByIndex(_))) {
+				return "a [#N] selector needs an instance that does not exist yet";
+			}
+			if s.star {
+				return "a * name segment has no name to write";
+			}
+		}
+		""
 	};
+	let unwritable = |c: &Constraint| !why_unwritable(c).is_empty();
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
 	// some live path). Fixpoint: a fill can materialize another's parent.
@@ -7020,21 +7031,26 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// rather than at the schema line that cannot be generated.
 	// A repeat lower bound of 2 or more is the one documented shortfall - the
 	// line is emitted once and the count reported - so it is not this fault.
+	// Every such path is named, not just the first: fixing one only to be
+	// refused over the next tells nobody how much is wrong.
 	let cannot_satisfy =
 		|c: &Constraint| c.required || matches!(c.repeat, Some((lo, _)) if lo == 1);
-	if let Some(c) = cons
+	let blocked: Vec<Diagnostic> = cons
 		.iter()
-		.find(|c| cannot_satisfy(c) && unwritable(c) && !has_wild(c))
-	{
-		return Err(vec![Diagnostic {
+		.filter(|c| cannot_satisfy(c) && unwritable(c) && !has_wild(c))
+		.map(|c| Diagnostic {
 			line: 0,
 			severity: Severity::Error,
 			code: "V097",
 			message: format!(
-				"required path cannot be generated: {}",
-				c.path.replace('\n', "\\n")
+				"required path cannot be generated: {} ({})",
+				c.path.replace('\n', "\\n"),
+				why_unwritable(c)
 			),
-		}]);
+		})
+		.collect();
+	if !blocked.is_empty() {
+		return Err(blocked);
 	}
 	let mut wild: Vec<(String, String)> = Vec::new();
 	// Dropping a trailing `[*]` can render the same line a concrete sibling

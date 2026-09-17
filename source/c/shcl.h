@@ -7014,14 +7014,18 @@ static int g_has_wild(const ShclVCons *c) {
 // binding line. A path deeper than a document may nest cannot be generated
 // either: the line would draw E016 on the way back in. A newline in a name or a
 // by-value selector is writable, since both are spelled escaped.
-static int g_unwritable(const ShclVCons *c) {
-	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
+// The reason doubles as the predicate, so the refusal cannot name a path for a
+// reason generation did not act on.
+static const char *g_why_unwritable(const ShclVCons *c) {
+	if (c->segs.len > SHCL_MAX_DEPTH) return "nests past the depth cap";
 	for (size_t si = 0; si < c->segs.len; si++) {
 		const ShclSegment *sg = &c->segs.data[si];
-		if (sg->sel.tag == SEL_INDEX || sg->star) return 1;
+		if (sg->sel.tag == SEL_INDEX) return "a [#N] selector needs an instance that does not exist yet";
+		if (sg->star) return "a * name segment has no name to write";
 	}
-	return 0;
+	return "";
 }
+static int g_unwritable(const ShclVCons *c) { return g_why_unwritable(c)[0] != '\0'; }
 // A repeat lower bound of 2 or more is the one documented shortfall - the line
 // is emitted once and the count reported - so it is not the fault below.
 static int g_cannot_satisfy(const ShclVCons *c) { return c->required || (c->has_repeat && c->rep_lo == 1); }
@@ -7305,14 +7309,23 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	/* A path that cannot be written at all belongs in the trailing note, but one
 	   that must exist can never be satisfied from there: the self-check would
 	   then report the document as missing a path, which points at the config
-	   rather than at the schema line that cannot be generated. */
+	   rather than at the schema line that cannot be generated.
+	   Every such path is named, not just the first: fixing one only to be
+	   refused over the next tells nobody how much is wrong. */
+	int blocked = 0;
 	for (size_t i = 0; i < cons.len; i++) {
 		const ShclVCons *c = &cons.data[i];
 		if (!g_cannot_satisfy(c) || !g_unwritable(c) || g_has_wild(c)) continue;
 		ShclSB m = {0, 0, 0};
 		sb_puts(a, &m, "required path cannot be generated: ");
 		sb_putS(a, &m, g_escape_nl(a, c->path));
+		sb_puts(a, &m, " (");
+		sb_puts(a, &m, g_why_unwritable(c));
+		sb_puts(a, &m, ")");
 		push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+		blocked = 1;
+	}
+	if (blocked) {
 		if (ok) *ok = 0;
 		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}

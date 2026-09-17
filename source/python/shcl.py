@@ -5981,10 +5981,20 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# binding line. A path deeper than a document may nest cannot be generated
 	# either: the line would draw E016 on the way back in. A newline in a name or
 	# a by-value selector is writable, since both are spelled escaped.
+	# The reason doubles as the predicate, so the refusal below can never name a
+	# path for a reason generation did not act on.
+	def why_unwritable(c):
+		if len(c.segs) > MAX_DEPTH:
+			return "nests past the depth cap"
+		for s in c.segs:
+			if s.selector is not None and s.selector[0] == "idx":
+				return "a [#N] selector needs an instance that does not exist yet"
+			if s.star:
+				return "a * name segment has no name to write"
+		return ""
+
 	def unwritable(c):
-		return len(c.segs) > MAX_DEPTH or any(
-			(s.selector is not None and s.selector[0] == "idx") or s.star for s in c.segs
-		)
+		return why_unwritable(c) != ""
 
 	# Live concrete paths materialize instances; decide which must-exist
 	# wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -6034,12 +6044,24 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# rather than at the schema line that cannot be generated. A repeat lower
 	# bound of 2 or more is the one documented shortfall - the line is emitted
 	# once and the count reported - so it is not this fault.
+	# Every such path is named, not just the first: fixing one only to be refused
+	# over the next tells nobody how much is wrong.
+	blocked: list[Diagnostic] = []
 	for c in cons:
 		cannot_satisfy = c.required or (c.repeat is not None and c.repeat[0] == 1)
 		if cannot_satisfy and unwritable(c) and not has_wild(c):
-			faults = []
-			_vdiag(faults, 0, "V097", "required path cannot be generated: " + c.path.replace("\n", "\\n"))
-			return "", faults
+			_vdiag(
+				blocked,
+				0,
+				"V097",
+				"required path cannot be generated: "
+				+ c.path.replace("\n", "\\n")
+				+ " ("
+				+ why_unwritable(c)
+				+ ")",
+			)
+	if blocked:
+		return "", blocked
 	out = []
 	wild = []
 	# Dropping a trailing `[*]` can render the same line a concrete sibling

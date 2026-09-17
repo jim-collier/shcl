@@ -97,26 +97,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
 
-	- Item 45 is under Future and/or deferred.
-
-	- 🛠️ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
-		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
-		- Reproduced, both shapes, 2026-09-17. Eight times the input against the release reference: star paths 0.028 s to 1.387 s, mounts 0.020 s to 0.974 s, where a schema with neither goes 0.010 s to 0.098 s. Same curve in all four bindings; Python is worst, 22.4 s where the fix does it in 0.8 s.
-		- Cause: `star_legal` and `chain_parts_legal` each walk their whole list per document node. Both are element-wise, so a path can only match a chain whose first part its own first segment accepts.
-		- Fixed: the two matchers take an index bucketing paths by first segment, with one bucket for `*`, built once per constraint list. `first_index` and `FirstIndex` (Rust), `firstIndex` and `firstIdx` (Go), `_first_index` and `_candidates` (Python), `fidx_add` and `fidx_bucket` (C). Both curves are linear now and sit at the no-schema control's cost: star paths 1.387 s to 0.141 s, mounts 0.974 s to 0.135 s.
-		- Note: C indexes the per-fragment lists by position rather than by fragment name, because its `dead` array is already numbered that way. The comment says so.
-		- Pinned by: two `perf-gate.bash` workloads, `stars` and `mounts`, each timed against the binding's own parse baseline. Watched to fail: on the old code 5 of the 6 go red, by 4.4x (rust), 2.3x (c) and 1.3x (go). Correctness is pinned by the corpus, which was watched to fail too - a dropped star bucket fails `validation_matches_expected`, and a fragment reading the top-level bucket fails that and `init_generation_matches_expected`.
-		- Note: the workload shape matters twice over. The document's names sit at the end of the schema's list, since a name near the front ends the scan early and hid four fifths of the cost; and each instance is one dotted line, since the block spelling costs three times the parse for the same chains and pushed the new code near its own budget.
-		- Note: checked against the old code over 3,000 random schema and document pairs in the reference, and 800 each for the three ports, comparing `check --schema` stdout and exit code. No divergence. The harness was falsified first: with the star bucket dropped it reports one.
-		- Open: the three schema builds. `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.
-			- Measured: a 64,000-field schema against a one-field document is 0.210 s, of which 0.060 s is parsing the schema. Building once instead would take most of the rest, so roughly 2x on a schema-heavy run. The build itself is linear, so this is a constant factor, not a curve.
-			- Note: left open for a call rather than coded around. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling shape this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings. Neither is a mechanical change.
-		- Opened: 20260909-104600
-
-	- 🔘 Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
-		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
-		- Related: bug item 37 is the stale reason given for the refusal.
-		- Opened: 20260909-104800
+	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
 	- 🔘 Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
 		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
@@ -3511,6 +3492,29 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
+	- ✅ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
+		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
+		- Reproduced, both shapes, 2026-09-17. Eight times the input against the release reference: star paths 0.028 s to 1.387 s, mounts 0.020 s to 0.974 s, where a schema with neither goes 0.010 s to 0.098 s. Same curve in all four bindings; Python is worst, 22.4 s where the fix does it in 0.8 s.
+		- Cause: `star_legal` and `chain_parts_legal` each walk their whole list per document node. Both are element-wise, so a path can only match a chain whose first part its own first segment accepts.
+		- Fixed: the two matchers take an index bucketing paths by first segment, with one bucket for `*`, built once per constraint list. `first_index` and `FirstIndex` (Rust), `firstIndex` and `firstIdx` (Go), `_first_index` and `_candidates` (Python), `fidx_add` and `fidx_bucket` (C). Both curves are linear now and sit at the no-schema control's cost: star paths 1.387 s to 0.141 s, mounts 0.974 s to 0.135 s.
+		- Note: C indexes the per-fragment lists by position rather than by fragment name, because its `dead` array is already numbered that way. The comment says so.
+		- Pinned by: two `perf-gate.bash` workloads, `stars` and `mounts`, each timed against the binding's own parse baseline. Watched to fail: on the old code 5 of the 6 go red, by 4.4x (rust), 2.3x (c) and 1.3x (go). Correctness is pinned by the corpus, which was watched to fail too - a dropped star bucket fails `validation_matches_expected`, and a fragment reading the top-level bucket fails that and `init_generation_matches_expected`.
+		- Note: the workload shape matters twice over. The document's names sit at the end of the schema's list, since a name near the front ends the scan early and hid four fifths of the cost; and each instance is one dotted line, since the block spelling costs three times the parse for the same chains and pushed the new code near its own budget.
+		- Note: checked against the old code over 3,000 random schema and document pairs in the reference, and 800 each for the three ports, comparing `check --schema` stdout and exit code. No divergence. The harness was falsified first: with the star bucket dropped it reports one.
+		- Decided: the three schema builds are deferred, not fixed. They are a 2x constant on a schema-heavy run, not a curve, and both ways to fix it cost more than that. Moved to Future and/or deferred with the measurement.
+		- Opened: 20260909-104600
+		- Closed: 20260917-210000
+
+	- ✅ Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
+		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
+		- Related: bug item 37 is the stale reason given for the refusal.
+		- Decided: the refusal stays. `spec.md` says a must-exist path nothing can write is a `V097` fault rather than a line in the trailing block, so generating the rest would contradict the spec. What was missing is what the fault says.
+		- Fixed: `why_unwritable` in each binding gives the reason and the old `unwritable` predicate is now one line reading it, so the refusal can never name a path for a reason generation did not act on. Three reasons: a `[#N]` selector, a `*` name segment, and a path past the depth cap. Every blocked path gets its own fault line instead of only the first, so one run says how much of the schema is unreachable.
+		- Note: a separate line saying the rest generated fine was declined. Naming every blocker already says it, and the V09x lines are machine-read.
+		- Pinned by: `cli-regress.bash` rows `init-blocked-first` and `init-blocked-second` on a schema with two blocked paths either side of one that generates, plus the reason added to `init-star-repeat1` and `init-index-required`. All four watched to fail against the old code.
+		- Opened: 20260909-104800
+		- Closed: 20260917-210000
+
 	- ✅ Item 48: `V005` and `V006` name neither the bound nor the offending value.
 		- A range failure says which field, not what it was or what it should have been, so a user reading a long report has to open the schema for each one.
 		- Decided: the message follows V004's shape, with the bound inserted: `value above max 10 at 'port': 99`. The value is the source text of the element that broke the bound, not the first element, so an array says which slot.
@@ -5763,6 +5767,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ Code review 20260909 item 47, second half: `check --schema` builds the schema three times.
+	- `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.
+	- Measured: a 64,000-field schema against a one-field document is 0.210 s, of which 0.060 s is parsing the schema. Building once instead would take most of the rest, so roughly 2x on a schema-heavy run. The build itself is linear, so this is a constant factor, not a curve.
+	- Note: deferred 20260917. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling class this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings plus the veneer. Neither is worth a 2x constant without a call.
+	- Opened: 20260909-104600
 
 - ✋ Code review 20260909 item 45: creating instances one at a time is quadratic in the instance count.
 	- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.

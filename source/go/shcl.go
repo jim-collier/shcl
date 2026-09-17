@@ -7123,17 +7123,23 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// a binding line. A path deeper than a document may nest cannot be generated
 	// either: the line would draw E016 on the way back in. A newline in a name
 	// or a by-value selector is writable, since both are spelled escaped.
-	unwritable := func(c *constraint) bool {
+	// The reason doubles as the predicate, so the refusal below can never name a
+	// path for a reason generation did not act on.
+	whyUnwritable := func(c *constraint) string {
 		if len(c.segs) > MaxDepth {
-			return true
+			return "nests past the depth cap"
 		}
 		for _, s := range c.segs {
-			if (s.sel != nil && s.sel.kind == selByIndex) || s.star {
-				return true
+			if s.sel != nil && s.sel.kind == selByIndex {
+				return "a [#N] selector needs an instance that does not exist yet"
+			}
+			if s.star {
+				return "a * name segment has no name to write"
 			}
 		}
-		return false
+		return ""
 	}
+	unwritable := func(c *constraint) bool { return whyUnwritable(c) != "" }
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
 	// some live path). Fixpoint: a fill can materialize another's parent.
@@ -7235,13 +7241,20 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// rather than at the schema line that cannot be generated. A repeat lower
 	// bound of 2 or more is the one documented shortfall - the line is emitted
 	// once and the count reported - so it is not this fault.
+	// Every such path is named, not just the first: fixing one only to be
+	// refused over the next tells nobody how much is wrong.
+	var blocked []Diagnostic
 	for i := range cons {
 		c := &cons[i]
 		cannotSatisfy := c.required || (c.repeat != nil && c.repeat[0] == 1)
 		if cannotSatisfy && unwritable(c) && !hasWild(c) {
-			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n")
-			return "", []Diagnostic{{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"}}
+			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n") +
+				" (" + whyUnwritable(c) + ")"
+			blocked = append(blocked, Diagnostic{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"})
 		}
+	}
+	if len(blocked) > 0 {
+		return "", blocked
 	}
 	var b strings.Builder
 	var wild [][2]string

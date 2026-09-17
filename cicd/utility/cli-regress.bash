@@ -106,6 +106,10 @@ printf 'field: a\n\tallowed: x\nfield: a\n\tallowed: y\n' > "${tmpDir}/hintschem
 ## on the way back in. Either way the fault names the path rather than reporting
 ## the generated config as missing it.
 printf 'field: "srv[#1].port"\n\trequired: yes\n' > "${tmpDir}/idxreq.shcl"
+## Two must-exist paths nothing can generate, either side of a field that
+## generates fine: the refusal used to stop at the first, so fixing one only
+## bought the next one's message.
+printf 'field: "srv[#1].port"\n\trequired: yes\nfield: "*"\n\ttype: int\n\trepeat: 1\nfield: ok\n\ttype: int\n' > "${tmpDir}/twoblocked.shcl"
 ## A schema that does not build: the report is the build faults alone, not the
 ## faults plus what an empty document would owe the schema.
 printf 'field: a\n\ttype: int\n\trequired: yes\nfield: b\n\ttype: nope\n' > "${tmpDir}/nobuild.shcl"
@@ -168,7 +172,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	damaged file for a layered load, %D% a directory,
 ##	%P% the deepest legal document, %S% the self-contradicting schema, %S1%/%S2%
 ##	a nameless must-exist path at repeat 1 and 2, %S3% a schema that does not
-##	build, %S4% a required path with an index selector, %S5%/%S6% a schema at and
+##	build, %S4% a required path with an index selector, %SF% two of them either
+##	side of a field that generates, %S5%/%S6% a schema at and
 ##	one past the generation field ceiling, %S7% a schema whose own load hints,
 ##	%S8% a raw default, %S9% a desc with a comma, %N% a file in a directory that
 ##	takes no temp file, %R%/%SA% a raw block and a schema that refuses it, %X% an
@@ -226,12 +231,17 @@ rows=(
 	## 20260901 item 5: the self-check waved every V007 through, so a repeat
 	## lower bound of 1 - a must-exist path - went out as a config that fails
 	## its own schema at exit 0.
-	'init-star-repeat1|init --schema=%S1%|-|6||V097 required path cannot be generated'
+	'init-star-repeat1|init --schema=%S1%|-|6||V097 required path cannot be generated: \* \(a \* name segment has no name to write\)'
 	'init-star-repeat2|init --schema=%S2%|-|0|-|^$'
 	## 20260902 item 19: an index selector or a path past the cap got the
 	## self-check's "required path missing", which points at the config rather
 	## than at the schema line nothing can generate.
-	'init-index-required|init --schema=%S4%|-|6||V097 required path cannot be generated: srv\[#1\].port'
+	'init-index-required|init --schema=%S4%|-|6||V097 required path cannot be generated: srv\[#1\].port \(a \[#N\] selector needs an instance'
+	## 20260909 item 49: one unwritable path took the whole schema with it and
+	## the message said only which path, so the reason and the other blockers
+	## were both left to guesswork.
+	'init-blocked-first|init --schema=%SF%|-|6||V097 required path cannot be generated: srv\[#1\].port \(a \[#N\] selector needs an instance'
+	'init-blocked-second|init --schema=%SF%|-|6||V097 required path cannot be generated: \* \(a \* name segment has no name to write\)'
 	## 20260902 item 20: V096 fired at exactly the ceiling, on a schema with no
 	## fragments, saying the schema expands past it.
 	'init-cap-at-limit|init --no-banner --schema=%S5%|-|0|-|^$'
@@ -471,6 +481,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%S2%/${tmpDir}/star2.shcl}"
 	argv="${argv//%S3%/${tmpDir}/nobuild.shcl}"
 	argv="${argv//%S4%/${tmpDir}/idxreq.shcl}"
+	argv="${argv//%SF%/${tmpDir}/twoblocked.shcl}"
 	argv="${argv//%S5%/${tmpDir}/cap10000.shcl}"
 	argv="${argv//%S6%/${tmpDir}/cap10001.shcl}"
 	argv="${argv//%S7%/${tmpDir}/hintschema.shcl}"
