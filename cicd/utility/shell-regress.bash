@@ -592,6 +592,18 @@ fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
 	|| fBad "flame-report.py invented a sample count for a graph that carries none"
 grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
 	|| fBad "the profiler does not record how many samples reached the graph"
+##	The C corpus runner counted a case with no reads.tsv as passing, where the
+##	other three runners stop on it. One real case, minus that file.
+if fHave cc; then
+	mkdir -p "${tmpDir}/corpus-noreads"
+	cp -r "${repoDir}/project/conformance/001-messy-cities" "${tmpDir}/corpus-noreads/"
+	rm -f "${tmpDir}/corpus-noreads/001-messy-cities/reads.tsv"
+	if cc -std=c11 -O2 -I"${repoDir}/source/c" "${repoDir}/source/c/tests/conformance.c" -o "${tmpDir}/cconf" -lm -lpthread; then
+		"${tmpDir}/cconf" "${tmpDir}/corpus-noreads" >/dev/null 2>&1 && fBad "the C corpus runner passed a case with no reads.tsv"
+	else
+		fBad "the C corpus runner did not build"
+	fi
+fi
 ##	20260909 item 28: largedoc.bash skipped its invariants when the reference
 ##	wrote nothing, and empty output agrees with empty output, so it said OK.
 printf '#!/bin/sh\nexit 0\n' > "${tmpDir}/emptycli"; chmod +x "${tmpDir}/emptycli"

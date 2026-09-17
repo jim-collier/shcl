@@ -113,11 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
 		- Opened: 20260909-103800
 
-- 🔘 The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
-	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.
-	- Note: this is a runner reporting OK with a whole dimension absent, so a case carrying no read coverage looks the same as one that does.
-	- Opened: 20260916-105829
-
 - 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
 	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
 	- Cause: only must-exist lines count as valued parents, so a child under a commented valued parent is not written `srv[web].port`.
@@ -237,6 +232,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
+	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.
+	- Note: this is a runner reporting OK with a whole dimension absent, so a case carrying no read coverage looks the same as one that does.
+	- Fixed: the C runner fails a case missing `input.shcl`, `expected.shcl` or `reads.tsv`, as it already did for `expected-diags.txt`.
+	- Pinned by: a `shell-regress.bash` row running the C runner on one real case with `reads.tsv` removed. The old runner passed it.
+	- Opened: 20260916-105829
+	- Closed: 20260916-193322
 
 - ✅ `migrate` left a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding was gone and `migrate --write` exited 0.
 	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` wrote the line back unchanged, which is `E019` now, so `k` bound nothing, and `migrate --write` exited 0. The value spelling `k: a\,b` migrated correctly, so only the last-segment arm dropped it.
