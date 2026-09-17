@@ -5798,6 +5798,16 @@ static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const Shc
 	v_diag(a, out, line, "V004", sb_S(&s));
 }
 
+// V005/V006. rel is "below min " or "above max "; bound is the schema's own
+// spelling of it, so the float half reads the same as the annotation line.
+static void v_out_of_range(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, const char *code, const char *rel, ShclStr bound, ShclStr text) {
+	ShclSB s = {0, 0, 0};
+	sb_puts(a, &s, "value "); sb_puts(a, &s, rel); sb_putS(a, &s, bound);
+	sb_puts(a, &s, " at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, "': "); sb_putS(a, &s, v_one_line(a, text));
+	v_diag(a, out, line, code, sb_S(&s));
+}
+
 // Diagnostic messages go to a (they outlive the walk); coercion temporaries
 // and compare strings go to lv, the walk level's scratch.
 static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c, size_t n, ShclVecDiag *out) {
@@ -5840,8 +5850,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { v_diag(a, out, line, "V005", v_msg3(a, "value below min at '", c->path, "'")); break; } }
-		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { v_diag(a, out, line, "V006", v_msg3(a, "value above max at '", c->path, "'")); break; } }
+		if (c->has_min_i) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_i) { ShclStr b; char nb[32]; b.p = nb; b.n = (size_t)snprintf(nb, sizeof nb, "%" PRId64, c->min_i); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
+		if (c->has_max_i) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_i) { ShclStr b; char nb[32]; b.p = nb; b.n = (size_t)snprintf(nb, sizeof nb, "%" PRId64, c->max_i); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
 	} else if (V_BASE_IS("float")) {
 		double *vals = (double *)arena_alloc(lv, (nels ? nels : 1) * sizeof(double));
 		for (size_t x = 0; x < nels; x++)
@@ -5853,8 +5863,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { v_diag(a, out, line, "V005", v_msg3(a, "value below min at '", c->path, "'")); break; } }
-		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { v_diag(a, out, line, "V006", v_msg3(a, "value above max at '", c->path, "'")); break; } }
+		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->min_f, fb); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
+		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->max_f, fb); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
 	} else if (V_BASE_IS("bool")) {
 		int *vals = (int *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int));
 		for (size_t x = 0; x < nels; x++)

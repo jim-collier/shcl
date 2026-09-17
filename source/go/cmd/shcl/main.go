@@ -2258,6 +2258,16 @@ func doSet(o *opts) int {
 			fmt.Fprintf(os.Stderr, "%s: file exists (it appeared while the edits were read)\n", file)
 			return exitIO
 		}
+		// The banner seeded an empty document, so the blank line above it was
+		// the document's first and the parse drops those on purpose. Put it
+		// back now that the edits sit above it, so a created file reads the
+		// way init's output does.
+		if creating && !o.noBanner {
+			text := doc.ToCanonical()
+			if head, ok := strings.CutSuffix(text, shcl.GenBanner); ok && head != "" && !strings.HasSuffix(head, "\n\n") {
+				doc = shcl.Parse(head + "\n" + shcl.GenBanner)
+			}
+		}
 		return writeBack(doc, file, o)
 	}
 	outs(doc.ToCanonical())

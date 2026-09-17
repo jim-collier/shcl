@@ -7925,11 +7925,15 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 					}
 				}
 			}
-			if c.minI != nil && anyIntBelow(vals, *c.minI) {
-				vdiag(out, line, "V005", fmt.Sprintf("value below min at '%s'", c.path))
+			if c.minI != nil {
+				if i := firstIntBelow(vals, *c.minI); i >= 0 {
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %d at '%s': %s", *c.minI, c.path, oneLine(els[i].text)))
+				}
 			}
-			if c.maxI != nil && anyIntAbove(vals, *c.maxI) {
-				vdiag(out, line, "V006", fmt.Sprintf("value above max at '%s'", c.path))
+			if c.maxI != nil {
+				if i := firstIntAbove(vals, *c.maxI); i >= 0 {
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %d at '%s': %s", *c.maxI, c.path, oneLine(els[i].text)))
+				}
 			}
 		case "float":
 			vals := make([]float64, 0, len(els))
@@ -7949,11 +7953,15 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 					}
 				}
 			}
-			if c.minF != nil && anyFloatBelow(vals, *c.minF) {
-				vdiag(out, line, "V005", fmt.Sprintf("value below min at '%s'", c.path))
+			if c.minF != nil {
+				if i := firstFloatBelow(vals, *c.minF); i >= 0 {
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %s at '%s': %s", FormatFloat(*c.minF), c.path, oneLine(els[i].text)))
+				}
 			}
-			if c.maxF != nil && anyFloatAbove(vals, *c.maxF) {
-				vdiag(out, line, "V006", fmt.Sprintf("value above max at '%s'", c.path))
+			if c.maxF != nil {
+				if i := firstFloatAbove(vals, *c.maxF); i >= 0 {
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %s at '%s': %s", FormatFloat(*c.maxF), c.path, oneLine(els[i].text)))
+				}
 			}
 		case "bool":
 			vals := make([]bool, 0, len(els))
@@ -8043,40 +8051,43 @@ func containsDate(xs []DateTime, v DateTime) bool {
 	return false
 }
 
-func anyIntBelow(xs []int64, lo int64) bool {
-	for _, x := range xs {
+// The four range scans return the offending index, or -1, so the diagnostic can
+// name the value the reference's position() names.
+
+func firstIntBelow(xs []int64, lo int64) int {
+	for i, x := range xs {
 		if x < lo {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
-func anyIntAbove(xs []int64, hi int64) bool {
-	for _, x := range xs {
+func firstIntAbove(xs []int64, hi int64) int {
+	for i, x := range xs {
 		if x > hi {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
-func anyFloatBelow(xs []float64, lo float64) bool {
-	for _, x := range xs {
+func firstFloatBelow(xs []float64, lo float64) int {
+	for i, x := range xs {
 		if x < lo {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
-func anyFloatAbove(xs []float64, hi float64) bool {
-	for _, x := range xs {
+func firstFloatAbove(xs []float64, hi float64) int {
+	for i, x := range xs {
 		if x > hi {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 // vUnknown is the unknown-field sweep: a schema path legalizes its name chain

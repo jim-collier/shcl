@@ -7697,23 +7697,33 @@ impl Document {
 							);
 						}
 						if let Some(lo) = c.min_i
-							&& vals.iter().any(|v| *v < lo)
+							&& let Some(i) = vals.iter().position(|v| *v < lo)
 						{
 							vdiag(
 								out,
 								line,
 								"V005",
-								format!("value below min at '{}'", c.path),
+								format!(
+									"value below min {} at '{}': {}",
+									lo,
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(hi) = c.max_i
-							&& vals.iter().any(|v| *v > hi)
+							&& let Some(i) = vals.iter().position(|v| *v > hi)
 						{
 							vdiag(
 								out,
 								line,
 								"V006",
-								format!("value above max at '{}'", c.path),
+								format!(
+									"value above max {} at '{}': {}",
+									hi,
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
@@ -7741,23 +7751,33 @@ impl Document {
 							);
 						}
 						if let Some(lo) = c.min_f
-							&& vals.iter().any(|v| *v < lo)
+							&& let Some(i) = vals.iter().position(|v| *v < lo)
 						{
 							vdiag(
 								out,
 								line,
 								"V005",
-								format!("value below min at '{}'", c.path),
+								format!(
+									"value below min {} at '{}': {}",
+									format_f64(lo),
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 						if let Some(hi) = c.max_f
-							&& vals.iter().any(|v| *v > hi)
+							&& let Some(i) = vals.iter().position(|v| *v > hi)
 						{
 							vdiag(
 								out,
 								line,
 								"V006",
-								format!("value above max at '{}'", c.path),
+								format!(
+									"value above max {} at '{}': {}",
+									format_f64(hi),
+									c.path,
+									one_line(&els[i].text)
+								),
 							);
 						}
 					}
