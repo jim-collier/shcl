@@ -109,7 +109,7 @@ fi
 ## a worktree .git is a file.
 setup_hooks() {
 	git -C "${clone_dir}" config core.hooksPath cicd/hooks
-	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main and dev)"
+	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main)"
 	## The gate runs for minutes while git already holds the ssh session open;
 	## without keepalives GitHub drops it and the push dies of SIGPIPE after a
 	## green gate. Only set when nothing is configured, so a chosen key stays.
@@ -122,20 +122,33 @@ setup_hooks() {
 ## Already inside a clone? Then set up here instead of cloning again. Known by
 ## shape, not by remote URL, so a fork's clone counts too. An explicit --dir
 ## wins under --hooks-only, which exists to be pointed at a clone.
+fIsShcl(){   ## fIsShcl DIR
+	[[ -e "$1/.git" && -f "$1/cicd/cicd.bash" ]] && grep -q '^name = "shcl"' "$1/source/rust/Cargo.toml" 2>/dev/null
+}
 in_clone=0
 if (( ! (hooks_only && dir_given) )) \
-	&& top="$(git rev-parse --show-toplevel 2>/dev/null)" \
-	&& [[ -f "${top}/cicd/cicd.bash" ]] && grep -q '^name = "shcl"' "${top}/source/rust/Cargo.toml" 2>/dev/null; then
+	&& top="$(git rev-parse --show-toplevel 2>/dev/null)" && fIsShcl "${top}"; then
 	in_clone=1; clone_dir="${top}"
 fi
 
 ## Hooks only: no clone, no stocktaking, no installs.
 if (( hooks_only )); then
 	if (( ! in_clone )); then
-		[[ -e "${clone_dir}/.git" && -f "${clone_dir}/cicd/cicd.bash" ]] || die "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
+		fIsShcl "${clone_dir}" || die "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
 	fi
 	setup_hooks
 	exit 0
+fi
+
+## An existing --dir is used only if it is already a clone of this project.
+## Anything else there gets refused before the plan, since git config and the
+## dev checkout below would land on someone else's repository.
+if (( ! in_clone )) && [[ -e "${clone_dir}" ]]; then
+	if fIsShcl "${clone_dir}"; then
+		in_clone=1; clone_dir="$(cd "${clone_dir}" && pwd)"
+	elif [[ -n "$(ls -A "${clone_dir}" 2>/dev/null)" || ! -d "${clone_dir}" ]]; then
+		die "${clone_dir} already exists and is not an shcl clone - pick another --dir"
+	fi
 fi
 
 ## Tool versions come from TOOL_PINS in cicd/config.bash, so a dev box gets what
@@ -261,7 +274,7 @@ fStartOnDev(){   ## fStartOnDev DIR
 }
 if (( ! in_clone )); then
 	echo
-	[[ -e "${clone_dir}/.git" ]] || git clone "${REPO_URL}" "${clone_dir}"
+	git clone "${REPO_URL}" "${clone_dir}"
 	cd "${clone_dir}"
 	clone_dir="$(pwd)"
 	fStartOnDev "${clone_dir}"

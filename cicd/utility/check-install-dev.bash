@@ -72,7 +72,29 @@ if ( cd "${work}" && bash "${script}" --hooks-only --dir tree >/dev/null 2>&1 );
 	fail "--hooks-only accepted a tree that is not a repository"
 fi
 
-(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone"
+## The default path, not --hooks-only, pointed at a repository that is not
+## shcl: refused before anything is fetched, with its branch and config as
+## they were. The refusal comes ahead of the network, so this runs offline.
+git -C "${work}/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "${work}/other" branch -q dev
+other_branch="$(git -C "${work}/other" branch --show-current)"
+## The message is read too: without the guard the run can still fail later,
+## on the network, for a reason that has nothing to do with this.
+if ( cd "${work}" && bash "${script}" --yes --dir other >"${work}/out" 2>&1 </dev/null ); then
+	fail "the default path accepted a repository that is not an shcl clone"
+fi
+grep -qF "is not an shcl clone" "${work}/out" || fail "the default path did not refuse a foreign repository up front"
+[[ "$(git -C "${work}/other" branch --show-current)" == "${other_branch}" ]] || fail "a refused run switched a foreign repository's branch"
+[[ -z "$(git -C "${work}/other" config --local core.hooksPath || true)" ]] || fail "the default path set hooksPath on a foreign repository"
+
+## A non-empty directory that is no repository at all is refused the same way.
+mkdir -p "${work}/stuff" && : >"${work}/stuff/keep"
+if ( cd "${work}" && bash "${script}" --yes --dir stuff >"${work}/out" 2>&1 </dev/null ); then
+	fail "the default path accepted a non-empty directory that is not a clone"
+fi
+grep -qF "is not an shcl clone" "${work}/out" || fail "the default path did not refuse a non-empty directory up front"
+
+(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone; the default path refuses one too"
 exit "${rc}"
 
 
