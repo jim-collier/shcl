@@ -106,13 +106,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
 		- Opened: 20260909-102100
 
-	- 🔘 Item 25: `check-migrate.bash` passes with four of `migrate`'s six rules deleted.
-		- Reproduced. The sugar rewrite in both halves, the single-quoted-name re-spelling and the whole-line carriage-return rule can each be removed from `migrate` and the gate still reports OK at its real settings.
-		- Cause: three separate holes. The only sugar corpus case is skipped because 2.x hints `E019` on it; the gate compares reads only, never diagnostics, exit code or lost count; and the skip predicate is unanchored and whole-file, so one plain comment line skips a whole document - 422 of 615 documents are skipped per run, and in one configuration 114 of 115.
-		- Note: the `--min 100` coverage floor is met by the fuzz dump alone, so the corpus half can vanish without the gate saying anything.
-		- Note: item 9 above is a shape inside the gate's own comparison set that it never generated.
-		- Opened: 20260909-102400
-
 	- 🔘 Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
 		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
 		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
@@ -473,7 +466,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 25, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -677,6 +670,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `shell-regress.bash` rows for both gates, one with a marker moved ahead by `--file` and one with a graph whose sidecar kept its old role. Each fails on the old scripts. A second look must still say SEEN, so neither gate can pass by always reporting.
 		- Opened: 20260909-102300
 		- Closed: 20260914-191700
+
+	- ✅ Item 25: `check-migrate.bash` passes with four of `migrate`'s six rules deleted.
+		- Reproduced. The sugar rewrite in both halves, the single-quoted-name re-spelling and the whole-line carriage-return rule can each be removed from `migrate` and the gate still reports OK at its real settings.
+		- Cause: three separate holes. The only sugar corpus case is skipped because 2.x hints `E019` on it; the gate compares reads only, never diagnostics, exit code or lost count; and the skip predicate is unanchored and whole-file, so one plain comment line skips a whole document - 422 of 615 documents are skipped per run, and in one configuration 114 of 115.
+		- Note: the `--min 100` coverage floor is met by the fuzz dump alone, so the corpus half can vanish without the gate saying anything.
+		- Note: item 9 above is a shape inside the gate's own comparison set that it never generated.
+		- Decided: 2.x work is low stakes, so the gate was fixed and `migrate` was left alone.
+		- Fixed: the gate takes out the lines 2.x could not read and compares the rest, where it used to skip the whole document. The `name:[x]` sugar, which 2.x reads with a hint, counts as clean. A compared document has to migrate at exit 0. A document whose only 2.x errors are bracket arrays has to be refused over exactly that many lost lines. The corpus half has a floor of its own.
+		- Fixed: the carriage-return rule only matters in a CRLF file whose raw block closes before a line that gets rewritten, and nothing had that. Corpus `124-migrate-crlf-fence` does now.
+		- Pinned by: the gate itself, now comparing 568 documents where it compared 200, 120 of them corpus cases. The sugar rewrite in both halves, the quoted-name re-spelling, the carriage-return rule and the value re-spelling each fail it when deleted, and so does a dropped lost count.
+		- Note: `migrate` counts a lost line on some lines 2.x had already skipped, such as a child under a malformed parent. That refuses a file 2.x itself would not load cleanly, so it was left alone.
+		- Opened: 20260909-102400
+		- Closed: 20260916-183729
 
 	- ✅ Item 29: an environment variable reaches an arithmetic context in the copied rotation script and executes a command.
 		- Reproduced. `GFS_KEEP_FREQUENT='x[$(touch FILE)]' gfs_rotate DIR log txt` runs the substitution. Bash expands a command substitution inside an array subscript in arithmetic evaluation, which is the recorded `[[ VAR -eq 1 ]]` trap in a different spelling.
