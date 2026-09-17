@@ -299,6 +299,37 @@ if fHave pwsh; then
 	[[ "${out}" == *"eap=Continue"* ]] || fBad "install.ps1 changed the caller's error preference: ${out@Q}"
 	[[ "${out}" == *"fn=False"* ]]     || fBad "install.ps1 left its functions in the caller: ${out@Q}"
 	[[ "${out}" == *"strict=off"* ]]   || fBad "install.ps1 left strict mode on in the caller: ${out@Q}"
+
+	##	20260909 item 38: a smoke test binary that never started left
+	##	$LASTEXITCODE at the 0 the last native command set, and the install went
+	##	ahead. The stand-in cannot start because its interpreter is missing. It
+	##	has the exec bit, since pwsh hands a file without one to the desktop
+	##	opener.
+	printf '#!/nonexistent/interp\n' > "${tmpDir}/nostart.exe"
+	printf '#!/bin/sh\necho oops >&2\nexit 3\n' > "${tmpDir}/three.exe"
+	printf '#!/bin/sh\necho "shcl 9.9.9"\n' > "${tmpDir}/good.exe"
+	chmod 755 "${tmpDir}/nostart.exe" "${tmpDir}/three.exe" "${tmpDir}/good.exe"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Invoke-ShclSmoke/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "foreach (\$exe in 'nostart', 'three', 'good') {"
+		echo '	& sh -c "exit 0"'
+		echo "	\$r = Invoke-ShclSmoke \"${tmpDir}/\$exe.exe\""
+		echo '	Write-Output "$exe=$($r.Code)"'
+		echo '}'
+	} > "${tmpDir}/smoke.ps1"
+	out="$(env -u DISPLAY -u WAYLAND_DISPLAY pwsh -NoProfile -File "${tmpDir}/smoke.ps1" 2>&1 || true)"
+	[[ "${out}" == *"nostart=-1"* ]] || fBad "install.ps1 smoke test passed a binary that never started: ${out@Q}"
+	[[ "${out}" == *"three=3"* ]]    || fBad "install.ps1 smoke test lost a nonzero exit: ${out@Q}"
+	[[ "${out}" == *"good=0"* ]]     || fBad "install.ps1 smoke test failed a working binary: ${out@Q}"
+
+	##	20260909 item 38: the setup's PATH script exited 0 when it could not
+	##	write, so the setup's fallback message never showed. There is no
+	##	registry here at all, which is a failure it must report.
+	pwsh -NoProfile -File "${repoDir}/cicd/packaging/shclpath.ps1" -Dir /shcl-regress >/dev/null 2>&1 \
+		&& fBad "shclpath.ps1 exited 0 with no registry to write"
 else
 	echo "shell-regress: pwsh not installed - PowerShell rows skipped"
 fi
@@ -367,6 +398,29 @@ nBadBefore="${nBad}"
 		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
 	done
 	rmdir "${udir}" 2>/dev/null || fBad "install.bash uninstall did not empty the install directory"
+	exit $((nBad - nBadBefore))
+) || nBad=$((nBad + 1))
+
+##	20260909 item 38: the uninstall emptied code/ and scripts/ by glob, taking
+##	files the installer never wrote, and left the staging file an interrupted
+##	install drops.
+nBadBefore="${nBad}"
+(
+	udir="${tmpDir}/uninst-mine"
+	mkdir -p "${udir}/code" "${udir}/scripts" "${udir}/man" "${udir}/completions"
+	for f in code/lib.rs code/shcl.go code/shcl.py code/shcl.h code/shcl.hpp scripts/shcl.bash scripts/shcl.ps1 man/shcl.1 completions/shcl.bash completions/_shcl .shcl.new; do
+		printf 'x\n' > "${udir}/${f}"
+	done
+	printf 'mine\n' > "${udir}/code/local.rs"
+	# shellcheck disable=SC2034  ## the lifted function's own global
+	asroot=""
+	fRemoveLaidDown "${udir}"
+	[[ -f "${udir}/code/local.rs" ]] || fBad "install.bash uninstall deleted a file it never installed"
+	[[ -e "${udir}/code/lib.rs" ]] && fBad "install.bash uninstall left an installed file behind"
+	[[ -e "${udir}/.shcl.new" ]] && fBad "install.bash uninstall left the staging file behind"
+	for d in scripts man completions; do
+		[[ -e "${udir}/${d}" ]] && fBad "install.bash uninstall left ${d} behind"
+	done
 	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
 
@@ -788,13 +842,14 @@ fi
 grep -q 'Add/Remove Programs entry still shows the version it installed' "${repoDir}/install.ps1" \
 	|| fBad "install.ps1 does not say a setup install's Add/Remove entry goes stale when it writes over one"
 
-eapLine="$( { grep -n "ErrorActionPreference = 'Continue'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
-smokeRun="$( { grep -n "shcl.exe') version 2>&1" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+## The preference is set inside Invoke-ShclSmoke, so the function's own scope
+## puts it back.
+smokeFn="$(sed -n '/^\tfunction Invoke-ShclSmoke/,/^\t}/p' "${repoDir}/install.ps1")"
+eapLine="$( { grep -n "ErrorActionPreference = 'Continue'" <<<"${smokeFn}" || true; } | head -n1 | cut -d: -f1)"
+smokeRun="$( { grep -n 'version 2>&1' <<<"${smokeFn}" || true; } | head -n1 | cut -d: -f1)"
 if [[ -z "${eapLine}" || -z "${smokeRun}" ]] || ((eapLine >= smokeRun)); then
 	fBad "install.ps1 runs the smoke test under its own Stop preference, which 5.1 throws on"
 fi
-grep -q "finally { \$ErrorActionPreference = \$smokeEap }" "${repoDir}/install.ps1" \
-	|| fBad "install.ps1 does not put the caller's error preference back after the smoke run"
 
 ##	20260901b item 35: the rpm listed the payload's subdirectories and not their
 ##	parent, so removing the package left /usr/share/shcl behind. The package
@@ -1086,7 +1141,7 @@ fi
 ##	running the real thing needs a network and a release.
 ps1="${repoDir}/install.ps1"
 if [[ -f "${ps1}" ]]; then
-	smokeLine="$({ grep -n "(Join-Path \$tmp 'shcl.exe') version" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	smokeLine="$({ grep -n "Invoke-ShclSmoke (Join-Path \$tmp 'shcl.exe')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
 	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path \$dest '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
 	if [[ -z "${smokeLine}" ]]; then
 		fBad "install.ps1 never runs the downloaded binary from the temp dir"
@@ -1097,7 +1152,7 @@ if [[ -f "${ps1}" ]]; then
 	fi
 	## A bare native call throws under this script's error preference on 7.4+,
 	## which turned a failing binary into an exception after the success message.
-	grep -q 'LASTEXITCODE -ne 0' <<<"$(sed -n "${smokeLine:-1},+4p" "${ps1}")" \
+	grep -q 'smoke.Code -ne 0' <<<"$(sed -n "${smokeLine:-1},+4p" "${ps1}")" \
 		|| fBad "install.ps1 does not test the smoke run's exit status"
 fi
 

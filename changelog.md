@@ -250,6 +250,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A system install under a tight umask left a bin or man1 directory the installer had to create root-only; the "not on your PATH" note fired when the directory was on PATH with a trailing slash.
 
+- Both installers' `--uninstall` deleted every file in `code/` and `scripts/`, including ones they never installed. They now remove their own files by name, plus the temporary file an interrupted install leaves. The Windows setup reported a PATH update as done when it had failed, so its "add it manually" note never showed. The Windows installer names a binary that cannot start at all, such as one blocked by antivirus, instead of stopping on a raw error. The `.rpm` now owns `/usr/share/doc/shcl`, like the `.deb`.
+
 - The C++ veneer's `to_canonical()` never gave the read memory back, so a save loop grew without bound.
 
 - Go's `Diagnostics()` and both suppress filters could hand back a slice sharing the document's own backing array.

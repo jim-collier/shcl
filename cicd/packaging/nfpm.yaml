@@ -53,7 +53,12 @@ contents:
     dst: /usr/share/man/man1/shcl.1.gz
     file_info:
       mode: 0644
-  # Debian policy wants both under /usr/share/doc/<package>.
+  # Debian policy wants both under /usr/share/doc/<package>. The dir entry is
+  # for rpm, the same as /usr/share/shcl above.
+  - dst: /usr/share/doc/shcl
+    type: dir
+    file_info:
+      mode: 0755
   - src: ${SHCL_PAYLOAD}/doc/copyright
     dst: /usr/share/doc/shcl/copyright
     file_info:

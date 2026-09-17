@@ -91,14 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 38: four installer and packaging defects, each reproduced.
-		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
-		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
-		- `--uninstall` deletes every file in `code/` and `scripts/` (bash) or the whole subtrees (ps1), then prints that it removed what the installer laid down. `README.md:382` says "and nothing else".
-		- An interrupted install leaves `.shcl.new` or `.shcl.exe.new`; neither uninstall removes it, and both then tell the user the directory holds files the installer did not put there.
-		- Note: the rpm does not own `/usr/share/doc/shcl` where the deb does, against the rule stated at `nfpm.yaml:39-41`.
-		- Opened: 20260909-103700
-
 	- 🛠️ Item 39: three copied or generated tools do the wrong thing and say it worked.
 		- `n8runshcl.ps1` deletes the copy it just staged and is about to launch, is squatted by any `shcl-*` file in its build directory on POSIX, and reports a failed delete as a success.
 		- `git-auto-msg.bash` produces commit messages git rejects.
@@ -762,6 +754,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: `design.md` says a bare run prints the padded help and exits 0, and names `version` as the one unpadded output.
 		- Opened: 20260909-103500
 		- Closed: 20260914-191700
+
+	- ✅ Item 38: four installer and packaging defects, each reproduced.
+		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
+		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
+		- `--uninstall` deletes every file in `code/` and `scripts/` (bash) or the whole subtrees (ps1), then prints that it removed what the installer laid down. `README.md:382` says "and nothing else".
+		- An interrupted install leaves `.shcl.new` or `.shcl.exe.new`; neither uninstall removes it, and both then tell the user the directory holds files the installer did not put there.
+		- Note: the rpm does not own `/usr/share/doc/shcl` where the deb does, against the rule stated at `nfpm.yaml:39-41`.
+		- Found on 2026-09-17: the smoke-test half does not show as a success in the shipped script. The call sits inside a `try`, and on both 5.1 and pwsh 7.6 a program that cannot start throws there, so the run ended in a raw exception with nothing installed. Only outside a `try` does the stale 0 get read.
+		- Fixed: `shclpath.ps1` exits 1 on any failure, so the setup's "add it manually" line can show. `install.ps1` runs the smoke test through `Invoke-ShclSmoke`, which sets the exit code to -1 first and catches a start failure, so both cases end in the installer's own message. Both uninstalls remove the installed files by name, plus the staging file, and remove a directory only once it is empty. The rpm lists `/usr/share/doc/shcl`, and `package.bash` checks it.
+		- Pinned by: `shell-regress.bash` rows for the smoke function, `shclpath.ps1` with no registry, and the bash uninstall with a foreign file and a staging file present. `winpath-regress.ps1` runs two broken copies of `shclpath.ps1` that must exit nonzero. All of the local rows failed against the old code, and so did the rpm check. Run on vm925w under 5.1: the smoke function against a file that is not a program, `install.ps1 -Target user`, then an uninstall that kept a foreign `code\local.rs`.
+		- Opened: 20260909-103700
+		- Closed: 20260917-070500
 
 - Code review 20260905:
 
