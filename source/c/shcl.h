@@ -7195,6 +7195,18 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// A filled wildcard emits a valued line of its own, so it belongs here too.
 		if ((!g_has_wild(c) || fill[i]) && !g_unwritable(c) && g_must_exist(c) && c->has_default) { pv.data[pv.len].segs = &c->segs; pv.data[pv.len].value = c->default_text; pv.len++; }
 	}
+	/* A commented line under a commented valued parent has the same problem
+	   once both are uncommented, so it selects the parent's default too. A
+	   live line keeps the dotted form under a commented parent: selecting by
+	   value would make the optional parent exist. The live values go first, so
+	   a lookup finds them before a commented one. */
+	ShclParentValues cpv; cpv.len = pv.len;
+	cpv.data = (ShclParentValue *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *cpv.data);
+	for (size_t i = 0; i < pv.len; i++) cpv.data[i] = pv.data[i];
+	for (size_t i = 0; i < cons.len; i++) {
+		const ShclVCons *c = &cons.data[i];
+		if (!g_has_wild(c) && !g_unwritable(c) && !g_must_exist(c) && c->has_default) { cpv.data[cpv.len].segs = &c->segs; cpv.data[cpv.len].value = c->default_text; cpv.len++; }
+	}
 	/* A path that cannot be written at all belongs in the trailing note, but one
 	   that must exist can never be satisfied from there: the self-check would
 	   then report the document as missing a path, which points at the config
@@ -7238,9 +7250,10 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// Rebuilt from the parsed segments, not by cutting text out of the
 		// path: the same path can be written several ways, and only the
 		// segments say what it means. Otherwise the schema's own spelling.
+		const ShclParentValues *values = g_must_exist(c) ? &pv : &cpv;
 		int under_valued_parent = 0;
 		for (size_t k = 1; k < c->segs.len && !under_valued_parent; k++)
-			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(&pv, &c->segs, k) != NULL;
+			under_valued_parent = c->segs.data[k - 1].sel.tag == SEL_NONE && parent_value_for(values, &c->segs, k) != NULL;
 		// A name carrying a newline has no verbatim spelling on a binding line;
 		// the segment renderer escapes it, so such a path goes through there
 		// whether or not it was filled.
@@ -7254,8 +7267,8 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			for (size_t k = 0; k < c->segs.len; k++) ShclVecSeg_push(a, &segs, c->segs.data[k]);
 			ShclSelector *last = &segs.data[segs.len - 1].sel;
 			last->tag = SEL_NONE; last->value = s_empty(); last->index = 0; last->quoted = 0;
-			path = gen_path_text(a, &segs, &pv);
-		} else path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, &pv) : c->path;
+			path = gen_path_text(a, &segs, values);
+		} else path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, values) : c->path;
 		uint64_t ph = fnv_str(1469598103934665603ull, path);
 		int dup = 0;
 		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);

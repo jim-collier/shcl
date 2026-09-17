@@ -170,6 +170,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one.
 
+- A commented `init` line under a commented parent with a `default` selects the parent by that value, as a live line under a live parent does. `# srv: web` and `# srv.port: 80` became two `srv` instances once both were uncommented; the second line is now `# srv[web].port: 80`.
+
 - `init` no longer writes a starter config that fails its own `check`. A schema path whose last segment selects by value, with a `default`, came out as `a[b]: hello`, and a value after that selector is ignored, so the file loaded with `E002` and `check` exited 6 on it. Such a line is now the bare path carrying the default (`env[prod]` with `default: prod` gives `env: prod`), and a default that names a different instance than the path selects is a `V097` fault. The self-check reads the generated text's load as well as its validation, so a line that does not load is refused too.
 
 - An unterminated quote in a selector body is reported. `srv["prod].host: example.com` loaded with no diagnostic at all and bound an instance of `srv` valued `"prod`, so a one-character typo silently pointed a whole block at a path nothing else uses, and the next `fmt --write` wrote the typo out as canonical text. The tokenizer had recorded the open quote all along; only the value half was reading it. The body is still kept as text, quotes and all, which is what the spec says a piece that opens a quote and never closes it does.

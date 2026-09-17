@@ -7000,6 +7000,18 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		.filter(|(i, c)| (!has_wild(c) || fill[*i]) && !unwritable(c) && must_exist(c))
 		.filter_map(|(_, c)| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
 		.collect();
+	// A commented line under a commented valued parent has the same problem
+	// once both are uncommented, so it selects the parent's default too. A
+	// live line keeps the dotted form under a commented parent: selecting by
+	// value would make the optional parent exist.
+	let mut commented_values = parent_values.clone();
+	for c in &cons {
+		if !has_wild(c) && !unwritable(c) && !must_exist(c) {
+			if let Some(d) = c.default_text.as_deref() {
+				commented_values.entry(names_of(&c.segs)).or_insert(d);
+			}
+		}
+	}
 	// A path that cannot be written at all belongs in the trailing note, but one
 	// that must exist can never be satisfied from there: the self-check would
 	// then report the document as missing a path, which points at the config
@@ -7043,8 +7055,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		// Rebuilt from the parsed segments, not by cutting text out of the
 		// path: the same path can be written several ways, and only the
 		// segments say what it means. Otherwise the schema's own spelling.
+		let values = if must_exist(c) {
+			&parent_values
+		} else {
+			&commented_values
+		};
 		let under_valued_parent = (1..c.segs.len()).any(|k| {
-			c.segs[k - 1].selector.is_none() && parent_values.contains_key(&names_of(&c.segs[..k]))
+			c.segs[k - 1].selector.is_none() && values.contains_key(&names_of(&c.segs[..k]))
 		});
 		// A name carrying a newline has no verbatim spelling on a binding line;
 		// the segment renderer escapes it, so such a path goes through there
@@ -7062,9 +7079,9 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			if let Some(last) = segs.last_mut() {
 				last.selector = None;
 			}
-			gen_path_text(&segs, &parent_values)
+			gen_path_text(&segs, values)
 		} else if fill[i] || under_valued_parent || c.path.contains('\n') {
-			gen_path_text(&c.segs, &parent_values)
+			gen_path_text(&c.segs, values)
 		} else {
 			c.path.clone()
 		};

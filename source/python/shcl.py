@@ -5979,6 +5979,14 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		for i, c in enumerate(cons)
 		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
 	}
+	# A commented line under a commented valued parent has the same problem
+	# once both are uncommented, so it selects the parent's default too. A
+	# live line keeps the dotted form under a commented parent: selecting by
+	# value would make the optional parent exist.
+	commented_values = dict(parent_values)
+	for c in cons:
+		if not has_wild(c) and not unwritable(c) and not must_exist(c) and c.default_text is not None:
+			commented_values.setdefault(tuple(names_of(c.segs)), c.default_text)
 	# A path that cannot be written at all belongs in the trailing note, but one
 	# that must exist can never be satisfied from there: the self-check would
 	# then report the document as missing a path, which points at the config
@@ -6012,8 +6020,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# Rebuilt from the parsed segments, not by cutting text out of the
 		# path: the same path can be written several ways, and only the
 		# segments say what it means. Otherwise the schema's own spelling.
+		values = parent_values if must_exist(c) else commented_values
 		under_valued_parent = any(
-			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in parent_values
+			c.segs[k - 1].selector is None and tuple(names_of(c.segs[:k])) in values
 			for k in range(1, len(c.segs))
 		)
 		# A name carrying a newline has no verbatim spelling on a binding line;
@@ -6024,9 +6033,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# validation below decides whether the default names the one selected.
 		last = c.segs[-1]
 		if c.default_text is not None and last.selector is not None and last.selector[0] == "val":
-			path = _gen_path_text(c.segs[:-1] + [_Segment(last.name, last.name_src, None, last.star)], parent_values)
+			path = _gen_path_text(c.segs[:-1] + [_Segment(last.name, last.name_src, None, last.star)], values)
 		elif fill[i] or under_valued_parent or "\n" in c.path:
-			path = _gen_path_text(c.segs, parent_values)
+			path = _gen_path_text(c.segs, values)
 		else:
 			path = c.path
 		if path in emitted:
