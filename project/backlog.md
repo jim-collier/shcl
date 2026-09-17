@@ -121,13 +121,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
 		- Opened: 20260909-102700
 
-	- 🔘 Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production can't generate the label its own comment gives.
-		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it can't generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
-		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that can't express shipped behavior costs more than a typo.
-		- Note: under `design.md` -> Lexical edges the `info-string` production is right to exclude `#`; the example beside it is what is wrong. The `%xEOF` half stands.
-		- Note: the example half is fixed with the rules code; the note now says ```` ```c# ```` labels the block `c`. The `%xEOF` half is still open.
-		- Opened: 20260909-103100
-
 	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
 		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
 		- Opened: 20260909-103200
@@ -466,7 +459,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 25, 30, 31 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -712,6 +705,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: churn on a subtle design interpretation. The rule this item turned on is settled the other way in `design.md` under Lexical edges, so the item is no longer relevant.
 		- Opened: 20260909-103000
 		- Closed: 20260909-151500
+
+	- ✅ Item 32: `grammar.abnf` does not parse as ABNF, and its `info-string` production can't generate the label its own comment gives.
+		- Reproduced. `%xEOF` at `:173` is not a hex string; 38 of 41 rules parse. And `info-string` is built on `bare-plain`, which excludes `#`, `:`, `,`, `"` and `[`, so it can't generate ```` ```c# ````, the example on the next line, and instead generates that text as a fence plus the info string `c` plus a comment.
+		- Note: the grammar is the oracle two of this round's harnesses were written against, so a production that can't express shipped behavior costs more than a typo.
+		- Note: under `design.md` -> Lexical edges the `info-string` production is right to exclude `#`; the example beside it is what is wrong. The `%xEOF` half stands.
+		- Note: the example half is fixed with the rules code; the note now says ```` ```c# ```` labels the block `c`. The `%xEOF` half is still open.
+		- Fixed: the last line without a newline is its own alternative in `file`, so `newline` is plain LF or CRLF. The grammar also defined `wsp` and `DQUOTE`, which ABNF reads as the core `WSP` and `DQUOTE` since rule names ignore case, and its `wsp` holds CR where the core one does not. `wsp` is `blank` now and the copy of `DQUOTE` is gone.
+		- Verified: all 41 rules parse, where the old file stops at `%xEOF`, and `file` matches a document with and without its final newline.
+		- Opened: 20260909-103100
+		- Closed: 20260916-190622
 
 	- ✅ Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
 		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.
