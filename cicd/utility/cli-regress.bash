@@ -394,6 +394,14 @@ rows=(
 	## there is never given one.
 	'create-info-block|set --write %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n##\n## This config file format is SHCL.\n## "Simple Hierarchical Config Language"\n##    Format   3\n##    Home     https://github.com/jim-collier/shcl\n##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n##    Legal    SHCL is Copyright \xc2\xa9 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n##\n'
 	'create-no-banner|set --write --no-banner %C% --set=srv.port=8080|-|0|-|-|srv:\n\tport: 8080\n'
+	## 20260909 item 35: set without --write took --no-banner and did nothing with
+	## it, where --lossy in the same spot was refused.
+	'no-banner-without-write|set --no-banner --set=a=2 %F%|-|1|-|only meaningful with --write'
+	## 20260909 item 33: the help put migrate and tokens among the subcommands
+	## that take --strictness, --layer and --set. They refuse all three.
+	'migrate-no-strictness|migrate --strictness=strict %F%|-|1|-|not valid for migrate'
+	'tokens-no-layer|tokens --layer=%F% %F%|-|1|-|not valid for tokens'
+	'migrate-no-set|migrate --set=a=2 %F%|-|1|-|not valid for migrate'
 	## 20260909 item 6: the create was decided before the wait on stdin, so a
 	## file made during the wait was replaced by the edits at exit 0.
 	'create-appeared|set --write %C%|@appear|8|-|exists|b: 2\n'

@@ -91,42 +91,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
-		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
-		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
-		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
-		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` can't see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
-		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
-		- Opened: 20260909-102100
-
-	- 🔘 Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
-		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
-		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
-		- Opened: 20260909-102500
-
-	- 🔘 Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
-		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
-		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
-		- Opened: 20260909-102600
-
-	- 🔘 Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
-		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
-		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
-		- Opened: 20260909-102700
-
-	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
-		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
-		- Opened: 20260909-103200
-
-	- 🔘 Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
+	- 🛠️ Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
 		- Reproduced. `README.md:501` and `:505` quote `unexpected '4' after field` where the code now says `unexpected character after the path`. The offending character's position is still computed in all four and thrown away before the message is built; `shcl tokens` prints it as `fault=8:...`.
 		- Sites: `lib.rs:1765`, `shcl.go:1908`, `shcl.py:1625`, `shcl.h:1847`.
+		- Fixed: the README transcript shows the message the CLIs print. A `check-docs.bash` row rebuilds the damaged file from the README and compares the line with the debug binary's output.
+		- Note: the message half is still open. The fault reason also feeds `shcl tokens`, and the character or column has to be spelled the same way in all four.
 		- Opened: 20260909-103300
-
-	- 🔘 Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
-		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
-		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
-		- Opened: 20260909-103400
 
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
@@ -142,11 +112,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
 		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
 		- Opened: 20260909-103800
-
-- 🔘 The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
-	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.
-	- Note: this is a runner reporting OK with a whole dimension absent, so a case carrying no read coverage looks the same as one that does.
-	- Opened: 20260916-105829
 
 - 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
 	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
@@ -209,11 +174,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 52: the C sanitizer gate never runs the commands the last three rounds added.
 		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
 		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
+		- Note: that `mem_bounds.c` half was done with bug item 22.
 		- Opened: 20260909-105100
 
 	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
 		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
 		- Site: `shell-regress.bash:824`.
+		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
 		- Opened: 20260909-105200
 
 	- 🔘 Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
@@ -265,6 +232,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
+	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.
+	- Note: this is a runner reporting OK with a whole dimension absent, so a case carrying no read coverage looks the same as one that does.
+	- Fixed: the C runner fails a case missing `input.shcl`, `expected.shcl` or `reads.tsv`, as it already did for `expected-diags.txt`.
+	- Pinned by: a `shell-regress.bash` row running the C runner on one real case with `reads.tsv` removed. The old runner passed it.
+	- Opened: 20260916-105829
+	- Closed: 20260916-193322
 
 - ✅ `migrate` left a `name:[disc]` line whose discriminator holds a backslash before a comma, which 2.x bound cleanly, so the binding was gone and `migrate --write` exited 0.
 	- Reproduced in the reference against the pinned 2.x build. `k:[a\,b]` reads `a\,b` under 2.x with only the sugar hint. `migrate` wrote the line back unchanged, which is `E019` now, so `k` bound nothing, and `migrate --write` exited 0. The value spelling `k: a\,b` migrated correctly, so only the last-segment arm dropped it.
@@ -452,7 +427,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 33, 35, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -647,6 +622,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260909-101900
 		- Closed: 20260916-191604
 
+	- ✅ Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
+		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
+		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
+		- Note: `shcl.h:4608-4609` says the setter's working memory is dead by the time the setter returns.
+		- Note: this is 20260902 item 11 reintroduced through the other arena. `mem_bounds.c:163-169` can't see it twice over - it reads only the document arena, and every refusal it makes is a path refusal.
+		- Sites: `shcl.h:3909`, `:4007`, `:4008`, `:4017`, `:4020`, `:4062`.
+		- Fixed: each value refusal resets scratch before it returns, in `w_set_marked`, `shcl_set_comment`, `shcl_set_literal`, `shcl_set_datetime` and `shcl_set_datetime_array`. The other three bindings have no scratch arena.
+		- Pinned by: a `mem_bounds.c` row making 400 refused one-MiB writes, a raw info string holding `#` and an unterminated literal, and reading the scratch arena. 839 MB before the fix, 4 MB after.
+		- Opened: 20260909-102100
+		- Closed: 20260916-191918
+
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
 		- Cause: the scan matches `warning`, `rustsec-`, `vulnerab`, `unmaintained`, `yanked` and `error[`. Only rustc's bracketed error-code form is an error spelling; a gcc error, a shellcheck finding, a failed test and the pipeline's own abort line all pass through.
@@ -691,6 +677,32 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260909-102800
 		- Closed: 20260915-112859
 
+	- ✅ Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
+		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
+		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
+		- Fixed: all three key copies must be readable, or the run stops at exit 2 before anything is signed.
+		- Pinned by: a `shell-regress.bash` row running a copy of the script in a tree with no key copies. The old script signed there and wrote a `.sig`.
+		- Opened: 20260909-102500
+		- Closed: 20260916-192106
+
+	- ✅ Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
+		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
+		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
+		- Fixed: any fetch other than `curl -o /absolute/path` now fails the gate, rather than a detector growing a case per spelling. A commented-out line no longer counts as a check.
+		- Pinned by: five `shell-regress.bash` rows, each a copy of `ci.yml` with one change: a relative `-o`, a commented-out check, `curl | tar`, `wget -O` and `gh release download`. All five passed the old script.
+		- Opened: 20260909-102600
+		- Closed: 20260916-192257
+
+	- ✅ Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
+		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
+		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
+		- Fixed: `check-docs.bash` fails under `SHCL_GATE_STRICT` with no debug binary and notes the skip otherwise. It also fails when it finds no `-default` op in `apply_op` or a language fence is missing from the README.
+		- Fixed: `largedoc.bash` fails when the reference writes nothing, instead of skipping its invariants.
+		- Fixed: `check-locale.bash` no longer dies on its own `diff`. A probe proves a C program adopts the built locale, and a CLI copy that adopts the environment reads a float with `get --float`, so the CLI half can fail on a library defect.
+		- Pinned by: a `shell-regress.bash` row for the empty reference, and `check-docs.bash` added to the gates that must read `SHCL_GATE_STRICT` and note skips. Each check-docs and check-locale change was watched to fail against an injected fault: no binary, a renamed `apply_op`, a renamed fence, and a library that ignores the locale's decimal point.
+		- Opened: 20260909-102700
+		- Closed: 20260916-192654
+
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
 		- Note: `changelog.md:25` also calls `base:[Boston]` "the documented selector sugar", which this release deleted.
@@ -719,6 +731,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Verified: all 41 rules parse, where the old file stops at `%xEOF`, and `file` matches a document with and without its final newline.
 		- Opened: 20260909-103100
 		- Closed: 20260916-190622
+
+	- ✅ Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
+		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
+		- Fixed: the help in all four CLIs says "all but init/migrate/tokens" for `--strictness` and "all but check/init/migrate/tokens" for `--layer` and `--set`. The man page puts `migrate` under `--write` and in the strictness exclusions, and its `migrate` synopsis lists `--lossy`.
+		- Pinned by: three `cli-regress.bash` rows showing `migrate` and `tokens` refuse those options. The help itself is pinned byte for byte across the four.
+		- Opened: 20260909-103200
+		- Closed: 20260916-193142
+
+	- ✅ Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
+		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
+		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
+		- Fixed: `set --no-banner` without `--write` exits 1 with "only meaningful with --write", in `check_opts` in all four CLIs (`checkOpts` in Go). The help lists it among the refused combinations.
+		- Pinned by: a `cli-regress.bash` row. The old C CLI exited 0 there.
+		- Opened: 20260909-103400
+		- Closed: 20260916-193142
 
 	- ✅ Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
 		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.

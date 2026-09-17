@@ -405,6 +405,11 @@ int main(int argc, char **argv) {
 		snprintf(path, sizeof path, "%s/%s/input.shcl", corpus, names[ci]); size_t ilen; char *input = read_file(path, &ilen);
 		snprintf(path, sizeof path, "%s/%s/expected.shcl", corpus, names[ci]); size_t elen; char *expected = read_file(path, &elen);
 		snprintf(path, sizeof path, "%s/%s/reads.tsv", corpus, names[ci]); size_t rlen; char *reads = read_file(path, &rlen);
+		/* Required, as the other three runners open them unconditionally. A
+		   missing one used to count as a pass with that dimension absent. */
+		if (!input) fail(names[ci], "missing input.shcl");
+		if (!expected) fail(names[ci], "missing expected.shcl");
+		if (!reads) fail(names[ci], "missing reads.tsv");
 
 		// Canonical output must match expected.shcl and be a fixpoint.
 		shcl_doc *d = shcl_parse(input, ilen);

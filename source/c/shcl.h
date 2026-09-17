@@ -4028,10 +4028,12 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
    a bump arena never gives that back - a refused 20 MB write used to cost the
    document 85 MB permanently. w_place allocates only in scratch until its
    probe passes, so on a refusal nothing but the encoded value sits past the
-   mark. The mark is taken by the caller, before it encodes. */
+   mark. The mark is taken by the caller, before it encodes. A value refused
+   by its read-back is checked in scratch, and nothing resets scratch after a
+   refusal, so it goes back here. */
 static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
-	if (!value_reads_back(&d->scratch, &v)) { arena_release(&d->arena, m); return 0; }
+	if (!value_reads_back(&d->scratch, &v)) { arena_release(&d->arena, m); arena_reset(&d->scratch); return 0; }
 	if (d->probe) { arena_release(&d->arena, m); return 1; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
@@ -4084,7 +4086,7 @@ shcl_write_reason shcl_write_reason_(shcl_doc *d, const char *path, size_t plen)
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; size_t idx;
 	ShclStr in; in.p = text ? text : ""; in.n = tlen; ShclStr line;
-	if (!comment_line(&d->scratch, in, &line)) return 0;
+	if (!comment_line(&d->scratch, in, &line)) { arena_reset(&d->scratch); return 0; }
 	/* Copied out ahead of w_place, which resets the scratch the line was built
 	   in; a refused place gives the copy straight back. */
 	ShclMark m = arena_mark(a);
@@ -4139,10 +4141,10 @@ int shcl_set_literal(shcl_doc *d, const char *path, size_t plen, const char *tex
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclStr in; in.p = text; in.n = tlen;
 	ShclValue v;
 	ShclMark m = arena_mark(a);
-	if (!literal_value(a, &d->scratch, in, &v)) { arena_release(a, m); return 0; }
+	if (!literal_value(a, &d->scratch, in, &v)) { arena_release(a, m); arena_reset(&d->scratch); return 0; }
 	return w_set_marked(d, p, v, m);
 }
-int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) return 0; ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_dt_text(a, dt)), m); }
+int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt) { if (!dt_reads_back(&d->scratch, dt)) { arena_reset(&d->scratch); return 0; } ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_dt_text(a, dt)), m); }
 // Bind a raw block at a path, picking a fence longer than any content line.
 // The info-string is stored as a fence line would read it back (trimmed the
 // way the load trims one); one that would not read back whole - it holds a
@@ -4184,7 +4186,7 @@ int shcl_set_string_array(shcl_doc *d, const char *path, size_t plen, const char
 	return w_set_marked(d, p, w_array(a, t, n), m);
 }
 int shcl_set_datetime_array(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *v, size_t n) {
-	for (size_t i = 0; i < n; i++) if (!dt_reads_back(&d->scratch, &v[i])) return 0;
+	for (size_t i = 0; i < n; i++) if (!dt_reads_back(&d->scratch, &v[i])) { arena_reset(&d->scratch); return 0; }
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); ShclStr *t = (ShclStr *)arena_alloc(a, (n ? n : 1) * sizeof(ShclStr));
 	for (size_t i = 0; i < n; i++) t[i] = w_dt_text(a, &v[i]);
 	return w_set_marked(d, p, w_array(a, t, n), m);

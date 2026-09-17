@@ -177,6 +177,9 @@ if [[ -s "${refOut}" ]]; then
 	else
 		echo "largedoc: FAILED: long array read back ${wideCount} of 20000 elements" >&2; rc=1
 	fi
+else
+	## Empty output agrees with empty output, so every binding would pass above.
+	echo "largedoc: FAILED: the reference wrote nothing, so no invariant could be checked" >&2; rc=1
 fi
 
 echo

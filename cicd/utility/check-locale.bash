@@ -76,20 +76,40 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
 LC_ALL=commadec.UTF-8 SHCL_TEST_LC_NUMERIC=1 "${work}/conformance" "${repoDir}/project/conformance" \
 	> "${work}/corpus.out" 2>&1 || { fBad "the corpus fails under a comma-decimal locale:"; tail -n 5 "${work}/corpus.out" >&2 ;}
 
-##	And the same property end to end, which is what a user sees. The CLI pins its
-##	own locale at startup as well, so this holds twice over now; back either half
-##	out on its own and the corpus check above is the one that fires.
+##	A C program built here has to take the comma from the environment, or every
+##	check below passes whether or not the library handles it.
+printf '#include <locale.h>\n#include <stdio.h>\nint main(void) { setlocale(LC_ALL, ""); printf("%%.1f\\n", 1.5); return 0; }\n' > "${work}/probe.c"
+cc -std=c11 -O2 "${work}/probe.c" -o "${work}/probe" || { echo "check-locale: the locale probe did not build" >&2; exit 2 ;}
+probed="$(LC_ALL=commadec.UTF-8 "${work}/probe" || true)"
+[[ "${probed}" == "1,5" ]] || { echo "check-locale: a C program here does not adopt the built locale (printed '${probed}')" >&2; exit 2 ;}
+
+##	And the same property end to end, which is what a user sees. The shipped CLI
+##	pins its own locale at startup, so it cannot fail here by itself. A copy
+##	with the pin turned into adopting the environment is what reaches the
+##	library's own handling.
 cc -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
 	"${repoDir}/source/c/cmd/shcl/main.c" -o "${work}/shcl" -lm \
 	|| { echo "check-locale: the C CLI did not build" >&2; exit 2 ;}
+pin='setlocale(LC_ALL, "C");'
+grep -qF -- "${pin}" "${repoDir}/source/c/cmd/shcl/main.c" || { echo "check-locale: main.c no longer pins its locale with ${pin}" >&2; exit 2 ;}
+mkdir -p "${work}/envcli"
+sed 's/setlocale(LC_ALL, "C");/setlocale(LC_ALL, "");/' "${repoDir}/source/c/cmd/shcl/main.c" > "${work}/envcli/main.c"
+cc -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" -I"${repoDir}/source/c/cmd/shcl" \
+	"${work}/envcli/main.c" -o "${work}/shcl-env" -lm \
+	|| { echo "check-locale: the C CLI did not build with its locale unpinned" >&2; exit 2 ;}
 printf 'ratio: 3.5\ntiny: 0.125\nbig: 1.5e300\nneg: -0.5\n' > "${work}/floats.shcl"
 LC_ALL=C "${work}/shcl" fmt "${work}/floats.shcl" > "${work}/plain.out" 2>&1 || true
-LC_ALL=commadec.UTF-8 "${work}/shcl" fmt "${work}/floats.shcl" > "${work}/comma.out" 2>&1 || true
-if ! cmp -s "${work}/plain.out" "${work}/comma.out"; then
-	fBad "the CLI formats floats differently under a comma-decimal locale:"
-	diff "${work}/plain.out" "${work}/comma.out" | head -n 6 >&2
-fi
-grep -q '^ratio: 3\.5$' "${work}/comma.out" || fBad "the CLI did not write 3.5 under a comma-decimal locale"
+for cli in shcl shcl-env; do
+	LC_ALL=commadec.UTF-8 "${work}/${cli}" fmt "${work}/floats.shcl" > "${work}/comma.out" 2>&1 || true
+	if ! cmp -s "${work}/plain.out" "${work}/comma.out"; then
+		fBad "${cli} formats floats differently under a comma-decimal locale:"
+		diff "${work}/plain.out" "${work}/comma.out" | head -n 6 >&2 || true
+	fi
+	grep -q '^ratio: 3\.5$' "${work}/comma.out" || fBad "${cli} did not write 3.5 under a comma-decimal locale"
+	## fmt passes the text through; a typed read is what converts it.
+	got="$(LC_ALL=commadec.UTF-8 "${work}/${cli}" get --float "${work}/floats.shcl" ratio 2>&1 || true)"
+	[[ "${got}" == "3.5" ]] || fBad "${cli} read ratio as '${got}' under a comma-decimal locale, not 3.5"
+done
 
 if ((nBad)); then
 	echo "check-locale: ${nBad} check(s) failed" >&2
@@ -101,3 +121,6 @@ echo "check-locale: OK: corpus and CLI unchanged under a comma-decimal locale"
 ##		2026-08-31  Created. The locale fix from the 20260817 round went in with
 ##		            nothing pinning it, on the reading that a corpus case cannot
 ##		            set a locale - which is true of the corpus and not of a gate.
+##		2026-09-16  A failed CLI compare no longer ends the run before its summary.
+##		            A probe proves the locale is adopted, and an unpinned CLI copy
+##		            gives the CLI half something that can fail.

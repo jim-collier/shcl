@@ -54,6 +54,7 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .SY shcl
 .B migrate
 .RB [ \-\-write | \-w | \-\-check ]
+.RB [ \-\-lossy ]
 .RB [ \-\-from\-2x ]
 .I FILE
 .YS
@@ -273,7 +274,7 @@ array, per matched instance for a wildcard.
 Leave out the info block naming the format and pointing at its spec.
 .TP
 .BR \-\-write ", " \-w
-.RB ( fmt ", " set )
+.RB ( fmt ", " set ", " migrate )
 Rewrite
 .I FILE
 in place instead of printing to stdout. The write goes through a temp file and
@@ -283,7 +284,9 @@ a
 .I FILE
 that does not exist yet is created;
 .B fmt
-has nothing to format and reports it missing.
+and
+.B migrate
+have nothing to read and report it missing.
 .TP
 .B \-\-lossy
 .RB ( fmt ", " set ", " migrate )
@@ -309,7 +312,7 @@ files in a tree need migrating. It cannot be combined with
 .BR \-\-write .
 .TP
 .BR \-\-strictness= loose | standard | strict
-.RB "(all but " init )
+.RB "(all but " init ", " migrate ", " tokens )
 How much the loader tolerates; also spelled
 .BR 1 ,
 .B 2

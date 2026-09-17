@@ -142,31 +142,29 @@ openssl pkey -in "${key}" -pubout -out "${pub}" 2>/dev/null || fDie "cannot deri
 fFp(){ openssl pkey -pubin -in "$1" -outform DER -pubout 2>/dev/null | sha256sum | cut -d' ' -f1 || true; }
 want="$(fFp "${pub}")"
 [[ -n "${want}" ]] || fDie "cannot fingerprint the signing key"
+## A copy that cannot be read is a check that did not run, not a pass.
+for f in shcl-signing.pub install.bash install.ps1; do
+	[[ -r "${root}/${f}" ]] || fDie "cannot read ${f}, so the key cannot be checked against it" 2
+done
 
 ## Published key file, the one README tells people to verify against.
-if [[ -r "${root}/shcl-signing.pub" ]]; then
-	[[ "$(fFp "${root}/shcl-signing.pub")" == "${want}" ]] || fDie "shcl-signing.pub is not this key"
-fi
+[[ "$(fFp "${root}/shcl-signing.pub")" == "${want}" ]] || fDie "shcl-signing.pub is not this key"
 
 ## install.bash carries the PEM inside a single-quoted bash string, so the
 ## BEGIN line has a 'readonly SIGNING_KEY=' prefix and the END line a trailing
 ## quote. Strip both, or what comes out is not a PEM at all.
-if [[ -r "${root}/install.bash" ]]; then
-	sed -n '/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p' "${root}/install.bash" \
-		| sed "s/^[^-]*'//; s/'[[:space:]]*$//" > "${tmppub}"
-	[[ "$(fFp "${tmppub}")" == "${want}" ]] || fDie "install.bash carries a different key"
-fi
+sed -n '/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p' "${root}/install.bash" \
+	| sed "s/^[^-]*'//; s/'[[:space:]]*$//" > "${tmppub}"
+[[ "$(fFp "${tmppub}")" == "${want}" ]] || fDie "install.bash carries a different key"
 
 ## install.ps1 carries the bare modulus, not a PEM - compare that directly.
 ## openssl gives the modulus as hex; printf turns each pair into its byte and
 ## openssl base64s the result, so no other tool is needed for the round trip.
-if [[ -r "${root}/install.ps1" ]]; then
-	psmod="$(sed -n "s/^\$signingModulus = '\(.*\)'.*/\1/p" "${root}/install.ps1")"
-	modhex="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//; s/../\\x&/g' || true)"
-	[[ -n "${modhex}" ]] || fDie "cannot read the key's modulus"
-	keymod="$(printf '%b' "${modhex}" | openssl enc -base64 -A)"
-	[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
-fi
+psmod="$(sed -n "s/^\$signingModulus = '\(.*\)'.*/\1/p" "${root}/install.ps1")"
+modhex="$(openssl rsa -pubin -in "${pub}" -modulus -noout 2>/dev/null | sed 's/^Modulus=//; s/../\\x&/g' || true)"
+[[ -n "${modhex}" ]] || fDie "cannot read the key's modulus"
+keymod="$(printf '%b' "${modhex}" | openssl enc -base64 -A)"
+[[ -n "${psmod}" && "${psmod}" == "${keymod}" ]] || fDie "install.ps1 carries a different key"
 
 ## Everything checked; sign, and verify what was written. A signature that
 ## does not verify is removed rather than left looking finished.
@@ -190,3 +188,5 @@ printf 'attach both the sums file and its .sig to the release.\n'
 ##		  with a blank line each side.
 ##		- 2026-09-02 JC: Checks before the signature: the sums file's name and
 ##		  contents, then the key, and only then the write; a failed run leaves no .sig.
+##		- 2026-09-16 JC: A key copy that cannot be read refuses the run; it used
+##		  to skip that check and sign.
