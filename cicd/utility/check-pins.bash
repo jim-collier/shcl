@@ -73,14 +73,26 @@ done
 ## A version pin is only half of it. The workflow also fetches two tools as
 ## archives and puts them ahead of the system copy, and one of those went in
 ## with nothing checked at all, so the pin bought nothing.
+## Only one spelling can be followed to its check: `curl ... -o /absolute/path`.
+## Any other fetch fails here rather than passing unseen, and so does a check
+## that is commented out.
+liveLines="$(grep -vE -- '^[[:space:]]*#' "${ciFile}" || true)"
+while IFS= read -r fetchLine; do
+	[[ -n "${fetchLine}" ]] || continue
+	if ! grep -qE -- '(^|[[:space:]])curl[[:space:]].*[[:space:]]-o[[:space:]]+/' <<<"${fetchLine}" \
+		|| grep -qE -- '\||[[:space:]]-O([[:space:]]|$)' <<<"${fetchLine}"; then
+		echo "check-pins: ci.yml fetches in a form this check cannot follow to its sha256 (use curl -o /absolute/path): ${fetchLine#"${fetchLine%%[![:space:]]*}"}" >&2; rc=1
+	fi
+done < <(grep -E -- '(^|[^A-Za-z0-9_-])(curl|wget|Invoke-WebRequest|iwr|Invoke-RestMethod|irm|Start-BitsTransfer)([^A-Za-z0-9_-]|$)|gh (release|run) download' <<<"${liveLines}" || true)
 while IFS= read -r target; do
-	checked="$(grep -F -- "${target}\" | sha256sum -c" "${ciFile}" || true)"
+	[[ -n "${target}" ]] || continue
+	checked="$(grep -F -- "${target}\" | sha256sum -c" <<<"${liveLines}" || true)"
 	if [[ -z "${checked}" ]]; then
 		echo "check-pins: ci.yml downloads ${target} and never checks it" >&2; rc=1
 	elif ! grep -qE -- '[0-9a-f]{64}' <<<"${checked}"; then
 		echo "check-pins: the check on ${target} carries no sha256" >&2; rc=1
 	fi
-done < <(grep -oE -- '-o[[:space:]]+/[^[:space:]]+' "${ciFile}" | sed 's/^-o[[:space:]]*//' | sort -u)
+done < <(grep -oE -- '-o[[:space:]]+/[^[:space:]]+' <<<"${liveLines}" | sed 's/^-o[[:space:]]*//' | sort -u || true)
 
 ## The other direction. The checks above pass when a pin is DELETED from
 ## config.bash while ci.yml still installs the tool, which is how the one lint
@@ -115,3 +127,5 @@ exit "${rc}"
 ##		- 2026-08-30 JC: Whole-token matching; the cppcheck wheel is checked
 ##		  against CPPCHECK_WHEEL as well as the binary version.
 ##		- 2026-08-31 JC: Every archive the workflow downloads has to be hashed.
+##		- 2026-09-16 JC: A fetch in any other spelling fails, and a commented-out
+##		  check does not count.

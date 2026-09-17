@@ -592,6 +592,24 @@ fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
 	|| fBad "flame-report.py invented a sample count for a graph that carries none"
 grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
 	|| fBad "the profiler does not record how many samples reached the graph"
+##	20260909 item 27: check-pins.bash saw only `curl -o /absolute/path`, so any
+##	other fetch passed with no hash, and so did a commented-out check. Each
+##	variant is a copy of the real workflow with one change; the unchanged copy
+##	has to pass first, or the refusals prove nothing.
+mkdir -p "${tmpDir}/pins/cicd/utility" "${tmpDir}/pins/.github/workflows"
+cp "${repoDir}/cicd/utility/check-pins.bash" "${tmpDir}/pins/cicd/utility/"
+cp "${repoDir}/cicd/config.bash" "${tmpDir}/pins/cicd/"
+pinsYml="${tmpDir}/pins/.github/workflows/ci.yml"
+fPinsRun(){   ## fPinsRun SED-EXPR: run check-pins on ci.yml edited by SED-EXPR; 0 if it passed
+	sed -E "$1" "${repoDir}/.github/workflows/ci.yml" > "${pinsYml}"
+	bash "${tmpDir}/pins/cicd/utility/check-pins.bash" >/dev/null 2>&1
+}
+fPinsRun 's/^//' || fBad "check-pins.bash failed on an unchanged copy of ci.yml"
+fPinsRun 's#-o /tmp/shellcheck\.tar\.xz#-o shellcheck.tar.xz#' && fBad "check-pins.bash passed a relative curl -o"
+fPinsRun 's#^([[:space:]]*)(echo "8c3be12b)#\1\# \2#' && fBad "check-pins.bash passed a commented-out sha256 check"
+fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1curl -fsSL https://example.com/x.tgz | tar xz#' && fBad "check-pins.bash passed curl piped to tar"
+fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1wget -O x.tgz https://example.com/x.tgz#' && fBad "check-pins.bash passed wget -O"
+fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1gh release download v1 -R a/b#' && fBad "check-pins.bash passed gh release download"
 ##	20260909 item 24: rotation retagged a graph and left its sidecar under the
 ##	old role, so the caveat vanished. And --check --file wrote the named graph's
 ##	stamp into the shared marker, so one dated ahead left the gate at SEEN for

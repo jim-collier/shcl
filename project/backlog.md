@@ -91,11 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
-		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
-		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
-		- Opened: 20260909-102600
-
 	- 🔘 Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
 		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
 		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
@@ -440,7 +435,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -697,6 +692,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a `shell-regress.bash` row running a copy of the script in a tree with no key copies. The old script signed there and wrote a `.sig`.
 		- Opened: 20260909-102500
 		- Closed: 20260916-192106
+
+	- ✅ Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
+		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
+		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
+		- Fixed: any fetch other than `curl -o /absolute/path` now fails the gate, rather than a detector growing a case per spelling. A commented-out line no longer counts as a check.
+		- Pinned by: five `shell-regress.bash` rows, each a copy of `ci.yml` with one change: a relative `-o`, a commented-out check, `curl | tar`, `wget -O` and `gh release download`. All five passed the old script.
+		- Opened: 20260909-102600
+		- Closed: 20260916-192257
 
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
