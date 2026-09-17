@@ -88,6 +88,22 @@ fragSchema="${tmpDir}/frag-schema.shcl"; fragDoc="${tmpDir}/frag.shcl"
 awk 'BEGIN{ print "field: a"; print "\ttype: int"
 	for (i = 0; i < 16000; i++) printf "fragment: f%d\n\tfield: x%d\n\t\ttype: int\n", i, i }' > "${fragSchema}"
 printf 'a: x\n' > "${fragDoc}"
+## The unknown-field sweep's two element-wise matchers, one workload each. Both
+## used to scan their whole list per document node, so the cost was the document
+## times the schema. `stars` is the star-bearing paths, which cannot live in the
+## exact-chain hash; `mounts` is the general matcher, reached once a fragment is
+## mounted anywhere. Two things the shape depends on: the document names sit at
+## the END of the schema's list, because a name near the front ends the scan
+## early and hides most of it, and each instance is one dotted line, because the
+## block spelling costs three times the parse for the same chains. The trailing
+## unknown field is what makes `check` exit 6.
+starSchema="${tmpDir}/star-schema.shcl"; starDoc="${tmpDir}/star.shcl"
+awk 'BEGIN{ for (i = 0; i < 16000; i++) printf "field: s%d.*.leaf\n", i }' > "${starSchema}"
+awk 'BEGIN{ for (i = 12000; i < 16000; i++) printf "s%d.inst.leaf: 1\n", i; print "zz: 1" }' > "${starDoc}"
+mountSchema="${tmpDir}/mount-schema.shcl"; mountDoc="${tmpDir}/mount.shcl"
+awk 'BEGIN{ print "fragment: f"; print "\tfield: leaf"
+	for (i = 0; i < 16000; i++) printf "field: m%d\n\tinherits: f\n", i }' > "${mountSchema}"
+awk 'BEGIN{ for (i = 12000; i < 16000; i++) printf "m%d.leaf: 1\n", i; print "zz: 1" }' > "${mountDoc}"
 
 ##	Milliseconds for one run of $2 (an ops file, a document when $3 is
 ##	"check", or a document validated against ${sugSchema} when $3 is
@@ -110,6 +126,10 @@ fTimeMs(){
 			"${cli}" check --schema "${recSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == frags ]]; then
 			"${cli}" check --schema "${fragSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == stars ]]; then
+			"${cli}" check --schema "${starSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == mounts ]]; then
+			"${cli}" check --schema "${mountSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			"${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -117,7 +137,7 @@ fTimeMs(){
 		##	`check` on a document with diagnostics exits 6; everything else here
 		##	succeeds. Anything else means the run did no work.
 		local wantRc=0
-		[[ "${mode}" == check || "${mode}" == suggest || "${mode}" == recurse || "${mode}" == frags ]] && wantRc=6
+		case "${mode}" in check|suggest|recurse|frags|stars|mounts) wantRc=6 ;; esac
 		if ((rc != wantRc)); then
 			echo "perf-gate: ${cli##*/}: ${mode} run exited ${rc}, expected ${wantRc} - it did not do the work" >&2
 			printf '%s' -1; return
@@ -162,7 +182,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags; do
+	for w in writes defaults reads badlines suggest recurse frags stars mounts; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
@@ -171,6 +191,10 @@ for b in "${bindings[@]}"; do
 			ms="$(fTimeMs "${cli}" "${recDoc}" recurse 2)"
 		elif [[ "${w}" == frags ]]; then
 			ms="$(fTimeMs "${cli}" "${fragDoc}" frags 2)"
+		elif [[ "${w}" == stars ]]; then
+			ms="$(fTimeMs "${cli}" "${starDoc}" stars 2)"
+		elif [[ "${w}" == mounts ]]; then
+			ms="$(fTimeMs "${cli}" "${mountDoc}" mounts 2)"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
@@ -204,3 +228,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            duplicate check scanned every fragment already recorded.
 ##		2026-09-08  Self-test over the timer's own two guards, so a tidy-up cannot
 ##		            delete one and leave the gate reporting OK on a CLI that failed.
+##		2026-09-17  stars and mounts workloads: the unknown-field sweep's two
+##		            element-wise matchers, each scanning its whole list per node.

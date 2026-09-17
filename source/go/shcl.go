@@ -8117,6 +8117,27 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 			legal[chain] = true
 		}
 	}
+	// Both element-wise matchers below used to scan their whole list per
+	// document node, which is quadratic once the schema and the document grow
+	// together. A path can only match a chain whose first part its own first
+	// segment accepts, so one bucket lookup replaces the scan.
+	starIdx := firstIndex(starPats)
+	setIdx := map[string]firstIdx{}
+	if hasMounts {
+		// Keyed the way chainPartsLegal's dead set is: "" for the top-level
+		// list, otherwise the fragment name.
+		segsOf := func(cs []constraint) [][]segment {
+			out := make([][]segment, len(cs))
+			for i := range cs {
+				out[i] = cs[i].segs
+			}
+			return out
+		}
+		setIdx[""] = firstIndex(segsOf(cons))
+		for name, fcs := range def.frags {
+			setIdx[name] = firstIndex(segsOf(fcs))
+		}
+	}
 	type frame struct {
 		node  int
 		chain string
@@ -8137,7 +8158,7 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 		if fr.shown != "" {
 			shown = fr.shown + "." + seg
 		}
-		if !legal[chain] && !starLegal(starPats, chain) && !(hasMounts && chainLegal(cons, def.frags, chain)) {
+		if !legal[chain] && !starLegal(starPats, starIdx, chain) && !(hasMounts && chainLegal(cons, def.frags, setIdx, chain)) {
 			hint := vSuggest(siblings, fr.chain, node.name)
 			vdiag(out, node.line, "V001", fmt.Sprintf("unknown field '%s'%s", shown, hint))
 			continue
@@ -8182,12 +8203,13 @@ func chainParts(chain string) []string {
 // starLegal is the element-wise chain match against the star-bearing schema
 // paths: a `*` segment matches any one name, and every prefix of a path is
 // legal.
-func starLegal(pats [][]segment, chain string) bool {
+func starLegal(pats [][]segment, idx firstIdx, chain string) bool {
 	if len(pats) == 0 {
 		return false
 	}
 	parts := chainParts(chain)
-	for _, p := range pats {
+	for _, pi := range idx.candidates(parts[0]) {
+		p := pats[pi]
 		if len(p) < len(parts) {
 			continue
 		}
@@ -8209,10 +8231,44 @@ func starLegal(pats [][]segment, chain string) bool {
 // element-wise like starLegal (stars wild, prefixes legal), and when a mount's
 // whole path matched with chain left over, the remainder is retried against
 // the mounted fragment's fields. Terminates: every descent consumes >= 1 part.
-func chainLegal(cons []constraint, frags map[string][]constraint, chain string) bool {
+func chainLegal(cons []constraint, frags map[string][]constraint, setIdx map[string]firstIdx, chain string) bool {
 	parts := chainParts(chain)
 	dead := map[chainState]bool{}
-	return chainPartsLegal(cons, "", frags, parts, 0, dead)
+	return chainPartsLegal(cons, "", frags, setIdx, parts, 0, dead)
+}
+
+// firstIdx buckets schema paths by what their first segment accepts. A path
+// can only match a chain whose first part is that segment's name, or anything
+// at all when the segment is `*`, so a lookup plus the star bucket is the whole
+// candidate set. Values are positions in the list the index was built from.
+// Both callers ask "does any of these match", so bucket order cannot reach the
+// answer.
+type firstIdx struct {
+	byName map[string][]int
+	stars  []int
+}
+
+func (ix firstIdx) candidates(part string) []int {
+	named := ix.byName[part]
+	if len(ix.stars) == 0 {
+		return named
+	}
+	out := make([]int, 0, len(named)+len(ix.stars))
+	return append(append(out, named...), ix.stars...)
+}
+
+func firstIndex(paths [][]segment) firstIdx {
+	ix := firstIdx{byName: map[string][]int{}}
+	for i, segs := range paths {
+		// A pathless entry keeps its old place in every candidate set: the
+		// scan it replaces looked at one, and what it then did is unchanged.
+		if len(segs) > 0 && !segs[0].star {
+			ix.byName[segs[0].name] = append(ix.byName[segs[0].name], i)
+		} else {
+			ix.stars = append(ix.stars, i)
+		}
+	}
+	return ix
 }
 
 // chainState: a fragment and how many parts are consumed on entry. One that
@@ -8223,13 +8279,25 @@ type chainState struct {
 	at  int
 }
 
-func chainPartsLegal(cons []constraint, set string, frags map[string][]constraint, parts []string, at int, dead map[chainState]bool) bool {
+func chainPartsLegal(cons []constraint, set string, frags map[string][]constraint, setIdx map[string]firstIdx, parts []string, at int, dead map[chainState]bool) bool {
 	if dead[chainState{set, at}] {
 		return false
 	}
 	rest := parts[at:]
-	for i := range cons {
-		c := &cons[i]
+	// The recursion only descends with parts left over, and the sweep never
+	// asks about an empty chain, so rest always has a first part to look up.
+	cand, ok := setIdx[set]
+	var order []int
+	if ok {
+		order = cand.candidates(rest[0])
+	} else {
+		order = make([]int, len(cons))
+		for i := range cons {
+			order[i] = i
+		}
+	}
+	for _, ci := range order {
+		c := &cons[ci]
 		n := len(c.segs)
 		k := len(rest)
 		if n < k {
@@ -8249,7 +8317,7 @@ func chainPartsLegal(cons []constraint, set string, frags map[string][]constrain
 			return true
 		}
 		if c.inherits != "" {
-			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, c.inherits, frags, parts, at+n, dead) {
+			if fcs, ok := frags[c.inherits]; ok && chainPartsLegal(fcs, c.inherits, frags, setIdx, parts, at+n, dead) {
 				return true
 			}
 		}

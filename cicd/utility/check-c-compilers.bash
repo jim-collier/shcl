@@ -64,6 +64,33 @@ fBuild(){  ## fBuild CC OPT SRC [FLAG...]
 	fi
 }
 
+fRefuse(){  ## fRefuse CC SRC WANT - a build that must fail, and fail saying WANT
+	local cc="$1" src="$2" want="$3" out
+	nRun+=1
+	if out="$("${cc}" -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+		"${src}" -o "${tmpDir}/out" -lm -lpthread 2>&1)"; then
+		echo "check-c-compilers: ${cc} accepted ${src##*/}, which must not compile" >&2
+		nBad+=1
+	elif ! grep -qF -- "${want}" <<< "${out}"; then
+		## Refused for some other reason, so it proves nothing about the guard.
+		echo "check-c-compilers: ${cc} refused ${src##*/} without saying \"${want}\":" >&2
+		head -n 8 <<< "${out}" >&2
+		nBad+=1
+	fi
+}
+
+## The header sets the POSIX feature level, and glibc only honors that before
+## the first system header. Its sentinel says so; without it the symptom is
+## pages of implicit-declaration errors that never mention include order. The
+## three builds above are the other half: they include the header first and
+## must stay clean, so a guard that fired unconditionally would show up there.
+cat > "${tmpDir}/order-bad.c" <<'EOF'
+#include <stdio.h>
+#define SHCL_IMPLEMENTATION
+#include "shcl.h"
+int main(void){ return 0; }
+EOF
+
 ## Same flags the build and test stages use, so a disagreement here is a
 ## disagreement there.
 for cc in "${compilers[@]}"; do
@@ -73,6 +100,7 @@ for cc in "${compilers[@]}"; do
 	## Most Linux consumers define _GNU_SOURCE, and glibc declares more under it,
 	## so a static name in the header can collide with one of those functions.
 	fBuild "${cc}" -O2 source/c/cmd/shcl/main.c -D_GNU_SOURCE
+	fRefuse "${cc}" "${tmpDir}/order-bad.c" "included before any system header"
 	## The two OOM tests get every level. Their shape is the one this gate was
 	## written for - which locals a compiler thinks a setjmp's unwind can
 	## clobber, and whether it gives the frame a pointer and saved xmm registers
@@ -100,3 +128,5 @@ echo "check-c-compilers: OK: ${nRun} build(s) across ${#compilers[@]} compiler(s
 ##		            the shape they exist for is one gcc decides per level.
 ##		2026-09-14  A build with _GNU_SOURCE defined. A long error cascade no
 ##		            longer ends the sweep.
+##		2026-09-17  A build that must be refused: the header included after a
+##		            system header, which has to name include order.

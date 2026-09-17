@@ -97,19 +97,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
 
-	- 🔘 Item 45: creating instances one at a time is quadratic in the instance count.
-		- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.
-		- Cause: `children_named` materializes the whole same-name chain in `probe_write` and `collapse_dup`.
-		- Note: not caused by the setter round. The emit-and-tokenize it added is linear on every axis measured - value length, element count, depth and document size - and 40,000 flat writes cost 35 ms.
-		- Opened: 20260909-104400
+	- Item 45 is under Future and/or deferred.
 
-	- 🔘 Item 46: `shcl.h` has no compile-time guard for the include-order trap it documents in a comment.
-		- A consumer who includes a system header first gets "implicit declaration of function 'readlink'", which says nothing about include order. A one-block sentinel on a glibc internal define catches it and can say so.
-		- Related: bug item 12 is the other half of the header's build story.
-		- Opened: 20260909-104500
-
-	- 🔘 Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
+	- 🛠️ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
 		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
+		- Reproduced, both shapes, 2026-09-17. Eight times the input against the release reference: star paths 0.028 s to 1.387 s, mounts 0.020 s to 0.974 s, where a schema with neither goes 0.010 s to 0.098 s. Same curve in all four bindings; Python is worst, 22.4 s where the fix does it in 0.8 s.
+		- Cause: `star_legal` and `chain_parts_legal` each walk their whole list per document node. Both are element-wise, so a path can only match a chain whose first part its own first segment accepts.
+		- Fixed: the two matchers take an index bucketing paths by first segment, with one bucket for `*`, built once per constraint list. `first_index` and `FirstIndex` (Rust), `firstIndex` and `firstIdx` (Go), `_first_index` and `_candidates` (Python), `fidx_add` and `fidx_bucket` (C). Both curves are linear now and sit at the no-schema control's cost: star paths 1.387 s to 0.141 s, mounts 0.974 s to 0.135 s.
+		- Note: C indexes the per-fragment lists by position rather than by fragment name, because its `dead` array is already numbered that way. The comment says so.
+		- Pinned by: two `perf-gate.bash` workloads, `stars` and `mounts`, each timed against the binding's own parse baseline. Watched to fail: on the old code 5 of the 6 go red, by 4.4x (rust), 2.3x (c) and 1.3x (go). Correctness is pinned by the corpus, which was watched to fail too - a dropped star bucket fails `validation_matches_expected`, and a fragment reading the top-level bucket fails that and `init_generation_matches_expected`.
+		- Note: the workload shape matters twice over. The document's names sit at the end of the schema's list, since a name near the front ends the scan early and hid four fifths of the cost; and each instance is one dotted line, since the block spelling costs three times the parse for the same chains and pushed the new code near its own budget.
+		- Note: checked against the old code over 3,000 random schema and document pairs in the reference, and 800 each for the three ports, comparing `check --schema` stdout and exit code. No divergence. The harness was falsified first: with the star bucket dropped it reports one.
+		- Open: the three schema builds. `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.
+			- Measured: a 64,000-field schema against a one-field document is 0.210 s, of which 0.060 s is parsing the schema. Building once instead would take most of the rest, so roughly 2x on a schema-heavy run. The build itself is linear, so this is a constant factor, not a curve.
+			- Note: left open for a call rather than coded around. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling shape this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings. Neither is a mechanical change.
 		- Opened: 20260909-104600
 
 	- 🔘 Item 48: `V005` and `V006` name neither the bound nor the offending value.
@@ -3522,6 +3523,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
+	- ✅ Item 46: `shcl.h` has no compile-time guard for the include-order trap it documents in a comment.
+		- Reproduced. A translation unit that includes `<stdio.h>` before the header, built `-std=c11`, fails with "implicit declaration of function 'readlink'" at `shcl.h:6538` and a page of the same for `lstat`, `fdopen` and the rest. Nothing in the cascade names include order.
+		- Cause: the header asks for `_POSIX_C_SOURCE 200809L`, and glibc only honors that before the first system header.
+		- Related: bug item 12 is the other half of the header's build story.
+		- Decided: the sentinel is `_FEATURES_H`, which both glibc and musl use to guard `features.h`. It cannot misfire on a build that would have worked: any feature level that declares the POSIX calls leaves `_POSIX_C_SOURCE` defined, and the block's existing condition already skips those. Confirmed both ways here - under `-std=c11` the sentinel is set and `_POSIX_C_SOURCE` is not, and in the default gnu mode both are set and the build works.
+		- Fixed: an `#error` inside the existing feature-level block in `shcl.h`, naming the three ways out (move the include up, set `_POSIX_C_SOURCE` first, or build `SHCL_NO_FILE_IO`).
+		- Pinned by: `check-c-compilers.bash` builds a fixture with the header second and requires the refusal to name include order, under every compiler on the box. Watched to fail: with the `#error` taken out, the fixture still will not compile, but for the old unhelpful reason, and the gate reports 6 of 90 builds bad - one per compiler. The three existing builds that include the header first are the other half, so an unconditional guard would show up there too.
+		- Opened: 20260909-104500
+		- Closed: 20260917-152000
+
 	- ✅ Item 42: no `shcl explain CODE`, and a diagnostic says nothing about where to look a code up.
 		- `E019 bracket array syntax; an array is comma-separated, without brackets` is a good message, but a user who wants the rule has to know that `project/spec.md` has a table and that it lives on GitHub.
 		- The spec's own table is the text an `explain` subcommand would print, so this is mostly plumbing.
@@ -5738,6 +5749,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ Code review 20260909 item 45: creating instances one at a time is quadratic in the instance count.
+	- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.
+	- Cause: `children_named` materializes the whole same-name chain in `probe_write` and `collapse_dup`.
+	- Note: not caused by the setter round. The emit-and-tokenize it added is linear on every axis measured - value length, element count, depth and document size - and 40,000 flat writes cost 35 ms.
+	- Note: the name index itself is fine. It keeps a per-`(parent, name)` chain and every mutation site maintains it incrementally, so nothing is being rebuilt. The two linear walks are real: `probe_write`'s `ByValue` arm has no match when it is creating, so it always walks the whole chain, and `collapse_dup` builds a fresh vector of the chain to find one `merge_eq` sibling.
+	- Note: deferred 20260917 for a design pass. Making those two O(1) needs a second index keyed on parent, name and the value's display key, maintained wherever a node is created, revalued, folded or removed, in all four bindings and with a hand-rolled table in the C arena. A missed site does not crash - it fails to find an existing instance and silently creates a duplicate, which is the one-site-not-its-sibling class this round was about. The invalidation rules want deciding before any code.
+	- Opened: 20260909-104400
 
 - ✋ The Python corpus runner segfaults now and then, inside the garbage collector.
 	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
