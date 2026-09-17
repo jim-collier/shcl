@@ -27,13 +27,16 @@ fBad(){ echo "check-docs: $1" >&2; nBad+=1 ;}
 ##	`<type>[-array]-default` line that covers the typed scalars and arrays.
 ##	`raw-default` was accepted for a year and named nowhere.
 mainRs="${repoDir}/source/rust/src/main.rs"
+defaultOps="$(sed -n '/^fn apply_op/,/^}/p' "${mainRs}" | { grep -oE '"[a-z-]+-default" =>' || true ;} | tr -d '"=> ' | sort -u)"
+[[ -n "${defaultOps}" ]] || fBad "main.rs: found no -default write ops in apply_op, so the op-table check had nothing to compare"
 while IFS= read -r op; do
+	[[ -n "${op}" ]] || continue
 	base="${op%-default}"
 	case "${base}" in
 		int|float|bool|string|datetime|*-array) continue ;;
 	esac
 	grep -qF -- "  ${base}[-default]<TAB>" "${mainRs}" || fBad "write op ${op} is dispatched but the help's op table never spells ${base}[-default]"
-done < <(sed -n '/^fn apply_op/,/^}/p' "${mainRs}" | { grep -oE '"[a-z-]+-default" =>' || true ;} | tr -d '"=> ' | sort -u)
+done <<<"${defaultOps}"
 
 ##	`migrate` is the one path across the 3.0 lexical change, and it needs a
 ##	place in the spec and the man page that says what it rewrites and what it
@@ -151,7 +154,7 @@ readme="${repoDir}/README.md"
 if [[ -f "${readme}" ]]; then
 	for fence in rust go python c; do
 		block="$(awk -v f="^\`\`\`${fence}\$" '$0 ~ f, /^```$/' "${readme}")"
-		[[ -n "${block}" ]] || continue
+		[[ -n "${block}" ]] || { fBad "README.md has no \`\`\`${fence} example, so its setter checks went unread"; continue ;}
 		calls="$(grep -cE '(doc\.[Ss]et[A-Za-z_]+\(|shcl_set_[a-z]+\(doc)' <<<"${block}" || true)"
 		checked="$(grep -cE '(if !doc\.[Ss]et|if not doc\.set_|if \(!shcl_set_)' <<<"${block}" || true)"
 		((calls == 0)) && continue
@@ -192,6 +195,16 @@ grep -q 'in the space form a comma may follow the day .*only inside quotes' "${r
 ##	layer, goes stale the moment one is added. Each claim is checked against the
 ##	shipped help text rather than against a copy of the list.
 help="$("${repoDir}/source/rust/target/debug/shcl" help 2>/dev/null || true)"
+##	Four checks below read the help. Without the debug binary they cannot run,
+##	which the gate treats as a failure, since its build stage comes first.
+if [[ -z "${help}" ]]; then
+	if [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+		fBad "no debug binary to read the help from, and the gate requires it"
+	else
+		echo "check-docs: SKIPPED the help checks - no debug binary (cargo build first)"
+		echo check-docs >> "${SHCL_GATE_SKIPS:-/dev/null}"
+	fi
+fi
 if [[ -n "${help}" ]]; then
 	for opt in --remove --set-default --set-literal-default; do
 		grep -q -- "${opt}" <<<"${help}" || continue

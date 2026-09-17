@@ -91,11 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
-		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
-		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
-		- Opened: 20260909-102700
-
 	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
 		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
 		- Opened: 20260909-103200
@@ -197,6 +192,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
 		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
 		- Site: `shell-regress.bash:824`.
+		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
 		- Opened: 20260909-105200
 
 	- 🔘 Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
@@ -435,7 +431,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -700,6 +696,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: five `shell-regress.bash` rows, each a copy of `ci.yml` with one change: a relative `-o`, a commented-out check, `curl | tar`, `wget -O` and `gh release download`. All five passed the old script.
 		- Opened: 20260909-102600
 		- Closed: 20260916-192257
+
+	- ✅ Item 28: three gates disable their own assertions when an input is missing or renamed, and report OK.
+		- Reproduced, all three. `check-docs.bash` silently drops four claims when the debug binary is absent, its op-table loop is vacuous if `apply_op` is renamed, and a renamed language fence drops its setter check. `largedoc.bash` disables all three invariants when the reference output is empty. `check-locale.bash` dies at line 89 before its second assertion and its summary, its CLI half can't fail at all, and it never checks that the harness it built adopted the locale.
+		- Note: `SHCL_GATE_STRICT` exists to turn a skip into a failure, and `shell-regress.bash:824` enforces it for 5 of 14 gates. All three of these are outside that list, and so is `check-migrate.bash`.
+		- Fixed: `check-docs.bash` fails under `SHCL_GATE_STRICT` with no debug binary and notes the skip otherwise. It also fails when it finds no `-default` op in `apply_op` or a language fence is missing from the README.
+		- Fixed: `largedoc.bash` fails when the reference writes nothing, instead of skipping its invariants.
+		- Fixed: `check-locale.bash` no longer dies on its own `diff`. A probe proves a C program adopts the built locale, and a CLI copy that adopts the environment reads a float with `get --float`, so the CLI half can fail on a library defect.
+		- Pinned by: a `shell-regress.bash` row for the empty reference, and `check-docs.bash` added to the gates that must read `SHCL_GATE_STRICT` and note skips. Each check-docs and check-locale change was watched to fail against an injected fault: no binary, a renamed `apply_op`, a renamed fence, and a library that ignores the locale's decimal point.
+		- Opened: 20260909-102700
+		- Closed: 20260916-192654
 
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.

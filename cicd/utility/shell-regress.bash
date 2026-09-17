@@ -592,6 +592,11 @@ fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
 	|| fBad "flame-report.py invented a sample count for a graph that carries none"
 grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
 	|| fBad "the profiler does not record how many samples reached the graph"
+##	20260909 item 28: largedoc.bash skipped its invariants when the reference
+##	wrote nothing, and empty output agrees with empty output, so it said OK.
+printf '#!/bin/sh\nexit 0\n' > "${tmpDir}/emptycli"; chmod +x "${tmpDir}/emptycli"
+bash "${repoDir}/cicd/utility/largedoc.bash" --mib 1 "a|${tmpDir}/emptycli" "b|${tmpDir}/emptycli" >/dev/null 2>&1 \
+	&& fBad "largedoc.bash passed a reference that wrote nothing"
 ##	20260909 item 27: check-pins.bash saw only `curl -o /absolute/path`, so any
 ##	other fetch passed with no hash, and so did a commented-out check. Each
 ##	variant is a copy of the real workflow with one change; the unchanged copy
@@ -891,14 +896,14 @@ grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
-for g in check-c-compilers.bash check-locale.bash package.bash shell-regress.bash cli-regress.bash; do
+for g in check-c-compilers.bash check-locale.bash check-docs.bash package.bash shell-regress.bash cli-regress.bash; do
 	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
 done
 ##	The same skips outside the gate have to be noted, or a local run that
 ##	skipped one records its tree as though it ran everything. This file is not
 ##	in the list, since the grep below would find its own pattern; the fHave
 ##	self-test further down covers it.
-for g in check-c-compilers.bash check-locale.bash cli-regress.bash; do
+for g in check-c-compilers.bash check-locale.bash check-docs.bash cli-regress.bash; do
 	grep -qF 'SHCL_GATE_SKIPS:-/dev/null' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer notes a local skip in SHCL_GATE_SKIPS"
 done
 grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
