@@ -773,7 +773,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: `git-auto-msg.bash` asks git for its comment string, reads the message only above the scissors line, and treats an unedited template as empty. It writes the message above git's own comment lines. A message holding a line git would drop as a comment fails with a message that says so. The four other cases git threw away now commit.
 		- Fixed: `n8runshcl.ps1` counts only files named with an exact stamp, never ages out the copy it is about to launch, and warns when a removal fails.
 		- Pinned by: `shell-regress.bash` rows for both scripts, each run against the old copy and seen to fail. The `git-auto-msg.bash` row covers another comment char, `commit.verbose`, a template, a blank message and a `#` line.
-		- Note: `n8runshcl.ps1` was not run on Windows. `git-auto-msg.bash` is a shared helper, and other projects' copies were not touched.
+		- Note: `n8runshcl.ps1` was not run on Windows. The same `git-auto-msg.bash` fix went into the eleven other project copies on 2026-09-17, each keeping its own default message, and each passed the same cases. Those were left uncommitted in their repos.
 		- Opened: 20260909-103800
 		- Closed: 20260917-085634
 
