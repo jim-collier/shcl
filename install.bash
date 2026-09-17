@@ -185,25 +185,30 @@ else
 	asroot=""
 fi
 
-## The payload directories' contents, then the directories - never a recursive
-## delete. The globs have to expand in the shell that can read the directory, so
-## they go inside the privileged one: a system tree only root could list left
-## them unexpanded, nothing was removed, and the run then reported the install
-## directory as holding files it had not put there.
+## The files the install writes, by name, then each payload directory if that
+## emptied it - never a recursive delete, and never a glob. A glob took whatever
+## else someone had put in code/ or scripts/. The staging name goes too, since
+## an interrupted install leaves it behind. Everything runs in one privileged
+## shell, because a system tree only root can list is also one only root can
+## empty.
 fRemoveLaidDown(){   ## fRemoveLaidDown DEST
 	local dest="$1"
 	# shellcheck disable=SC2016  ## the positional parameters are the inner shell's
 	${asroot} sh -c '
-		for d in "$@"; do
-			rm -f "${d}"/* 2>/dev/null
-			rmdir "${d}" 2>/dev/null
-		done
+		cd -- "$1" 2>/dev/null || exit 0
+		shift
+		rm -f "$@" 2>/dev/null
+		rmdir code scripts man completions 2>/dev/null
 		exit 0
-	' sh "${dest}/code" "${dest}/scripts" "${dest}/man" "${dest}/completions"
+	' sh "${dest}" .shcl.new \
+		code/lib.rs code/shcl.go code/shcl.py code/shcl.h code/shcl.hpp \
+		scripts/shcl.bash scripts/shcl.ps1 \
+		man/shcl.1 \
+		completions/shcl.bash completions/_shcl
 }
 
 ## Uninstall: the reverse of what the install lays down, and nothing else - the
-## symlink, the binary, and the two payload dirs, then the install dir if it is
+## symlinks, the binary, and the payload files, then each directory if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
 if (( uninstall )); then
 	echo

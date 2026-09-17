@@ -171,6 +171,27 @@ file. Nothing unverified is installed.
 		}
 	}
 
+	## Runs `EXE version` and hands back its exit code and output. Redirected and
+	## status-tested rather than called bare, since a nonzero exit from a native
+	## command throws under this script's own error preference on 7.4 and later.
+	## Windows PowerShell 5.1 turns a native command's stderr into error records
+	## under this redirect, and a Stop preference then throws before the exit
+	## code is read, so the preference is Continue in here. A program that never
+	## starts (blocked by AV or AppLocker) does not touch $LASTEXITCODE, and the
+	## 0 tar left there read as a pass. So it is set to -1 first, and a start
+	## failure that throws comes back as -1 too.
+	function Invoke-ShclSmoke([string]$Exe) {
+		$ErrorActionPreference = 'Continue'
+		## The global is the one a native command sets; a local would shadow it.
+		$global:LASTEXITCODE = -1
+		try {
+			$out = & $Exe version 2>&1
+			return @{ Code = $global:LASTEXITCODE; Out = $out }
+		} catch {
+			return @{ Code = -1; Out = $_.Exception.Message }
+		}
+	}
+
 	## Windows only; elsewhere install.bash (Linux) or build from source.
 	if (($PSVersionTable.PSVersion.Major -ge 6) -and -not $IsWindows) {
 		Exit-Install 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
@@ -268,19 +289,29 @@ file. Nothing unverified is installed.
 				return
 			}
 		}
-		Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe') -ErrorAction SilentlyContinue
-		Remove-Item -Recurse -Force -LiteralPath (Join-Path $dest 'code'), (Join-Path $dest 'scripts') -ErrorAction SilentlyContinue
+		## The files the install writes, by name, and the staging name an
+		## interrupted install leaves. Deleting the whole code\ and scripts\ trees
+		## took whatever else someone had put there.
+		Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe'), (Join-Path $dest '.shcl.exe.new') -ErrorAction SilentlyContinue
+		Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest 'code\lib.rs'), (Join-Path $dest 'code\shcl.go'), (Join-Path $dest 'code\shcl.py'), (Join-Path $dest 'code\shcl.h'), (Join-Path $dest 'code\shcl.hpp'), (Join-Path $dest 'scripts\shcl.ps1'), (Join-Path $dest 'scripts\shcl.bash')
 		## Only an empty dir goes: the setup .exe installs here too, and a Remove-Item
 		## on a populated dir would offer to take everything in it.
-		if (Test-Path -LiteralPath $dest) {
-			if (@(Get-ChildItem -Force -LiteralPath $dest).Count -eq 0) {
-				Remove-Item -Force -LiteralPath $dest -ErrorAction SilentlyContinue
+		$leftDest = $false
+		foreach ($dir in (Join-Path $dest 'code'), (Join-Path $dest 'scripts'), $dest) {
+			if (-not (Test-Path -LiteralPath $dir)) { continue }
+			if (@(Get-ChildItem -Force -LiteralPath $dir).Count -eq 0) {
+				Remove-Item -Force -LiteralPath $dir -ErrorAction SilentlyContinue
 			} else {
-				Write-Output "left $dest in place: it holds files this installer did not put there"
+				$leftDest = $true
 			}
 		}
 		$null = Update-ShclPath -Scope $pathScope -Dir $pathDir -Remove
-		Write-Output 'removed'
+		if ($leftDest) {
+			Write-Output 'removed what this installer laid down'
+			Write-Output "left $dest in place: it holds files this installer did not put there"
+		} else {
+			Write-Output 'removed'
+		}
 		Write-Output ''
 		return
 	}
@@ -352,19 +383,10 @@ file. Nothing unverified is installed.
 
 		## Run it from the temp dir before anything is written, the way the Linux
 		## installer does: a binary that will not start here should never become
-		## an install. Redirected and status-tested rather than called bare,
-		## since a nonzero exit from a native command throws under this script's
-		## own error preference on 7.4 and later - which used to mean a success
-		## message followed by an exception, with the install left in place.
-		## Windows PowerShell 5.1 turns a native command's stderr into error
-		## records under this redirect, and the script's own Stop preference
-		## then throws before the exit code is read - so the preference comes
-		## off for the call and goes straight back on.
-		$smokeEap = $ErrorActionPreference
-		$ErrorActionPreference = 'Continue'
-		try { $smokeOut = & (Join-Path $tmp 'shcl.exe') version 2>&1 }
-		finally { $ErrorActionPreference = $smokeEap }
-		if ($LASTEXITCODE -ne 0) {
+		## an install.
+		$smoke = Invoke-ShclSmoke (Join-Path $tmp 'shcl.exe')
+		$smokeOut = $smoke.Out
+		if ($smoke.Code -ne 0) {
 			Exit-Install "the downloaded shcl.exe does not run here: $($smokeOut -join ' ')"
 		}
 
