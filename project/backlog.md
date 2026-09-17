@@ -91,12 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-- 🔘 The Python corpus runner segfaults now and then, inside the garbage collector.
-	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
-	- Note: `shcl.py` and the runner were unchanged from the last green dev run, so the crash predates that merge. Pure Python should not segfault, so either the library builds something the collector cannot walk or Python 3.13.5 has a defect. Neither is known yet.
-	- Note: not reproduced on 2026-09-17. The runner passed 24 runs in a row with a `--ci` run loading the box, and the churn loop alone passed 6. The kernel log and core dumps need the `adm` group, so no record of the 2026-09-16 crashes was read. cppcheck died of heap corruption on the same day, which points at the box more than the code.
-	- Opened: 20260916-200202
-
 ### Features and enhancements
 
 - Code review 20260909:
@@ -5727,6 +5721,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ The Python corpus runner segfaults now and then, inside the garbage collector.
+	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
+	- Note: `shcl.py` and the runner were unchanged from the last green dev run, so the crash predates that merge. Pure Python should not segfault, so either the library builds something the collector cannot walk or Python 3.13.5 has a defect. Neither is known yet.
+	- Note: not reproduced on 2026-09-17. The runner passed 24 runs in a row with a `--ci` run loading the box, and the churn loop alone passed 6. The kernel log and core dumps need the `adm` group, so no record of the 2026-09-16 crashes was read. cppcheck died of heap corruption on the same day, which points at the box more than the code.
+	- Note: the kernel log on 2026-09-17 shows four processes taking general protection faults between 19:56 and 20:02 on 2026-09-16. They were cargo inside libc, python3 twice, and cppcheck. An LLVM process segfaulted half an hour earlier. Faults across unrelated programs in a few minutes point at the box, not `shcl.py`.
+	- Note: deferred until it happens again. Core dumps are kept now, so the next one can be read with `coredumpctl`.
+	- Opened: 20260916-200202
 
 - ✋ Ports: Tier 3.
 	- Each a drop-in where possible, and corpus-green before release.
