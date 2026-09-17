@@ -36,7 +36,7 @@ _shcl_opts() {
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
 		migrate)         echo '--write --lossy --from-2x --check' ;;
-		tokens)          echo '' ;;
+		tokens|explain)  echo '' ;;
 		count|instances|children|paths) echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		*)               echo '' ;;
 	esac
@@ -70,6 +70,7 @@ _shcl() {
 		'paths:every field path in the document'
 		'migrate:rewrite a 2.x file for the current rules'
 		'tokens:the lexical spans of each line'
+		'explain:what a diagnostic code means'
 		'help:the help text'
 		'version:the version'
 		'about:what shcl is'
@@ -108,6 +109,12 @@ _shcl() {
 		## -w is the only short option; the CLI takes no other.
 		[[ "${opts}" == *'--write'* ]] && opts="${opts} -w"
 		compadd -- ${=opts} -h --help
+		return
+	fi
+
+	## help takes a subcommand name, the one positional here that can be listed.
+	if [[ "${cmd}" == "help" ]]; then
+		_describe -t commands 'shcl subcommand' cmds
 		return
 	fi
 

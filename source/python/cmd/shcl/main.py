@@ -87,8 +87,12 @@ Usage:
                                          would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
-  shcl help | version                    this help, or the version (also
-                                         -h/--help, -v/-V/--version)
+  shcl explain [CODE]                    what a diagnostic code means (every
+                                         code, one line each, when CODE is
+                                         left out)
+  shcl help [CMD] | version              this help (or one subcommand's, with
+                                         CMD), or the version (also -h/--help,
+                                         -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -180,10 +184,11 @@ without --write; --no-banner on 'set' without --write; --check with --write;
 --layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
 across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
-once per run. An in-place write also refuses when the load dropped content the
-rewrite would delete (--lossy overrides). migrate refuses a file that does not
-say which rules it was written for, when the two readings differ (--from-2x
-says it is 2.x), and reports a 2.x binding it cannot carry.
+once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
+in-place write also refuses when the load dropped content the rewrite would
+delete (--lossy overrides). migrate refuses a file that does not say which
+rules it was written for, when the two readings differ (--from-2x says it is
+2.x), and reports a 2.x binding it cannot carry.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -217,6 +222,129 @@ If it saves you time and you want to give something back:
 
 A star on the project, a clear bug report, or a mention to someone who needs it
 are worth just as much.
+"""
+
+
+# The diagnostic code table behind `shcl explain`. One entry per code: a
+# `CODE|severity|summary` head line, then its detail indented two spaces.
+# spec.md's diagnostic tables are the long form; this is the same rules cut to
+# what a terminal shows. Like the help text it is byte-for-byte across the
+# bindings, and crosscheck compares every code.
+CODES = """E001|error|field line under a parent holding stacked '*' list elements
+  A parent holds list elements or named children, not both. The field line
+  is kept and the elements stay.
+E002|error|value after a last-segment selector (a.b[X]: v)
+  The selector already says which instance, so the value has nowhere to go
+  and is ignored. Put the value on the line that creates the instance.
+E003|error|selector names an instance that does not exist
+  a[5].b or a[#5].b where there is one a. An index selects an existing
+  instance by position and never creates one, so a binding line should
+  select by value instead.
+E004|error|wildcard selector on a binding line
+  Wildcards read every instance, so there is no single one to write to.
+  They are query-only.
+E005|error|unterminated raw block (closing fence never found)
+  The block runs to the end of the file. Close it with a fence at the
+  opening fence's indent.
+E006|error|raw-block fence with no parent field to bind to
+  A raw block is a field's value, so a fence needs a field line above it.
+E007|error|stacked '*' list element with no parent field
+  A '* value' line is an element of the field above it.
+E008|error|stacked '*' list element under a parent with field children
+  The parent already holds named children, so the element is dropped.
+E009|error|empty stacked '*' list element
+  A '*' with nothing after it has no value to add.
+E010|error|bare comma in a stacked '*' list element
+  The stacked form is one element per line. Quote the comma, or write the
+  whole array on the field's own line.
+E011|error|stacked '*' element for a field that already has a value
+  The field's value is kept and the element is ignored. A field is spelled
+  one way or the other, not both.
+E012|error|indentation matches no open level
+  The line is skipped, and anything written deeper is skipped with it
+  (E018). Indent to a column some open parent already uses.
+E013|error|malformed '*' line ('*' not followed by a space)
+  The line is skipped, and what is written under it goes with it.
+E014|error|malformed line skipped (the message names the reason)
+  The reason and the byte column the line went wrong at are in the prose.
+  A quote that never closes in a field name arrives here too.
+E015|error|missing colon (repaired as an empty value)
+  The name binds with no value rather than the line being dropped.
+E016|error|nesting deeper than the 512-level cap (line skipped)
+  The cap is what makes any loadable document safe to format, merge and
+  copy in every binding.
+E017|error|a quote that never closes with the matching quote last
+  In a value element or a selector body. The piece is read bare, quotes and
+  all, and a comma or comment after it still ends it. The same typo in a
+  field name is E014.
+E018|error|line written under a line that was skipped
+  It is skipped with it, so a skipped line's block never re-parents one
+  level up. Fix the line above and this one comes back with it.
+E019|error|a value beginning with '[', the way JSON and YAML spell arrays
+  An array is comma-separated and written without brackets: ports: 80, 443.
+  A '[' after the colon is never a selector, and reading the text without
+  its brackets would bake a changed value in, so the line is kept verbatim:
+  it binds nothing, a read on it is NotFound, and nothing counts as lost.
+E020|error|node cap exceeded (fires only under a caller-supplied cap)
+  The parse stopped there and the unparsed remainder counts as lost, so a
+  later save refuses rather than writing a truncated file.
+E021|error|array longer than the caller-supplied element cap
+  The line is skipped whole rather than truncated to a value the author
+  never wrote. A fence line's info string is split the same way.
+E022|error/hint|the diagnostics list was cut at the caller-supplied cap
+  This entry ends the list and counts what was not listed. An error when
+  any unlisted one was, so a scan for errors still finds one; a hint
+  otherwise.
+H001|hint|repeated bare leaf (an array spelled as repeated lines)
+  Repeated leaves are legal - that is how instances are written - but
+  'tags: red' twice and 'tags: red, blue' look alike, so the parser says
+  which one it read. A schema's repeat bound above 1 disavows it.
+H002|hint|a binding merged with a non-adjacent earlier one
+  Same name and value, so the two combine. Legal, and only the parser can
+  see it happened. The prose names the earlier line, and a schema can
+  disavow it per section with 'reopen: true'.
+V001|error|unknown field
+  No schema path covers it. Only the topmost unknown node is reported; its
+  subtree is skipped. The prose carries the did-you-mean suggestion.
+V002|error|required path missing
+  Declared 'required: yes' and nothing in the document resolves it.
+V003|error|wrong type
+  The value does not read as the declared type.
+V004|error|value not in the allowed set
+  The line number is the node, at its first offending element.
+V005|error|below the declared min
+  The prose names the bound and the value that missed it.
+V006|error|above the declared max
+  The prose names the bound and the value that missed it.
+V007|error|instance count out of repeat bounds
+  Too few or too many instances of a field the schema bounds with 'repeat'.
+V090|error|unknown schema key
+  A schema fault: the key is dropped and the rest of the schema still
+  checks the document. The line number is a schema line.
+V091|error|unknown schema type name
+  A schema fault, on a schema line.
+V092|error|bad schema constraint value
+  A schema fault, on a schema line. Also covers min or max without a
+  numeric type, and 'allowed' with 'type: raw'.
+V093|error|bad schema path
+  A schema fault, on a schema line. The path spelling could not be read, so
+  the unknown-field sweep turns off with it.
+V094|error|bad fragment declaration
+  No name, a duplicate, or a non-field key inside. A schema fault, on a
+  schema line.
+V095|error|'inherits' names no declared fragment
+  A schema fault, on a schema line. A mount naming a missing fragment
+  checks nothing at the mount.
+V096|error|schema expands to more fields than generation allows
+  Generation lays every path out flat, so mounts multiply. The line number
+  is 0: this is about the output, not a schema line.
+V097|error|generated output does not load, or fails its own schema
+  init checks its own output before returning it, so a starter config that
+  would fail its first check is a fault instead. A default outside its
+  field's constraints is the usual cause. Line 0.
+V099|error|schema failed to load
+  The schema had error diagnostics of its own; they are printed above this
+  with their own line numbers. Line 0.
 """
 
 
@@ -361,11 +489,73 @@ def asked_for(argv):
 	return None
 
 
+# The type options, as one list. kind_from_opt is still the reader; this is for
+# the places that need the spellings themselves - the did-you-mean on a typo,
+# and the per-subcommand help.
+TYPE_OPTS = ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo")
+
+
 def kind_from_opt(opt):
 	# The type option's kind, or None when the token is not one.
 	if opt in ("--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"):
 		return opt[2:]
 	return None
+
+
+def edit_distance(a, b, cap):
+	# Levenshtein distance capped at cap; past it, cap + 1. The validator has one
+	# of these for schema field names, but it is private and the CLI's lists are
+	# a dozen short words, so the CLI computes its own.
+	inf = cap + 1
+	if abs(len(a) - len(b)) > cap:
+		return inf
+	prev = list(range(len(b) + 1))
+	for i in range(1, len(a) + 1):
+		cur = [i] + [0] * len(b)
+		for j in range(1, len(b) + 1):
+			cost = 0 if a[i - 1] == b[j - 1] else 1
+			cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+		prev = cur
+	return min(prev[len(b)], inf)
+
+
+def suggest(cands, word):
+	# "; did you mean 'x'?" for the nearest candidate within two edits, or
+	# nothing. Same wording the validator's unknown-field suggestion uses, and
+	# prose either way - a typo's exit code is 1 whether or not this has an idea.
+	# Every candidate is ASCII, and C counts distance in bytes where the other
+	# three count characters, so a word that is not ASCII gets no suggestion
+	# rather than one the four bindings could disagree on.
+	if not word.isascii():
+		return ""
+	w = _ascii_lower(word)
+	best, best_dist = "", 3
+	for c in cands:
+		d = edit_distance(w, _ascii_lower(c), 2)
+		if d <= 2 and d < best_dist:
+			best, best_dist = c, d
+	return f"; did you mean '{best}'?" if best else ""
+
+
+def command_names():
+	# Every command word, for the same. The informational four are commands to a
+	# user typing one, whatever the dispatch calls them.
+	return COMMANDS + ("help", "version", "about", "donate")
+
+
+def option_names():
+	# Every option spelling some subcommand takes. Built from the table
+	# check_opts judges against, so a new option becomes suggestable the moment
+	# it is accepted somewhere. The informational flags are in no subcommand's
+	# table but are options to anyone typing one.
+	v = ["--help", "--version", "--about", "--donate"]
+	for cmd in COMMANDS:
+		for o in allowed_opts(cmd):
+			names = TYPE_OPTS if o == "--<type>" else (o,)
+			for name in names:
+				if name not in v:
+					v.append(name)
+	return v
 
 
 def parse_opts(argv):
@@ -432,7 +622,9 @@ def parse_opts(argv):
 		elif a.startswith("--set="):
 			_set_value_opt(o, "--set", a[len("--set="):])
 		elif a.startswith("-") and len(a) > 1:
-			raise ValueError(f"unknown option: {a}")
+			# The suggestion is against the name half: `--stricness=1` is a typo
+			# in the option, not in a spelling that includes a value.
+			raise ValueError(f"unknown option: {a}{suggest(option_names(), a.split('=')[0])}")
 		else:
 			o.args.append(a)
 		i += 1
@@ -547,10 +739,10 @@ def load_layered(o, file):
 	return doc, None
 
 
-def check_opts(cmd, o):
-	# Every option must be meaningful for its subcommand; an option that would be
-	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
-	# usage error instead. Returns an exit code, or None to proceed.
+def allowed_opts(cmd):
+	# The options each subcommand takes. check_opts judges against it, the
+	# per-subcommand help is cut from the full help with it, and the shell
+	# completions carry the same table (check-completions.bash diffs the two).
 	if cmd == "get":
 		allowed = ("--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "set":
@@ -563,12 +755,87 @@ def check_opts(cmd, o):
 		allowed = ("--schema", "--no-banner")
 	elif cmd == "migrate":
 		allowed = ("--write", "--lossy", "--from-2x", "--check")
-	elif cmd == "tokens":
+	elif cmd in ("tokens", "explain"):
 		allowed = ()
 	elif cmd in ("count", "instances", "children", "paths"):
 		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	else:
 		allowed = ()
+	return allowed
+
+
+def help_for(cmd):
+	# One subcommand's slice of the help: its usage entry, the type block when it
+	# takes one, and the option entries allowed_opts lets it have. Cut from the
+	# full help rather than written out a second time, so the two cannot drift
+	# and the four bindings stay byte-identical for free. An entry keeps the
+	# "(get)" style annotation it carries there, which still reads true.
+	lines = HELP.split("\n")
+	out = ["Usage:"]
+	want = f"  shcl {cmd} "
+	taking = False
+	for line in lines:
+		if line.startswith("  shcl "):
+			taking = line.startswith(want)
+		elif taking and not line.startswith("   "):
+			taking = False
+		if taking:
+			out.append(line)
+	# A paragraph of the full help that opens with the subcommand's own name is
+	# that subcommand's - today that is set's write-ops block, which is the half
+	# of set a user most needs in front of them.
+	for i, line in enumerate(lines):
+		if line.startswith(cmd + " "):
+			out.append("")
+			for para in lines[i:]:
+				if not para:
+					break
+				out.append(para)
+			break
+	allowed = allowed_opts(cmd)
+	if "--<type>" in allowed:
+		for i, line in enumerate(lines):
+			if line.startswith("Types ("):
+				out.append("")
+				for t in lines[i:]:
+					if not t:
+						break
+					out.append(t)
+				break
+	# The option entries, in the order the full help lists them. A head line is
+	# `  --name`; the deeper-indented lines under it are its text, and the first
+	# line at column zero ends the block.
+	entries = []
+	in_block = False
+	keep = False
+	for line in lines:
+		if not in_block:
+			in_block = line.startswith("Options (")
+			continue
+		if line.startswith("  --"):
+			name = line[2:].replace("=", " ").split(" ")[0]
+			keep = name in allowed
+		elif not line.startswith("   "):
+			break
+		if keep:
+			entries.append(line)
+	if entries:
+		out.append("")
+		out.append("Options (the subcommands each belongs to are in parentheses):")
+		out.extend(entries)
+	else:
+		out.append("")
+		out.append(f"{cmd} takes no options.")
+	out.append("")
+	out.append("See 'shcl help' for the full text, and 'shcl explain CODE' for a code.")
+	return "\n".join(out) + "\n"
+
+
+def check_opts(cmd, o):
+	# Every option must be meaningful for its subcommand; an option that would be
+	# silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+	# usage error instead. Returns an exit code, or None to proceed.
+	allowed = allowed_opts(cmd)
 	for s in o.seen:
 		if s not in allowed:
 			if s == "--<type>":
@@ -915,6 +1182,53 @@ def do_migrate(o):
 def _span(p):
 	mark = {shcl.Quote.NONE: "", shcl.Quote.SINGLE: "'", shcl.Quote.DOUBLE: '"', shcl.Quote.OPEN: "?"}[p.quote]
 	return f"{p.start}-{p.end}{mark}"
+
+
+def code_line(head):
+	# `CODE  severity  summary` - the one line both explain forms lead with.
+	f = (head.split("|", 2) + ["", ""])[:3]
+	return f"{f[0]}  {f[1]:<10}  {f[2]}"
+
+
+def code_heads():
+	# The head lines of the code table, in table order.
+	return [line for line in CODES.split("\n") if line and not line.startswith(" ")]
+
+
+def do_explain(o):
+	if not o.args:
+		body = "Diagnostic codes:\n\n"
+		for h in code_heads():
+			body += code_line(h) + "\n"
+		body += "\n'shcl explain CODE' has the rule behind one of them.\n"
+		sys.stdout.write("\n" + body + "\n")
+		return 0
+	if len(o.args) > 1:
+		sys.stderr.write("usage: shcl explain [CODE] (see --help)\n")
+		return 1
+	code = o.args[0].upper()
+	# The entry runs from its head line to the next one. Built up first, since a
+	# code the table does not carry prints nothing at all.
+	body = ""
+	found = False
+	for line in CODES.rstrip("\n").split("\n"):
+		if not line.startswith(" "):
+			if found:
+				break
+			found = line.split("|", 1)[0] == code
+			if found:
+				body += code_line(line) + "\n"
+			continue
+		if found:
+			body += line + "\n"
+	if not found:
+		names = [h.split("|", 1)[0] for h in code_heads()]
+		sys.stderr.write(
+			f"unknown diagnostic code: {code}{suggest(names, code)} (shcl explain lists them all)\n"
+		)
+		return 1
+	sys.stdout.write("\n" + body + "\n")
+	return 0
 
 
 def do_tokens(o):
@@ -1322,6 +1636,10 @@ def do_check(o):
 	for d in diags:
 		print(f"line {d.line}: {d.severity.name}: {d.code}")
 	say_diagnostics(diags)
+	# The codes are the portable half of a diagnostic and nothing else on screen
+	# says where to look one up.
+	if diags:
+		sys.stderr.write("(run 'shcl explain CODE' for the rule behind a code)\n")
 	errors = sum(1 for d in diags if d.severity == shcl.Severity.Error)
 	if strict_failed:
 		print(f"strict load failed: {len(diags)} diagnostic(s)")
@@ -1427,7 +1745,7 @@ def do_paths(o):
 	return 0
 
 
-COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens")
+COMMANDS = ("get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens", "explain")
 
 
 def run(argv):
@@ -1448,8 +1766,25 @@ def run(argv):
 		sys.stdout.write("\n" + HELP + "\n")
 		return 0
 	if asked == "help" or argv[0] == "help":
-		sys.stdout.write("\n" + HELP + "\n")
-		return 0
+		# `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
+		# flag form the command is the first word, which a bare `--help` is not.
+		if argv[0] == "help":
+			if len(argv) > 2:
+				sys.stderr.write("usage: shcl help [CMD] (see --help)\n")
+				return 1
+			topic = argv[1] if len(argv) == 2 else ""
+		else:
+			topic = "" if argv[0].startswith("-") else argv[0]
+		# The informational words are the full help's own last two lines, so
+		# there is nothing narrower to show for them.
+		if topic in ("", "help", "version", "about", "donate"):
+			sys.stdout.write("\n" + HELP + "\n")
+			return 0
+		if topic in COMMANDS:
+			sys.stdout.write("\n" + help_for(topic) + "\n")
+			return 0
+		sys.stderr.write(f"unknown command: {topic}{suggest(command_names(), topic)} (see --help)\n")
+		return 1
 	if asked == "version" or argv[0] == "version":
 		print(f"shcl {VERSION}")
 		return 0
@@ -1464,9 +1799,9 @@ def run(argv):
 		# Before the options are judged, so a typo in the command is reported
 		# as that and not as an option the wrong command cannot take.
 		if cmd.startswith("-") and cmd != "--":
-			sys.stderr.write(f"unknown option: {cmd} (see --help)\n")
+			sys.stderr.write(f"unknown option: {cmd}{suggest(option_names(), cmd.split('=')[0])} (see --help)\n")
 		else:
-			sys.stderr.write(f"unknown command: {cmd} (see --help)\n")
+			sys.stderr.write(f"unknown command: {cmd}{suggest(command_names(), cmd)} (see --help)\n")
 		return 1
 	try:
 		o = parse_opts(argv[1:])
@@ -1498,6 +1833,8 @@ def run(argv):
 		return do_migrate(o)
 	if cmd == "tokens":
 		return do_tokens(o)
+	if cmd == "explain":
+		return do_explain(o)
 	# A refusal rather than a fall-through: with one, adding a name to COMMANDS
 	# without adding a branch here quietly ran whichever command the last line
 	# named, with no message. run() gates on COMMANDS first, so this is only

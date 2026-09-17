@@ -94,8 +94,12 @@ Usage:
                                          would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
-  shcl help | version                    this help, or the version (also
-                                         -h/--help, -v/-V/--version)
+  shcl explain [CODE]                    what a diagnostic code means (every
+                                         code, one line each, when CODE is
+                                         left out)
+  shcl help [CMD] | version              this help (or one subcommand's, with
+                                         CMD), or the version (also -h/--help,
+                                         -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -187,10 +191,11 @@ without --write; --no-banner on 'set' without --write; --check with --write;
 --layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
 across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
-once per run. An in-place write also refuses when the load dropped content the
-rewrite would delete (--lossy overrides). migrate refuses a file that does not
-say which rules it was written for, when the two readings differ (--from-2x
-says it is 2.x), and reports a 2.x binding it cannot carry.
+once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
+in-place write also refuses when the load dropped content the rewrite would
+delete (--lossy overrides). migrate refuses a file that does not say which
+rules it was written for, when the two readings differ (--from-2x says it is
+2.x), and reports a 2.x binding it cannot carry.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -224,6 +229,128 @@ If it saves you time and you want to give something back:
 
 A star on the project, a clear bug report, or a mention to someone who needs it
 are worth just as much.
+`
+
+// The diagnostic code table behind `shcl explain`. One entry per code: a
+// `CODE|severity|summary` head line, then its detail indented two spaces.
+// spec.md's diagnostic tables are the long form; this is the same rules cut to
+// what a terminal shows. Like the help text it is byte-for-byte across the
+// bindings, and crosscheck compares every code.
+const codes = `E001|error|field line under a parent holding stacked '*' list elements
+  A parent holds list elements or named children, not both. The field line
+  is kept and the elements stay.
+E002|error|value after a last-segment selector (a.b[X]: v)
+  The selector already says which instance, so the value has nowhere to go
+  and is ignored. Put the value on the line that creates the instance.
+E003|error|selector names an instance that does not exist
+  a[5].b or a[#5].b where there is one a. An index selects an existing
+  instance by position and never creates one, so a binding line should
+  select by value instead.
+E004|error|wildcard selector on a binding line
+  Wildcards read every instance, so there is no single one to write to.
+  They are query-only.
+E005|error|unterminated raw block (closing fence never found)
+  The block runs to the end of the file. Close it with a fence at the
+  opening fence's indent.
+E006|error|raw-block fence with no parent field to bind to
+  A raw block is a field's value, so a fence needs a field line above it.
+E007|error|stacked '*' list element with no parent field
+  A '* value' line is an element of the field above it.
+E008|error|stacked '*' list element under a parent with field children
+  The parent already holds named children, so the element is dropped.
+E009|error|empty stacked '*' list element
+  A '*' with nothing after it has no value to add.
+E010|error|bare comma in a stacked '*' list element
+  The stacked form is one element per line. Quote the comma, or write the
+  whole array on the field's own line.
+E011|error|stacked '*' element for a field that already has a value
+  The field's value is kept and the element is ignored. A field is spelled
+  one way or the other, not both.
+E012|error|indentation matches no open level
+  The line is skipped, and anything written deeper is skipped with it
+  (E018). Indent to a column some open parent already uses.
+E013|error|malformed '*' line ('*' not followed by a space)
+  The line is skipped, and what is written under it goes with it.
+E014|error|malformed line skipped (the message names the reason)
+  The reason and the byte column the line went wrong at are in the prose.
+  A quote that never closes in a field name arrives here too.
+E015|error|missing colon (repaired as an empty value)
+  The name binds with no value rather than the line being dropped.
+E016|error|nesting deeper than the 512-level cap (line skipped)
+  The cap is what makes any loadable document safe to format, merge and
+  copy in every binding.
+E017|error|a quote that never closes with the matching quote last
+  In a value element or a selector body. The piece is read bare, quotes and
+  all, and a comma or comment after it still ends it. The same typo in a
+  field name is E014.
+E018|error|line written under a line that was skipped
+  It is skipped with it, so a skipped line's block never re-parents one
+  level up. Fix the line above and this one comes back with it.
+E019|error|a value beginning with '[', the way JSON and YAML spell arrays
+  An array is comma-separated and written without brackets: ports: 80, 443.
+  A '[' after the colon is never a selector, and reading the text without
+  its brackets would bake a changed value in, so the line is kept verbatim:
+  it binds nothing, a read on it is NotFound, and nothing counts as lost.
+E020|error|node cap exceeded (fires only under a caller-supplied cap)
+  The parse stopped there and the unparsed remainder counts as lost, so a
+  later save refuses rather than writing a truncated file.
+E021|error|array longer than the caller-supplied element cap
+  The line is skipped whole rather than truncated to a value the author
+  never wrote. A fence line's info string is split the same way.
+E022|error/hint|the diagnostics list was cut at the caller-supplied cap
+  This entry ends the list and counts what was not listed. An error when
+  any unlisted one was, so a scan for errors still finds one; a hint
+  otherwise.
+H001|hint|repeated bare leaf (an array spelled as repeated lines)
+  Repeated leaves are legal - that is how instances are written - but
+  'tags: red' twice and 'tags: red, blue' look alike, so the parser says
+  which one it read. A schema's repeat bound above 1 disavows it.
+H002|hint|a binding merged with a non-adjacent earlier one
+  Same name and value, so the two combine. Legal, and only the parser can
+  see it happened. The prose names the earlier line, and a schema can
+  disavow it per section with 'reopen: true'.
+V001|error|unknown field
+  No schema path covers it. Only the topmost unknown node is reported; its
+  subtree is skipped. The prose carries the did-you-mean suggestion.
+V002|error|required path missing
+  Declared 'required: yes' and nothing in the document resolves it.
+V003|error|wrong type
+  The value does not read as the declared type.
+V004|error|value not in the allowed set
+  The line number is the node, at its first offending element.
+V005|error|below the declared min
+  The prose names the bound and the value that missed it.
+V006|error|above the declared max
+  The prose names the bound and the value that missed it.
+V007|error|instance count out of repeat bounds
+  Too few or too many instances of a field the schema bounds with 'repeat'.
+V090|error|unknown schema key
+  A schema fault: the key is dropped and the rest of the schema still
+  checks the document. The line number is a schema line.
+V091|error|unknown schema type name
+  A schema fault, on a schema line.
+V092|error|bad schema constraint value
+  A schema fault, on a schema line. Also covers min or max without a
+  numeric type, and 'allowed' with 'type: raw'.
+V093|error|bad schema path
+  A schema fault, on a schema line. The path spelling could not be read, so
+  the unknown-field sweep turns off with it.
+V094|error|bad fragment declaration
+  No name, a duplicate, or a non-field key inside. A schema fault, on a
+  schema line.
+V095|error|'inherits' names no declared fragment
+  A schema fault, on a schema line. A mount naming a missing fragment
+  checks nothing at the mount.
+V096|error|schema expands to more fields than generation allows
+  Generation lays every path out flat, so mounts multiply. The line number
+  is 0: this is about the output, not a schema line.
+V097|error|generated output does not load, or fails its own schema
+  init checks its own output before returning it, so a starter config that
+  would fail its first check is a fault instead. A default outside its
+  field's constraints is the usual cause. Line 0.
+V099|error|schema failed to load
+  The schema had error diagnostics of its own; they are printed above this
+  with their own line numbers. Line 0.
 `
 
 func statusCode(st shcl.Status) int {
@@ -305,6 +432,11 @@ const (
 	kindRaw
 	kindRawInfo
 )
+
+// The type options, as one list. kindFromOpt is still the reader; this is for
+// the places that need the spellings themselves - the did-you-mean on a typo,
+// and the per-subcommand help.
+var typeOpts = [...]string{"--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo"}
 
 func kindFromOpt(opt string) (kind, bool) {
 	switch opt {
@@ -519,6 +651,110 @@ func setValueOpt(o *opts, name, v string) error {
 	return nil
 }
 
+// editDistance is the Levenshtein distance capped at cap; past it, cap + 1.
+// The validator has one of these for schema field names, but it is not
+// exported and the CLI's lists are a dozen short words, so the CLI computes
+// its own.
+func editDistance(a, b string, cap int) int {
+	ar, br := []rune(a), []rune(b)
+	inf := cap + 1
+	gap := len(ar) - len(br)
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap > cap {
+		return inf
+	}
+	prev := make([]int, len(br)+1)
+	cur := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ar); i++ {
+		cur[0] = i
+		for j := 1; j <= len(br); j++ {
+			cost := 1
+			if ar[i-1] == br[j-1] {
+				cost = 0
+			}
+			cur[j] = prev[j] + 1
+			if cur[j-1]+1 < cur[j] {
+				cur[j] = cur[j-1] + 1
+			}
+			if prev[j-1]+cost < cur[j] {
+				cur[j] = prev[j-1] + cost
+			}
+		}
+		prev, cur = cur, prev
+	}
+	if prev[len(br)] > inf {
+		return inf
+	}
+	return prev[len(br)]
+}
+
+// suggest is "; did you mean 'x'?" for the nearest candidate within two edits,
+// or nothing. Same wording the validator's unknown-field suggestion uses, and
+// prose either way - a typo's exit code is 1 whether or not this has an idea.
+func suggest(cands []string, word string) string {
+	// Every candidate is ASCII, and C counts distance in bytes where the other
+	// three count characters, so a word that is not ASCII gets no suggestion
+	// rather than one the four bindings could disagree on.
+	for i := 0; i < len(word); i++ {
+		if word[i] >= 0x80 {
+			return ""
+		}
+	}
+	w := asciiLower(word)
+	best, bestDist := "", 3
+	for _, c := range cands {
+		if d := editDistance(w, asciiLower(c), 2); d <= 2 && d < bestDist {
+			best, bestDist = c, d
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return "; did you mean '" + best + "'?"
+}
+
+// commandNames is every command word, for the same. The informational four are
+// commands to a user typing one, whatever the dispatch calls them.
+func commandNames() []string {
+	return append(commands[:], "help", "version", "about", "donate")
+}
+
+// optionNames is every option spelling some subcommand takes. Built from the
+// table checkOpts judges against, so a new option becomes suggestable the
+// moment it is accepted somewhere.
+func optionNames() []string {
+	// The informational flags are in no subcommand's table but are options to
+	// anyone typing one.
+	v := []string{"--help", "--version", "--about", "--donate"}
+	has := func(name string) bool {
+		for _, x := range v {
+			if x == name {
+				return true
+			}
+		}
+		return false
+	}
+	for _, cmd := range commands {
+		for _, o := range allowedOpts(cmd) {
+			if o == "--<type>" {
+				for _, t := range typeOpts {
+					if !has(t) {
+						v = append(v, t)
+					}
+				}
+			} else if !has(o) {
+				v = append(v, o)
+			}
+		}
+	}
+	return v
+}
+
 func parseOpts(argv []string) (*opts, error) {
 	o := &opts{kind: kindString, onBad: onBadFlag, strictness: shcl.Standard}
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -608,7 +844,10 @@ func parseOpts(argv []string) (*opts, error) {
 				return nil, err
 			}
 		case strings.HasPrefix(a, "-") && len(a) > 1:
-			return nil, fmt.Errorf("unknown option: %s", a)
+			// The suggestion is against the name half: `--stricness=1` is a typo
+			// in the option, not in a spelling that includes a value.
+			return nil, fmt.Errorf("unknown option: %s%s", a,
+				suggest(optionNames(), strings.SplitN(a, "=", 2)[0]))
 		default:
 			o.args = append(o.args, a)
 		}
@@ -619,7 +858,10 @@ func parseOpts(argv []string) (*opts, error) {
 // checkOpts: every option must be meaningful for its subcommand; an option that
 // would be silently ignored (`set --write` before it existed, `--schema` on
 // `get`) is a usage error instead.
-func checkOpts(cmd string, o *opts) int {
+// allowedOpts is the options each subcommand takes. checkOpts judges against
+// it, the per-subcommand help is cut from the full help with it, and the shell
+// completions carry the same table (check-completions.bash diffs the two).
+func allowedOpts(cmd string) []string {
 	var allowed []string
 	switch cmd {
 	case "get":
@@ -637,12 +879,115 @@ func checkOpts(cmd string, o *opts) int {
 		allowed = []string{"--schema", "--no-banner"}
 	case "migrate":
 		allowed = []string{"--write", "--lossy", "--from-2x", "--check"}
-	case "tokens":
+	case "tokens", "explain":
 		allowed = []string{}
 	case "count", "instances", "children", "paths":
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
 			"--set-literal-default", "--remove"}
 	}
+	return allowed
+}
+
+// helpFor is one subcommand's slice of the help: its usage entry, the type
+// block when it takes one, and the option entries allowedOpts lets it have.
+// Cut from the full help rather than written out a second time, so the two
+// cannot drift and the four bindings stay byte-identical for free. An entry
+// keeps the "(get)" style annotation it carries there, which still reads true.
+func helpFor(cmd string) string {
+	var out strings.Builder
+	out.WriteString("Usage:\n")
+	lines := strings.Split(help, "\n")
+	want := "  shcl " + cmd + " "
+	taking := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "  shcl ") {
+			taking = strings.HasPrefix(l, want)
+		} else if taking && !strings.HasPrefix(l, "   ") {
+			taking = false
+		}
+		if taking {
+			out.WriteString(l + "\n")
+		}
+	}
+	// A paragraph of the full help that opens with the subcommand's own name is
+	// that subcommand's - today that is set's write-ops block, which is the
+	// half of set a user most needs in front of them.
+	lead := cmd + " "
+	for i, l := range lines {
+		if !strings.HasPrefix(l, lead) {
+			continue
+		}
+		out.WriteString("\n")
+		for _, p := range lines[i:] {
+			if p == "" {
+				break
+			}
+			out.WriteString(p + "\n")
+		}
+		break
+	}
+	allowed := allowedOpts(cmd)
+	takesType := false
+	for _, a := range allowed {
+		if a == "--<type>" {
+			takesType = true
+		}
+	}
+	if takesType {
+		for i, l := range lines {
+			if !strings.HasPrefix(l, "Types (") {
+				continue
+			}
+			out.WriteString("\n")
+			for _, p := range lines[i:] {
+				if p == "" {
+					break
+				}
+				out.WriteString(p + "\n")
+			}
+			break
+		}
+	}
+	// The option entries, in the order the full help lists them. A head line is
+	// `  --name`; the deeper-indented lines under it are its text, and the
+	// first line at column zero ends the block.
+	var entries strings.Builder
+	inBlock, keep := false, false
+	for _, l := range lines {
+		if !inBlock {
+			inBlock = strings.HasPrefix(l, "Options (")
+			continue
+		}
+		if strings.HasPrefix(l, "  --") {
+			name := strings.FieldsFunc(l[2:], func(r rune) bool { return r == '=' || r == ' ' })[0]
+			keep = false
+			for _, a := range allowed {
+				if a == name {
+					keep = true
+				}
+			}
+		} else if !strings.HasPrefix(l, "   ") {
+			break
+		}
+		if keep {
+			entries.WriteString(l + "\n")
+		}
+	}
+	if entries.Len() == 0 {
+		out.WriteString("\n" + cmd + " takes no options.\n")
+	} else {
+		out.WriteString("\nOptions (the subcommands each belongs to are in parentheses):\n")
+		out.WriteString(entries.String())
+	}
+	out.WriteString("\nSee 'shcl help' for the full text, and 'shcl explain CODE' for a code.\n")
+	return out.String()
+}
+
+// Every option must be meaningful for its subcommand; an option that would be
+// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+// usage error instead.
+func checkOpts(cmd string, o *opts) int {
+	allowed := allowedOpts(cmd)
 	for _, s := range o.seen {
 		ok := false
 		for _, a := range allowed {
@@ -1269,6 +1614,75 @@ func doMigrate(o *opts) int {
 // from the first character after the indent. A blank line and a comment
 // line say so; every other line is tokenized on its own, raw bodies
 // included, since this is the lexical view and not the parse.
+// codeLine is `CODE  severity  summary` - the one line both explain forms lead
+// with.
+func codeLine(head string) string {
+	f := strings.SplitN(head, "|", 3)
+	for len(f) < 3 {
+		f = append(f, "")
+	}
+	return fmt.Sprintf("%s  %-10s  %s", f[0], f[1], f[2])
+}
+
+// codeHeads is the head lines of the code table, in table order.
+func codeHeads() []string {
+	var heads []string
+	for _, l := range strings.Split(codes, "\n") {
+		if l != "" && !strings.HasPrefix(l, " ") {
+			heads = append(heads, l)
+		}
+	}
+	return heads
+}
+
+func doExplain(o *opts) int {
+	if len(o.args) == 0 {
+		var body strings.Builder
+		body.WriteString("Diagnostic codes:\n\n")
+		for _, h := range codeHeads() {
+			body.WriteString(codeLine(h) + "\n")
+		}
+		body.WriteString("\n'shcl explain CODE' has the rule behind one of them.\n")
+		outf("\n%s\n", body.String())
+		return 0
+	}
+	if len(o.args) > 1 {
+		fmt.Fprintln(os.Stderr, "usage: shcl explain [CODE] (see --help)")
+		return 1
+	}
+	code := strings.ToUpper(o.args[0])
+	// The entry runs from its head line to the next one. Built up first, since
+	// a code the table does not carry prints nothing at all.
+	var body strings.Builder
+	found := false
+	for _, l := range strings.Split(strings.TrimSuffix(codes, "\n"), "\n") {
+		if !strings.HasPrefix(l, " ") {
+			if found {
+				break
+			}
+			found = strings.SplitN(l, "|", 2)[0] == code
+			if found {
+				body.WriteString(codeLine(l) + "\n")
+			}
+			continue
+		}
+		if found {
+			body.WriteString(l + "\n")
+		}
+	}
+	if !found {
+		var names []string
+		for _, h := range codeHeads() {
+			names = append(names, strings.SplitN(h, "|", 2)[0])
+		}
+		fmt.Fprintf(os.Stderr, "unknown diagnostic code: %s%s (shcl explain lists them all)\n",
+			code, suggest(names, code))
+		return 1
+	}
+	outf("\n%s\n", body.String())
+	return 0
+}
+
 func doTokens(o *opts) int {
 	if len(o.args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: shcl tokens FILE (see --help)")
@@ -1918,6 +2332,11 @@ func doCheck(o *opts) int {
 		}
 	}
 	sayDiagnostics(diags)
+	// The codes are the portable half of a diagnostic and nothing else on
+	// screen says where to look one up.
+	if len(diags) > 0 {
+		fmt.Fprintln(os.Stderr, "(run 'shcl explain CODE' for the rule behind a code)")
+	}
 	switch {
 	case strictFailed:
 		outf("strict load failed: %d diagnostic(s)\n", len(diags))
@@ -2039,7 +2458,7 @@ func doPaths(o *opts) int {
 	return 0
 }
 
-var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens"}
+var commands = [...]string{"get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens", "explain"}
 
 func run() int {
 	argv := os.Args[1:]
@@ -2059,8 +2478,35 @@ func run() int {
 		return 0
 	}
 	if asked == "help" || argv[0] == "help" {
-		outf("\n%s\n", help)
-		return 0
+		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
+		// flag form the command is the first word, which a bare `--help` is not.
+		topic := ""
+		if argv[0] == "help" {
+			if len(argv) > 2 {
+				fmt.Fprintln(os.Stderr, "usage: shcl help [CMD] (see --help)")
+				return 1
+			}
+			if len(argv) == 2 {
+				topic = argv[1]
+			}
+		} else if !strings.HasPrefix(argv[0], "-") {
+			topic = argv[0]
+		}
+		// The informational words are the full help's own last two lines, so
+		// there is nothing narrower to show for them.
+		switch topic {
+		case "", "help", "version", "about", "donate":
+			outf("\n%s\n", help)
+			return 0
+		}
+		for _, c := range commands {
+			if c == topic {
+				outf("\n%s\n", helpFor(topic))
+				return 0
+			}
+		}
+		fmt.Fprintf(os.Stderr, "unknown command: %s%s (see --help)\n", topic, suggest(commandNames(), topic))
+		return 1
 	}
 	if asked == "version" || argv[0] == "version" {
 		outf("shcl %s\n", version)
@@ -2086,9 +2532,11 @@ func run() int {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if strings.HasPrefix(cmd, "-") && cmd != "--" {
-			fmt.Fprintf(os.Stderr, "unknown option: %s (see --help)\n", cmd)
+			fmt.Fprintf(os.Stderr, "unknown option: %s%s (see --help)\n",
+				cmd, suggest(optionNames(), strings.SplitN(cmd, "=", 2)[0]))
 		} else {
-			fmt.Fprintf(os.Stderr, "unknown command: %s (see --help)\n", cmd)
+			fmt.Fprintf(os.Stderr, "unknown command: %s%s (see --help)\n",
+				cmd, suggest(commandNames(), cmd))
 		}
 		return 1
 	}
@@ -2128,6 +2576,8 @@ func run() int {
 		return doMigrate(o)
 	case "tokens":
 		return doTokens(o)
+	case "explain":
+		return doExplain(o)
 	default:
 		fmt.Fprintf(os.Stderr, "%s: no dispatch arm (see --help)\n", argv[0])
 		return 1

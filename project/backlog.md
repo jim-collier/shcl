@@ -97,19 +97,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
 
-	- 🔘 Item 42: no `shcl explain CODE`, and a diagnostic says nothing about where to look a code up.
-		- `E019 bracket array syntax; an array is comma-separated, without brackets` is a good message, but a user who wants the rule has to know that `project/spec.md` has a table and that it lives on GitHub.
-		- The spec's own table is the text an `explain` subcommand would print, so this is mostly plumbing.
-		- Opened: 20260909-104100
-
-	- 🔘 Item 43: no did-you-mean on an unknown command or option, though the suggester is already in the library.
-		- `shcl frmt FILE` and `shcl --stricness=strict` both print a bare usage error. `edit_distance` and `v_suggest` are right there and the README advertises the same feature for schema fields.
-		- Opened: 20260909-104200
-
-	- 🔘 Item 44: no per-subcommand help.
-		- `shcl help get` prints all 130 lines and ignores the argument. Every CLI a user compares this to narrows.
-		- Opened: 20260909-104300
-
 	- 🔘 Item 45: creating instances one at a time is quadratic in the instance count.
 		- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.
 		- Cause: `children_named` materializes the whole same-name chain in `probe_write` and `collapse_dup`.
@@ -3534,6 +3521,36 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 42: no `shcl explain CODE`, and a diagnostic says nothing about where to look a code up.
+		- `E019 bracket array syntax; an array is comma-separated, without brackets` is a good message, but a user who wants the rule has to know that `project/spec.md` has a table and that it lives on GitHub.
+		- The spec's own table is the text an `explain` subcommand would print, so this is mostly plumbing.
+		- Decided: the spec's prose is too long for a terminal, so the table is written again in short form, one entry per code: a `CODE|severity|summary` head line and a few lines of detail. Bare `explain` lists every code one line each. An unknown code is exit 1. The subcommand takes no options and reads no file.
+		- Decided: the pointer at the lookup goes on `check`'s stderr, once per run and only when there was a diagnostic. The summary line is stdout and compared across bindings, so nothing there could move.
+		- Fixed: `explain` is in the four CLIs, the completions, the man page and the README.
+		- Pinned by: a crosscheck dimension comparing all four bindings on every code and on the listing, and five `cli-regress.bash` rows, watched to fail on a disabled refusal and an over-wide table line.
+		- Opened: 20260909-104100
+		- Closed: 20260917-123150
+
+	- ✅ Item 43: no did-you-mean on an unknown command or option, though the suggester is already in the library.
+		- `shcl frmt FILE` and `shcl --stricness=strict` both print a bare usage error. `edit_distance` and `v_suggest` are right there and the README advertises the same feature for schema fields.
+		- Decided: the library's copy is not public API, and exporting it would put a new call in four bindings and the veneer for the sake of the CLI's own prose. Each CLI carries its own dozen lines instead.
+		- Decided: the suggestion says nothing for a word that is not ASCII. C counts distance in bytes where the other three count characters, and every candidate is ASCII, so this removes the one shape the four could answer differently.
+		- Fixed: a near miss on a command, an option or a diagnostic code says what was probably meant, in the same "; did you mean 'x'?" wording the validator uses. The candidate list is built from the table `check_opts` judges against, so a new option is suggestable as soon as it is accepted.
+		- Fixed: the suggestion for `--stricness=1` is against the name half, not the whole token.
+		- Pinned by: five `cli-regress.bash` rows, including one that must stay silent, watched to fail with the suggester disabled.
+		- Opened: 20260909-104200
+		- Closed: 20260917-123150
+
+	- ✅ Item 44: no per-subcommand help.
+		- `shcl help get` prints all 130 lines and ignores the argument. Every CLI a user compares this to narrows.
+		- Decided: the narrowed text is cut from the full help rather than written a second time - its usage entry, the type block where it takes one, and the option entries `allowed_opts` lets it have. Writing it out again would be 11 more blocks per binding to keep byte-identical, and the two copies would drift.
+		- Decided: an entry keeps the "(get)" annotation it carries in the full help. It still reads true, and stripping it would mean reflowing the text.
+		- Decided: a paragraph of the full help that opens with a subcommand's own name belongs to it. Today that is `set`'s write-ops block, and that is the half of `set` most needed in front of a reader.
+		- Fixed: `shcl help CMD` and `--help` after a subcommand both narrow. `help` with two arguments is a usage error, and a name that is no subcommand gets item 43's suggestion. `allowed_opts` was split out of `check_opts`, which `check-completions.bash` still reads.
+		- Pinned by: a crosscheck dimension comparing all four bindings on every subcommand's help, four `cli-regress.bash` rows, and the width check, which now covers every narrowed help and every code entry.
+		- Opened: 20260909-104300
+		- Closed: 20260917-123150
 
 	- ✅ Item 41: there is no way to ask whether a file or a tree needs migrating, and `migrate --write` reports nothing either way.
 		- A user upgrading has a directory of files and no command that answers "which of these change meaning". `migrate FILE` prints the migrated text, so telling migrated from unchanged means diffing it yourself, and `migrate --write` prints nothing on success and nothing on a file it left alone.

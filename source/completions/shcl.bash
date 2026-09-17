@@ -16,7 +16,7 @@
 ##	SPDX-License-Identifier: MIT
 
 ## Subcommands. The CLI takes exactly one, and always as the first word.
-_shcl_subcommands='get set fmt check init count instances children paths migrate tokens help version about donate'
+_shcl_subcommands='get set fmt check init count instances children paths migrate tokens explain help version about donate'
 
 ## Type options, valid on `get` only. The table below carries them as the single
 ## token --<type>, exactly as the CLI's own table does.
@@ -36,7 +36,7 @@ _shcl_opts() {
 		check)           echo '--strictness --schema' ;;
 		init)            echo '--schema --no-banner' ;;
 		migrate)         echo '--write --lossy --from-2x --check' ;;
-		tokens)          echo '' ;;
+		tokens|explain)  echo '' ;;
 		count|instances|children|paths) echo '--strictness --layer --set --set-literal --set-default --set-literal-default --remove' ;;
 		*)               echo '' ;;
 	esac
@@ -93,6 +93,12 @@ _shcl() {
 		## -w is the only short option; the CLI takes no other.
 		[[ "${opts}" == *'--write'* ]] && opts="${opts} -w"
 		mapfile -t COMPREPLY < <(compgen -W "${opts} -h --help" -- "${cur}")
+		return
+	fi
+
+	## help takes a subcommand name, the one positional here that can be listed.
+	if [[ "${cmd}" == "help" ]]; then
+		mapfile -t COMPREPLY < <(compgen -W "${_shcl_subcommands}" -- "${cur}")
 		return
 	fi
 

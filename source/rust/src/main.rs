@@ -86,8 +86,12 @@ Usage:
                                          would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
-  shcl help | version                    this help, or the version (also
-                                         -h/--help, -v/-V/--version)
+  shcl explain [CODE]                    what a diagnostic code means (every
+                                         code, one line each, when CODE is
+                                         left out)
+  shcl help [CMD] | version              this help (or one subcommand's, with
+                                         CMD), or the version (also -h/--help,
+                                         -v/-V/--version)
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
@@ -179,10 +183,11 @@ without --write; --no-banner on 'set' without --write; --check with --write;
 --layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
 across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
-once per run. An in-place write also refuses when the load dropped content the
-rewrite would delete (--lossy overrides). migrate refuses a file that does not
-say which rules it was written for, when the two readings differ (--from-2x
-says it is 2.x), and reports a 2.x binding it cannot carry.
+once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
+in-place write also refuses when the load dropped content the rewrite would
+delete (--lossy overrides). migrate refuses a file that does not say which
+rules it was written for, when the two readings differ (--from-2x says it is
+2.x), and reports a 2.x binding it cannot carry.
 FILE may be '-' for stdin. With --layer, FILE is the highest file layer and
 each --layer is merged under it in order; --set applies last. 'fmt' with
 layers prints the merged canonical document.
@@ -221,6 +226,129 @@ If it saves you time and you want to give something back:
 
 A star on the project, a clear bug report, or a mention to someone who needs it
 are worth just as much.
+";
+
+/// The diagnostic code table behind `shcl explain`. One entry per code: a
+/// `CODE|severity|summary` head line, then its detail indented two spaces.
+/// spec.md's diagnostic tables are the long form; this is the same rules cut
+/// to what a terminal shows. Like the help text it is byte-for-byte across the
+/// bindings, and crosscheck compares every code.
+const CODES: &str = "\
+E001|error|field line under a parent holding stacked '*' list elements
+  A parent holds list elements or named children, not both. The field line
+  is kept and the elements stay.
+E002|error|value after a last-segment selector (a.b[X]: v)
+  The selector already says which instance, so the value has nowhere to go
+  and is ignored. Put the value on the line that creates the instance.
+E003|error|selector names an instance that does not exist
+  a[5].b or a[#5].b where there is one a. An index selects an existing
+  instance by position and never creates one, so a binding line should
+  select by value instead.
+E004|error|wildcard selector on a binding line
+  Wildcards read every instance, so there is no single one to write to.
+  They are query-only.
+E005|error|unterminated raw block (closing fence never found)
+  The block runs to the end of the file. Close it with a fence at the
+  opening fence's indent.
+E006|error|raw-block fence with no parent field to bind to
+  A raw block is a field's value, so a fence needs a field line above it.
+E007|error|stacked '*' list element with no parent field
+  A '* value' line is an element of the field above it.
+E008|error|stacked '*' list element under a parent with field children
+  The parent already holds named children, so the element is dropped.
+E009|error|empty stacked '*' list element
+  A '*' with nothing after it has no value to add.
+E010|error|bare comma in a stacked '*' list element
+  The stacked form is one element per line. Quote the comma, or write the
+  whole array on the field's own line.
+E011|error|stacked '*' element for a field that already has a value
+  The field's value is kept and the element is ignored. A field is spelled
+  one way or the other, not both.
+E012|error|indentation matches no open level
+  The line is skipped, and anything written deeper is skipped with it
+  (E018). Indent to a column some open parent already uses.
+E013|error|malformed '*' line ('*' not followed by a space)
+  The line is skipped, and what is written under it goes with it.
+E014|error|malformed line skipped (the message names the reason)
+  The reason and the byte column the line went wrong at are in the prose.
+  A quote that never closes in a field name arrives here too.
+E015|error|missing colon (repaired as an empty value)
+  The name binds with no value rather than the line being dropped.
+E016|error|nesting deeper than the 512-level cap (line skipped)
+  The cap is what makes any loadable document safe to format, merge and
+  copy in every binding.
+E017|error|a quote that never closes with the matching quote last
+  In a value element or a selector body. The piece is read bare, quotes and
+  all, and a comma or comment after it still ends it. The same typo in a
+  field name is E014.
+E018|error|line written under a line that was skipped
+  It is skipped with it, so a skipped line's block never re-parents one
+  level up. Fix the line above and this one comes back with it.
+E019|error|a value beginning with '[', the way JSON and YAML spell arrays
+  An array is comma-separated and written without brackets: ports: 80, 443.
+  A '[' after the colon is never a selector, and reading the text without
+  its brackets would bake a changed value in, so the line is kept verbatim:
+  it binds nothing, a read on it is NotFound, and nothing counts as lost.
+E020|error|node cap exceeded (fires only under a caller-supplied cap)
+  The parse stopped there and the unparsed remainder counts as lost, so a
+  later save refuses rather than writing a truncated file.
+E021|error|array longer than the caller-supplied element cap
+  The line is skipped whole rather than truncated to a value the author
+  never wrote. A fence line's info string is split the same way.
+E022|error/hint|the diagnostics list was cut at the caller-supplied cap
+  This entry ends the list and counts what was not listed. An error when
+  any unlisted one was, so a scan for errors still finds one; a hint
+  otherwise.
+H001|hint|repeated bare leaf (an array spelled as repeated lines)
+  Repeated leaves are legal - that is how instances are written - but
+  'tags: red' twice and 'tags: red, blue' look alike, so the parser says
+  which one it read. A schema's repeat bound above 1 disavows it.
+H002|hint|a binding merged with a non-adjacent earlier one
+  Same name and value, so the two combine. Legal, and only the parser can
+  see it happened. The prose names the earlier line, and a schema can
+  disavow it per section with 'reopen: true'.
+V001|error|unknown field
+  No schema path covers it. Only the topmost unknown node is reported; its
+  subtree is skipped. The prose carries the did-you-mean suggestion.
+V002|error|required path missing
+  Declared 'required: yes' and nothing in the document resolves it.
+V003|error|wrong type
+  The value does not read as the declared type.
+V004|error|value not in the allowed set
+  The line number is the node, at its first offending element.
+V005|error|below the declared min
+  The prose names the bound and the value that missed it.
+V006|error|above the declared max
+  The prose names the bound and the value that missed it.
+V007|error|instance count out of repeat bounds
+  Too few or too many instances of a field the schema bounds with 'repeat'.
+V090|error|unknown schema key
+  A schema fault: the key is dropped and the rest of the schema still
+  checks the document. The line number is a schema line.
+V091|error|unknown schema type name
+  A schema fault, on a schema line.
+V092|error|bad schema constraint value
+  A schema fault, on a schema line. Also covers min or max without a
+  numeric type, and 'allowed' with 'type: raw'.
+V093|error|bad schema path
+  A schema fault, on a schema line. The path spelling could not be read, so
+  the unknown-field sweep turns off with it.
+V094|error|bad fragment declaration
+  No name, a duplicate, or a non-field key inside. A schema fault, on a
+  schema line.
+V095|error|'inherits' names no declared fragment
+  A schema fault, on a schema line. A mount naming a missing fragment
+  checks nothing at the mount.
+V096|error|schema expands to more fields than generation allows
+  Generation lays every path out flat, so mounts multiply. The line number
+  is 0: this is about the output, not a schema line.
+V097|error|generated output does not load, or fails its own schema
+  init checks its own output before returning it, so a starter config that
+  would fail its first check is a fault instead. A default outside its
+  field's constraints is the usual cause. Line 0.
+V099|error|schema failed to load
+  The schema had error diagnostics of its own; they are printed above this
+  with their own line numbers. Line 0.
 ";
 
 fn status_code(st: Status) -> u8 {
@@ -278,6 +406,19 @@ impl Set {
 		}
 	}
 }
+
+/// The type options, as one list. `Kind::from_opt` is still the reader; this
+/// is for the places that need the spellings themselves - the did-you-mean on
+/// a typo, and the per-subcommand help.
+const TYPE_OPTS: [&str; 7] = [
+	"--int",
+	"--float",
+	"--bool",
+	"--datetime",
+	"--string",
+	"--raw",
+	"--rawinfo",
+];
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -399,6 +540,84 @@ fn split_set(arg: &str) -> Option<(&str, &str)> {
 	tok.sep.map(|i| (&arg[..i], &arg[i + 1..]))
 }
 
+/// Levenshtein distance capped at `cap`; past it, `cap + 1`. The validator has
+/// one of these for schema field names, but it is not public API and the CLI's
+/// lists are a dozen short words, so the CLI computes its own.
+fn edit_distance(a: &str, b: &str, cap: usize) -> usize {
+	let a: Vec<char> = a.chars().collect();
+	let b: Vec<char> = b.chars().collect();
+	let inf = cap + 1;
+	if a.len().abs_diff(b.len()) > cap {
+		return inf;
+	}
+	let mut prev: Vec<usize> = (0..=b.len()).collect();
+	let mut cur = vec![0usize; b.len() + 1];
+	for i in 1..=a.len() {
+		cur[0] = i;
+		for j in 1..=b.len() {
+			let cost = usize::from(a[i - 1] != b[j - 1]);
+			cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+		}
+		std::mem::swap(&mut prev, &mut cur);
+	}
+	prev[b.len()].min(inf)
+}
+
+/// "; did you mean 'x'?" for the nearest candidate within two edits, or
+/// nothing. Same wording the validator's unknown-field suggestion uses, and
+/// prose either way - a typo's exit code is 1 whether or not this has an idea.
+fn suggest(cands: &[&str], word: &str) -> String {
+	// Every candidate is ASCII, and C counts distance in bytes where the other
+	// three count characters, so a word that is not ASCII gets no suggestion
+	// rather than one the four bindings could disagree on.
+	if !word.is_ascii() {
+		return String::new();
+	}
+	let w = word.to_ascii_lowercase();
+	let mut best: Option<(usize, &str)> = None;
+	for c in cands {
+		let d = edit_distance(&w, &c.to_ascii_lowercase(), 2);
+		if d <= 2 && best.is_none_or(|(bd, _)| d < bd) {
+			best = Some((d, c));
+		}
+	}
+	match best {
+		Some((_, c)) => format!("; did you mean '{}'?", c),
+		None => String::new(),
+	}
+}
+
+/// Every command word, for the same. The informational four are commands to a
+/// user typing one, whatever the dispatch calls them.
+fn command_names() -> Vec<&'static str> {
+	let mut v: Vec<&'static str> = COMMANDS.to_vec();
+	v.extend(["help", "version", "about", "donate"]);
+	v
+}
+
+/// Every option spelling some subcommand takes. Built from the table
+/// `check_opts` judges against, so a new option becomes suggestable the moment
+/// it is accepted somewhere.
+fn option_names() -> Vec<&'static str> {
+	// The informational flags are in no subcommand's table but are options to
+	// anyone typing one.
+	let mut v: Vec<&'static str> = vec!["--help", "--version", "--about", "--donate"];
+	for cmd in COMMANDS {
+		for o in allowed_opts(cmd) {
+			if *o == "--<type>" {
+				for t in TYPE_OPTS {
+					if !v.contains(&t) {
+						v.push(t);
+					}
+				}
+			} else if !v.contains(o) {
+				v.push(o);
+			}
+		}
+	}
+	v
+}
+
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: Kind::String,
@@ -497,7 +716,14 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			}
 			_ if a.starts_with("--remove=") => set_value_opt(&mut o, "--remove", &a[9..])?,
 			_ if a.starts_with('-') && a.len() > 1 => {
-				return Err(format!("unknown option: {}", a));
+				// The suggestion is against the name half: `--stricness=1` is a
+				// typo in the option, not in a spelling that includes a value.
+				let name = a.split('=').next().unwrap_or(a);
+				return Err(format!(
+					"unknown option: {}{}",
+					a,
+					suggest(&option_names(), name)
+				));
 			}
 			_ => o.args.push(argv[i].clone()),
 		}
@@ -572,10 +798,10 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 	Ok(())
 }
 
-/// Every option must be meaningful for its subcommand; an option that would be
-/// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
-/// usage error instead.
-fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
+/// The options each subcommand takes. `check_opts` judges against it, the
+/// per-subcommand help is cut from the full help with it, and the shell
+/// completions carry the same table (check-completions.bash diffs the two).
+fn allowed_opts(cmd: &str) -> &'static [&'static str] {
 	let allowed: &[&str] = match cmd {
 		"get" => &[
 			"--<type>",
@@ -617,7 +843,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		"check" => &["--strictness", "--schema"],
 		"init" => &["--schema", "--no-banner"],
 		"migrate" => &["--write", "--lossy", "--from-2x", "--check"],
-		"tokens" => &[],
+		"tokens" | "explain" => &[],
 		"count" | "instances" | "children" | "paths" => &[
 			"--strictness",
 			"--layer",
@@ -629,6 +855,95 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 		],
 		_ => &[],
 	};
+	allowed
+}
+
+/// One subcommand's slice of the help: its usage entry, the type block when it
+/// takes one, and the option entries `allowed_opts` lets it have. Cut from the
+/// full help rather than written out a second time, so the two cannot drift
+/// and the four bindings stay byte-identical for free. An entry keeps the
+/// "(get)" style annotation it carries there, which still reads true.
+fn help_for(cmd: &str) -> String {
+	let mut out = String::from("Usage:\n");
+	let want = format!("  shcl {} ", cmd);
+	let mut taking = false;
+	for l in HELP.lines() {
+		if l.starts_with("  shcl ") {
+			taking = l.starts_with(&want);
+		} else if taking && !l.starts_with("   ") {
+			taking = false;
+		}
+		if taking {
+			out.push_str(l);
+			out.push('\n');
+		}
+	}
+	// A paragraph of the full help that opens with the subcommand's own name is
+	// that subcommand's - today that is set's write-ops block, which is the
+	// half of set a user most needs in front of them.
+	let lead = format!("{} ", cmd);
+	let mut first = true;
+	for l in HELP
+		.lines()
+		.skip_while(|l| !l.starts_with(&lead))
+		.take_while(|l| !l.is_empty())
+	{
+		if first {
+			out.push('\n');
+			first = false;
+		}
+		out.push_str(l);
+		out.push('\n');
+	}
+	let allowed = allowed_opts(cmd);
+	if allowed.contains(&"--<type>") {
+		out.push('\n');
+		for l in HELP
+			.lines()
+			.skip_while(|l| !l.starts_with("Types ("))
+			.take_while(|l| !l.is_empty())
+		{
+			out.push_str(l);
+			out.push('\n');
+		}
+	}
+	// The option entries, in the order the full help lists them. A head line is
+	// `  --name`; the deeper-indented lines under it are its text, and the
+	// first line at column zero ends the block.
+	let mut opts = String::new();
+	let mut in_block = false;
+	let mut keep = false;
+	for l in HELP.lines() {
+		if !in_block {
+			in_block = l.starts_with("Options (");
+			continue;
+		}
+		if l.starts_with("  --") {
+			let name = l[2..].split(['=', ' ']).next().unwrap_or("");
+			keep = allowed.contains(&name);
+		} else if !l.starts_with("   ") {
+			break;
+		}
+		if keep {
+			opts.push_str(l);
+			opts.push('\n');
+		}
+	}
+	if opts.is_empty() {
+		out.push_str(&format!("\n{} takes no options.\n", cmd));
+	} else {
+		out.push_str("\nOptions (the subcommands each belongs to are in parentheses):\n");
+		out.push_str(&opts);
+	}
+	out.push_str("\nSee 'shcl help' for the full text, and 'shcl explain CODE' for a code.\n");
+	out
+}
+
+/// Every option must be meaningful for its subcommand; an option that would be
+/// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+/// usage error instead.
+fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
+	let allowed = allowed_opts(cmd);
 	for s in &o.seen {
 		if !allowed.contains(s) {
 			if *s == "--<type>" {
@@ -1254,6 +1569,74 @@ fn do_migrate(o: &Opts) -> u8 {
 /// from the first character after the indent. A blank line and a comment
 /// line say so; every other line is tokenized on its own, raw bodies
 /// included, since this is the lexical view and not the parse.
+/// `CODE  severity  summary` - the one line both explain forms lead with.
+fn code_line(head: &str) -> String {
+	let mut f = head.split('|');
+	let code = f.next().unwrap_or("");
+	let sev = f.next().unwrap_or("");
+	let summary = f.next().unwrap_or("");
+	format!("{}  {:<10}  {}", code, sev, summary)
+}
+
+/// The head lines of the code table, in table order.
+fn code_heads() -> impl Iterator<Item = &'static str> {
+	CODES.lines().filter(|l| !l.starts_with(' '))
+}
+
+fn do_explain(o: &Opts) -> u8 {
+	let code = match o.args.as_slice() {
+		[] => {
+			let mut body = String::from("Diagnostic codes:\n\n");
+			for h in code_heads() {
+				body.push_str(&code_line(h));
+				body.push('\n');
+			}
+			body.push_str("\n'shcl explain CODE' has the rule behind one of them.\n");
+			out!("\n{}\n", body);
+			return 0;
+		}
+		[c] => c.to_ascii_uppercase(),
+		_ => {
+			errln!("usage: shcl explain [CODE] (see --help)");
+			return 1;
+		}
+	};
+	// The entry runs from its head line to the next one. Built up first, since
+	// a code the table does not carry prints nothing at all.
+	let mut body = String::new();
+	let mut found = false;
+	for l in CODES.lines() {
+		if !l.starts_with(' ') {
+			if found {
+				break;
+			}
+			found = l.split('|').next() == Some(code.as_str());
+			if found {
+				body.push_str(&code_line(l));
+				body.push('\n');
+			}
+			continue;
+		}
+		if found {
+			body.push_str(l);
+			body.push('\n');
+		}
+	}
+	if !found {
+		let names: Vec<&str> = code_heads()
+			.map(|h| h.split('|').next().unwrap_or(""))
+			.collect();
+		errln!(
+			"unknown diagnostic code: {}{} (shcl explain lists them all)",
+			code,
+			suggest(&names, &code)
+		);
+		return 1;
+	}
+	out!("\n{}\n", body);
+	0
+}
+
 fn do_tokens(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
 		errln!("usage: shcl tokens FILE (see --help)");
@@ -1717,6 +2100,11 @@ fn do_check(o: &Opts) -> u8 {
 		outln!("line {}: {:?}: {}", d.line, d.severity, d.code);
 	}
 	say_diagnostics(&diags);
+	// The codes are the portable half of a diagnostic and nothing else on
+	// screen says where to look one up.
+	if !diags.is_empty() {
+		errln!("(run 'shcl explain CODE' for the rule behind a code)");
+	}
 	let errors = diags
 		.iter()
 		.filter(|d| d.severity == Severity::Error)
@@ -1847,7 +2235,7 @@ fn do_paths(o: &Opts) -> u8 {
 	0
 }
 
-const COMMANDS: [&str; 11] = [
+const COMMANDS: [&str; 12] = [
 	"get",
 	"set",
 	"fmt",
@@ -1859,6 +2247,7 @@ const COMMANDS: [&str; 11] = [
 	"paths",
 	"migrate",
 	"tokens",
+	"explain",
 ];
 
 fn run(cmd: &str, o: &Opts) -> u8 {
@@ -1882,6 +2271,7 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 		"paths" => do_paths(o),
 		"migrate" => do_migrate(o),
 		"tokens" => do_tokens(o),
+		"explain" => do_explain(o),
 		other => {
 			errln!("{}: no dispatch arm (see --help)", other);
 			1
@@ -1987,7 +2377,33 @@ fn run_cli() -> u8 {
 	// block from the surrounding prompts. A bare run used to print the same
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if asked == Some("help") || first == Some("help") || argv.is_empty() {
-		out!("\n{}\n", HELP);
+		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
+		// flag form the command is the first word, which a bare `--help` is not.
+		let topic = if first == Some("help") {
+			if argv.len() > 2 {
+				errln!("usage: shcl help [CMD] (see --help)");
+				return 1;
+			}
+			argv.get(1).map(|s| s.as_str())
+		} else {
+			first.filter(|f| !f.starts_with('-'))
+		};
+		match topic {
+			// The informational words are the full help's own last two lines,
+			// so there is nothing narrower to show for them.
+			None | Some("help") | Some("version") | Some("about") | Some("donate") => {
+				out!("\n{}\n", HELP)
+			}
+			Some(t) if COMMANDS.contains(&t) => out!("\n{}\n", help_for(t)),
+			Some(t) => {
+				errln!(
+					"unknown command: {}{} (see --help)",
+					t,
+					suggest(&command_names(), t)
+				);
+				return 1;
+			}
+		}
 		return 0;
 	}
 	if asked == Some("version") || first == Some("version") {
@@ -2007,9 +2423,17 @@ fn run_cli() -> u8 {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
-			errln!("unknown option: {} (see --help)", cmd);
+			errln!(
+				"unknown option: {}{} (see --help)",
+				cmd,
+				suggest(&option_names(), cmd.split('=').next().unwrap_or(&cmd))
+			);
 		} else {
-			errln!("unknown command: {} (see --help)", cmd);
+			errln!(
+				"unknown command: {}{} (see --help)",
+				cmd,
+				suggest(&command_names(), &cmd)
+			);
 		}
 		return 1;
 	}
