@@ -70,8 +70,12 @@ static const char *HELP =
 	"                                         would change with --check)\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
 	"                                         why the parser read a line as it did\n"
-	"  shcl help | version                    this help, or the version (also\n"
-	"                                         -h/--help, -v/-V/--version)\n"
+	"  shcl explain [CODE]                    what a diagnostic code means (every\n"
+	"                                         code, one line each, when CODE is\n"
+	"                                         left out)\n"
+	"  shcl help [CMD] | version              this help (or one subcommand's, with\n"
+	"                                         CMD), or the version (also -h/--help,\n"
+	"                                         -v/-V/--version)\n"
 	"  shcl about | donate                    what shcl is, or how to support it\n"
 	"                                         (also --about, --donate)\n"
 	"\n"
@@ -163,10 +167,11 @@ static const char *HELP =
 	"--layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once\n"
 	"across FILE, --layer and --schema.\n"
 	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
-	"once per run. An in-place write also refuses when the load dropped content the\n"
-	"rewrite would delete (--lossy overrides). migrate refuses a file that does not\n"
-	"say which rules it was written for, when the two readings differ (--from-2x\n"
-	"says it is 2.x), and reports a 2.x binding it cannot carry.\n"
+	"once per run; 'shcl explain CODE' gives the rule behind one of their codes. An\n"
+	"in-place write also refuses when the load dropped content the rewrite would\n"
+	"delete (--lossy overrides). migrate refuses a file that does not say which\n"
+	"rules it was written for, when the two readings differ (--from-2x says it is\n"
+	"2.x), and reports a 2.x binding it cannot carry.\n"
 	"FILE may be '-' for stdin. With --layer, FILE is the highest file layer and\n"
 	"each --layer is merged under it in order; --set applies last. 'fmt' with\n"
 	"layers prints the merged canonical document.\n"
@@ -233,6 +238,128 @@ typedef struct {
 // script's remedy - fix the path, the permissions, the disk - has nothing to do
 // with the remedy for a usage error, which keeps 1.
 #define EXIT_IO 8
+
+// The diagnostic code table behind `shcl explain`. One entry per code: a
+// `CODE|severity|summary` head line, then its detail indented two spaces.
+// spec.md's diagnostic tables are the long form; this is the same rules cut to
+// what a terminal shows. Like the help text it is byte-for-byte across the
+// bindings, and crosscheck compares every code.
+static const char *CODES =
+	"E001|error|field line under a parent holding stacked '*' list elements\n"
+	"  A parent holds list elements or named children, not both. The field line\n"
+	"  is kept and the elements stay.\n"
+	"E002|error|value after a last-segment selector (a.b[X]: v)\n"
+	"  The selector already says which instance, so the value has nowhere to go\n"
+	"  and is ignored. Put the value on the line that creates the instance.\n"
+	"E003|error|selector names an instance that does not exist\n"
+	"  a[5].b or a[#5].b where there is one a. An index selects an existing\n"
+	"  instance by position and never creates one, so a binding line should\n"
+	"  select by value instead.\n"
+	"E004|error|wildcard selector on a binding line\n"
+	"  Wildcards read every instance, so there is no single one to write to.\n"
+	"  They are query-only.\n"
+	"E005|error|unterminated raw block (closing fence never found)\n"
+	"  The block runs to the end of the file. Close it with a fence at the\n"
+	"  opening fence's indent.\n"
+	"E006|error|raw-block fence with no parent field to bind to\n"
+	"  A raw block is a field's value, so a fence needs a field line above it.\n"
+	"E007|error|stacked '*' list element with no parent field\n"
+	"  A '* value' line is an element of the field above it.\n"
+	"E008|error|stacked '*' list element under a parent with field children\n"
+	"  The parent already holds named children, so the element is dropped.\n"
+	"E009|error|empty stacked '*' list element\n"
+	"  A '*' with nothing after it has no value to add.\n"
+	"E010|error|bare comma in a stacked '*' list element\n"
+	"  The stacked form is one element per line. Quote the comma, or write the\n"
+	"  whole array on the field's own line.\n"
+	"E011|error|stacked '*' element for a field that already has a value\n"
+	"  The field's value is kept and the element is ignored. A field is spelled\n"
+	"  one way or the other, not both.\n"
+	"E012|error|indentation matches no open level\n"
+	"  The line is skipped, and anything written deeper is skipped with it\n"
+	"  (E018). Indent to a column some open parent already uses.\n"
+	"E013|error|malformed '*' line ('*' not followed by a space)\n"
+	"  The line is skipped, and what is written under it goes with it.\n"
+	"E014|error|malformed line skipped (the message names the reason)\n"
+	"  The reason and the byte column the line went wrong at are in the prose.\n"
+	"  A quote that never closes in a field name arrives here too.\n"
+	"E015|error|missing colon (repaired as an empty value)\n"
+	"  The name binds with no value rather than the line being dropped.\n"
+	"E016|error|nesting deeper than the 512-level cap (line skipped)\n"
+	"  The cap is what makes any loadable document safe to format, merge and\n"
+	"  copy in every binding.\n"
+	"E017|error|a quote that never closes with the matching quote last\n"
+	"  In a value element or a selector body. The piece is read bare, quotes and\n"
+	"  all, and a comma or comment after it still ends it. The same typo in a\n"
+	"  field name is E014.\n"
+	"E018|error|line written under a line that was skipped\n"
+	"  It is skipped with it, so a skipped line's block never re-parents one\n"
+	"  level up. Fix the line above and this one comes back with it.\n"
+	"E019|error|a value beginning with '[', the way JSON and YAML spell arrays\n"
+	"  An array is comma-separated and written without brackets: ports: 80, 443.\n"
+	"  A '[' after the colon is never a selector, and reading the text without\n"
+	"  its brackets would bake a changed value in, so the line is kept verbatim:\n"
+	"  it binds nothing, a read on it is NotFound, and nothing counts as lost.\n"
+	"E020|error|node cap exceeded (fires only under a caller-supplied cap)\n"
+	"  The parse stopped there and the unparsed remainder counts as lost, so a\n"
+	"  later save refuses rather than writing a truncated file.\n"
+	"E021|error|array longer than the caller-supplied element cap\n"
+	"  The line is skipped whole rather than truncated to a value the author\n"
+	"  never wrote. A fence line's info string is split the same way.\n"
+	"E022|error/hint|the diagnostics list was cut at the caller-supplied cap\n"
+	"  This entry ends the list and counts what was not listed. An error when\n"
+	"  any unlisted one was, so a scan for errors still finds one; a hint\n"
+	"  otherwise.\n"
+	"H001|hint|repeated bare leaf (an array spelled as repeated lines)\n"
+	"  Repeated leaves are legal - that is how instances are written - but\n"
+	"  'tags: red' twice and 'tags: red, blue' look alike, so the parser says\n"
+	"  which one it read. A schema's repeat bound above 1 disavows it.\n"
+	"H002|hint|a binding merged with a non-adjacent earlier one\n"
+	"  Same name and value, so the two combine. Legal, and only the parser can\n"
+	"  see it happened. The prose names the earlier line, and a schema can\n"
+	"  disavow it per section with 'reopen: true'.\n"
+	"V001|error|unknown field\n"
+	"  No schema path covers it. Only the topmost unknown node is reported; its\n"
+	"  subtree is skipped. The prose carries the did-you-mean suggestion.\n"
+	"V002|error|required path missing\n"
+	"  Declared 'required: yes' and nothing in the document resolves it.\n"
+	"V003|error|wrong type\n"
+	"  The value does not read as the declared type.\n"
+	"V004|error|value not in the allowed set\n"
+	"  The line number is the node, at its first offending element.\n"
+	"V005|error|below the declared min\n"
+	"  The prose names the bound and the value that missed it.\n"
+	"V006|error|above the declared max\n"
+	"  The prose names the bound and the value that missed it.\n"
+	"V007|error|instance count out of repeat bounds\n"
+	"  Too few or too many instances of a field the schema bounds with 'repeat'.\n"
+	"V090|error|unknown schema key\n"
+	"  A schema fault: the key is dropped and the rest of the schema still\n"
+	"  checks the document. The line number is a schema line.\n"
+	"V091|error|unknown schema type name\n"
+	"  A schema fault, on a schema line.\n"
+	"V092|error|bad schema constraint value\n"
+	"  A schema fault, on a schema line. Also covers min or max without a\n"
+	"  numeric type, and 'allowed' with 'type: raw'.\n"
+	"V093|error|bad schema path\n"
+	"  A schema fault, on a schema line. The path spelling could not be read, so\n"
+	"  the unknown-field sweep turns off with it.\n"
+	"V094|error|bad fragment declaration\n"
+	"  No name, a duplicate, or a non-field key inside. A schema fault, on a\n"
+	"  schema line.\n"
+	"V095|error|'inherits' names no declared fragment\n"
+	"  A schema fault, on a schema line. A mount naming a missing fragment\n"
+	"  checks nothing at the mount.\n"
+	"V096|error|schema expands to more fields than generation allows\n"
+	"  Generation lays every path out flat, so mounts multiply. The line number\n"
+	"  is 0: this is about the output, not a schema line.\n"
+	"V097|error|generated output does not load, or fails its own schema\n"
+	"  init checks its own output before returning it, so a starter config that\n"
+	"  would fail its first check is a fault instead. A default outside its\n"
+	"  field's constraints is the usual cause. Line 0.\n"
+	"V099|error|schema failed to load\n"
+	"  The schema had error diagnostics of its own; they are printed above this\n"
+	"  with their own line numbers. Line 0.\n";
 
 static void outln(const char *p, size_t n) { fwrite(p, 1, n, stdout); fputc('\n', stdout); }
 
@@ -1193,6 +1320,9 @@ static int do_check(const Opts *o) {
 		// the prose names the file so the number spaces cannot be confused.
 		say_diag(shcl_validation_line(val, i), shcl_validation_severity(val, i), code, shcl_validation_message(val, i));
 	}
+	// The codes are the portable half of a diagnostic and nothing else on
+	// screen says where to look one up.
+	if (total > 0) fprintf(stderr, "(run 'shcl explain CODE' for the rule behind a code)\n");
 	int rc;
 	if (shcl_strict_failed(d)) {
 		printf("strict load failed: %zu diagnostic(s)\n", total); rc = 6;
@@ -1262,6 +1392,11 @@ static int do_enum(Opts *o, int want_count) {
 
 // The type option's kind name (--int -> "int"), or NULL when a is no type
 // option.
+// The type options, as one list. kind_from_opt is still the reader; this is
+// for the places that need the spellings themselves - the did-you-mean on a
+// typo, and the per-subcommand help.
+static const char *const TYPE_OPTS[] = { "--int", "--float", "--bool", "--datetime", "--string", "--raw", "--rawinfo", NULL };
+
 static const char *kind_from_opt(const char *a) {
 	static const char *const kinds[] = { "int", "float", "bool", "datetime", "string", "raw", "rawinfo" };
 	if (a[0] != '-' || a[1] != '-') return NULL;
@@ -1323,6 +1458,10 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 	return 0;
 }
 
+// Defined below, beside the command table they read.
+static size_t option_names(const char **v, size_t cap);
+static void suggest(char *out, size_t outsz, const char **cands, size_t ncands, const char *word);
+
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
@@ -1359,7 +1498,21 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strncmp(a, "--set-default=", 14)) { if (set_value_opt(o, "--set-default", a + 14)) return 1; }
 		else if (!strncmp(a, "--remove=", 9)) { if (set_value_opt(o, "--remove", a + 9)) return 1; }
 		else if (!strncmp(a, "--set=", 6)) { if (set_value_opt(o, "--set", a + 6)) return 1; }
-		else if (a[0] == '-' && a[1] != '\0') { fprintf(stderr, "unknown option: %s\n", a); return 1; }
+		else if (a[0] == '-' && a[1] != '\0') {
+			// The suggestion is against the name half: `--stricness=1` is a typo
+			// in the option, not in a spelling that includes a value.
+			const char *cands[64];
+			char hint[96], name[64];
+			const char *eq = strchr(a, '=');
+			size_t len = eq ? (size_t)(eq - a) : strlen(a);
+			if (len >= sizeof name) len = sizeof name - 1;
+			memcpy(name, a, len);
+			name[len] = '\0';
+			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
+			suggest(hint, sizeof hint, cands, n, name);
+			fprintf(stderr, "unknown option: %s%s\n", a, hint);
+			return 1;
+		}
 		else opt_push(&o->args, &o->nargs, a);
 	}
 	return 0;
@@ -1402,7 +1555,10 @@ static int do_paths(Opts *o) {
 	return 0;
 }
 
-static int check_opts(const char *cmd, const Opts *o) {
+// The options each subcommand takes. check_opts judges against it, the
+// per-subcommand help is cut from the full help with it, and the shell
+// completions carry the same table (check-completions.bash diffs the two).
+static const char *const *allowed_opts(const char *cmd) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", "--no-banner", NULL };
 	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
@@ -1411,7 +1567,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	static const char *migrate_ok[] = { "--write", "--lossy", "--from-2x", "--check", NULL };
 	static const char *enum_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *none_ok[] = { NULL };
-	const char **allowed = none_ok;
+	const char *const *allowed = none_ok;
 	if (!strcmp(cmd, "get")) allowed = get_ok;
 	else if (!strcmp(cmd, "set")) allowed = set_ok;
 	else if (!strcmp(cmd, "fmt")) allowed = fmt_ok;
@@ -1420,6 +1576,14 @@ static int check_opts(const char *cmd, const Opts *o) {
 	else if (!strcmp(cmd, "migrate")) allowed = migrate_ok;
 	else if (!strcmp(cmd, "count") || !strcmp(cmd, "instances")
 	         || !strcmp(cmd, "children") || !strcmp(cmd, "paths")) allowed = enum_ok;
+	return allowed;
+}
+
+// Every option must be meaningful for its subcommand; an option that would be
+// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
+// usage error instead.
+static int check_opts(const char *cmd, const Opts *o) {
+	const char *const *allowed = allowed_opts(cmd);
 	for (int i = 0; i < o->nseen; i++) {
 		int ok = 0;
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
@@ -1514,10 +1678,274 @@ static const char *asked_for(int argc, char **argv) {
 	return NULL;
 }
 
-static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens" };
+static const char *const COMMANDS[] = { "get", "set", "fmt", "check", "init", "count", "instances", "children", "paths", "migrate", "tokens", "explain" };
 static int is_command(const char *cmd) {
 	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0]; i++)
 		if (!strcmp(cmd, COMMANDS[i])) return 1;
+	return 0;
+}
+
+
+// Levenshtein distance capped at cap; past it, cap + 1. The validator has one
+// of these for schema field names, but it is not public API and the CLI's
+// lists are a dozen short words, so the CLI computes its own. It counts bytes
+// where the other three count characters, which is why suggest() refuses a
+// word that is not ASCII.
+static size_t edit_distance(const char *a, const char *b, size_t cap) {
+	size_t la = strlen(a), lb = strlen(b), inf = cap + 1;
+	if ((la > lb ? la - lb : lb - la) > cap) return inf;
+	size_t prev[64], cur[64];
+	if (lb + 1 > sizeof prev / sizeof prev[0]) return inf;
+	for (size_t j = 0; j <= lb; j++) prev[j] = j;
+	for (size_t i = 1; i <= la; i++) {
+		cur[0] = i;
+		for (size_t j = 1; j <= lb; j++) {
+			size_t cost = a[i - 1] == b[j - 1] ? 0 : 1;
+			size_t m = prev[j] + 1;
+			if (cur[j - 1] + 1 < m) m = cur[j - 1] + 1;
+			if (prev[j - 1] + cost < m) m = prev[j - 1] + cost;
+			cur[j] = m;
+		}
+		memcpy(prev, cur, (lb + 1) * sizeof prev[0]);
+	}
+	return prev[lb] < inf ? prev[lb] : inf;
+}
+
+static char lower_byte(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+
+// "; did you mean 'x'?" for the nearest candidate within two edits, or an
+// empty string. Same wording the validator's unknown-field suggestion uses,
+// and prose either way - a typo's exit code is 1 whether or not this has an
+// idea. C fills the caller's buffer where the other three return the clause.
+static void suggest(char *out, size_t outsz, const char **cands, size_t ncands, const char *word) {
+	out[0] = '\0';
+	// Every candidate is ASCII, and this counts distance in bytes where the
+	// other three count characters, so a word that is not ASCII gets no
+	// suggestion rather than one the four bindings could disagree on.
+	char w[64];
+	size_t wl = strlen(word);
+	if (wl >= sizeof w) return;
+	for (size_t i = 0; i < wl; i++) {
+		if ((unsigned char)word[i] >= 0x80) return;
+		w[i] = lower_byte(word[i]);
+	}
+	w[wl] = '\0';
+	const char *best = NULL;
+	size_t bestd = 3;
+	for (size_t i = 0; i < ncands; i++) {
+		char c[64];
+		size_t cl = strlen(cands[i]);
+		if (cl >= sizeof c) continue;
+		for (size_t j = 0; j <= cl; j++) c[j] = lower_byte(cands[i][j]);
+		size_t d = edit_distance(w, c, 2);
+		if (d <= 2 && d < bestd) { best = cands[i]; bestd = d; }
+	}
+	if (best) snprintf(out, outsz, "; did you mean '%s'?", best);
+}
+
+// Every command word, for the same. The informational four are commands to a
+// user typing one, whatever the dispatch calls them.
+static size_t command_names(const char **v, size_t cap) {
+	static const char *const extra[] = { "help", "version", "about", "donate" };
+	size_t n = 0;
+	for (size_t i = 0; i < sizeof COMMANDS / sizeof COMMANDS[0] && n < cap; i++) v[n++] = COMMANDS[i];
+	for (size_t i = 0; i < sizeof extra / sizeof extra[0] && n < cap; i++) v[n++] = extra[i];
+	return n;
+}
+
+static size_t push_unique(const char **v, size_t n, size_t cap, const char *name) {
+	for (size_t i = 0; i < n; i++) if (!strcmp(v[i], name)) return n;
+	if (n < cap) v[n++] = name;
+	return n;
+}
+
+// Every option spelling some subcommand takes. Built from the table check_opts
+// judges against, so a new option becomes suggestable the moment it is
+// accepted somewhere.
+static size_t option_names(const char **v, size_t cap) {
+	// The informational flags are in no subcommand's table but are options to
+	// anyone typing one.
+	static const char *const info[] = { "--help", "--version", "--about", "--donate" };
+	size_t n = 0;
+	for (size_t i = 0; i < sizeof info / sizeof info[0] && n < cap; i++) v[n++] = info[i];
+	for (size_t c = 0; c < sizeof COMMANDS / sizeof COMMANDS[0]; c++) {
+		const char *const *a = allowed_opts(COMMANDS[c]);
+		for (size_t k = 0; a[k]; k++) {
+			if (!strcmp(a[k], "--<type>"))
+				for (size_t t = 0; TYPE_OPTS[t]; t++) n = push_unique(v, n, cap, TYPE_OPTS[t]);
+			else n = push_unique(v, n, cap, a[k]);
+		}
+	}
+	return n;
+}
+
+// From the first line of text starting with lead to the blank line after it,
+// with a blank line above. Nothing at all when no line starts with lead.
+static void print_block(const char *text, const char *lead) {
+	size_t ll = strlen(lead);
+	for (const char *p = text; *p;) {
+		const char *e = strchr(p, '\n');
+		size_t n = e ? (size_t)(e - p) : strlen(p);
+		if (!strncmp(p, lead, ll)) {
+			putchar('\n');
+			while (*p) {
+				e = strchr(p, '\n');
+				n = e ? (size_t)(e - p) : strlen(p);
+				if (n == 0) return;
+				printf("%.*s\n", (int)n, p);
+				if (!e) return;
+				p = e + 1;
+			}
+			return;
+		}
+		p = e ? e + 1 : p + n;
+	}
+}
+
+// The option entries of the full help this subcommand takes, in the order the
+// help lists them. A head line is `  --name`; the deeper-indented lines under
+// it are its text, and the first line at column zero ends the block. Counted
+// on the first pass and printed on the second, since the heading above them is
+// only right when there is one.
+static int help_options(const char *cmd, int print) {
+	const char *const *allowed = allowed_opts(cmd);
+	int count = 0, keep = 0, in_block = 0;
+	for (const char *p = HELP; *p;) {
+		const char *e = strchr(p, '\n');
+		size_t n = e ? (size_t)(e - p) : strlen(p);
+		if (!in_block) {
+			in_block = !strncmp(p, "Options (", 9);
+			p = e ? e + 1 : p + n;
+			continue;
+		}
+		if (!strncmp(p, "  --", 4)) {
+			size_t len = 2;
+			while (len < n && p[len] != '=' && p[len] != ' ') len++;
+			keep = 0;
+			for (int k = 0; allowed[k]; k++)
+				if (!strncmp(p + 2, allowed[k], len - 2) && strlen(allowed[k]) == len - 2) keep = 1;
+			if (keep) count++;
+		} else if (strncmp(p, "   ", 3)) break;
+		if (keep && print) printf("%.*s\n", (int)n, p);
+		p = e ? e + 1 : p + n;
+	}
+	return count;
+}
+
+// One subcommand's slice of the help: its usage entry, the type block when it
+// takes one, and the option entries allowed_opts lets it have. Cut from the
+// full help rather than written out a second time, so the two cannot drift and
+// the four bindings stay byte-identical for free. An entry keeps the "(get)"
+// style annotation it carries there, which still reads true. The other three
+// build the text and print it once; C prints as it goes, having no builder.
+static void print_help_for(const char *cmd) {
+	char want[64], lead[64];
+	snprintf(want, sizeof want, "  shcl %s ", cmd);
+	snprintf(lead, sizeof lead, "%s ", cmd);
+	printf("\nUsage:\n");
+	int taking = 0;
+	for (const char *p = HELP; *p;) {
+		const char *e = strchr(p, '\n');
+		size_t n = e ? (size_t)(e - p) : strlen(p);
+		if (!strncmp(p, "  shcl ", 7)) taking = !strncmp(p, want, strlen(want));
+		else if (taking && strncmp(p, "   ", 3)) taking = 0;
+		if (taking) printf("%.*s\n", (int)n, p);
+		p = e ? e + 1 : p + n;
+	}
+	// A paragraph of the full help that opens with the subcommand's own name is
+	// that subcommand's - today that is set's write-ops block, which is the
+	// half of set a user most needs in front of them.
+	print_block(HELP, lead);
+	const char *const *allowed = allowed_opts(cmd);
+	for (int k = 0; allowed[k]; k++)
+		if (!strcmp(allowed[k], "--<type>")) { print_block(HELP, "Types ("); break; }
+	if (help_options(cmd, 0) > 0) {
+		printf("\nOptions (the subcommands each belongs to are in parentheses):\n");
+		help_options(cmd, 1);
+	} else {
+		printf("\n%s takes no options.\n", cmd);
+	}
+	printf("\nSee 'shcl help' for the full text, and 'shcl explain CODE' for a code.\n\n");
+}
+
+// `CODE  severity  summary` - the one line both explain forms lead with.
+static void code_line(const char *head) {
+	const char *bar1 = strchr(head, '|');
+	const char *bar2 = bar1 ? strchr(bar1 + 1, '|') : NULL;
+	const char *end = strchr(head, '\n');
+	if (!bar1 || !bar2 || !end) return;
+	printf("%.*s  %-10.*s  %.*s\n", (int)(bar1 - head), head,
+	       (int)(bar2 - bar1 - 1), bar1 + 1, (int)(end - bar2 - 1), bar2 + 1);
+}
+
+static int do_explain(const Opts *o) {
+	if (o->nargs == 0) {
+		printf("\nDiagnostic codes:\n\n");
+		for (const char *p = CODES; *p;) {
+			const char *e = strchr(p, '\n');
+			if (*p != ' ') code_line(p);
+			if (!e) break;
+			p = e + 1;
+		}
+		printf("\n'shcl explain CODE' has the rule behind one of them.\n\n");
+		return 0;
+	}
+	if (o->nargs > 1) { fprintf(stderr, "usage: shcl explain [CODE] (see --help)\n"); return 1; }
+	// Heap rather than a fixed buffer: a long bogus code has to come back in
+	// the message whole, the way the other three print it.
+	size_t cl = strlen(o->args[0]);
+	char *code = (char *)xrealloc(NULL, cl + 1);
+	for (size_t i = 0; i < cl; i++) {
+		char c = o->args[0][i];
+		code[i] = c >= 'a' && c <= 'z' ? (char)(c - 32) : c;
+	}
+	code[cl] = '\0';
+	// Found first, then printed: a code the table does not carry prints nothing
+	// at all.
+	const char *head = NULL;
+	for (const char *p = CODES; *p;) {
+		const char *e = strchr(p, '\n');
+		if (*p != ' ' && !strncmp(p, code, cl) && p[cl] == '|') { head = p; break; }
+		if (!e) break;
+		p = e + 1;
+	}
+	if (!head) {
+		const char *names[64];
+		size_t n = 0;
+		for (const char *p = CODES; *p && n < sizeof names / sizeof names[0];) {
+			const char *e = strchr(p, '\n');
+			if (*p != ' ') names[n++] = p;
+			if (!e) break;
+			p = e + 1;
+		}
+		// The names are table lines, so each is compared up to its own bar.
+		char cands[64][8];
+		const char *cp[64];
+		for (size_t i = 0; i < n; i++) {
+			const char *bar = strchr(names[i], '|');
+			size_t len = bar ? (size_t)(bar - names[i]) : 0;
+			if (len >= sizeof cands[0]) len = sizeof cands[0] - 1;
+			memcpy(cands[i], names[i], len);
+			cands[i][len] = '\0';
+			cp[i] = cands[i];
+		}
+		char hint[96];
+		suggest(hint, sizeof hint, cp, n, code);
+		fprintf(stderr, "unknown diagnostic code: %s%s (shcl explain lists them all)\n", code, hint);
+		free(code);
+		return 1;
+	}
+	free(code);
+	putchar('\n');
+	code_line(head);
+	for (const char *p = strchr(head, '\n'); p && *(p + 1) == ' ';) {
+		const char *e = strchr(p + 1, '\n');
+		size_t n = e ? (size_t)(e - (p + 1)) : strlen(p + 1);
+		printf("%.*s\n", (int)n, p + 1);
+		if (!e) break;
+		p = e;
+	}
+	putchar('\n');
 	return 0;
 }
 
@@ -1578,7 +2006,26 @@ static int cli_main(int argc, char **argv) {
 	// block from the surrounding prompts. A bare run used to print the same
 	// text unpadded and exit 1, which read as neither a help nor an error.
 	if (argc <= 1) { printf("\n%s\n", HELP); return 0; }
-	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) { printf("\n%s\n", HELP); return 0; }
+	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) {
+		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
+		// flag form the command is the first word, which a bare `--help` is not.
+		const char *topic = "";
+		if (!strcmp(argv[1], "help")) {
+			if (argc > 3) { fprintf(stderr, "usage: shcl help [CMD] (see --help)\n"); return 1; }
+			if (argc == 3) topic = argv[2];
+		} else if (argv[1][0] != '-') topic = argv[1];
+		// The informational words are the full help's own last two lines, so
+		// there is nothing narrower to show for them.
+		if (!*topic || !strcmp(topic, "help") || !strcmp(topic, "version")
+		    || !strcmp(topic, "about") || !strcmp(topic, "donate")) { printf("\n%s\n", HELP); return 0; }
+		if (is_command(topic)) { print_help_for(topic); return 0; }
+		const char *cands[32];
+		size_t n = command_names(cands, sizeof cands / sizeof cands[0]);
+		char hint[96];
+		suggest(hint, sizeof hint, cands, n, topic);
+		fprintf(stderr, "unknown command: %s%s (see --help)\n", topic, hint);
+		return 1;
+	}
 	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
 	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }
 	if ((asked && !strcmp(asked, "donate")) || !strcmp(argv[1], "donate")) { printf("\n%s\n", DONATE); return 0; }
@@ -1586,8 +2033,24 @@ static int cli_main(int argc, char **argv) {
 	if (!is_command(cmd)) {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
-		if (cmd[0] == '-' && strcmp(cmd, "--") != 0) fprintf(stderr, "unknown option: %s (see --help)\n", cmd);
-		else fprintf(stderr, "unknown command: %s (see --help)\n", cmd);
+		const char *cands[64];
+		char hint[96], name[64];
+		if (cmd[0] == '-' && strcmp(cmd, "--") != 0) {
+			// The suggestion is against the name half: `--stricness=1` is a typo
+			// in the option, not in a spelling that includes a value.
+			const char *eq = strchr(cmd, '=');
+			size_t len = eq ? (size_t)(eq - cmd) : strlen(cmd);
+			if (len >= sizeof name) len = sizeof name - 1;
+			memcpy(name, cmd, len);
+			name[len] = '\0';
+			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
+			suggest(hint, sizeof hint, cands, n, name);
+			fprintf(stderr, "unknown option: %s%s (see --help)\n", cmd, hint);
+		} else {
+			size_t n = command_names(cands, sizeof cands / sizeof cands[0]);
+			suggest(hint, sizeof hint, cands, n, cmd);
+			fprintf(stderr, "unknown command: %s%s (see --help)\n", cmd, hint);
+		}
 		return 1;
 	}
 	Opts o;
@@ -1605,6 +2068,7 @@ static int cli_main(int argc, char **argv) {
 	else if (!strcmp(cmd, "paths")) rc = do_paths(&o);
 	else if (!strcmp(cmd, "migrate")) rc = do_migrate(&o);
 	else if (!strcmp(cmd, "tokens")) rc = do_tokens(&o);
+	else if (!strcmp(cmd, "explain")) rc = do_explain(&o);
 	// A refusal rather than a fall-through: with one, adding a name to COMMANDS
 	// without adding a branch here quietly ran whichever command the last line
 	// named, with no message. main gates on COMMANDS first, so this is only

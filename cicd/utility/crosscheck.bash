@@ -382,6 +382,21 @@ fCompare "usage help flag" --help
 fCompare "usage version" version
 fCompare "usage bare"
 fCompare "usage unknown" definitely-not-a-subcommand
+# The diagnostic code table and the per-subcommand help are hand-duplicated per
+# CLI the way the help text is, and both are long. Every code and every
+# subcommand is compared, since one entry going stale in one binding is the
+# exact shape a four-way diff exists to catch. The code list comes from the
+# reference's own listing, so a code added there is compared without a second
+# list to keep in step.
+fCompare "usage explain list" explain
+fCompare "usage explain unknown code" explain E999
+while read -r code; do
+	fCompare "usage explain ${code}" explain "${code}"
+done < <("$refCli" explain | { grep -oE '^[EHV][0-9]+' || true ;})
+while read -r cmd; do
+	fCompare "usage help ${cmd}" help "${cmd}"
+	fCompare "usage ${cmd} --help" "${cmd}" --help
+done < <("$refCli" help | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | sort -u)
 # about/donate carry both spellings and the blank-line padding; bare help above
 # is the control, since it prints the same text with no padding.
 fCompare "usage about" about

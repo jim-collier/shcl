@@ -63,7 +63,15 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .I FILE
 .YS
 .SY shcl
-.BR help | version | about | donate
+.B explain
+.RI [ CODE ]
+.YS
+.SY shcl
+.B help
+.RI [ CMD ]
+.YS
+.SY shcl
+.BR version | about | donate
 .YS
 .SH DESCRIPTION
 .B shcl
@@ -202,8 +210,22 @@ byte offsets from the first character after the indent, with a mark for how a
 piece was quoted, and the fault that made a line malformed. This is the view
 the parser reads a line through, for seeing why it read a line as it did.
 .TP
+.B explain
+Print what a diagnostic code means: the code, its severity and the rule behind
+it. With no
+.I CODE
+it lists every code one line each. The codes are the portable half of a
+diagnostic \- the same problem carries the same code in every binding \- so
+this is where to look one up. The prose beside a code on screen is per-binding
+voice and says the same thing at less length.
+.TP
 .BR help ", " version ", " about ", " donate
 Print this command's help, its version, what SHCL is, or where to support it.
+.B help
+with a subcommand name prints that subcommand's usage and options alone, and
+so does
+.B \-\-help
+after a subcommand.
 The first two are also
 .BR \-h / \-\-help
 and

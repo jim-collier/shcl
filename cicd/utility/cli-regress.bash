@@ -421,6 +421,27 @@ rows=(
 	## Literal text is read the way a file line is, so a # opens a comment
 	## there too and only what comes before it is written.
 	'literal-hash|set --write --no-banner %C% --set-literal=color=red#ff0000|-|0|-|-|color: red\n'
+	## 20260909 item 42: explain. A code is looked up whatever its case, an
+	## unknown one is a usage error that says where the list is, and the
+	## subcommand takes no options and no second code.
+	'explain-code|explain E019|-|0|-|-'
+	'explain-lower|explain e019|-|0|-|-'
+	'explain-unknown|explain E999|-|1|-|unknown diagnostic code: E999'
+	'explain-two|explain E019 E020|-|1|-|usage: shcl explain'
+	'explain-no-options|explain --strictness=strict E019|-|1|-|not valid for explain'
+	## 20260909 item 43: a near miss on a command, an option or a code says what
+	## was probably meant. A word nothing is near says nothing.
+	'suggest-command|frmt %F%|-|1|-|did you mean .fmt.'
+	'suggest-option|get --stricness=1 %F% a|-|1|-|did you mean .--strictness.'
+	'suggest-option-space|get --slot %F% a|-|1|-|did you mean .--slots.'
+	'suggest-code|explain E19|-|1|-|did you mean .E019.'
+	'suggest-none|zzzzzzzz %F%|-|1|-|!did you mean'
+	## 20260909 item 44: help narrows to one subcommand, by name or by the flag
+	## after it, and refuses a name that is not one.
+	'help-subcommand|help get|-|0|-|-'
+	'help-subcommand-flag|fmt --help|-|0|-|-'
+	'help-subcommand-unknown|help frmt|-|1|-|unknown command: frmt'
+	'help-too-many|help get set|-|1|-|usage: shcl help'
 )
 
 declare -i nRun=0 nBad=0
@@ -590,8 +611,20 @@ done
 maxCols=80
 for b in "${bindings[@]}"; do
 	name="${b%%|*}"; cli="${b#*|}"
-	for cmd in help --help; do
-		text="$("${cli}" "${cmd}" 2>/dev/null </dev/null || true)"
+	## The narrowed helps and the code table are cut from the same text and make
+	## the same 80-column promise, and there are far too many of them to eyeball.
+	## Both lists come from the CLI under test, so a new code or subcommand is
+	## covered without a second list to keep in step.
+	checks=(help --help explain)
+	while read -r sub; do
+		[[ -n "${sub}" ]] && checks+=("help ${sub}")
+	done < <("${cli}" help 2>/dev/null </dev/null | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | sort -u)
+	while read -r code; do
+		[[ -n "${code}" ]] && checks+=("explain ${code}")
+	done < <("${cli}" explain 2>/dev/null </dev/null | { grep -oE '^[EHV][0-9]+' || true ;})
+	for cmd in "${checks[@]}"; do
+		read -r -a cmdArgv <<<"${cmd}"
+		text="$("${cli}" "${cmdArgv[@]}" 2>/dev/null </dev/null || true)"
 		nRun+=1
 		if [[ -z "${text}" ]]; then
 			echo "cli-regress: help-width [${name}]: ${cmd} printed nothing" >&2; nBad+=1; continue
