@@ -1064,6 +1064,63 @@ if command -v git >/dev/null 2>&1; then
 	[[ "${leftRc}" == 1 ]] || fBad "n8git_backup-and-publish published over an earlier run's auto-stash"
 fi
 
+##	20260909 item 39: git-auto-msg.bash judged "empty" by `#` alone and wrote
+##	the message as given, so git threw the commit away as empty under another
+##	comment char, commit.verbose, an unedited template, or a message whose line
+##	starts with the comment char. The last one has to fail by name instead.
+if command -v git >/dev/null 2>&1; then
+	out="$(
+		unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_CONFIG_COUNT
+		sb="${tmpDir}/automsg"
+		git init -q -b main "${sb}"; cd "${sb}" || exit
+		git config user.name t; git config user.email t@t.invalid
+		printf 'template text\n' > "${sb}/tmpl"
+		fTry(){   ## fTry MESSAGE [CONFIG=VALUE]: prints the subject git stored, or "rc N"
+			local rc=0
+			echo "$RANDOM" >> f; git add f
+			env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_EDITOR="${repoDir}/cicd/utility/git-auto-msg.bash" GIT_AUTO_MESSAGE="$1" \
+				git ${2:+-c "$2"} commit -q >/dev/null 2>"${sb}/err" || rc=$?
+			((rc == 0)) && git log -1 --format=%s || echo "rc ${rc}"
+		}
+		fTry plain
+		fTry semi core.commentChar=';'
+		fTry verbose commit.verbose=true
+		fTry tmpl commit.template="${sb}/tmpl"
+		fTry '   '
+		fTry '#12 fix'
+		grep -c 'drops as a comment' "${sb}/err" || true
+	)" || true
+	want=$'plain\nsemi\nverbose\ntmpl\nCI/CD automated commit\nrc 1\n1'
+	[[ "${out}" == "${want}" ]] || fBad "git-auto-msg.bash: commits came out as ${out@Q}"
+fi
+
+##	20260909 item 39: n8runshcl.ps1 aged out the copy it had just staged when
+##	that build was older than the kept ones or any other `shcl-*` file sat there,
+##	then launched a file that was gone. A failed removal reported success.
+if fHave pwsh; then
+	rs="${tmpDir}/runshcl"
+	fRunStage(){   ## fRunStage BUILD-DATE EXISTING...: a fresh fake repo with one build
+		rm -rf "${rs}"; mkdir -p "${rs}/cicd/utility" "${rs}/cicd/artifacts/runbuilds" "${rs}/source/rust/target/release"
+		cp "${repoDir}/cicd/utility/n8runshcl.ps1" "${rs}/cicd/utility/"
+		printf '#!/bin/sh\necho ran\n' > "${rs}/source/rust/target/release/shcl"; chmod +x "${rs}/source/rust/target/release/shcl"
+		touch -d "$1" "${rs}/source/rust/target/release/shcl"; shift
+		local n; for n in "$@"; do : > "${rs}/cicd/artifacts/runbuilds/${n}"; done
+	}
+	fRunShcl(){ env -u DISPLAY -u WAYLAND_DISPLAY pwsh -NoProfile -File "${rs}/cicd/utility/n8runshcl.ps1" "$@" 2>&1 || true ;}
+	fRunStage 2026-01-01 shcl-zz1 shcl-zz2
+	out="$(fRunShcl -Keep 2)"
+	[[ "${out}" == ran && -e "${rs}/cicd/artifacts/runbuilds/shcl-zz1" ]] || fBad "n8runshcl.ps1 with squatters in its build dir: ${out@Q}"
+	fRunStage 2026-01-01 shcl-20260301-000000 shcl-20260302-000000
+	out="$(fRunShcl -Keep 2)"
+	[[ "${out}" == ran ]] || fBad "n8runshcl.ps1 aged out an older build it was about to launch: ${out@Q}"
+	fRunStage 2026-05-01 shcl-20260401-000000
+	cp -p "${rs}/source/rust/target/release/shcl" "${rs}/cicd/artifacts/runbuilds/shcl-20260501-000000"
+	chmod 555 "${rs}/cicd/artifacts/runbuilds"
+	out="$(fRunShcl -Keep 1)"
+	chmod 755 "${rs}/cicd/artifacts/runbuilds"
+	[[ "${out}" == *"could not remove shcl-20260401-000000"* ]] || fBad "n8runshcl.ps1 said nothing about a copy it failed to remove: ${out@Q}"
+fi
+
 ##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so
 ##	at one MiB the runtime's own footprint failed a healthy tree. Run the gate
 ##	small, which is exactly the size a developer shrinks it to.

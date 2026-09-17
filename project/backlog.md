@@ -91,13 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🛠️ Item 39: three copied or generated tools do the wrong thing and say it worked.
-		- `n8runshcl.ps1` deletes the copy it just staged and is about to launch, is squatted by any `shcl-*` file in its build directory on POSIX, and reports a failed delete as a success.
-		- `git-auto-msg.bash` produces commit messages git rejects.
-		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
-		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
-		- Opened: 20260909-103800
-
 - 🔘 The Python corpus runner segfaults now and then, inside the garbage collector.
 	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
 	- Note: `shcl.py` and the runner were unchanged from the last green dev run, so the crash predates that merge. Pure Python should not segfault, so either the library builds something the collector cannot walk or Python 3.13.5 has a defect. Neither is known yet.
@@ -417,7 +410,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 33, 35, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 33, 35, 30, 31, 32, 36, 38 and 39 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -766,6 +759,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `shell-regress.bash` rows for the smoke function, `shclpath.ps1` with no registry, and the bash uninstall with a foreign file and a staging file present. `winpath-regress.ps1` runs two broken copies of `shclpath.ps1` that must exit nonzero. All of the local rows failed against the old code, and so did the rpm check. Run on vm925w under 5.1: the smoke function against a file that is not a program, `install.ps1 -Target user`, then an uninstall that kept a foreign `code\local.rs`.
 		- Opened: 20260909-103700
 		- Closed: 20260917-070500
+
+	- ✅ Item 39: three copied or generated tools do the wrong thing and say it worked.
+		- `n8runshcl.ps1` deletes the copy it just staged and is about to launch, is squatted by any `shcl-*` file in its build directory on POSIX, and reports a failed delete as a success.
+		- `git-auto-msg.bash` produces commit messages git rejects.
+		- `check-c-compilers.bash` dies of SIGPIPE on a large diagnostic cascade, so the sweep that exists to catch a compiler-specific failure stops on the first big one.
+		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input.
+		- Fixed: `git-auto-msg.bash` asks git for its comment string, reads the message only above the scissors line, and treats an unedited template as empty. It writes the message above git's own comment lines. A message holding a line git would drop as a comment fails with a message that says so. The four other cases git threw away now commit.
+		- Fixed: `n8runshcl.ps1` counts only files named with an exact stamp, never ages out the copy it is about to launch, and warns when a removal fails.
+		- Pinned by: `shell-regress.bash` rows for both scripts, each run against the old copy and seen to fail. The `git-auto-msg.bash` row covers another comment char, `commit.verbose`, a template, a blank message and a `#` line.
+		- Note: `n8runshcl.ps1` was not run on Windows. `git-auto-msg.bash` is a shared helper, and other projects' copies were not touched.
+		- Opened: 20260909-103800
+		- Closed: 20260917-085634
 
 - Code review 20260905:
 
