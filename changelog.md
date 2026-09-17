@@ -158,6 +158,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `set --write` no longer replaces a file that turned up at the path while it waited for ops on stdin. It had decided the file was new before the wait, so the other file was replaced by the info block and the edits, at exit 0. It exits 8 now and leaves that file alone, and a save that finds nothing at the path never replaces a file that appears there before it finishes.
 
+- `set --no-banner` without `--write` is a usage error, like `--lossy` there. It was accepted and did nothing.
+
+- The help and the man page name the right subcommands for `--strictness`, `--layer`, `--set` and `--write`, and `migrate`'s synopsis lists `--lossy`.
+
 - C: a setter refused for its value no longer keeps the memory it checked the value in. A loop of refused writes grew the document until it was freed.
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.

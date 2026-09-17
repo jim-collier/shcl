@@ -139,21 +139,22 @@ Options (the subcommands each belongs to are in parentheses):
   --check                                (migrate) print nothing, name each
                                          line the rewrite would change on
                                          stderr, and exit 6 when there is one
-  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
-                                         standard)
+  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3
+                                         (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (all but check/init) merge a
-                                         lower-priority layer under FILE;
-                                         repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (all but check/init) override one path
-                                         as the top layer, after all files;
-                                         repeatable. On 'set' it is an edit to
-                                         the document itself, so it persists
-                                         with --write. VALUE goes in as data:
-                                         its type still follows the text (8 is
-                                         an int), but a comma or quote in it is
-                                         content, not syntax
+  --layer=FILE                           (all but check/init/migrate/tokens)
+                                         merge a lower-priority layer under
+                                         FILE; repeatable, earlier = lower
+                                         priority
+  --set=PATH=VALUE                       (all but check/init/migrate/tokens)
+                                         override one path as the top layer,
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE goes
+                                         in as data: its type still follows the
+                                         text (8 is an int), but a comma or
+                                         quote in it is content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
@@ -175,8 +176,9 @@ so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --check with --write; --layer=- on 'set'; --array with --raw
-or --rawinfo; '-' named more than once across FILE, --layer and --schema.
+without --write; --no-banner on 'set' without --write; --check with --write;
+--layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
+across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides). migrate refuses a file that does not
@@ -599,16 +601,21 @@ def check_opts(cmd, o):
 	if o.write and o.sets and cmd != "set":
 		sys.stderr.write(f"--write cannot be combined with {o.sets[0].opt()} (see --help)\n")
 		return 1
-	# --lossy only overrides the in-place write's refusal, so on its own it says
 	# --default says "substitute this" and --on-bad=error says "fail instead", so
 	# the two together are a contradiction. Each used to overwrite the other's
 	# mode, which made the answer depend on the order they were typed in.
 	if "--default" in o.seen and o.on_bad_arg is not None and o.on_bad_arg != "default":
 		sys.stderr.write(f"--default cannot be combined with --on-bad={o.on_bad_arg} (see --help)\n")
 		return 1
+	# --lossy only overrides the in-place write's refusal, so on its own it says
 	# nothing and would read as protection the command never had.
 	if o.lossy and not o.write:
 		sys.stderr.write("--lossy is only meaningful with --write (see --help)\n")
+		return 1
+	# On set, --no-banner shapes only the file a write creates, so without
+	# --write it would be accepted and do nothing.
+	if o.no_banner and cmd == "set" and not o.write:
+		sys.stderr.write("--no-banner is only meaningful with --write (see --help)\n")
 		return 1
 	if o.check and o.write:
 		sys.stderr.write("--check cannot be combined with --write (see --help)\n")

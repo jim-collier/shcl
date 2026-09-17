@@ -245,6 +245,18 @@ fi
 readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/README.md")"
 grep -q 'E014' <<<"${readmeGet}" \
 	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
+##	And the diagnostic it shows is the one the CLI prints. The file is the
+##	README's own example with the colon knocked off line 3, as the prose says.
+if [[ -n "${help}" ]]; then
+	tmpDoc="$(mktemp -d)"
+	awk '/^## What a \.shcl file looks like/ { hdr = 1 } hdr && /^```text$/ { body = 1; next } body && /^```$/ { exit } body' "${readme}" \
+		| sed '3s/: / /' > "${tmpDoc}/server.shcl"
+	shown="$(grep -m1 'E014 malformed' <<<"${readmeGet}" || true)"
+	actual="$(cd "${tmpDoc}" && "${repoDir}/source/rust/target/debug/shcl" get server.shcl log-level 2>&1 >/dev/null || true)"
+	[[ -n "${shown}" && "${shown}" == "${actual}" ]] \
+		|| fBad "README.md: the E014 transcript line is not what the CLI prints (${actual})"
+	rm -rf "${tmpDoc}"
+fi
 
 ##	Three merge facts a consumer folding layers itself has to know, and that
 ##	nothing in the code or the corpus can tell them: the fold is not

@@ -138,21 +138,22 @@ Options (the subcommands each belongs to are in parentheses):
   --check                                (migrate) print nothing, name each
                                          line the rewrite would change on
                                          stderr, and exit 6 when there is one
-  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default
-                                         standard)
+  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3
+                                         (default standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (all but check/init) merge a
-                                         lower-priority layer under FILE;
-                                         repeatable, earlier = lower priority
-  --set=PATH=VALUE                       (all but check/init) override one path
-                                         as the top layer, after all files;
-                                         repeatable. On 'set' it is an edit to
-                                         the document itself, so it persists
-                                         with --write. VALUE goes in as data:
-                                         its type still follows the text (8 is
-                                         an int), but a comma or quote in it is
-                                         content, not syntax
+  --layer=FILE                           (all but check/init/migrate/tokens)
+                                         merge a lower-priority layer under
+                                         FILE; repeatable, earlier = lower
+                                         priority
+  --set=PATH=VALUE                       (all but check/init/migrate/tokens)
+                                         override one path as the top layer,
+                                         after all files; repeatable. On 'set'
+                                         it is an edit to the document itself,
+                                         so it persists with --write. VALUE goes
+                                         in as data: its type still follows the
+                                         text (8 is an int), but a comma or
+                                         quote in it is content, not syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
@@ -174,8 +175,9 @@ so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
 refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --check with --write; --layer=- on 'set'; --array with --raw
-or --rawinfo; '-' named more than once across FILE, --layer and --schema.
+without --write; --no-banner on 'set' without --write; --check with --write;
+--layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
+across FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run. An in-place write also refuses when the load dropped content the
 rewrite would delete (--lossy overrides). migrate refuses a file that does not
@@ -686,6 +688,12 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	// nothing and would read as protection the command never had.
 	if o.lossy && !o.write {
 		errln!("--lossy is only meaningful with --write (see --help)");
+		return Err(1);
+	}
+	// On set, --no-banner shapes only the file a write creates, so without
+	// --write it would be accepted and do nothing.
+	if o.no_banner && cmd == "set" && !o.write {
+		errln!("--no-banner is only meaningful with --write (see --help)");
 		return Err(1);
 	}
 	if o.check && o.write {

@@ -122,21 +122,22 @@ static const char *HELP =
 	"  --check                                (migrate) print nothing, name each\n"
 	"                                         line the rewrite would change on\n"
 	"                                         stderr, and exit 6 when there is one\n"
-	"  --strictness=loose|standard|strict     (all but init) or 1|2|3 (default\n"
-	"                                         standard)\n"
+	"  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3\n"
+	"                                         (default standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
-	"  --layer=FILE                           (all but check/init) merge a\n"
-	"                                         lower-priority layer under FILE;\n"
-	"                                         repeatable, earlier = lower priority\n"
-	"  --set=PATH=VALUE                       (all but check/init) override one path\n"
-	"                                         as the top layer, after all files;\n"
-	"                                         repeatable. On 'set' it is an edit to\n"
-	"                                         the document itself, so it persists\n"
-	"                                         with --write. VALUE goes in as data:\n"
-	"                                         its type still follows the text (8 is\n"
-	"                                         an int), but a comma or quote in it is\n"
-	"                                         content, not syntax\n"
+	"  --layer=FILE                           (all but check/init/migrate/tokens)\n"
+	"                                         merge a lower-priority layer under\n"
+	"                                         FILE; repeatable, earlier = lower\n"
+	"                                         priority\n"
+	"  --set=PATH=VALUE                       (all but check/init/migrate/tokens)\n"
+	"                                         override one path as the top layer,\n"
+	"                                         after all files; repeatable. On 'set'\n"
+	"                                         it is an edit to the document itself,\n"
+	"                                         so it persists with --write. VALUE goes\n"
+	"                                         in as data: its type still follows the\n"
+	"                                         text (8 is an int), but a comma or\n"
+	"                                         quote in it is content, not syntax\n"
 	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
@@ -158,8 +159,9 @@ static const char *HELP =
 	"FILE or PATH begins with a dash.\n"
 	"An option a subcommand does not use is a usage error, not ignored. Also\n"
 	"refused: --write with --layer; --write with --set outside 'set'; --lossy\n"
-	"without --write; --check with --write; --layer=- on 'set'; --array with --raw\n"
-	"or --rawinfo; '-' named more than once across FILE, --layer and --schema.\n"
+	"without --write; --no-banner on 'set' without --write; --check with --write;\n"
+	"--layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once\n"
+	"across FILE, --layer and --schema.\n"
 	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
 	"once per run. An in-place write also refuses when the load dropped content the\n"
 	"rewrite would delete (--lossy overrides). migrate refuses a file that does not\n"
@@ -1449,7 +1451,6 @@ static int check_opts(const char *cmd, const Opts *o) {
 		fprintf(stderr, "--write cannot be combined with %s (see --help)\n", o->sets[0].opt);
 		return 1;
 	}
-	// --lossy only overrides the in-place write's refusal, so on its own it says
 	// --default says "substitute this" and --on-bad=error says "fail instead",
 	// so the two together are a contradiction. Each used to overwrite the
 	// other's mode, which made the answer depend on the order they were typed
@@ -1458,9 +1459,16 @@ static int check_opts(const char *cmd, const Opts *o) {
 		fprintf(stderr, "--default cannot be combined with --on-bad=%s (see --help)\n", o->on_bad_arg);
 		return 1;
 	}
+	// --lossy only overrides the in-place write's refusal, so on its own it says
 	// nothing and would read as protection the command never had.
 	if (o->lossy && !o->write) {
 		fprintf(stderr, "--lossy is only meaningful with --write (see --help)\n");
+		return 1;
+	}
+	// On set, --no-banner shapes only the file a write creates, so without
+	// --write it would be accepted and do nothing.
+	if (o->no_banner && !strcmp(cmd, "set") && !o->write) {
+		fprintf(stderr, "--no-banner is only meaningful with --write (see --help)\n");
 		return 1;
 	}
 	if (o->check && o->write) {

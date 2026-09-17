@@ -91,19 +91,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
-		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
-		- Opened: 20260909-103200
-
-	- 🔘 Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
+	- 🛠️ Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
 		- Reproduced. `README.md:501` and `:505` quote `unexpected '4' after field` where the code now says `unexpected character after the path`. The offending character's position is still computed in all four and thrown away before the message is built; `shcl tokens` prints it as `fault=8:...`.
 		- Sites: `lib.rs:1765`, `shcl.go:1908`, `shcl.py:1625`, `shcl.h:1847`.
+		- Fixed: the README transcript shows the message the CLIs print. A `check-docs.bash` row rebuilds the damaged file from the README and compares the line with the debug binary's output.
+		- Note: the message half is still open. The fault reason also feeds `shcl tokens`, and the character or column has to be spelled the same way in all four.
 		- Opened: 20260909-103300
-
-	- 🔘 Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
-		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
-		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
-		- Opened: 20260909-103400
 
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
@@ -431,7 +424,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 33, 35, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -735,6 +728,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Verified: all 41 rules parse, where the old file stops at `%xEOF`, and `file` matches a document with and without its final newline.
 		- Opened: 20260909-103100
 		- Closed: 20260916-190622
+
+	- ✅ Item 33: four option-scope and synopsis claims in the help text and the man page are wrong.
+		- Reproduced against all four CLIs. `--strictness` is documented as "all but init" and is also refused by `migrate` and `tokens`. `--layer` and `--set` are documented as "all but check/init" and are accepted by seven commands, not nine. The man page attributes `--write` to fmt and set, and `migrate` takes it. `migrate`'s synopsis lists its options exhaustively and omits `--lossy`.
+		- Fixed: the help in all four CLIs says "all but init/migrate/tokens" for `--strictness` and "all but check/init/migrate/tokens" for `--layer` and `--set`. The man page puts `migrate` under `--write` and in the strictness exclusions, and its `migrate` synopsis lists `--lossy`.
+		- Pinned by: three `cli-regress.bash` rows showing `migrate` and `tokens` refuse those options. The help itself is pinned byte for byte across the four.
+		- Opened: 20260909-103200
+		- Closed: 20260916-193142
+
+	- ✅ Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
+		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
+		- Note: the help says "An option a subcommand does not use is a usage error, not ignored."
+		- Fixed: `set --no-banner` without `--write` exits 1 with "only meaningful with --write", in `check_opts` in all four CLIs (`checkOpts` in Go). The help lists it among the refused combinations.
+		- Pinned by: a `cli-regress.bash` row. The old C CLI exited 0 there.
+		- Opened: 20260909-103400
+		- Closed: 20260916-193142
 
 	- ✅ Item 36: bare `shcl` is neither a usage error nor unpadded, both of which design.md says it is.
 		- Reproduced in all four. Bare `shcl` writes 8,252 bytes to stdout at exit 0, byte-identical to `shcl help`, with nothing on stderr.
