@@ -528,6 +528,16 @@ if fHave openssl; then
 	fSignRun "${tmpDir}/sign3"
 	[[ "${signOut}" == *"is not the sums file for ${sver}"* ]] || fBad "sign-release.bash signed a sums file for another version: ${signOut@Q}"
 	[[ ! -e "${tmpDir}/sign3/shcl-0.0.1-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind after a misnamed sums file"
+	## 20260909 item 26: each key copy was checked only if it could be read, so
+	## a tree with none of them signed at rc 0. The script is copied into a tree
+	## holding only the version, and the key is then the right one by default.
+	mkdir -p "${tmpDir}/signtree/cicd/utility" "${tmpDir}/signtree/source/rust" "${tmpDir}/sign4"
+	cp "${repoDir}/cicd/utility/sign-release.bash" "${tmpDir}/signtree/cicd/utility/"
+	cp "${repoDir}/source/rust/Cargo.toml" "${tmpDir}/signtree/source/rust/"
+	cp "${tmpDir}/sign1/"* "${tmpDir}/sign4/"
+	signOut="$(bash "${tmpDir}/signtree/cicd/utility/sign-release.bash" --key "${tmpDir}/wrong.pem" --dir "${tmpDir}/sign4" --no-tag-check 2>&1 || true)"
+	[[ "${signOut}" == *"cannot read shcl-signing.pub"* ]] || fBad "sign-release.bash signed with no key copy to check against: ${signOut@Q}"
+	[[ ! -e "${tmpDir}/sign4/shcl-${sver}-sha256sums.txt.sig" ]] || fBad "sign-release.bash left a .sig behind with no key copy to check against"
 else
 	echo "shell-regress: openssl not installed - signing rows skipped"
 fi

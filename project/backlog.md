@@ -91,11 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
-		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
-		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
-		- Opened: 20260909-102500
-
 	- 🔘 Item 27: `check-pins.bash` says every file the workflow downloads is checked against a sha256, and detects exactly one spelling.
 		- Reproduced. Only `curl -o /absolute/path` is seen. A relative `-o`, `curl -O`, `wget -O`, `curl | tar`, `curl | sh`, `gh release download` and even a commented-out `sha256sum -c` all pass.
 		- Note: the version-pin half of the same gate is sound, 7 of its 8 claims hold.
@@ -445,7 +440,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -694,6 +689,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: a caller under `set -u` never ran the payload, since the unbound name stops it first. This project's callers all set it; the library can't count on that.
 		- Opened: 20260909-102800
 		- Closed: 20260915-112859
+
+	- ✅ Item 26: `sign-release.bash` signs at rc 0 with none of its three key-identity checks having run.
+		- Reproduced. Each check is guarded by `if [[ -r FILE ]]`, so an absent or unreadable file degrades to silence, and the success output is identical either way. The script's own header promises the opposite.
+		- Note: signing is one of the four irreversible steps, and the fingerprint comparison is the only thing standing between a mistake and a published signature made with the wrong key.
+		- Fixed: all three key copies must be readable, or the run stops at exit 2 before anything is signed.
+		- Pinned by: a `shell-regress.bash` row running a copy of the script in a tree with no key copies. The old script signed there and wrote a `.sig`.
+		- Opened: 20260909-102500
+		- Closed: 20260916-192106
 
 	- ✅ Item 30: the changelog states the opposite of what `E019` ships, in two of its three entries.
 		- Reproduced against all four CLIs. `changelog.md:25` says a bracket-array line counts as lost so an in-place rewrite refuses unless `--lossy`, and that `check` exits 0 and a strict load passes for `tags: [prod]`. `changelog.md:206` says the save gate refuses like it does for the plain spelling. Both are false: `check` exits 6 on every spelling and `fmt --write` rewrites at exit 0 with nothing lost. `changelog.md:50`, four lines away, says the truth.
