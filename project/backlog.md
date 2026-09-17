@@ -91,13 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🔘 Item 20: `install-dev.bash` rewrites an unrelated repository's git config and switches its branch.
-		- Reproduced. `--dir` naming an existing git repository that is not shcl announces that it will clone, silently does not, then runs `git checkout dev` on that repository and overwrites its `core.hooksPath` and `core.sshCommand`. The victim repository's own hooks stop running with no sign of it.
-		- Cause: the clone is guarded by `[[ -e "${clone_dir}/.git" ]]`, which is true of any repository, and nothing afterwards checks that the directory is this project.
-		- Note: this is the recorded past defect on the path its fix did not reach. `check-install-dev.bash` passes `--hooks-only` on all seven of its invocations, so the default path has no gate at all.
-		- Sites: `install-dev.bash:264`, `:267`, `:295`.
-		- Opened: 20260909-101900
-
 	- 🔘 Item 22: a refused setter keeps its whole check working set in the C document's scratch arena, forever.
 		- Reproduced. 200 refused `shcl_set_raw` calls with a 1 MiB info string leave 212 MB of scratch on a 10-byte document; Python running the identical loop stays flat. `shcl_reads_release` does not give it back, `shcl_compact` does.
 		- Cause: the setter round moved the emit-and-tokenize into scratch. `w_place` resets scratch on entry, so path refusals are fine; the value refusal paths reset nothing, and those are exactly the refusals `spec.md:454` names.
@@ -459,7 +452,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
-	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
+	- Items 1, 3, 4, 5, 7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 23, 24, 25, 30, 31, 32 and 36 are here. The rest of the round is under Bugs and Canceled, with the round's own notes.
 
 	- ✅ Item 1: an unterminated quote in a selector body is never reported, so a one-character typo binds a phantom instance and the next write makes it permanent.
 		- Reproduced in all four. `srv["prod].host: example.com` under a `srv: prod` block loads with zero diagnostics at exit 0, a strict load passes, and `fmt --write` rewrites the line to `srv: '"prod'`. The document gains an instance of `srv` valued `"prod`, `get srv[prod].host` is NotFound, and the result is a fixpoint, so nothing will report it later either.
@@ -642,6 +635,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a check in the Python runner, beside the other structural shortcut assertions, since no CLI path reaches this call. It fails with the guard backed out and names the wrong spans.
 		- Opened: 20260909-101800
 		- Closed: 20260916-125334
+
+	- ✅ Item 20: `install-dev.bash` rewrites an unrelated repository's git config and switches its branch.
+		- Reproduced. `--dir` naming an existing git repository that is not shcl announces that it will clone, silently does not, then runs `git checkout dev` on that repository and overwrites its `core.hooksPath` and `core.sshCommand`. The victim repository's own hooks stop running with no sign of it.
+		- Cause: the clone is guarded by `[[ -e "${clone_dir}/.git" ]]`, which is true of any repository, and nothing afterwards checks that the directory is this project.
+		- Note: this is the recorded past defect on the path its fix did not reach. `check-install-dev.bash` passes `--hooks-only` on all seven of its invocations, so the default path has no gate at all.
+		- Sites: `install-dev.bash:264`, `:267`, `:295`.
+		- Fixed: one `fIsShcl` check decides what counts as a clone, for `--hooks-only` and the default path both. An existing `--dir` that is not an shcl clone is refused before the plan and before anything is fetched. An empty one is still cloned into.
+		- Pinned by: two `check-install-dev.bash` rows on the default path, a foreign repository and a non-empty plain directory, each checking the refusal message, and the branch and config read back. Both fail against the old script.
+		- Note: the installers must match on main and dev, so the fix went to both.
+		- Opened: 20260909-101900
+		- Closed: 20260916-191604
 
 	- ✅ Item 23: `lint-report.bash` reports a failed run as CLEAN.
 		- Reproduced. A run log carrying `error: conflicting types`, a shellcheck finding, `test result: FAILED. 3 passed; 8 failed` and `ABORTED at stage 3, rc=1` prints `CLEAN (0 warnings)`.
