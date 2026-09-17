@@ -7213,6 +7213,22 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
 		}
 	}
+	// A commented line under a commented valued parent has the same problem
+	// once both are uncommented, so it selects the parent's default too. A
+	// live line keeps the dotted form under a commented parent: selecting by
+	// value would make the optional parent exist.
+	commentedValues := make(map[string]string, len(parentValues))
+	for k, v := range parentValues {
+		commentedValues[k] = v
+	}
+	for i := range cons {
+		c := &cons[i]
+		if !hasWild(c) && !unwritable(c) && !mustExist(c) && c.defaultText != nil {
+			if _, ok := commentedValues[namesKey(namesOf(c.segs))]; !ok {
+				commentedValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			}
+		}
+	}
 	// A path that cannot be written at all belongs in the trailing note, but one
 	// that must exist can never be satisfied from there: the self-check would
 	// then report the document as missing a path, which points at the config
@@ -7261,9 +7277,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// Rebuilt from the parsed segments, not by cutting text out of the
 		// path: the same path can be written several ways, and only the
 		// segments say what it means. Otherwise the schema's own spelling.
+		values := parentValues
+		if !mustExist(c) {
+			values = commentedValues
+		}
 		underValuedParent := false
 		for k := 1; k < len(c.segs); k++ {
-			if _, ok := parentValues[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
+			if _, ok := values[namesKey(namesOf(c.segs[:k]))]; ok && c.segs[k-1].sel == nil {
 				underValuedParent = true
 				break
 			}
@@ -7280,9 +7300,9 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		if selectsByValue {
 			segs := append([]segment(nil), c.segs...)
 			segs[len(segs)-1].sel = nil
-			path = genPathText(segs, parentValues)
+			path = genPathText(segs, values)
 		} else if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
-			path = genPathText(c.segs, parentValues)
+			path = genPathText(c.segs, values)
 		}
 		if emitted[path] {
 			continue

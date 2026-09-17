@@ -94,13 +94,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - 🔘 The Python corpus runner segfaults now and then, inside the garbage collector.
 	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
 	- Note: `shcl.py` and the runner were unchanged from the last green dev run, so the crash predates that merge. Pure Python should not segfault, so either the library builds something the collector cannot walk or Python 3.13.5 has a defect. Neither is known yet.
+	- Note: not reproduced on 2026-09-17. The runner passed 24 runs in a row with a `--ci` run loading the box, and the churn loop alone passed 6. The kernel log and core dumps need the `adm` group, so no record of the 2026-09-16 crashes was read. cppcheck died of heap corruption on the same day, which points at the box more than the code.
 	- Opened: 20260916-200202
-
-- 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
-	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
-	- Cause: only must-exist lines count as valued parents, so a child under a commented valued parent is not written `srv[web].port`.
-	- Note: found while fixing the optional-default `V097` bug. That fix checks each commented line alone on purpose, so this stays a starter config that breaks only when two lines are uncommented together.
-	- Opened: 20260915-110339
 
 ### Features and enhancements
 
@@ -215,6 +210,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
+	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
+	- Cause: only must-exist lines count as valued parents, so a child under a commented valued parent is not written `srv[web].port`.
+	- Note: found while fixing the optional-default `V097` bug. That fix checks each commented line alone on purpose, so this stays a starter config that breaks only when two lines are uncommented together.
+	- Fixed: a commented line under a commented valued parent selects that parent by its default, so the example generates `# srv[web].port: 80`, in all four. A live line under a commented parent keeps the dotted form, which the item 5 note in 20260909 decided on purpose. `spec.md` says both.
+	- Pinned by: corpus `125-init-commented-parent`, whose input is its own `init` output with both lines uncommented and reads one `srv`. All four runners fail it on the old code.
+	- Note: the `init-optional-defaults-ok` row in `cli-regress.bash` expected the dotted spelling. It is commented out with the reason, and a row with the new spelling sits beside it.
+	- Opened: 20260915-110339
+	- Closed: 20260917-090648
 
 - ✅ The C conformance runner passes a case directory that has no `reads.tsv`, where the other three runners abort.
 	- Reproduced. A case added without that file was counted among the C runner's passing cases, while Rust (`conformance.rs:190`), Go (`shcl_test.go:105`) and Python (`conformance.py:55`) each open it unconditionally and fail. The corpus README lists `reads.tsv` as a required file, unlike the pairs it marks optional.

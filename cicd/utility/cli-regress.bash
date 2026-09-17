@@ -246,7 +246,12 @@ rows=(
 	## Loose bug from 20260909 item 5: an optional field's bad default went out
 	## commented at exit 0.
 	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max at .port.'
-	'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv.port: 80\n\n## any\n# a: c\n|-'
+	## Retired 2026-09-17: a commented child of a commented valued parent now
+	## selects the parent's default, so the dotted `srv.port` this row expected
+	## became two instances once both lines were uncommented. The row below is
+	## the same schema and exit code with the new spelling.
+	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv.port: 80\n\n## any\n# a: c\n|-'
+	'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
