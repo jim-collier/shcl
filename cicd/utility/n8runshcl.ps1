@@ -78,8 +78,12 @@ function Get-StagedCopy {
 	## Newest first. The stamp sorts lexically, so the name is the ordering.
 	## The comma keeps a one-element result an array - returning it bare would
 	## unroll to a scalar, and every caller here counts what it gets back.
+	## Only an exact stamp counts. A loose `shcl-*` also took any other file
+	## there on POSIX, and those sorted above every real copy.
 	if (-not (Test-Path -LiteralPath $copyDir)) { return , @() }
-	$found = @(Get-ChildItem -LiteralPath $copyDir -File -Filter "shcl-*$exeSuffix" |
+	$stampName = '^shcl-\d{8}-\d{6}' + [regex]::Escape($exeSuffix) + '$'
+	$found = @(Get-ChildItem -LiteralPath $copyDir -File |
+		Where-Object { $_.Name -match $stampName } |
 		Sort-Object -Property Name -Descending)
 	return , $found
 }
@@ -104,20 +108,26 @@ function Test-CopyInUse([string]$path) {
 
 function Remove-AgedCopy {
 	[CmdletBinding(SupportsShouldProcess)]
-	param([int]$Keep)
+	param([int]$Keep, [string]$Launching)
 
 	## Keep the newest few, then drop what is left - but never a copy something
-	## is still running, however old it is.
+	## is still running, however old it is, and never the one about to launch.
+	## That one is named by the build's mtime, so an older build sorts last.
 	$all = Get-StagedCopy
 	if ($all.Count -le $Keep) { return }
 	foreach ($stale in $all[$Keep..($all.Count - 1)]) {
+		if ($stale.FullName -eq $Launching) { continue }
 		if (Test-CopyInUse $stale.FullName) {
 			Write-Verbose "in use, keeping: $($stale.Name)"
 			continue
 		}
 		if ($PSCmdlet.ShouldProcess($stale.FullName, 'Remove aged copy')) {
-			Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
-			Write-Verbose "removed: $($stale.Name)"
+			try {
+				Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction Stop
+				Write-Verbose "removed: $($stale.Name)"
+			} catch {
+				Write-Warning "could not remove $($stale.Name): $($_.Exception.Message)"
+			}
 		}
 	}
 }
@@ -158,7 +168,7 @@ if (-not (Test-Path -LiteralPath $staged)) {
 	if (-not $IsWindows) { & chmod '+x' $staged }
 }
 
-Remove-AgedCopy -Keep $Keep
+Remove-AgedCopy -Keep $Keep -Launching (Get-Item -LiteralPath $staged).FullName
 
 if ($NoLaunch) { Write-Output $staged; exit 0 }
 
@@ -167,3 +177,4 @@ exit $LASTEXITCODE
 
 ##	History:
 ##		- 2026-08-19 JC: Created. Stamped copies off the release build, aged out when nothing is running them, arguments passed straight through.
+##		- 2026-09-17 JC: Never ages out the copy about to launch; only exact stamps count as copies; a failed removal warns.
