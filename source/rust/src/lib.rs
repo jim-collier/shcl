@@ -7006,10 +7006,12 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// value would make the optional parent exist.
 	let mut commented_values = parent_values.clone();
 	for c in &cons {
-		if !has_wild(c) && !unwritable(c) && !must_exist(c) {
-			if let Some(d) = c.default_text.as_deref() {
-				commented_values.entry(names_of(&c.segs)).or_insert(d);
-			}
+		if !has_wild(c)
+			&& !unwritable(c)
+			&& !must_exist(c)
+			&& let Some(d) = c.default_text.as_deref()
+		{
+			commented_values.entry(names_of(&c.segs)).or_insert(d);
 		}
 	}
 	// A path that cannot be written at all belongs in the trailing note, but one
