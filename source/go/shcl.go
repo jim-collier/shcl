@@ -2978,7 +2978,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if strings.HasPrefix(rest, "\ufeff") {
 				out = outDropped
 			}
-			p.refuse(lineno, "E014", "malformed line skipped: "+serr.Error(), out, indent)
+			// The column counts bytes from the line start, so all four bindings
+			// spell it the same on non-ASCII text.
+			msg := fmt.Sprintf("malformed line skipped: %s, at column %d", serr.Error(), len(indent)+tok.Fault+1)
+			p.refuse(lineno, "E014", msg, out, indent)
 			i++
 			continue
 		}

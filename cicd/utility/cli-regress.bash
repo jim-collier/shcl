@@ -76,6 +76,9 @@ printf 'field: a\n\tdesc: one, two\n\trequired: yes\n' > "${tmpDir}/commadesc.sh
 ## to be pasted into the diagnostic exactly as stored, so one hint arrived as
 ## three stderr lines and a flat name read just like nesting.
 printf '"a\\nb": 1\n"a\\nb": 2\n' > "${tmpDir}/nbname.shcl"
+## An indented malformed line behind a two-byte character, so the E014 column
+## counts the indent and bytes rather than characters.
+printf 'a:\n\t"\303\251" x\n' > "${tmpDir}/colbytes.shcl"
 printf '"x.y": 1\n' > "${tmpDir}/dotname.shcl"
 printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 ## A directory a write cannot create a temp file in. The phase is worth naming -
@@ -179,7 +182,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
-##	carrying a dot and a schema that declares it as nesting.
+##	carrying a dot and a schema that declares it as nesting, %CB% a malformed
+##	line indented and behind a non-ASCII name.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
@@ -351,6 +355,10 @@ rows=(
 	## twice, with nothing to say which file each came from.
 	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
 	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
+	## 20260909 item 34: E014 says where on the line the path went wrong, as
+	## a byte column, which the tokenizer computed and the message dropped.
+	'e014-column|check %B%|-|6|-|^line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 3$'
+	'e014-column-bytes|check %CB%|-|6|-|^line 2: Error: E014 malformed line skipped: unexpected character after the path, at column 7$'
 	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
 	## and says which layer it was.
 	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
@@ -443,6 +451,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%NB%/${tmpDir}/nbname.shcl}"
 	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
+	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"

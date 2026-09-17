@@ -3007,6 +3007,9 @@ impl Parser {
 			let scan = match path_of(&tok, rest) {
 				Ok(s) => s,
 				Err(reason) => {
+					// The column counts bytes from the line start, so all four
+					// bindings spell it the same on non-ASCII text.
+					let at = tok.fault.map_or(0, |(pos, _)| pos);
 					// Content-malformed at any position, so retained - except a
 					// line led by a BOM, which the file-start strip would rewrite
 					// into something that can bind.
@@ -3021,7 +3024,11 @@ impl Parser {
 					self.refuse(
 						lineno,
 						"E014",
-						format!("malformed line skipped: {}", reason),
+						format!(
+							"malformed line skipped: {}, at column {}",
+							reason,
+							indent.len() + at + 1
+						),
 						outcome,
 						indent,
 					);

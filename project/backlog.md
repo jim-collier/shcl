@@ -91,13 +91,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-	- 🛠️ Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
-		- Reproduced. `README.md:501` and `:505` quote `unexpected '4' after field` where the code now says `unexpected character after the path`. The offending character's position is still computed in all four and thrown away before the message is built; `shcl tokens` prints it as `fault=8:...`.
-		- Sites: `lib.rs:1765`, `shcl.go:1908`, `shcl.py:1625`, `shcl.h:1847`.
-		- Fixed: the README transcript shows the message the CLIs print. A `check-docs.bash` row rebuilds the damaged file from the README and compares the line with the debug binary's output.
-		- Note: the message half is still open. The fault reason also feeds `shcl tokens`, and the character or column has to be spelled the same way in all four.
-		- Opened: 20260909-103300
-
 	- 🔘 Item 38: four installer and packaging defects, each reproduced.
 		- The NSIS setup's PATH edit reports success when it did nothing: `shclpath.ps1` exits 0 on a null registry key or a throwing `SetValue`, so the setup's "add it manually" branch is dead code and `winpath-regress.ps1:105` asserts an exit code that can't be nonzero.
 		- `install.ps1`'s smoke test reads `$LASTEXITCODE`, which is not updated when a process fails to start, so it keeps the 0 the preceding `tar` left. A binary blocked from executing in `%TEMP%` by AV or AppLocker is installed and reported as success - the Windows analogue of the noexec case `install.bash` handles by name.
@@ -743,6 +736,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: three `cli-regress.bash` rows showing `migrate` and `tokens` refuse those options. The help itself is pinned byte for byte across the four.
 		- Opened: 20260909-103200
 		- Closed: 20260916-193142
+
+	- ✅ Item 34: a README transcript prints a diagnostic message no binding produces, and the message itself lost the position all four still compute.
+		- Reproduced. `README.md:501` and `:505` quote `unexpected '4' after field` where the code now says `unexpected character after the path`. The offending character's position is still computed in all four and thrown away before the message is built; `shcl tokens` prints it as `fault=8:...`.
+		- Sites: `lib.rs:1765`, `shcl.go:1908`, `shcl.py:1625`, `shcl.h:1847`.
+		- Fixed: the README transcript shows the message the CLIs print. A `check-docs.bash` row rebuilds the damaged file from the README and compares the line with the debug binary's output.
+		- Note: the message half is still open. The fault reason also feeds `shcl tokens`, and the character or column has to be spelled the same way in all four.
+		- Fixed: every tokenizer `E014` ends with ", at column N". The column counts bytes from the start of the line, indent included, so all four spell it the same on non-ASCII text. `shcl tokens` is unchanged.
+		- Pinned by: two `cli-regress.bash` rows, one of them an indented line behind a two-byte name. Both failed against the old build.
+		- Opened: 20260909-103300
+		- Closed: 20260917-054433
 
 	- ✅ Item 35: `--no-banner` on `set` without `--write` is accepted and silently ignored, where its structural twin is a usage error.
 		- Reproduced in all four. `set --no-banner --set=a=1 FILE` exits 0 and does nothing with the flag; `set --lossy --set=a=1 FILE` exits 1 with "only meaningful with --write".
