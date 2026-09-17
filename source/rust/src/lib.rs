@@ -7864,6 +7864,24 @@ impl Document {
 				legal.insert(chain.clone());
 			}
 		}
+		// Both element-wise matchers below used to scan their whole list per
+		// document node, which is quadratic once the schema and the document
+		// grow together. A path can only match a chain whose first part its
+		// own first segment accepts, so one bucket lookup replaces the scan.
+		let star_idx = first_index(star_pats.iter().copied());
+		let set_idx: HashMap<String, FirstIndex> = if has_mounts {
+			// Keyed the way chain_parts_legal's `dead` is: "" for the
+			// top-level list, otherwise the fragment name.
+			std::iter::once((String::new(), first_index(cons.iter().map(|c| &c.segs[..]))))
+				.chain(
+					def.frags
+						.iter()
+						.map(|(k, v)| (k.clone(), first_index(v.iter().map(|c| &c.segs[..])))),
+				)
+				.collect()
+		} else {
+			HashMap::new()
+		};
 		let mut stack: Vec<(usize, String, String)> = self.arena[ROOT]
 			.children
 			.iter()
@@ -7881,8 +7899,8 @@ impl Document {
 				format!("{}.{}", pshown, seg)
 			};
 			let known = legal.contains(&chain)
-				|| star_legal(&star_pats, &chain)
-				|| (has_mounts && chain_legal(cons, &def.frags, &chain));
+				|| star_legal(&star_pats, &star_idx, &chain)
+				|| (has_mounts && chain_legal(cons, &def.frags, &set_idx, &chain));
 			if !known {
 				let hint = v_suggest(&siblings, &pchain, &node.name);
 				vdiag(
@@ -7935,18 +7953,57 @@ fn chain_parts(chain: &str) -> Vec<&str> {
 
 /// Element-wise chain match against the star-bearing schema paths: a `*`
 /// segment matches any one name, and every prefix of a path is legal.
-fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
+fn star_legal(pats: &[&[Segment]], idx: &FirstIndex, chain: &str) -> bool {
 	if pats.is_empty() {
 		return false;
 	}
 	let parts: Vec<&str> = chain_parts(chain);
-	pats.iter().any(|p| {
+	idx.candidates(parts[0]).any(|pi| {
+		let p = pats[pi];
 		p.len() >= parts.len()
 			&& parts
 				.iter()
 				.enumerate()
 				.all(|(i, seg)| p[i].star || p[i].name == *seg)
 	})
+}
+
+/// Schema paths bucketed by what their first segment accepts. A path can only
+/// match a chain whose first part is that segment's name, or anything at all
+/// when the segment is `*`, so a lookup plus the star bucket is the whole
+/// candidate set. Values are positions in the list the index was built from.
+/// Both callers ask "does any of these match", so bucket order cannot reach
+/// the answer.
+struct FirstIndex {
+	by_name: HashMap<String, Vec<usize>>,
+	stars: Vec<usize>,
+}
+
+impl FirstIndex {
+	fn candidates<'a>(&'a self, part: &str) -> impl Iterator<Item = usize> + 'a {
+		self.by_name
+			.get(part)
+			.into_iter()
+			.flatten()
+			.copied()
+			.chain(self.stars.iter().copied())
+	}
+}
+
+fn first_index<'a>(paths: impl Iterator<Item = &'a [Segment]>) -> FirstIndex {
+	let mut idx = FirstIndex {
+		by_name: HashMap::new(),
+		stars: Vec::new(),
+	};
+	for (i, segs) in paths.enumerate() {
+		// A pathless entry keeps its old place in every candidate set: the
+		// scan it replaces looked at one, and what it then did is unchanged.
+		match segs.first() {
+			Some(s) if !s.star => idx.by_name.entry(s.name.clone()).or_default().push(i),
+			_ => idx.stars.push(i),
+		}
+	}
+	idx
 }
 
 /// Chain legality through fragment mounts: the general matcher - element-wise
@@ -7956,16 +8013,22 @@ fn star_legal(pats: &[&[Segment]], chain: &str) -> bool {
 /// is (fragment, parts consumed), and one that has failed is not walked again:
 /// two mounts of the same fragment at the same depth used to be walked both,
 /// which is 2^depth on a chain that ends unknown.
-fn chain_legal(cons: &[Constraint], frags: &HashMap<String, Vec<Constraint>>, chain: &str) -> bool {
+fn chain_legal(
+	cons: &[Constraint],
+	frags: &HashMap<String, Vec<Constraint>>,
+	set_idx: &HashMap<String, FirstIndex>,
+	chain: &str,
+) -> bool {
 	let parts: Vec<&str> = chain_parts(chain);
 	let mut dead: std::collections::HashSet<(&str, usize)> = std::collections::HashSet::new();
-	chain_parts_legal(cons, "", frags, &parts, 0, &mut dead)
+	chain_parts_legal(cons, "", frags, set_idx, &parts, 0, &mut dead)
 }
 
 fn chain_parts_legal<'a>(
 	cons: &'a [Constraint],
 	set: &'a str,
 	frags: &'a HashMap<String, Vec<Constraint>>,
+	set_idx: &HashMap<String, FirstIndex>,
 	parts: &[&str],
 	at: usize,
 	dead: &mut std::collections::HashSet<(&'a str, usize)>,
@@ -7974,7 +8037,14 @@ fn chain_parts_legal<'a>(
 		return false;
 	}
 	let rest = &parts[at..];
-	for c in cons {
+	// The recursion only descends with parts left over, and the sweep never
+	// asks about an empty chain, so `rest` always has a first part to look up.
+	let cand: Vec<usize> = match set_idx.get(set) {
+		Some(idx) => idx.candidates(rest[0]).collect(),
+		None => (0..cons.len()).collect(),
+	};
+	for &ci in &cand {
+		let c = &cons[ci];
 		let n = c.segs.len();
 		let k = rest.len().min(n);
 		if (0..k).all(|i| c.segs[i].star || c.segs[i].name == rest[i]) {
@@ -7983,7 +8053,7 @@ fn chain_parts_legal<'a>(
 			}
 			if let Some(fr) = &c.inherits
 				&& let Some(fcs) = frags.get(fr)
-				&& chain_parts_legal(fcs, fr, frags, parts, at + n, dead)
+				&& chain_parts_legal(fcs, fr, frags, set_idx, parts, at + n, dead)
 			{
 				return true;
 			}

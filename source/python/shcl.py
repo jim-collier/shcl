@@ -4287,6 +4287,18 @@ class Document:
 				siblings.setdefault(chain, []).append(s.name)
 				chain = _chain_push(chain, s.name)
 				legal.add(chain)
+		# Both element-wise matchers below used to scan their whole list per
+		# document node, which is quadratic once the schema and the document
+		# grow together. A path can only match a chain whose first part its own
+		# first segment accepts, so one bucket lookup replaces the scan.
+		star_idx = _first_index(star_pats)
+		# Keyed the way _chain_parts_legal's seen set is: "" for the top-level
+		# list, otherwise the fragment name.
+		set_idx = {}
+		if has_mounts:
+			set_idx[""] = _first_index([c.segs for c in cons])
+			for name, fcs in sdef.frags.items():
+				set_idx[name] = _first_index([c.segs for c in fcs])
 		stack = [(c, "", "") for c in reversed(self.arena[ROOT].children)]
 		while stack:
 			n, pchain, pshown = stack.pop()
@@ -4296,8 +4308,8 @@ class Document:
 			shown = seg if not pshown else pshown + "." + seg
 			if (
 				chain not in legal
-				and not _star_legal(star_pats, chain)
-				and not (has_mounts and _chain_legal(cons, sdef.frags, chain))
+				and not _star_legal(star_pats, star_idx, chain)
+				and not (has_mounts and _chain_legal(cons, sdef.frags, set_idx, chain))
 			):
 				hint = _v_suggest(siblings, pchain, node.name)
 				_vdiag(out, node.line, "V001", f"unknown field '{shown}'{hint}")
@@ -6345,28 +6357,54 @@ def _chain_parts(chain):
 	return parts
 
 
-def _star_legal(pats, chain):
+def _first_index(paths):
+	"""Schema paths bucketed by what their first segment accepts. A path can
+	only match a chain whose first part is that segment's name, or anything at
+	all when the segment is `*`, so a lookup plus the star bucket is the whole
+	candidate set. Values are positions in the list the index was built from.
+	Both callers ask "does any of these match", so bucket order cannot reach
+	the answer."""
+	by_name: dict = {}
+	stars: list = []
+	for i, segs in enumerate(paths):
+		# A pathless entry keeps its old place in every candidate set: the scan
+		# it replaces looked at one, and what it then did is unchanged.
+		if segs and not segs[0].star:
+			by_name.setdefault(segs[0].name, []).append(i)
+		else:
+			stars.append(i)
+	return (by_name, stars)
+
+
+def _candidates(idx, part):
+	by_name, stars = idx
+	named = by_name.get(part, ())
+	return named if not stars else [*named, *stars]
+
+
+def _star_legal(pats, idx, chain):
 	"""Element-wise chain match against the star-bearing schema paths: a `*`
 	segment matches any one name, and every prefix of a path is legal."""
 	if not pats:
 		return False
 	parts = _chain_parts(chain)
 	return any(
-		len(p) >= len(parts) and all(p[i].star or p[i].name == seg for i, seg in enumerate(parts))
-		for p in pats
+		len(pats[pi]) >= len(parts)
+		and all(pats[pi][i].star or pats[pi][i].name == seg for i, seg in enumerate(parts))
+		for pi in _candidates(idx, parts[0])
 	)
 
 
-def _chain_legal(cons, frags, chain):
+def _chain_legal(cons, frags, set_idx, chain):
 	"""Chain legality through fragment mounts: the general matcher - element-
 	wise like _star_legal (stars wild, prefixes legal), and when a mount's whole
 	path matched with chain left over, the remainder is retried against the
 	mounted fragment's fields. Terminates: every descent consumes >= 1 part."""
 	parts = _chain_parts(chain)
-	return _chain_parts_legal(cons, frags, parts)
+	return _chain_parts_legal(cons, frags, set_idx, parts)
 
 
-def _chain_parts_legal(cons, frags, parts):
+def _chain_parts_legal(cons, frags, set_idx, parts):
 	# Explicit stack of (fragment, constraints, parts consumed) rather than one
 	# frame per mount: a chain at the depth cap descends that many mounts. A
 	# state seen once is not walked again - two mounts of the same fragment at
@@ -6380,7 +6418,12 @@ def _chain_parts_legal(cons, frags, parts):
 			continue
 		seen.add((name, at))
 		rest = parts[at:]
-		for c in cons:
+		# The stack only descends with parts left over, and the sweep never
+		# asks about an empty chain, so rest always has a first part to look up.
+		idx = set_idx.get(name)
+		order = range(len(cons)) if idx is None else _candidates(idx, rest[0])
+		for ci in order:
+			c = cons[ci]
 			n = len(c.segs)
 			k = min(len(rest), n)
 			if all(c.segs[i].star or c.segs[i].name == rest[i] for i in range(k)):
