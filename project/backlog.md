@@ -113,6 +113,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: `check-c-compilers.bash` hands a failed build's output to `head` without a pipe, so a long cascade is counted and the sweep goes on to its summary. The old script exited 141 on the same input. The other two tools are still open.
 		- Opened: 20260909-103800
 
+- 🔘 The Python corpus runner segfaults now and then, inside the garbage collector.
+	- Reproduced. `python3 source/python/tests/conformance.py` exited 139 about once in six runs on 2026-09-16, and once in the `--ci` test stage. `-X faulthandler` shows "Garbage-collecting" under `set_int` in the index-rebuild timing fixture, which churns 100,000 set-and-remove cycles.
+	- Note: `shcl.py` and the runner were unchanged from the last green dev run, so the crash predates that merge. Pure Python should not segfault, so either the library builds something the collector cannot walk or Python 3.13.5 has a defect. Neither is known yet.
+	- Opened: 20260916-200202
+
 - 🔘 `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
 	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.
 	- Cause: only must-exist lines count as valued parents, so a child under a commented valued parent is not written `srv[web].port`.
