@@ -154,6 +154,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The Linux installer's stable channel picks the highest version rather than the most recently published release, so a patch back-ported to an older line after a newer one shipped is no longer handed out as stable. Both installers now list releases for both channels and drop drafts, which have no assets to install.
 
+- A malformed line (`E014`) names the column where the path went wrong.
+
 ### Fixed
 
 - `set --write` no longer replaces a file that turned up at the path while it waited for ops on stdin. It had decided the file was new before the wait, so the other file was replaced by the info block and the edits, at exit 0. It exits 8 now and leaves that file alone, and a save that finds nothing at the path never replaces a file that appears there before it finishes.

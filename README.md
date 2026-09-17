@@ -498,11 +498,11 @@ tls
 ```console
 $ shcl check server.shcl
 line 3: Error: E014
-line 3: Error: E014 malformed line skipped: unexpected character after the path
+line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 9
 failed: 1 diagnostic(s), 1 error(s)
 
 $ shcl get server.shcl log-level     # the rest of the file loaded fine
-line 3: Error: E014 malformed line skipped: unexpected character after the path
+line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 9
 warn
 ```
 
