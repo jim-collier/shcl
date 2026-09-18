@@ -490,7 +490,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
 		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
 		- Fixed: check-migrate refuses a dump that wrote no documents, at exit 2 as crosscheck does, and has a floor for the fuzz half, `--min-fuzz`, default 200. A normal run compares about 440.
-		- Pinned by: with a `cargo` first on `PATH` that writes nothing, the gate now exits 2 naming the empty dump, where the old one reported OK on the corpus alone.
+		- Pinned by: a shell-regress case that runs check-migrate with a `cargo` whose test step writes nothing. It expects exit 2 naming the empty dump, and fails on the old script, which reported OK on the corpus alone.
 		- Opened: 20260918-132951
 		- Closed: 20260918-162501
 

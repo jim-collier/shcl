@@ -546,6 +546,7 @@ done
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 (
+	# shellcheck disable=SC2030  ## the subshell is there to keep this PATH to itself
 	PATH="/usr/bin:${tmpDir}/pbin/:/bin"
 	fOnPath "${tmpDir}/pbin"  || fBad "install.bash: a PATH element with a trailing slash was not seen"
 	fOnPath "${tmpDir}/pbin/" || fBad "install.bash: a directory asked for with a trailing slash was not seen"
@@ -1070,6 +1071,22 @@ rm -f "${tmpDir}"/onecc/gcc-* "${tmpDir}/onecc/clang" "${tmpDir}/onecc/cc" "${tm
 ln -sf "$(command -v gcc || command -v cc)" "${tmpDir}/onecc/gcc"
 out="$(PATH="${tmpDir}/onecc" SHCL_GATE_STRICT=1 "${BASH}" "${repoDir}/cicd/utility/check-c-compilers.bash" "${repoDir}" 2>&1 || true)"
 [[ "${out}" == *"needs two versioned gccs and clang"* ]] || fBad "check-c-compilers passed the gate with one compiler: ${out@Q}"
+
+##	20260918 item 12: check-migrate reported OK on the corpus alone when its fuzz
+##	dump wrote nothing, which is what a test filter matching no test does. The
+##	cargo here passes a build through and writes nothing for a test.
+if realCargo="$(command -v cargo)"; then
+	mkdir -p "${tmpDir}/nodump"
+	printf '#!/bin/sh\ncase " $* " in *" test "*) exit 0 ;; esac\nexec "%s" "$@"\n' "${realCargo}" > "${tmpDir}/nodump/cargo"
+	chmod +x "${tmpDir}/nodump/cargo"
+	rc=0
+	# shellcheck disable=SC2031  ## this is the script's own PATH; the subshell above keeps its change
+	out="$(PATH="${tmpDir}/nodump:${PATH}" "${BASH}" "${repoDir}/cicd/utility/check-migrate.bash" 2>&1)" || rc=$?
+	[[ "${rc}" == 2 && "${out}" == *"the fuzz dump wrote no documents"* ]] \
+		|| fBad "check-migrate passed with an empty fuzz dump (exit ${rc}): ${out: -200}"
+else
+	fHave cargo || true
+fi
 
 ##	20260904 item 24: the publish script ran `git config user.name` as a bare
 ##	statement under set -e, so a repository with no identity died in the trap
