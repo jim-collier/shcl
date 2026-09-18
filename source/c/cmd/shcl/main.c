@@ -1475,23 +1475,23 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		if (g_ci_eq(v, strlen(v), "error")) o->on_bad = "error";
 		else if (g_ci_eq(v, strlen(v), "default")) o->on_bad = "default";
 		else if (g_ci_eq(v, strlen(v), "flag")) o->on_bad = "flag";
-		else { fprintf(stderr, "bad --on-bad value: %s\n", v); return 1; }
+		else { fprintf(stderr, "bad --on-bad value: %s (see --help)\n", v); return 1; }
 		o->on_bad_arg = o->on_bad;
 		opt_seen(o, "--on-bad");
 	} else if (!strcmp(name, "--strictness")) {
-		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s\n", v); return 1; }
+		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s (see --help)\n", v); return 1; }
 		opt_seen(o, "--strictness");
 	} else if (!strcmp(name, "--schema")) {
 		o->schema = v; opt_seen(o, "--schema");
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
 	} else if (!strcmp(name, "--remove")) {
-		if (!*v) { fprintf(stderr, "bad --remove value (want PATH)\n"); return 1; }
+		if (!*v) { fprintf(stderr, "bad --remove value (want PATH) (see --help)\n"); return 1; }
 		set_push(o, v, strlen(v), "", "--remove"); opt_seen(o, "--remove");
 	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")
 	           || !strcmp(name, "--set-default") || !strcmp(name, "--set-literal-default")) {
 		size_t plen; const char *val;
-		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s\n", name, v); return 1; }
+		if (!split_set(v, &plen, &val) || plen == 0) { fprintf(stderr, "bad %s value (want PATH=VALUE, quotes and brackets balanced): %s (see --help)\n", name, v); return 1; }
 		set_push(o, v, plen, val, name); opt_seen(o, name);
 	}
 	return 0;
@@ -1551,7 +1551,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 			name[len] = '\0';
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
 			suggest(hint, sizeof hint, cands, n, name);
-			fprintf(stderr, "unknown option: %s%s\n", a, hint);
+			fprintf(stderr, "unknown option: %s%s (see --help)\n", a, hint);
 			return 1;
 		}
 		else opt_push(&o->args, &o->nargs, a);

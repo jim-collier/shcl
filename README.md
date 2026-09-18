@@ -949,6 +949,8 @@ cicd/cicd.bash --ci
 
 - [`style-guide.md`](style-guide.md): coding and prose style. The bindings deliberately mirror the reference's structure over per-language idiom, so they stay byte-for-byte in sync.
 
+- [`project/style-guide_ui-ux.md`](project/style-guide_ui-ux.md): how the command line behaves. Option spelling, the help layout, what goes to stdout and what to stderr, and the exit codes.
+
 Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
 
 ## Contributing and support

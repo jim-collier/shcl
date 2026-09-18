@@ -727,7 +727,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				// typo in the option, not in a spelling that includes a value.
 				let name = a.split('=').next().unwrap_or(a);
 				return Err(format!(
-					"unknown option: {}{}",
+					"unknown option: {}{} (see --help)",
 					a,
 					suggest(&option_names(), name)
 				));
@@ -751,14 +751,14 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 				"error" => OnBad::Error,
 				"default" => OnBad::Default,
 				"flag" => OnBad::Flag,
-				_ => return Err(format!("bad --on-bad value: {}", v)),
+				_ => return Err(format!("bad --on-bad value: {} (see --help)", v)),
 			};
 			o.on_bad_arg = Some(o.on_bad);
 			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
-			o.strictness =
-				Strictness::from_arg(v).ok_or_else(|| format!("bad --strictness value: {}", v))?;
+			o.strictness = Strictness::from_arg(v)
+				.ok_or_else(|| format!("bad --strictness value: {} (see --help)", v))?;
 			o.seen.push("--strictness");
 		}
 		"--schema" => {
@@ -771,7 +771,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 		}
 		"--remove" => {
 			if v.is_empty() {
-				return Err("bad --remove value (want PATH)".to_string());
+				return Err("bad --remove value (want PATH) (see --help)".to_string());
 			}
 			o.sets.push(Set {
 				path: v.to_string(),
@@ -783,7 +783,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 		"--set" | "--set-literal" | "--set-default" | "--set-literal-default" => {
 			let (p, val) = split_set(v).filter(|(p, _)| !p.is_empty()).ok_or_else(|| {
 				format!(
-					"bad {} value (want PATH=VALUE, quotes and brackets balanced): {}",
+					"bad {} value (want PATH=VALUE, quotes and brackets balanced): {} (see --help)",
 					name, v
 				)
 			})?;

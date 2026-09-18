@@ -612,14 +612,14 @@ func setValueOpt(o *opts, name, v string) error {
 		case "flag":
 			o.onBad = onBadFlag
 		default:
-			return fmt.Errorf("bad --on-bad value: %s", v)
+			return fmt.Errorf("bad --on-bad value: %s (see --help)", v)
 		}
 		o.seen = append(o.seen, "--on-bad")
 		o.onBadSet, o.onBadWanted = true, o.onBad
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
 		if !ok {
-			return fmt.Errorf("bad --strictness value: %s", v)
+			return fmt.Errorf("bad --strictness value: %s (see --help)", v)
 		}
 		o.strictness = s
 		o.seen = append(o.seen, "--strictness")
@@ -631,14 +631,14 @@ func setValueOpt(o *opts, name, v string) error {
 		o.seen = append(o.seen, "--layer")
 	case "--remove":
 		if v == "" {
-			return fmt.Errorf("bad --remove value (want PATH)")
+			return fmt.Errorf("bad --remove value (want PATH) (see --help)")
 		}
 		o.sets = append(o.sets, setOpt{path: v, kind: setRemove})
 		o.seen = append(o.seen, "--remove")
 	case "--set", "--set-literal", "--set-default", "--set-literal-default":
 		p, val, ok := splitSet(v)
 		if !ok || p == "" {
-			return fmt.Errorf("bad %s value (want PATH=VALUE, quotes and brackets balanced): %s", name, v)
+			return fmt.Errorf("bad %s value (want PATH=VALUE, quotes and brackets balanced): %s (see --help)", name, v)
 		}
 		k := setData
 		switch name {
@@ -853,7 +853,7 @@ func parseOpts(argv []string) (*opts, error) {
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			// The suggestion is against the name half: `--stricness=1` is a typo
 			// in the option, not in a spelling that includes a value.
-			return nil, fmt.Errorf("unknown option: %s%s", a,
+			return nil, fmt.Errorf("unknown option: %s%s (see --help)", a,
 				suggest(optionNames(), strings.SplitN(a, "=", 2)[0]))
 		default:
 			o.args = append(o.args, a)
