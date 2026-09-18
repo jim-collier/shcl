@@ -899,6 +899,27 @@ if fHave makensis; then
 	else
 		fBad "packaging a prerelease failed: $(cat "${tmpDir}/pkg.log")"
 	fi
+	##	20260918 item 13: the uninstaller deleted code\*.* and scripts\*.*, so a
+	##	file someone else kept there went too. What makensis compiles into it
+	##	has to name each payload file, through the list package.bash writes,
+	##	and hold no wildcard.
+	nsiPay="${tmpDir}/nsipay"; mkdir -p "${nsiPay}/code" "${nsiPay}/scripts"
+	: > "${nsiPay}/code/lib.rs"; : > "${nsiPay}/scripts/shcl.ps1"; : > "${tmpDir}/fake.exe"
+	eval "$(sed -n '/^fUninstallList()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
+	if declare -F fUninstallList >/dev/null; then
+		fUninstallList "${nsiPay}" > "${tmpDir}/uninstall.nsh"
+		nsiOut="$(makensis -V4 -DVERSION=1.0.0 -DVERQUAD=1.0.0.0 -DSRCEXE="${tmpDir}/fake.exe" -DPAYLOAD="${nsiPay}" \
+			-DOUTFILE="${tmpDir}/un-setup.exe" -DUNINSTLIST="${tmpDir}/uninstall.nsh" "${repoDir}/cicd/packaging/shcl.nsi" 2>&1 || true)"
+		# shellcheck disable=SC2016  ## $INSTDIR is NSIS's, not the shell's
+		if ! grep -qF 'Delete: "$INSTDIR\code\lib.rs"' <<<"${nsiOut}" || ! grep -qF 'Delete: "$INSTDIR\scripts\shcl.ps1"' <<<"${nsiOut}"; then
+			fBad "the setup's uninstaller does not name each payload file: $(grep -E '^Delete' <<<"${nsiOut}" | tr '\n' ' ' || true)"
+		fi
+		if grep -qE '^Delete: .*\*' <<<"${nsiOut}"; then
+			fBad "the setup's uninstaller deletes by wildcard: $(grep -E '^Delete: .*\*' <<<"${nsiOut}" | tr '\n' ' ' || true)"
+		fi
+	else
+		fBad "package.bash no longer carries fUninstallList, which the setup's uninstall list comes from"
+	fi
 else
 	echo "shell-regress: makensis not installed - packaging row skipped"
 fi

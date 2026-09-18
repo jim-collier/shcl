@@ -80,14 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
-		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
-		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
-		- Sites: `cicd/packaging/shcl.nsi:119-125`.
-		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
-		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
-		- Opened: 20260918-132951
-
 - Code review 20260909:
 
 	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check can't see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
@@ -497,6 +489,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a shell-regress case that runs check-migrate with a `cargo` whose test step writes nothing. It expects exit 2 naming the empty dump, and fails on the old script, which reported OK on the corpus alone.
 		- Opened: 20260918-132951
 		- Closed: 20260918-162501
+
+	- ✅ Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
+		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
+		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
+		- Sites: `cicd/packaging/shcl.nsi:119-125`.
+		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
+		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
+		- Fixed: the uninstaller removes the payload by name. `fUninstallList` in `package.bash` writes one Delete line per file from the same payload the setup copies, and `shcl.nsi` includes it in place of the two globs.
+		- Pinned by: shell-regress compiles `shcl.nsi` at makensis `-V4` against a scratch payload and the list package.bash writes, and requires a Delete naming each file and none with a wildcard. It fails on the old `.nsi` and on the old package.bash.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163344
 
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
