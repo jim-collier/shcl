@@ -79,6 +79,9 @@ printf '"a\\nb": 1\n"a\\nb": 2\n' > "${tmpDir}/nbname.shcl"
 ## An indented malformed line behind a two-byte character, so the E014 column
 ## counts the indent and bytes rather than characters.
 printf 'a:\n\t"\303\251" x\n' > "${tmpDir}/colbytes.shcl"
+## A malformed line behind a blank run holding a carriage return, which is a
+## blank and never indent. The column left the run out.
+printf '\r  b[c: 2\n' > "${tmpDir}/colcr.shcl"
 ## An int-array whose second element breaks the max, and a float whose bound is
 ## integral. A range diagnostic used to name the field and nothing else.
 printf 'field: ns\n\ttype: int-array\n\tmax: 10\nfield: fs\n\ttype: float-array\n\tmin: 1.0\n' > "${tmpDir}/range.shcl"
@@ -221,7 +224,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	carrying a dot and a schema that declares it as nesting, %SL%/%SM% schema
 ##	paths and a type carrying a line break, valid and faulted, and %DL% a
 ##	document for them, %CB% a malformed
-##	line indented and behind a non-ASCII name, %SG%/%DG% a schema with an int
+##	line indented and behind a non-ASCII name, %CR% one behind a carriage
+##	return that is not indent, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
@@ -441,6 +445,8 @@ rows=(
 	## a byte column, which the tokenizer computed and the message dropped.
 	'e014-column|check %B%|-|6|-|^line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 3$'
 	'e014-column-bytes|check %CB%|-|6|-|^line 2: Error: E014 malformed line skipped: unexpected character after the path, at column 7$'
+	## 20260918 item 15: the blank run between the indent and the text counts.
+	'e014-column-cr-lead|check %CR%|-|6|-|E014 .*, at column 5$'
 	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
 	## and says which layer it was.
 	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
@@ -581,6 +587,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SM%/${tmpDir}/nlfault.shcl}"
 	argv="${argv//%DL%/${tmpDir}/nldoc.shcl}"
 	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
+	argv="${argv//%CR%/${tmpDir}/colcr.shcl}"
 	argv="${argv//%SG%/${tmpDir}/range.shcl}"
 	argv="${argv//%DG%/${tmpDir}/outofrange.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh

@@ -2506,9 +2506,10 @@ class _Parser:
 				# something that can bind.
 				out = OUT_DROPPED if rest.startswith("\ufeff") else _out_retained(_trim_wsp_end(rest), had_blank)
 				# The column counts bytes from the line start, so all four
-				# bindings spell it the same on non-ASCII text. The indent is
-				# blanks only, so its length is its byte count.
-				col = len(indent) + (tok.fault[0] if tok.fault else 0) + 1
+				# bindings spell it the same on non-ASCII text. The indent and
+				# the blank run after it are blanks only, so their lengths are
+				# their byte counts.
+				col = len(indent) + lead + (tok.fault[0] if tok.fault else 0) + 1
 				self._refuse(lineno, "E014", f"malformed line skipped: {e.args[0]}, at column {col}", out, indent)
 				i += 1
 				continue

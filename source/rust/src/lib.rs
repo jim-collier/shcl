@@ -3095,7 +3095,7 @@ impl Parser {
 						format!(
 							"malformed line skipped: {}, at column {}",
 							reason,
-							indent.len() + at + 1
+							indent.len() + lead + at + 1
 						),
 						outcome,
 						indent,

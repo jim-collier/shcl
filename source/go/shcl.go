@@ -3035,7 +3035,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 			// The column counts bytes from the line start, so all four bindings
 			// spell it the same on non-ASCII text.
-			msg := fmt.Sprintf("malformed line skipped: %s, at column %d", serr.Error(), len(indent)+tok.Fault+1)
+			msg := fmt.Sprintf("malformed line skipped: %s, at column %d", serr.Error(), len(indent)+lead+tok.Fault+1)
 			p.refuse(lineno, "E014", msg, out, indent)
 			i++
 			continue

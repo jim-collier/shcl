@@ -3351,7 +3351,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err);
 			/* The column counts bytes from the line start, so all four bindings
 			   spell it the same on non-ASCII text. */
-			sb_puts(P.line, &m, ", at column "); sb_put_u64(P.line, &m, (uint64_t)(indent.n + tok.fault_at + 1));
+			sb_puts(P.line, &m, ", at column "); sb_put_u64(P.line, &m, (uint64_t)(indent.n + lead + tok.fault_at + 1));
 			/* Content-malformed at any position, so retained - except a line led
 			   by a BOM, which the file-start strip would rewrite into something
 			   that can bind. */

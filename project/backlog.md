@@ -129,14 +129,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
-		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
-		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
-		- Sites: `lib.rs:3030`, `shcl.go:2984`, `shcl.py:2462`, `shcl.h:3284`.
-		- Origin: `bac2498` (Merge e014-column, 2026-09-17). Confirmed.
-		- Against: 20260909 item 34's fix, a byte column from the line start, indent included, and the help text at `main.rs:273`.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
 		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
 		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
@@ -568,6 +560,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `cli-regress.bash` rows `schema-text-v002` to `schema-text-v007`, `schema-text-v091` and `schema-text-v093`. All eight fail in all four on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-155459
+
+	- ✅ Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
+		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
+		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
+		- Sites: `lib.rs:3030`, `shcl.go:2984`, `shcl.py:2462`, `shcl.h:3284`.
+		- Origin: `bac2498` (Merge e014-column, 2026-09-17). Confirmed.
+		- Against: 20260909 item 34's fix, a byte column from the line start, indent included, and the help text at `main.rs:273`.
+		- Fixed: the column adds the blank run between the indent and the text, in the E014 arm of each parser. The run is ASCII blanks, so its length is its byte count in Python too.
+		- Pinned by: `cli-regress.bash` row `e014-column-cr-lead`, which fails in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155713
 
 - Code review 20260909:
 
