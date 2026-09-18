@@ -166,6 +166,12 @@ printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.sh
 ## checked all at once, srv and srv.port make two srv against a repeat of 1.
 printf 'field: port\n\ttype: int\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/optdefbad.shcl"
 printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: c\n' > "${tmpDir}/optdefok.shcl"
+## An optional field whose default names another instance than its path
+## selects. Its line is commented, so the check only looked at the value.
+## The second schema is the optdefok one with `a[b]` defaulting to `b`, which
+## is what that one now has to say to pass.
+printf 'field: env[prod]\n\tdefault: staging\n' > "${tmpDir}/optselbad.shcl"
+printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: b\n' > "${tmpDir}/optdefok2.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -200,7 +206,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	current one, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
-##	optional lines that each pass alone,
+##	optional lines that each pass alone, %SH% an optional field whose default
+##	names another instance than its path selects, %SI% the %SE% schema with a
+##	default that names its instance,
 ##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
@@ -283,12 +291,19 @@ rows=(
 	## Loose bug from 20260909 item 5: an optional field's bad default went out
 	## commented at exit 0.
 	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max 10 at .port.: 99'
+	## 20260918 item 4: the same for a default that names another instance.
+	'init-optional-selector-default|init --schema=%SH%|-|6||V097 generated value fails the schema that produced it: default does not name the instance its path selects: env\[prod\]$'
 	## Retired 2026-09-17: a commented child of a commented valued parent now
 	## selects the parent's default, so the dotted `srv.port` this row expected
 	## became two instances once both lines were uncommented. The row below is
 	## the same schema and exit code with the new spelling.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv.port: 80\n\n## any\n# a: c\n|-'
-	'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
+	## Retired 2026-09-18 by 20260918 item 4: its `a[b]` carried `default: c`,
+	## which names another instance than the path selects, and the spec says
+	## that fails generation for an optional field too. The row below is the
+	## same schema with the default naming `b`.
+	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
+	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -535,6 +550,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SC%/${tmpDir}/seldefok.shcl}"
 	argv="${argv//%SD%/${tmpDir}/optdefbad.shcl}"
 	argv="${argv//%SE%/${tmpDir}/optdefok.shcl}"
+	argv="${argv//%SH%/${tmpDir}/optselbad.shcl}"
+	argv="${argv//%SI%/${tmpDir}/optdefok2.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"

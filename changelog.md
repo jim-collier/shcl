@@ -186,7 +186,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.
 
-- `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one.
+- `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one. That includes a default that names another instance than its path selects.
 
 - A commented `init` line under a commented parent with a `default` selects the parent by that value, as a live line under a live parent does. `# srv: web` and `# srv.port: 80` became two `srv` instances once both were uncommented; the second line is now `# srv[web].port: 80`.
 

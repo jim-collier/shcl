@@ -6215,7 +6215,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# A commented default fails the same check once someone uncomments it. Each
 	# line is read back alone and only its value is checked: uncommenting every
 	# line at once would pair a valued parent with a dotted child, which names
-	# a second instance, and fault a schema whose lines each work.
+	# a second instance, and fault a schema whose lines each work. The value is
+	# found through the field's own path, the way validation finds it, so a
+	# default naming another instance than the path selects is caught here as
+	# it is for a required field.
 	for i, line in commented:
 		one = Document.parse(line)
 		bad += [
@@ -6223,13 +6226,18 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			for d in one.diagnostics()
 			if d.severity == Severity.Error
 		]
-		leaf = ROOT
-		while one.arena[leaf].children:
-			leaf = one.arena[leaf].children[0]
-		if leaf == ROOT:
+		if not one.arena[ROOT].children:
+			continue
+		ctxs: list = []
+		one._v_contexts([ROOT], cons[i].segs, 0, ctxs)
+		nodes = [n for _, f in ctxs for n in f]
+		if not nodes:
+			path = cons[i].path.replace("\n", "\\n")
+			bad.append(Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: default does not name the instance its path selects: " + path, "V097"))
 			continue
 		found: list[Diagnostic] = []
-		one._v_node(cons[i], leaf, found)
+		for n in nodes:
+			one._v_node(cons[i], n, found)
 		bad += [
 			Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: " + d.message, "V097")
 			for d in found

@@ -7596,7 +7596,9 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		   Each line is read back alone and only its value is checked:
 		   uncommenting every line at once would pair a valued parent with a
 		   dotted child, which names a second instance, and fault a schema whose
-		   lines each work. */
+		   lines each work. The value is found through the field's own path, the
+		   way validation finds it, so a default naming another instance than the
+		   path selects is caught here as it is for a required field. */
 		for (size_t j = 0; j < commented_line.len; j++) {
 			ShclStr text = commented_line.data[j];
 			shcl_doc *one = shcl_parse(text.p, text.n);
@@ -7610,11 +7612,22 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 				push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
 				nbad++;
 			}
-			size_t leaf = ROOT;
-			while (NODE(one, leaf).children.len) leaf = NODE(one, leaf).children.data[0];
-			if (leaf != ROOT) {
+			if (NODE(one, ROOT).children.len) {
+				const ShclVCons *cc = &cons.data[commented_cons.data[j]];
+				ShclVecVCtx ctxs = {0};
+				size_t start = ROOT, nfound = 0;
+				v_contexts(a, one, &start, 1, cc->segs.data, cc->segs.len, 0, &ctxs);
 				ShclVecDiag found = {0, 0, 0};
-				v_node(a, a, one, &cons.data[commented_cons.data[j]], leaf, &found);
+				for (size_t k = 0; k < ctxs.len; k++) {
+					for (size_t q = 0; q < ctxs.data[k].found.len; q++, nfound++) v_node(a, a, one, cc, ctxs.data[k].found.data[q], &found);
+				}
+				if (!nfound) {
+					ShclSB m = {0, 0, 0};
+					sb_puts(a, &m, "generated value fails the schema that produced it: default does not name the instance its path selects: ");
+					sb_putS(a, &m, g_escape_nl(a, cc->path));
+					push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+					nbad++;
+				}
 				for (size_t i = 0; i < found.len; i++) {
 					if (found.data[i].sev != SHCL_SEV_ERROR) continue;
 					ShclSB m = {0, 0, 0};

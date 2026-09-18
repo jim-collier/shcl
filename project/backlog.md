@@ -80,14 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
-		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
-		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
-		- Sites: `lib.rs:7230`, `shcl.go:7458`, `shcl.py:6182`, `shcl.h:7559`.
-		- Origin: `533ca3e` (Merge optional-default, 2026-09-15) over `faf5adf` (Merge init-selfcheck, 2026-09-14). This is where 20260909 item 5 and the optional-default fix meet. Confirmed.
-		- Against: `spec.md:667`, a default that does not name the instance its path selects fails generation with V097, "That holds for an optional field too".
-		- Opened: 20260918-133258
-
 	- 🔘 Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
 		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
 		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
@@ -550,6 +542,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: corpus `126-skipped-line-fence`, which all four runners fail on the old code, and `raw_bodies_stay_content` in `fuzz_smoke.rs`, a property that no diagnostic lands on a raw body line. It fails on the old code at iteration 4.
 		- Opened: 20260918-133258
 		- Closed: 20260918-153943
+
+	- ✅ Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
+		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
+		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
+		- Sites: `lib.rs:7230`, `shcl.go:7458`, `shcl.py:6182`, `shcl.h:7559`.
+		- Origin: `533ca3e` (Merge optional-default, 2026-09-15) over `faf5adf` (Merge init-selfcheck, 2026-09-14). This is where 20260909 item 5 and the optional-default fix meet. Confirmed.
+		- Against: `spec.md:667`, a default that does not name the instance its path selects fails generation with V097, "That holds for an optional field too".
+		- Fixed: each commented line is read back through its field's own path, the way validation reads it, rather than through the first leaf the line binds. A line that binds nothing on that path is V097, "default does not name the instance its path selects". In the `generate` self-check of all four: `generate` in Rust and Python, `Generate` in Go, `shcl_generate` in C.
+		- Pinned by: `cli-regress.bash` row `init-optional-selector-default`, which fails in all four on the old code.
+		- Note: `init-optional-defaults-ok` expected an optional `a[b]` with `default: c` to generate, which is this defect. It is commented out with the reason, and `init-optional-defaults-ok-named` has the same schema with `default: b`. The generation grid count in `fuzz_smoke.rs` went from 1171 to 1039, all 132 of them optional fields with a contradicting default.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154454
 
 - Code review 20260909:
 

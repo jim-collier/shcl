@@ -7496,7 +7496,10 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// A commented default fails the same check once someone uncomments it. Each
 	// line is read back alone and only its value is checked: uncommenting every
 	// line at once would pair a valued parent with a dotted child, which names
-	// a second instance, and fault a schema whose lines each work.
+	// a second instance, and fault a schema whose lines each work. The value is
+	// found through the field's own path, the way validation finds it, so a
+	// default naming another instance than the path selects is caught here
+	// as it is for a required field.
 	for _, cm := range commented {
 		one := Parse(cm.line)
 		for _, d := range one.diags {
@@ -7509,15 +7512,28 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				})
 			}
 		}
-		leaf := root
-		for len(one.arena[leaf].children) > 0 {
-			leaf = one.arena[leaf].children[0]
+		if len(one.arena[root].children) == 0 {
+			continue
 		}
-		if leaf == root {
+		var ctxs []vContext
+		one.vContexts([]int{root}, cons[cm.cons].segs, 0, &ctxs)
+		var nodes []int
+		for _, cx := range ctxs {
+			nodes = append(nodes, cx.found...)
+		}
+		if len(nodes) == 0 {
+			bad = append(bad, Diagnostic{
+				Line:     0,
+				Severity: SeverityError,
+				Code:     "V097",
+				Message:  "generated value fails the schema that produced it: default does not name the instance its path selects: " + strings.ReplaceAll(cons[cm.cons].path, "\n", "\\n"),
+			})
 			continue
 		}
 		var found []Diagnostic
-		one.vNode(&cons[cm.cons], leaf, &found)
+		for _, n := range nodes {
+			one.vNode(&cons[cm.cons], n, &found)
+		}
 		for _, d := range found {
 			if d.Severity == SeverityError {
 				bad = append(bad, Diagnostic{

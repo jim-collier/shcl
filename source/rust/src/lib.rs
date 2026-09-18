@@ -7282,7 +7282,10 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// A commented default fails the same check once someone uncomments it. Each
 	// line is read back alone and only its value is checked: uncommenting every
 	// line at once would pair a valued parent with a dotted child, which names
-	// a second instance, and fault a schema whose lines each work.
+	// a second instance, and fault a schema whose lines each work. The value is
+	// found through the field's own path, the way validation finds it, so a
+	// default naming another instance than the path selects is caught here
+	// as it is for a required field.
 	for (i, line) in &commented {
 		let one = Document::parse(line);
 		bad.extend(
@@ -7296,15 +7299,28 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 					message: format!("generated text does not load: {} {}", d.code, d.message),
 				}),
 		);
-		let mut leaf = ROOT;
-		while let Some(&k) = one.arena[leaf].children.first() {
-			leaf = k;
+		if one.arena[ROOT].children.is_empty() {
+			continue;
 		}
-		if leaf == ROOT {
+		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
+		one.v_contexts(vec![ROOT], &cons[*i].segs, 0, &mut ctxs);
+		let nodes: Vec<usize> = ctxs.into_iter().flat_map(|(_, f)| f).collect();
+		if nodes.is_empty() {
+			bad.push(Diagnostic {
+				line: 0,
+				severity: Severity::Error,
+				code: "V097",
+				message: format!(
+					"generated value fails the schema that produced it: default does not name the instance its path selects: {}",
+					cons[*i].path.replace('\n', "\\n")
+				),
+			});
 			continue;
 		}
 		let mut found = Vec::new();
-		one.v_node(&cons[*i], leaf, &mut found);
+		for n in nodes {
+			one.v_node(&cons[*i], n, &mut found);
+		}
 		bad.extend(
 			found
 				.into_iter()
