@@ -256,6 +256,9 @@ rows=(
 	'read-dir-names-error|fmt %D%|-|8|-|^[^ ]*adir: Is a directory$'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
+	## 20260918 item 21: the spec named two summary spellings for check and a
+	## strict one prints a third.
+	'check-strict-summary|check --strictness=strict %B%|-|6|line 2: Error: E015\nline 3: Error: E014\nstrict load failed: 2 diagnostic(s)\n|-'
 	## 20260830 round: an unknown command is judged before its options.
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
 	## 20260909 item 59: a real option in front of the subcommand was called

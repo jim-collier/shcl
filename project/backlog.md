@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
-		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
-		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
-		- Sites: `README.md:499-503`, `README.md:532-536`, `project/spec.md:423`.
-		- Origin: `c78d41d` (Merge cli-help) and `9d7a4f4` (Merge cli-guide), both 2026-09-17. Same class as 20260909 item 34. Confirmed.
-		- Against: the README transcripts as real output, and item 58's "both spellings".
-		- Opened: 20260918-135050
-
 	- 🔘 Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
 		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
 		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
@@ -592,6 +584,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: row `explain-v097`, whose stdout is the whole entry. It fails in all four on the old code.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161626
+
+	- ✅ Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
+		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
+		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
+		- Sites: `README.md:499-503`, `README.md:532-536`, `project/spec.md:423`.
+		- Origin: `c78d41d` (Merge cli-help) and `9d7a4f4` (Merge cli-guide), both 2026-09-17. Same class as 20260909 item 34. Confirmed.
+		- Against: the README transcripts as real output, and item 58's "both spellings".
+		- Fixed: both README transcripts show the pointer line, and the spec names the third summary, `strict load failed: N diagnostic(s)`.
+		- Pinned by: `check-readme.bash` now runs every `$ shcl` line in the README's console blocks against the README's own files and compares the output, stderr included. It failed on exactly these two transcripts before the README fix. Row `check-strict-summary` pins the strict summary.
+		- Note: the second time a transcript drifted, after 20260909 item 34, so the check is for the class.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161754
 
 - Code review 20260909:
 
