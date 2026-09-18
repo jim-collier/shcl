@@ -435,11 +435,12 @@ typedef struct { size_t start, end; shcl_quote quote; } shcl_piece;
 // name was the bare `*` wildcard (lookups only).
 typedef struct { shcl_piece name; shcl_piece selector; int has_selector; int star; } shcl_seg_tok;
 // The spans of one line, or of one lookup path. Zero it before its first use;
-// each call clears and reuses it, and the two arrays grow in the document's
-// read arena (valid until shcl_free or shcl_reads_release - zero it again
-// after that). cap is the caller's element cap (0 = none): the scan stops as
-// soon as the value holds more elements than this, and capped says it did,
-// with elements then incomplete. cap is kept across calls.
+// each call clears and reuses it, and the two arrays grow in the read arena of
+// the document passed on that call (valid until shcl_free or
+// shcl_reads_release - zero it again after that). Handed another document, it
+// starts over in that one's arena. cap is the caller's element cap (0 = none):
+// the scan stops as soon as the value holds more elements than this, and
+// capped says it did, with elements then incomplete. cap is kept across calls.
 typedef struct {
 	shcl_seg_tok *segments; size_t nseg;
 	int has_sep; size_t sep;          // the separator (`:` on a line, `=` in --set); none when the path ran to the end or into a comment
@@ -449,6 +450,7 @@ typedef struct {
 	int has_fault; size_t fault_at; const char *fault_why; // where the path stopped making sense, and why (E014 as a whole)
 	size_t cap; int capped;
 	size_t seg_cap, elem_cap;         // storage bookkeeping
+	const void *arena;                // the read arena the two arrays live in
 } shcl_tokens;
 // Which spelling the tokenizer reads: the current rules, or the 2.x rules for
 // shcl_migrate only.
@@ -1380,12 +1382,24 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int path, ShclRules r
 	}
 }
 
+/* The two arrays belong to the arena they were grown in. Kept across a
+   second document, the next push would write into the first one's memory,
+   and once that one is freed, into memory nobody owns. What the old arrays
+   hold stays with the first document until it is freed. */
+static void tok_adopt(ShclArena *a, shcl_tokens *t) {
+	if (t->arena == a) return;
+	t->segments = NULL; t->seg_cap = 0; t->nseg = 0;
+	t->elements = NULL; t->elem_cap = 0; t->nelem = 0;
+	t->arena = a;
+}
 void shcl_tokenize(shcl_doc *d, const char *text, size_t len, char sep, int path, shcl_rules rules, shcl_tokens *out) {
 	ShclStr s; s.p = text ? text : ""; s.n = len;
+	tok_adopt(&d->reads, out);
 	tokenize(&d->reads, s, sep, path, rules, out);
 }
 void shcl_tokenize_value(shcl_doc *d, const char *text, size_t len, size_t from, shcl_rules rules, shcl_tokens *out) {
 	ShclStr s; s.p = text ? text : ""; s.n = len;
+	tok_adopt(&d->reads, out);
 	tokenize_value(&d->reads, s, from, rules, out);
 }
 

@@ -43,6 +43,15 @@ static size_t arena_bytes(const ShclArena *a) {
 	return n;
 }
 
+// Whether p points into one of the arena's blocks.
+static int arena_holds(const ShclArena *a, const void *p) {
+	for (const ShclBlock *b = a->head; b; b = b->next) {
+		const char *base = (const char *)(b + 1);
+		if ((const char *)p >= base && (const char *)p < base + b->cap) return 1;
+	}
+	return 0;
+}
+
 static int failures = 0;
 // Wall time in milliseconds: clock() is CPU time, and on windows it ticks in
 // whole milliseconds, too coarse for a ratio of two runs.
@@ -324,6 +333,22 @@ int main(void) {
 	if (got.n != wn || memcmp(got.p, wcopy, wn) != 0 || shcl_get_int_or(d, "group.key", 9, -1) != 99999) fail("compaction changed the document");
 	free(wcopy);
 	shcl_free(d);
+
+	// A tokens struct handed a second document grows in that one's read arena.
+	// Its arrays stayed in the first one's, so freeing the first and tokenizing
+	// again wrote into freed memory.
+	{
+		shcl_doc *da = shcl_parse("a: 1\n", 5), *db = shcl_parse("b: 2\n", 5);
+		shcl_tokens t;
+		memset(&t, 0, sizeof t);
+		shcl_tokenize(da, "a.b: 1, 2", 9, ':', 0, SHCL_RULES_CURRENT, &t);
+		shcl_tokenize(db, "x.y.z: 3, 4, 5", 14, ':', 0, SHCL_RULES_CURRENT, &t);
+		if (!arena_holds(&db->reads, t.segments) || !arena_holds(&db->reads, t.elements)) fail("tokens kept growing in another document's arena");
+		shcl_free(da);
+		shcl_tokenize(db, "p.q.r.s: 6, 7, 8, 9", 19, ':', 0, SHCL_RULES_CURRENT, &t);
+		if (t.nseg != 4 || t.nelem != 4 || t.elements[3].start != 18) fail("tokens reused across documents: wrong result");
+		shcl_free(db);
+	}
 
 	if (failures) return 1;
 	printf("mem_bounds: OK\n");

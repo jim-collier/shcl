@@ -80,14 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
-		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
-		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
-		- Sites: `shcl.h:436-441`, `:1180-1187`, `:1383-1390`.
-		- Origin: `fbbe7ce` (2026-09-07). A coverage gap the 20260909 round named and did not reach. Confirmed.
-		- Against: the `shcl_tokens` contract comment.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
 		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
 		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
@@ -554,6 +546,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: `init-optional-defaults-ok` expected an optional `a[b]` with `default: c` to generate, which is this defect. It is commented out with the reason, and `init-optional-defaults-ok-named` has the same schema with `default: b`. The generation grid count in `fuzz_smoke.rs` went from 1171 to 1039, all 132 of them optional fields with a contradicting default.
 		- Opened: 20260918-133258
 		- Closed: 20260918-154454
+
+	- ✅ Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
+		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
+		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
+		- Sites: `shcl.h:436-441`, `:1180-1187`, `:1383-1390`.
+		- Origin: `fbbe7ce` (2026-09-07). A coverage gap the 20260909 round named and did not reach. Confirmed.
+		- Against: the `shcl_tokens` contract comment.
+		- Fixed: the struct records the read arena its arrays live in, and `shcl_tokenize` or `shcl_tokenize_value` with another document starts them over in that one's arena, through `tok_adopt`. The header says so. C only: the other three hold these in their own memory.
+		- Pinned by: a block in `mem_bounds.c` that tokenizes with two documents, checks which arena holds the arrays, frees the first and tokenizes again. It fails on the old header, and `sanitize-c.bash` reports the use-after-free there under ASan.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154720
 
 - Code review 20260909:
 

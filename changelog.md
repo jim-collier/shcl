@@ -182,6 +182,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The help and the man page name the right subcommands for `--strictness`, `--layer`, `--set` and `--write`, and `migrate`'s synopsis lists `--lossy`.
 
+- C: a `shcl_tokens` reused with another document grows its arrays in that document's memory. It kept writing into the first document's, and after that one was freed, into memory nobody owned.
+
 - C: a setter refused for its value no longer keeps the memory it checked the value in. A loop of refused writes grew the document until it was freed.
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.
