@@ -37,9 +37,12 @@ from typing import Any, Optional
 
 REPO_PY = Path(__file__).absolute().parents[3] / "source" / "python"
 
-# What a loader hands back: (version, parse, emit) - emit None when the library
-# cannot write. Optional[] rather than | None: this alias is evaluated at import.
-Loader = tuple[str, Callable[[str], Any], Optional[Callable[[Any], str]]]
+# What a loader hands back: (version, parse, emit), and optionally a fourth
+# element that turns the file's text into whatever its parser wants - emit None
+# when the library cannot write. Optional[] rather than | None: this alias is
+# evaluated at import.
+Loader = tuple[str, Callable[[Any], Any], Optional[Callable[[Any], str]]]
+LoaderPrep = tuple[str, Callable[[Any], Any], Optional[Callable[[Any], str]], Callable[[str], Any]]
 
 
 def vmhwm() -> int:
@@ -107,16 +110,20 @@ def load_xml() -> Loader:
 	return "stdlib", ET.fromstring, lambda e: ET.tostring(e, encoding="unicode")
 
 
-def load_xml_lxml() -> Loader:
+def load_xml_lxml() -> LoaderPrep:
 	from lxml import etree
 	# huge_tree lifts libxml2's built-in size ceilings, which a document of the
 	# size this tool generates walks straight into - the parse fails outright
 	# otherwise. Turning them off is the fair setting rather than a thumb on the
 	# scale: they guard against hostile input, and this input is ours.
 	parser = etree.XMLParser(huge_tree=True)
+	# The bytes go in through `prepare`, not inside the timed parse. lxml's own
+	# entry point wants bytes where every other loader here wants str, and
+	# charging it for the encode is a cost none of the others pay.
 	return (etree.__version__,
-		(lambda s: etree.fromstring(s.encode("utf-8"), parser)),
-		(lambda e: etree.tostring(e, encoding="unicode")))
+		(lambda b: etree.fromstring(b, parser)),
+		(lambda e: etree.tostring(e, encoding="unicode")),
+		(lambda s: s.encode("utf-8")))
 
 
 ENTRIES = {
@@ -141,7 +148,7 @@ def emit_list() -> None:
 	"""key|format|library|retains|version|note for every entry that can be imported."""
 	for key, (loader, fmt, lib, retains, note) in ENTRIES.items():
 		try:
-			version, _, _ = loader()
+			version = loader()[0]
 		# Not just ImportError: a loader that fails any other way is one entry
 		# unavailable, not the whole listing gone.
 		except Exception as e:
@@ -153,15 +160,21 @@ def emit_list() -> None:
 def run(key: str, path: str, iters: int) -> None:
 	loader = ENTRIES[key][0]
 	try:
-		_, parse, emit = loader()
+		version_parse_emit = loader()
 	except ImportError as e:
 		print(f"skipped={e}")
 		return
+	_, parse, emit = version_parse_emit[:3]
+	# A loader whose parser wants something other than the file's text says so
+	# with a fourth element. Whatever it builds is built once, before the
+	# baseline, so neither the clock nor the memory figure carries it.
+	prepare = version_parse_emit[3] if len(version_parse_emit) > 3 else (lambda s: s)
 	src = Path(path).read_text(encoding="utf-8")
+	subject = prepare(src)
 
 	base = vmhwm()
 	try:
-		doc = parse(src)
+		doc = parse(subject)
 	except Exception as e:                                    # any parse failure is a result
 		print(f"failed={type(e).__name__}: {e}".replace("\n", " "))
 		return
@@ -171,13 +184,13 @@ def run(key: str, path: str, iters: int) -> None:
 	best = None
 	for _ in range(iters):
 		t = time.perf_counter()
-		doc = parse(src)
+		doc = parse(subject)
 		secs = time.perf_counter() - t
 		if best is None or secs < best:
 			best = secs
 		del doc
 
-	doc = parse(src)
+	doc = parse(subject)
 	emit_best = None
 	out = ""
 	if emit is not None:

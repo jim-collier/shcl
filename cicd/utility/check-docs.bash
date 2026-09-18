@@ -276,6 +276,14 @@ for phrase in "keeps the base's strictness" "merge is not free" \
 	"strict failure in a lower layer" "Tolerances the whitelist allows"; do
 	grep -qF -- "${phrase}" "${repoDir}/project/spec.md" || fBad "spec.md no longer says: ${phrase}"
 done
+##	20260909 item 55: migrate is the only path across the breaking change and had
+##	no normative description of what it promises. Same reason as the loop above -
+##	prose alone can be deleted with every gate green.
+for phrase in "The output is its own fixpoint" "It is not a formatter" \
+	"never writes the whole info block into a file that had none" \
+	"Exit codes: 0 when the file needed nothing or was rewritten"; do
+	grep -qF -- "${phrase}" "${repoDir}/project/spec.md" || fBad "spec.md's Migrating section no longer says: ${phrase}"
+done
 ##	20260901b item 45: the Python section owns the iterative-walk deviation and
 ##	its reason; it sat under the C heading once.
 pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/style-guide.md")"

@@ -936,6 +936,45 @@ print(len(sys.path) - len(before))
 PYEOF
 )"
 	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
+	## 20260909 item 61: lxml's parser wants bytes where every other loader here
+	## wants text, and the encode used to sit inside the timed parse - about 28%
+	## on a 7 MB document, charged to lxml. A loader's fourth element prepares the
+	## source once, before the clock starts, and the parse must see that.
+	prep="$(python3 - "${worker}" "${tmpDir}/w.shcl" <<'PYEOF'
+import contextlib, io, runpy, sys
+mod = runpy.run_path(sys.argv[1])
+seen = []
+def parse(x):
+	seen.append(x)
+	return x
+mod["ENTRIES"]["probe"] = (lambda: ("v", parse, None, lambda t: ("PREPARED", t)), "x", "x", "x", "x")
+with contextlib.redirect_stdout(io.StringIO()):
+	mod["run"]("probe", sys.argv[2], 2)
+ok = bool(seen) and all(isinstance(x, tuple) and x[0] == "PREPARED" for x in seen)
+print("ok" if ok else "raw")
+PYEOF
+)"
+	[[ "${prep}" == "ok" ]] || fBad "pyworker.py run() hands the parser the file text, not what the loader prepared"
+fi
+
+##	20260909 item 61: the demo captured stdout and stderr separately and stuck
+##	one after the other, so every stderr line landed under every stdout line -
+##	an order no terminal produces. The two share a pipe now.
+gif="${repoDir}/cicd/utility/gen-demo-gif.py"
+if [[ -f "${gif}" ]] && python3 -c 'import PIL' 2>/dev/null; then
+	merged="$(python3 - "${gif}" <<'PYEOF'
+import runpy, sys
+mod = runpy.run_path(sys.argv[1])
+step = {"show": "x", "run": "echo one; echo TWO >&2; echo three"}
+print("|".join(mod["fRunStep"](step, "shcl", "/bin/true")))
+PYEOF
+)"
+	[[ "${merged}" == "one|TWO|three" ]] || fBad "gen-demo-gif.py does not render a step's output in emission order: ${merged}"
+elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+	fBad "the demo output order cannot be checked here, and the gate requires it"
+else
+	echo "shell-regress: skipping the demo output order (no Pillow here)"
+	echo shell-regress >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 
 ##	The completions check against a subcommand that takes no options. One side
@@ -963,8 +1002,22 @@ grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
-for g in check-c-compilers.bash check-locale.bash check-docs.bash package.bash shell-regress.bash cli-regress.bash; do
-	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+##	The grep is for the expansion, not the name: a history line or a comment
+##	mentioning the flag satisfied the old pattern, so a gate could lose its
+##	guard and stay on the list. -F because the pattern carries braces.
+# shellcheck disable=SC2016  ## the literal expansion is the pattern
+for g in check-c-compilers.bash check-locale.bash check-docs.bash check-readme.bash package.bash shell-regress.bash cli-regress.bash; do
+	grep -qF '${SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+done
+##	20260909 item 53: the list above was five gates of fourteen, and every skip
+##	the round found was outside it. A hand list drifts, so the rule is derived:
+##	a gate that says it is skipping because a tool is not here has to be able to
+##	call that a failure. Input-shaped skips (crosscheck's NUL cases,
+##	check-migrate's untrimmable documents) are not environment and stay out.
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	grep -qE 'skipping .*\(no ' "${g}" || continue
+	# shellcheck disable=SC2016  ## the literal expansion is the pattern
+	grep -qF '${SHCL_GATE_STRICT' "${g}" || fBad "${g##*/} skips over a missing tool without reading SHCL_GATE_STRICT"
 done
 ##	The same skips outside the gate have to be noted, or a local run that
 ##	skipped one records its tree as though it ran everything. This file is not

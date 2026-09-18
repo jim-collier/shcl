@@ -495,6 +495,9 @@ struct Opts {
 	sets: Vec<Set>,          // final override layer, in the order given
 	args: Vec<String>,       // positional: FILE [PATH]
 	seen: Vec<&'static str>, // canonical names of options given, for per-command validation
+	// A value option in space form that took the LAST word on the line. That
+	// word is usually the FILE, and the usage line alone never says so.
+	swallowed: Option<(String, String)>,
 }
 
 /// Did the command line ask for one of the informational outputs? Only tokens
@@ -637,6 +640,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 		sets: Vec::new(),
 		args: Vec::new(),
 		seen: Vec::new(),
+		swallowed: None,
 	};
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	let mut i = 0;
@@ -698,6 +702,9 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 					.get(i)
 					.ok_or_else(|| format!("missing value for {} (try {}=VALUE)", a, a))?;
 				set_value_opt(&mut o, a, v)?;
+				if i + 1 == argv.len() {
+					o.swallowed = Some((a.to_string(), v.clone()));
+				}
 			}
 			_ if a.starts_with("--default=") => set_value_opt(&mut o, "--default", &a[10..])?,
 			_ if a.starts_with("--on-bad=") => set_value_opt(&mut o, "--on-bad", &a[9..])?,
@@ -1036,6 +1043,19 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 /// text, and only the caller knows which half of the op that was, so it names
 /// it: a setter refused for its value used to report the sentence written for
 /// `set_literal` whatever the op.
+/// Which half of a `raw` op had no spelling, and why. The half is asked of the
+/// library rather than worked out here: an empty info string always reads back,
+/// so a write that still fails with one is the body's fault. Re-deriving the
+/// rule in the CLI is how the two copies drift.
+fn raw_refusal(content: &str) -> &'static str {
+	let mut probe = Document::new();
+	if !probe.set_raw("p", content, "") {
+		"the block body has no spelling that reads back: a line ending in a carriage return is trimmed on the way back in, and a line spelling the closing fence would end the block early"
+	} else {
+		"the info string has no spelling that reads back: a '#' in it opens a comment, and a line break has no inline spelling"
+	}
+}
+
 fn describe_refusal(doc: &Document, path: &str, unwritable: &'static str) -> &'static str {
 	match doc.write_reason(path) {
 		shcl::WriteReason::Writable => unwritable,
@@ -1886,7 +1906,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		let unwritable = match f[0] {
 			"literal" | "literal-default" => "the value text is not one value",
 			"comment" => "the comment text is not one line",
-			"raw" | "raw-default" => "the info string or the block body has no fence spelling",
+			"raw" | "raw-default" => raw_refusal(&unescape_ops(f.get(3).copied().unwrap_or(""))),
 			_ => "the value has no spelling that reads back",
 		};
 		return Err(format!(
@@ -2436,11 +2456,19 @@ fn run_cli() -> u8 {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
-			errln!(
-				"unknown option: {}{} (see --help)",
-				cmd,
-				suggest(&option_names(), cmd.split('=').next().unwrap_or(&cmd))
-			);
+			let name = cmd.split('=').next().unwrap_or(&cmd);
+			if option_names().contains(&name) {
+				// It is a real option, just in front of the subcommand. Calling
+				// it unknown and then suggesting the same spelling back says
+				// nothing about what is actually wrong.
+				errln!("option {} goes after the subcommand (see --help)", name);
+			} else {
+				errln!(
+					"unknown option: {}{} (see --help)",
+					cmd,
+					suggest(&option_names(), name)
+				);
+			}
 		} else {
 			errln!(
 				"unknown command: {}{} (see --help)",
@@ -2457,6 +2485,21 @@ fn run_cli() -> u8 {
 			return 1;
 		}
 	};
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. init is
+	// the one command that wants no positional of its own.
+	if cmd != "init"
+		&& o.args.is_empty()
+		&& let Some((name, v)) = &o.swallowed
+	{
+		errln!(
+			"option {} took '{}' as its value, so no FILE is left; spell it {}=VALUE",
+			name,
+			v,
+			name
+		);
+		return 1;
+	}
 	#[cfg(feature = "profiling")]
 	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
 		return run_profiled(&cmd, &o, &out);

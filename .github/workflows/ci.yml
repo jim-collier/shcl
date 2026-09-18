@@ -72,8 +72,10 @@ jobs:
           ## unpinned on purpose: NSIS only has to compile the setup script,
           ## and the zsh rows run the shipped completion, so the version a
           ## user's own shell would be is the right one to answer.
+          ## zig builds the README's Zig example and Pillow loads the demo gif
+          ## script for its output-order row. Both skips fail the gate too.
           sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh
-          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0
+          pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0 pillow==11.1.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser'
           curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/shellcheck.tar.xz \
@@ -85,6 +87,11 @@ jobs:
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
           sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
           shellcheck --version
+          curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/zig-0.16.0.tar.xz \
+            "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
+          echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  /tmp/zig-0.16.0.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/zig-0.16.0.tar.xz -C /tmp
+          echo "/tmp/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
       ## The supply-chain trio gates the lint stage and none of it ships on the
       ## image. Versions match TOOL_PINS, same as everything above. cargo-deny
       ## comes as a prebuilt binary rather than a cargo install: building it

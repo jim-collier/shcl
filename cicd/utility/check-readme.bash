@@ -119,8 +119,12 @@ if command -v zig >/dev/null 2>&1; then
 		exit 1
 	fi
 	echo "check-readme: the Zig example builds as written"
+elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+	echo "check-readme: no zig here, and the gate requires it" >&2
+	exit 1
 else
 	echo "check-readme: skipping the Zig example (no zig here)"
+	echo check-readme >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 echo "check-readme: OK"
 
@@ -129,3 +133,6 @@ echo "check-readme: OK"
 ##		            system includes a reader adds above the header.
 ##		2026-09-08  Go and Zig join it, after the Go fragment was found not to
 ##		            compile at all and the Zig one to be checked by nothing.
+##		2026-09-17  The zig skip is a failure under SHCL_GATE_STRICT and is noted
+##		            in SHCL_GATE_SKIPS, so a local run that took it is not
+##		            recorded as having run everything.

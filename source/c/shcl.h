@@ -485,6 +485,8 @@ typedef struct { char *text; size_t len; int current; size_t ambiguous; size_t l
 // the same tree; everything the two rule sets agree on comes through as
 // written. from_v2 says the file really is 2.x, which is the only thing that
 // can settle the spellings the two rule sets read differently.
+// An allocation failure inside it frees its own working memory before SHCL_OOM
+// runs, so a hook that longjmps out is not left holding the two arenas.
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2);
 
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
@@ -1874,17 +1876,41 @@ static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating 
 	return sb_S(&out);
 }
 
+/* The two arenas a migration builds in. They sit off the frame so the recovery
+   point below can still reach them: a longjmping SHCL_OOM skips this frame, and
+   an ordinary local is indeterminate by the time the jump lands. */
+typedef struct { ShclArena a, sc; } ShclMigrateOwn;
+
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
-	ShclArena a, sc; memset(&a, 0, sizeof a); memset(&sc, 0, sizeof sc);
+	ShclMigrateOwn *volatile own = (ShclMigrateOwn *)calloc(1, sizeof *own);
+	if (!own) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		/* An allocation failed below. Drop what the two arenas hold - about two
+		   megabytes on a large file - then hand the failure on: the allocation
+		   still failed, so the hook gets its say with nothing left behind. */
+		ShclMigrateOwn *bad = own;
+		arena_free(&bad->a); arena_free(&bad->sc); free(bad);
+		SHCL_OOM();
+		abort();
+	}
+	arena_guard(&own->a, &panic); arena_guard(&own->sc, &panic);
 	ShclStr in; in.p = text ? text : ""; in.n = len;
 	ShclMigrating st; st.from_v2 = from_v2; st.ambiguous = 0; st.lost = 0;
 	shcl_migration m; m.current = 0;
-	ShclStr r = migrate(&a, &sc, in, &st, &m.current);
+	ShclStr r = migrate(&own->a, &own->sc, in, &st, &m.current);
 	m.ambiguous = st.ambiguous; m.lost = st.lost; m.len = r.n;
 	m.text = (char *)malloc(r.n + 1);
-	if (!m.text) { arena_free(&a); arena_free(&sc); SHCL_OOM(); abort(); }
+	if (!m.text) {
+		ShclMigrateOwn *bad = own;
+		arena_free(&bad->a); arena_free(&bad->sc); free(bad);
+		SHCL_OOM(); abort();
+	}
 	memcpy(m.text, r.p, r.n); m.text[r.n] = 0;
-	arena_free(&a); arena_free(&sc);
+	/* The recovery point is this frame's; the arenas go with it, so nothing is
+	   left holding a jmp_buf that has gone out of scope. */
+	ShclMigrateOwn *done = own;
+	arena_free(&done->a); arena_free(&done->sc); free(done);
 	return m;
 }
 
@@ -4716,10 +4742,13 @@ static int needs_quotes(ShclStr t) {
 		while (i < t.n) { uint32_t c; size_t l = utf8_decode(t.p, t.n, i, &c); i += l;
 			if (c == ' ' || c == '\t' || c == '\n' || c == ',' || c == ':' || c == '#' || c == '"' || c == '\'' || c == '[' || c == ']') { needs = 1; break; } }
 	}
-	/* Edge whitespace beyond the space/tab above still has to force quotes: the
-	   parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
-	   ideographic space) at either end would not survive the reload. Edges only
-	   - interior whitespace is never trimmed and quoting it would move bytes. */
+	/* Edge whitespace still has to force quotes, for the carriage return: it is
+	   a blank, so a piece ending in one loses it to the reload. Space and tab
+	   are already in the list above. The test is the whole Unicode whitespace
+	   set rather than those three, which only ever adds quoting - the parser
+	   itself trims no wider than is_wsp, so a leading no-break space is
+	   content. Edges only: interior whitespace is never trimmed and quoting it
+	   would move bytes. */
 	if (!needs && t.n) {
 		uint32_t f, l; utf8_decode(t.p, t.n, 0, &f); utf8_last(t, &l);
 		if (is_ws(f) || is_ws(l)) needs = 1;
@@ -7014,14 +7043,18 @@ static int g_has_wild(const ShclVCons *c) {
 // binding line. A path deeper than a document may nest cannot be generated
 // either: the line would draw E016 on the way back in. A newline in a name or a
 // by-value selector is writable, since both are spelled escaped.
-static int g_unwritable(const ShclVCons *c) {
-	if (c->segs.len > SHCL_MAX_DEPTH) return 1;
+// The reason doubles as the predicate, so the refusal cannot name a path for a
+// reason generation did not act on.
+static const char *g_why_unwritable(const ShclVCons *c) {
+	if (c->segs.len > SHCL_MAX_DEPTH) return "nests past the depth cap";
 	for (size_t si = 0; si < c->segs.len; si++) {
 		const ShclSegment *sg = &c->segs.data[si];
-		if (sg->sel.tag == SEL_INDEX || sg->star) return 1;
+		if (sg->sel.tag == SEL_INDEX) return "a [#N] selector needs an instance that does not exist yet";
+		if (sg->star) return "a * name segment has no name to write";
 	}
-	return 0;
+	return "";
 }
+static int g_unwritable(const ShclVCons *c) { return g_why_unwritable(c)[0] != '\0'; }
 // A repeat lower bound of 2 or more is the one documented shortfall - the line
 // is emitted once and the count reported - so it is not the fault below.
 static int g_cannot_satisfy(const ShclVCons *c) { return c->required || (c->has_repeat && c->rep_lo == 1); }
@@ -7305,14 +7338,23 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	/* A path that cannot be written at all belongs in the trailing note, but one
 	   that must exist can never be satisfied from there: the self-check would
 	   then report the document as missing a path, which points at the config
-	   rather than at the schema line that cannot be generated. */
+	   rather than at the schema line that cannot be generated.
+	   Every such path is named, not just the first: fixing one only to be
+	   refused over the next tells nobody how much is wrong. */
+	int blocked = 0;
 	for (size_t i = 0; i < cons.len; i++) {
 		const ShclVCons *c = &cons.data[i];
 		if (!g_cannot_satisfy(c) || !g_unwritable(c) || g_has_wild(c)) continue;
 		ShclSB m = {0, 0, 0};
 		sb_puts(a, &m, "required path cannot be generated: ");
 		sb_putS(a, &m, g_escape_nl(a, c->path));
+		sb_puts(a, &m, " (");
+		sb_puts(a, &m, g_why_unwritable(c));
+		sb_puts(a, &m, ")");
 		push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+		blocked = 1;
+	}
+	if (blocked) {
 		if (ok) *ok = 0;
 		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}

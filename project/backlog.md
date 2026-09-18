@@ -11,6 +11,7 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 
 <!-- TOC ignore:true -->
 ## Table of contents
+
 <!-- TOC -->
 
 - [Conventions](#conventions)
@@ -91,57 +92,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
+- 🔘 The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
+	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
+	- Note: a count of nodes walked would not flake the way a clock does.
+	- Opened: 20260917-190500
+
 ### Features and enhancements
 
 - Code review 20260909:
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
 
-	- Item 45 is under Future and/or deferred.
-
-	- 🛠️ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
-		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
-		- Reproduced, both shapes, 2026-09-17. Eight times the input against the release reference: star paths 0.028 s to 1.387 s, mounts 0.020 s to 0.974 s, where a schema with neither goes 0.010 s to 0.098 s. Same curve in all four bindings; Python is worst, 22.4 s where the fix does it in 0.8 s.
-		- Cause: `star_legal` and `chain_parts_legal` each walk their whole list per document node. Both are element-wise, so a path can only match a chain whose first part its own first segment accepts.
-		- Fixed: the two matchers take an index bucketing paths by first segment, with one bucket for `*`, built once per constraint list. `first_index` and `FirstIndex` (Rust), `firstIndex` and `firstIdx` (Go), `_first_index` and `_candidates` (Python), `fidx_add` and `fidx_bucket` (C). Both curves are linear now and sit at the no-schema control's cost: star paths 1.387 s to 0.141 s, mounts 0.974 s to 0.135 s.
-		- Note: C indexes the per-fragment lists by position rather than by fragment name, because its `dead` array is already numbered that way. The comment says so.
-		- Pinned by: two `perf-gate.bash` workloads, `stars` and `mounts`, each timed against the binding's own parse baseline. Watched to fail: on the old code 5 of the 6 go red, by 4.4x (rust), 2.3x (c) and 1.3x (go). Correctness is pinned by the corpus, which was watched to fail too - a dropped star bucket fails `validation_matches_expected`, and a fragment reading the top-level bucket fails that and `init_generation_matches_expected`.
-		- Note: the workload shape matters twice over. The document's names sit at the end of the schema's list, since a name near the front ends the scan early and hid four fifths of the cost; and each instance is one dotted line, since the block spelling costs three times the parse for the same chains and pushed the new code near its own budget.
-		- Note: checked against the old code over 3,000 random schema and document pairs in the reference, and 800 each for the three ports, comparing `check --schema` stdout and exit code. No divergence. The harness was falsified first: with the star bucket dropped it reports one.
-		- Open: the three schema builds. `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.
-			- Measured: a 64,000-field schema against a one-field document is 0.210 s, of which 0.060 s is parsing the schema. Building once instead would take most of the rest, so roughly 2x on a schema-heavy run. The build itself is linear, so this is a constant factor, not a curve.
-			- Note: left open for a call rather than coded around. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling shape this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings. Neither is a mechanical change.
-		- Opened: 20260909-104600
-
-	- 🔘 Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
-		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
-		- Related: bug item 37 is the stale reason given for the refusal.
-		- Opened: 20260909-104800
-
-	- 🔘 Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
-		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
-		- Note: the recorded rule is that a transient arena armed on a recovery point has to be reachable from it, or the unwind skips its frame.
-		- Opened: 20260909-105000
-
-	- 🔘 Item 52: the C sanitizer gate never runs the commands the last three rounds added.
-		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
-		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
-		- Note: that `mem_bounds.c` half was done with bug item 22.
-		- Opened: 20260909-105100
-
-	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
-		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
-		- Site: `shell-regress.bash:824`.
-		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
-		- Opened: 20260909-105200
-
-	- 🔘 Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
-		- Corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed and expects zero diagnostics. Adding the unclosed case is what would have caught bug item 1.
-		- Opened: 20260909-105300
-
-	- 🔘 Item 55: the spec says nothing about `migrate`.
-		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
-		- Opened: 20260909-105400
+	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
 	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
 		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
@@ -151,22 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
 		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
 		- Opened: 20260909-105700
-
-	- 🔘 Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
-		- Both are cases where the CLI knows more than it says.
-		- Opened: 20260909-105800
-
-	- 🔘 Item 60: three refusal messages name neither the half of the operation that failed nor the cause.
-		- The `raw` op's message conflates four causes. `emit_element`'s justifying comment is wrong in all four and contradicts the comment on `is_wsp` in the same file, though the clause it justifies is still needed for the carriage-return reason it omits.
-		- Opened: 20260909-105900
-
-	- 🔘 Item 61: two measurement tools report numbers that are wrong in a knowable direction.
-		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
-		- Opened: 20260909-110000
-
-	- 🔘 Item 62: three documentation gaps found on the way, none of them a contradiction.
-		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
-		- Opened: 20260909-110100
 
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
@@ -3511,6 +3457,108 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260909:
 
+	- ✅ Item 61: two measurement tools report numbers that are wrong in a knowable direction.
+		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
+		- Reproduced, 2026-09-17. On a 7.4 MB XML document the comparison worker timed lxml at 0.115 s where the same parse without the encode is 0.090 s, so about 28% of what it reported was work no other loader was charged for. lxml's entry point wants bytes; every other loader here takes the file's text.
+		- Fixed: a loader may hand back a fourth element that turns the file's text into whatever its parser wants. It runs once, before the baseline and before the clock, so neither the time nor the memory figure carries it.
+		- Fixed: the demo runs a step with stderr on the same pipe as stdout. It used to capture the two separately and concatenate, which put every stderr line under every stdout line - the order `set` prints its stdin note in, among others. No current step writes to stderr, so the published gif does not change; the next one that does would have been wrong.
+		- Pinned by: two `shell-regress.bash` checks, both watched to fail. The worker one hands `run()` a loader that marks what it prepared and asserts the parser saw the mark; the demo one runs a step that writes to both streams and asserts the order, skipping out loud where Pillow is absent.
+		- Opened: 20260909-110000
+		- Closed: 20260918-000000
+
+	- ✅ Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
+		- Both are cases where the CLI knows more than it says.
+		- Fixed: an option in front of the subcommand that is a real option now reads `option --schema goes after the subcommand`. It used to be called unknown and then handed its own spelling back as a did-you-mean.
+		- Fixed: a value option in space form records the word it took when that word was the last on the line. With no positional left, the refusal names the option, the word it ate and the `=VALUE` spelling. `init` is exempt, since it is the one command that wants no FILE.
+		- Pinned by: `cli-regress.bash` rows `opt-before-cmd`, `unknown-opt-before-cmd`, `opt-space-ate-file` and `opt-space-init-ok`. The first and third were watched to fail against the old code; the last holds the space form that has to keep working.
+		- Opened: 20260909-105800
+		- Closed: 20260917-233000
+
+	- ✅ Item 60: three refusal messages name neither the half of the operation that failed nor the cause.
+		- The `raw` op's message conflates four causes. `emit_element`'s justifying comment is wrong in all four and contradicts the comment on `is_wsp` in the same file, though the clause it justifies is still needed for the carriage-return reason it omits.
+		- Fixed: the `raw` op's refusal names the half and its causes. Which half is asked of the library rather than re-derived in the CLI - an empty info string always reads back, so a write that still fails with one is the body's fault - through `raw_refusal` in each of the four.
+		- Fixed: the `needs_quotes` comment in all four. It claimed the parser trims the whole Unicode whitespace set, which `is_wsp`'s own comment three screens up contradicts. The real reason is the carriage return, which is a blank and is trimmed; the wide test stays, since it only ever adds quoting.
+		- Note: the fence-close cause is all but unreachable, because `choose_fence` always picks a fence longer than any run in the body. It is named anyway, since a body line ending in a carriage return can reach it.
+		- Pinned by: `cli-regress.bash` rows `ops-raw-bad-info` and `ops-raw-bad-body`, both watched to fail against the one old message.
+		- Opened: 20260909-105900
+		- Closed: 20260917-233000
+
+	- ✅ Item 55: the spec says nothing about `migrate`.
+		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
+		- Fixed: the Migrating from 2.x section now states what `migrate` promises - the output reads as 2.x read it, it is its own fixpoint, a file it cannot carry across is left alone, it adds two comment lines and never the whole block, and it is not a formatter - plus the four exit codes in one line.
+		- Note: the section already described the flags and the two edges. What was missing was the guarantees, which is what a consumer needs to decide whether to trust a scripted migration.
+		- Pinned by: four phrases in `check-docs.bash`, watched to fail by rewording one.
+		- Opened: 20260909-105400
+		- Closed: 20260917-223000
+
+	- ✅ Item 62: three documentation gaps found on the way, none of them a contradiction.
+		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
+		- Fixed: all three. The `literal` op's `#` rule in `conformance/README.md` says the rule the corpus pins - a `#` outside quotes ends the text wherever it sits, not only behind a blank. The escape-decode bullet no longer lists `comment` beside the two that can use it, and says a decoded line break only gets the op refused. The `raw` op line says `INFO` is taken as written.
+		- Fixed: `design.md` has a blank line after the Table of contents heading. `backlog.md` had the same gap and got it too; `README.md` already had it.
+		- Note: each of the three was reproduced against the CLI first.
+		- Opened: 20260909-110100
+		- Closed: 20260917-223000
+
+	- ✅ Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
+		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
+		- Site: `shell-regress.bash:824`.
+		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
+		- Fixed: `check-readme.bash`'s zig skip is a failure under the flag and is noted in `SHCL_GATE_SKIPS`, which was the one skip left that turns on what is installed. `check-migrate.bash`'s untrimmable documents and `crosscheck.bash`'s NUL cases are properties of the input, not of the box, so both stay out and say why.
+		- Fixed: the hand list is backed by a derived rule. Any gate whose text says it is skipping because a tool is not here has to read the flag, so the list cannot fall behind again.
+		- Note: both greps now match the expansion rather than the name. The first attempt matched `SHCL_GATE_STRICT` anywhere, and the history line added in the same edit satisfied it - the guard could be deleted and the gate stayed green. Caught by watching it fail.
+		- Pinned by: `shell-regress.bash`, watched to fail with the guard taken out of `check-readme.bash`.
+		- Opened: 20260909-105200
+		- Closed: 20260917-220000
+
+	- ✅ Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
+		- Corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed and expects zero diagnostics. Adding the unclosed case is what would have caught bug item 1.
+		- Already done, by the fix for bug item 1. Corpus `116-selector-open-quote` holds four unclosed selector quotes across three shapes, with the fmt golden, the diagnostics and the reads, and a strict `load` row.
+		- Checked rather than assumed: dropping the `E017` the selector half emits was watched to fail the corpus with `116` present and `126` absent. A case written for this was drafted and thrown away as a duplicate - it asserted nothing `116` did not, and a corpus change costs a fuzz-seed round.
+		- Note: the finding named `105-quote-in-selector`, which is the all-clean case and stays that way.
+		- Opened: 20260909-105300
+		- Closed: 20260917-220000
+
+	- ✅ Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
+		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
+		- Note: the recorded rule is that a transient arena armed on a recovery point has to be reachable from it, or the unwind skips its frame.
+		- Fixed: the two arenas live in a small `ShclMigrateOwn` off the frame, reached through a volatile pointer, and `shcl_migrate` arms its own recovery point over them. An allocation failure now lands there, frees both and the owner, then calls `SHCL_OOM` so the hook still gets its unwind with nothing left behind.
+		- Note: the arenas had to leave the frame. An ordinary local is indeterminate once the jump lands, which is the same reason `do_parse` holds its two through volatile pointers.
+		- Pinned by: `oom_hook.c` counts live blocks now and asserts a cut-short migration ends where it started. Watched to fail: with the guards dropped it reports the leak at the first budget.
+		- Opened: 20260909-105000
+		- Closed: 20260917-213000
+
+	- ✅ Item 52: the C sanitizer gate never runs the commands the last three rounds added.
+		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
+		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
+		- Note: that `mem_bounds.c` half was done with bug item 22.
+		- Fixed: `sanitize-c.bash` runs `tokens`, `migrate`, `migrate --check` and the four write paths - `fmt --write`, `migrate --write`, `set --write`, and a `set --write` that creates the file - on its own copies. 2,486 CLI runs where there were 920.
+		- Note: all clean, as the finding predicted. The whole file tier had never run under the sanitizers, which is what this closes.
+		- Opened: 20260909-105100
+		- Closed: 20260917-213000
+
+	- ✅ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
+		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
+		- Reproduced, both shapes, 2026-09-17. Eight times the input against the release reference: star paths 0.028 s to 1.387 s, mounts 0.020 s to 0.974 s, where a schema with neither goes 0.010 s to 0.098 s. Same curve in all four bindings; Python is worst, 22.4 s where the fix does it in 0.8 s.
+		- Cause: `star_legal` and `chain_parts_legal` each walk their whole list per document node. Both are element-wise, so a path can only match a chain whose first part its own first segment accepts.
+		- Fixed: the two matchers take an index bucketing paths by first segment, with one bucket for `*`, built once per constraint list. `first_index` and `FirstIndex` (Rust), `firstIndex` and `firstIdx` (Go), `_first_index` and `_candidates` (Python), `fidx_add` and `fidx_bucket` (C). Both curves are linear now and sit at the no-schema control's cost: star paths 1.387 s to 0.141 s, mounts 0.974 s to 0.135 s.
+		- Note: C indexes the per-fragment lists by position rather than by fragment name, because its `dead` array is already numbered that way. The comment says so.
+		- Pinned by: two `perf-gate.bash` workloads, `stars` and `mounts`, each timed against the binding's own parse baseline. Watched to fail: on the old code 5 of the 6 go red, by 4.4x (rust), 2.3x (c) and 1.3x (go). Correctness is pinned by the corpus, which was watched to fail too - a dropped star bucket fails `validation_matches_expected`, and a fragment reading the top-level bucket fails that and `init_generation_matches_expected`.
+		- Note: the workload shape matters twice over. The document's names sit at the end of the schema's list, since a name near the front ends the scan early and hid four fifths of the cost; and each instance is one dotted line, since the block spelling costs three times the parse for the same chains and pushed the new code near its own budget.
+		- Note: checked against the old code over 3,000 random schema and document pairs in the reference, and 800 each for the three ports, comparing `check --schema` stdout and exit code. No divergence. The harness was falsified first: with the star bucket dropped it reports one.
+		- Decided: the three schema builds are deferred, not fixed. They are a 2x constant on a schema-heavy run, not a curve, and both ways to fix it cost more than that. Moved to Future and/or deferred with the measurement.
+		- Opened: 20260909-104600
+		- Closed: 20260917-210000
+
+	- ✅ Item 49: `init` refuses a whole satisfiable schema over one `[#N]` path.
+		- One unreachable path takes the entire generation with it, and the message names the path but not that the rest was fine.
+		- Related: bug item 37 is the stale reason given for the refusal.
+		- Decided: the refusal stays. `spec.md` says a must-exist path nothing can write is a `V097` fault rather than a line in the trailing block, so generating the rest would contradict the spec. What was missing is what the fault says.
+		- Fixed: `why_unwritable` in each binding gives the reason and the old `unwritable` predicate is now one line reading it, so the refusal can never name a path for a reason generation did not act on. Three reasons: a `[#N]` selector, a `*` name segment, and a path past the depth cap. Every blocked path gets its own fault line instead of only the first, so one run says how much of the schema is unreachable.
+		- Note: a separate line saying the rest generated fine was declined. Naming every blocker already says it, and the V09x lines are machine-read.
+		- Pinned by: `cli-regress.bash` rows `init-blocked-first` and `init-blocked-second` on a schema with two blocked paths either side of one that generates, plus the reason added to `init-star-repeat1` and `init-index-required`. All four watched to fail against the old code.
+		- Opened: 20260909-104800
+		- Closed: 20260917-210000
+
 	- ✅ Item 48: `V005` and `V006` name neither the bound nor the offending value.
 		- A range failure says which field, not what it was or what it should have been, so a user reading a long report has to open the schema for each one.
 		- Decided: the message follows V004's shape, with the bound inserted: `value above max 10 at 'port': 99`. The value is the source text of the element that broke the bound, not the first element, so an array says which slot.
@@ -5763,6 +5811,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ Code review 20260909 item 47, second half: `check --schema` builds the schema three times.
+	- `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.
+	- Measured: a 64,000-field schema against a one-field document is 0.210 s, of which 0.060 s is parsing the schema. Building once instead would take most of the rest, so roughly 2x on a schema-heavy run. The build itself is linear, so this is a constant factor, not a curve.
+	- Note: deferred 20260917. Caching the built schema on the schema document has no API cost but needs invalidating wherever that document's content changes, which is every setter, remove, merge and comment - the one-site-not-its-sibling class this round was about, and a miss there validates against a stale schema and says nothing. Passing a built schema in instead is a public API addition in all four bindings plus the veneer. Neither is worth a 2x constant without a call.
+	- Opened: 20260909-104600
 
 - ✋ Code review 20260909 item 45: creating instances one at a time is quadratic in the instance count.
 	- Measured on the `srv[name].port` shape the README leads with: per-write cost doubles with the sibling count in rust, go and C, and 16,000 instances takes 5.47 s in the release reference.
