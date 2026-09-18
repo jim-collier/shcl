@@ -1083,7 +1083,7 @@ if realCargo="$(command -v cargo)"; then
 	# shellcheck disable=SC2031  ## this is the script's own PATH; the subshell above keeps its change
 	out="$(PATH="${tmpDir}/nodump:${PATH}" "${BASH}" "${repoDir}/cicd/utility/check-migrate.bash" 2>&1)" || rc=$?
 	[[ "${rc}" == 2 && "${out}" == *"the fuzz dump wrote no documents"* ]] \
-		|| fBad "check-migrate passed with an empty fuzz dump (exit ${rc}): ${out: -200}"
+		|| fBad "check-migrate passed with an empty fuzz dump (exit ${rc}): $(tail -c 200 <<<"${out}")"
 else
 	fHave cargo || true
 fi
