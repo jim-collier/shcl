@@ -92,11 +92,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
-- 🔘 The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
-	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
-	- Note: a count of nodes walked would not flake the way a clock does.
-	- Opened: 20260917-190500
-
 ### Features and enhancements
 
 - Code review 20260909:
@@ -126,6 +121,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
+	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
+	- Note: a count of nodes walked would not flake the way a clock does.
+	- Cause: the fixture removed a leaf each cycle. A removed leaf leaves its parent's child list, so the old arena walk only stepped over dead nodes. With the defect put back, Go took 900 ms against 300 ms sound, so no bound could sit between them with room on a shared runner. The 1.5x headroom a sound build had here was thinner on windows.
+	- Fixed: the churn sets `g.tmp.x` and removes `g.tmp`, 50,000 times, so each dead child stays in a dead parent's list and the old walk indexes it. The constant is 1000 ms in all four, C included, which had 600. `TestIndexRebuildIgnoresRemovedNodes`, `index_rebuild_ignores_removed_nodes`, the Python runner's block, and `mem_bounds.c`.
+	- Left alone: a walked-node count. It needs a test-only hook in every binding, which 20260909 item 7 declined, and the new fixture separates the two cases by 8x or more.
+	- Measured: sound, churned against the bound: Go 230 ms of 1175, Rust debug 640 of 2300, Python 515 of 2500, C 27 of 1030. With the arena walk put back: Go 14 s, Rust debug 91 s, Python 54 s, C 8.7 s.
+	- Pinned by: the same four tests, each watched to fail with the arena walk put back.
+	- Opened: 20260917-190500
+	- Closed: 20260917-200839
 
 - ✅ `init` writes an optional child of an optional valued field as a dotted path, so uncommenting both lines makes two instances of the parent.
 	- Reproduced in the reference. `field: srv` with `repeat: 0, 1` and `default: web`, plus `field: srv.port` with a default, generates `# srv: web` and `# srv.port: 80`. Uncommented, `check --schema` exits 6 with `V007 ... 2 not in 0..1`, since `srv.port` names an empty-valued `srv`.

@@ -931,8 +931,12 @@ def main():
 	for churned in (False, True):
 		idoc = shcl.Document.parse("g:\n\tk: 1\n")
 		if churned:
-			for i in range(100000):
-				idoc.set_int("g.tmp", i)
+			# A subtree per cycle, not a leaf. A removed leaf leaves its
+			# parent's list, so the old walk only stepped over it and cost
+			# three times a sound build. A removed subtree keeps its own list,
+			# and the old walk indexed every dead child.
+			for i in range(50000):
+				idoc.set_int("g.tmp.x", i)
 				idoc.remove("g.tmp")
 		iother = shcl.Document.parse("g:\n\tk: 1\n")
 		t0 = time.perf_counter()
@@ -949,7 +953,7 @@ def main():
 	# A clock too coarse to see the fresh side leaves the ratio with a zero
 	# denominator, and then the bound is an absolute figure on whatever machine
 	# is running - which is what it was written not to be.
-	if ms[0] > 0 and ms[1] > ms[0] * 25 + 250:
+	if ms[0] > 0 and ms[1] > ms[0] * 25 + 1000:
 		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed

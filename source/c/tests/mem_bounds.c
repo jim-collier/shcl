@@ -218,13 +218,17 @@ int main(void) {
 		double t[2];
 		for (int churned = 0; churned < 2; churned++) {
 			shcl_doc *cd = shcl_parse("g:\n\tk: 1\n", 9);
-			if (churned) for (int i = 0; i < 100000; i++) { shcl_set_int(cd, "g.tmp", 5, i); shcl_remove(cd, "g.tmp", 5); }
+			/* A subtree per cycle, not a leaf. A removed leaf leaves its
+			   parent's list, so the old walk only stepped over it and cost
+			   three times a sound build. A removed subtree keeps its own list,
+			   and the old walk indexed every dead child. */
+			if (churned) for (int i = 0; i < 50000; i++) { shcl_set_int(cd, "g.tmp.x", 7, i); shcl_remove(cd, "g.tmp", 5); }
 			double c0 = wall_ms();
 			for (int i = 0; i < 2000; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
 			t[churned] = wall_ms() - c0;
 			shcl_free(cd);
 		}
-		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 100k set+remove\n", t[0], t[1]);
+		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 50k set+remove\n", t[0], t[1]);
 		/* A ratio between two timings says nothing under a sanitizer, which
 		   costs per allocation rather than per node walked. The plain build in
 		   the test stage is where this is judged. */
@@ -243,12 +247,11 @@ int main(void) {
 		   arena, which is a memset the walk cannot avoid. What the bound
 		   catches is the walk itself going over every dead node. Two thousand
 		   merges put that cost well past the constant term a shared runner
-		   needs. The constant is wider here than in the other three: on windows
-		   the allocator hands a freed 800 KB block back to the system and
-		   faults it in again on the next rebuild, which the hosted runner
-		   measured at half a second over two thousand merges; the defect is
-		   tens of seconds. */
-		if (t[1] > t[0] * 25 + 600) fail("the index rebuild walks nodes the document no longer holds");
+		   needs. On windows the allocator hands a freed 800 KB block back to
+		   the system and faults it in again on the next rebuild, which the
+		   hosted runner measured at half a second over two thousand merges;
+		   the defect is seconds. */
+		if (t[1] > t[0] * 25 + 1000) fail("the index rebuild walks nodes the document no longer holds");
 #endif
 	}
 
