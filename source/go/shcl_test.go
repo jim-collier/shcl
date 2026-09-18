@@ -1356,8 +1356,12 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	for churned := 0; churned < 2; churned++ {
 		d := Parse("g:\n\tk: 1\n")
 		if churned == 1 {
-			for i := 0; i < 100000; i++ {
-				d.SetInt("g.tmp", int64(i))
+			// A subtree per cycle, not a leaf. A removed leaf leaves its
+			// parent's list, so the old walk only stepped over it and cost
+			// three times a sound build. A removed subtree keeps its own list,
+			// and the old walk indexed every dead child.
+			for i := 0; i < 50000; i++ {
+				d.SetInt("g.tmp.x", int64(i))
 				d.Remove("g.tmp")
 			}
 		}
@@ -1379,14 +1383,15 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	// not. The factor is what catches the defect - the rebuild used to grow
 	// with the number of edits, which is orders rather than a fraction - so the
 	// constant can absorb a slow machine. Two thousand merges put the defect
-	// well past that constant; at two hundred it could hide under it.
+	// at seconds to tens of seconds, well past that constant; at two hundred
+	// it could hide under it.
 	// A clock too coarse to see the fresh side leaves the ratio with a zero
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be. Windows counts in
 	// whole milliseconds and reports 0.0 here.
 	if ms[0] <= 0 {
 		t.Logf("index rebuild ratio not judged: the clock cannot see the fresh side")
-	} else if ms[1] > ms[0]*25+250 {
+	} else if ms[1] > ms[0]*25+1000 {
 		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh - it walks nodes the document no longer holds", ms[1], ms[0])
 	}
 }

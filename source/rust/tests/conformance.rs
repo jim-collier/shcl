@@ -1534,8 +1534,12 @@ fn index_rebuild_ignores_removed_nodes() {
 	for (churned, slot) in ms.iter_mut().enumerate() {
 		let mut d = Document::parse("g:\n\tk: 1\n");
 		if churned == 1 {
-			for i in 0..100_000 {
-				assert!(d.set_int("g.tmp", i));
+			// A subtree per cycle, not a leaf. A removed leaf leaves its
+			// parent's list, so the old walk only stepped over it and cost
+			// three times a sound build. A removed subtree keeps its own list,
+			// and the old walk indexed every dead child.
+			for i in 0..50_000 {
+				assert!(d.set_int("g.tmp.x", i));
 				d.remove("g.tmp");
 			}
 		}
@@ -1556,7 +1560,7 @@ fn index_rebuild_ignores_removed_nodes() {
 	// denominator, and then the bound is an absolute figure on whatever machine
 	// is running - which is what it was written not to be.
 	assert!(
-		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 250.0,
+		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 1000.0,
 		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
 		ms[1],
 		ms[0]
