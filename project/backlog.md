@@ -11,6 +11,7 @@ The product backlog: bugs, features, enhancements, and code-review findings. Out
 
 <!-- TOC ignore:true -->
 ## Table of contents
+
 <!-- TOC -->
 
 - [Conventions](#conventions)
@@ -99,10 +100,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
-	- 🔘 Item 55: the spec says nothing about `migrate`.
-		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
-		- Opened: 20260909-105400
-
 	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
 		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
 		- Done in part: the block carries a `Format` line naming the format's major, added with item 4, which needed it to tell a 3.0 file from a 2.x one. The spec-link half is still open.
@@ -123,10 +120,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 61: two measurement tools report numbers that are wrong in a knowable direction.
 		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
 		- Opened: 20260909-110000
-
-	- 🔘 Item 62: three documentation gaps found on the way, none of them a contradiction.
-		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
-		- Opened: 20260909-110100
 
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
@@ -3470,6 +3463,22 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 55: the spec says nothing about `migrate`.
+		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
+		- Fixed: the Migrating from 2.x section now states what `migrate` promises - the output reads as 2.x read it, it is its own fixpoint, a file it cannot carry across is left alone, it adds two comment lines and never the whole block, and it is not a formatter - plus the four exit codes in one line.
+		- Note: the section already described the flags and the two edges. What was missing was the guarantees, which is what a consumer needs to decide whether to trust a scripted migration.
+		- Pinned by: four phrases in `check-docs.bash`, watched to fail by rewording one.
+		- Opened: 20260909-105400
+		- Closed: 20260917-223000
+
+	- ✅ Item 62: three documentation gaps found on the way, none of them a contradiction.
+		- `conformance/README.md:22` documents the `literal` op's `#` rule where the corpus pins the other one. The `comment` write op advertises a `\n` decode that can never succeed, and the `raw` op's INFO field does not decode escapes while its CONTENT field does. `design.md:12` has no blank line after the "Table of contents" heading.
+		- Fixed: all three. The `literal` op's `#` rule in `conformance/README.md` says the rule the corpus pins - a `#` outside quotes ends the text wherever it sits, not only behind a blank. The escape-decode bullet no longer lists `comment` beside the two that can use it, and says a decoded line break only gets the op refused. The `raw` op line says `INFO` is taken as written.
+		- Fixed: `design.md` has a blank line after the Table of contents heading. `backlog.md` had the same gap and got it too; `README.md` already had it.
+		- Note: each of the three was reproduced against the CLI first.
+		- Opened: 20260909-110100
+		- Closed: 20260917-223000
 
 	- ✅ Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
 		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.

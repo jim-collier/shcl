@@ -9,6 +9,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 
 <!-- TOC ignore:true -->
 ## Table of contents
+
 <!-- TOC -->
 
 - [Assumptions](#assumptions)

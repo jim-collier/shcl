@@ -708,6 +708,20 @@ Which file it is looking at is the one thing `migrate` cannot read off the text.
 
 Bracket text after the colon is the one line 2.x bound that nothing binds now, and there is no 3.0 spelling to move it to. `migrate` leaves the line and exits 7 rather than reporting success, so a scripted migration can tell "migrated" from "gave up"; `--lossy` accepts the loss on a rewrite.
 
+What `migrate` promises, and what it does not:
+
+- The output reads as the input read under 2.x. That is the whole point, and it is what the migration gate checks, document by document, against a build of the last 2.x commit.
+
+- The output is its own fixpoint. Running `migrate` on what `migrate` wrote changes nothing, so a rewrite cannot drift further on a second pass.
+
+- A file it cannot carry across is left alone. It never rewrites part of a file and reports success, and it never damages a file that was already correct. `--lossy` is the one way to accept a loss, and it has to be asked for.
+
+- It adds two comment lines to a file it rewrote - the `Format` line and a note saying the file came from 2.x - and nothing else. It never writes the whole info block into a file that had none.
+
+- It is not a formatter. Layout, comments, blank lines and raw bodies come through as written, so `migrate` output is not a `fmt` fixpoint and is not meant to be.
+
+Exit codes: 0 when the file needed nothing or was rewritten, 6 from `--check` when a line would change, 7 when a spelling needs `--from-2x` to settle or a line 2.x bound has nowhere to go, and 8 when the file cannot be read or written.
+
 Two edges read differently, and `migrate` leaves both as written:
 
 - A fence label holding a `#` ran to the end of the line in 2.x. It ends at the `#` now, and the rest is the line's comment. A label has no quoting, so rename it.
