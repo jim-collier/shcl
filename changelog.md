@@ -172,17 +172,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A skipped line whose value opens a raw block takes the block with it. The body used to be read as lines, and its closing fence opened a block that hid the rest of the file.
+
+- A schema path or type holding a line break no longer splits a diagnostic across two lines. It is written `\n`, as `init` already wrote it.
+
+- The column an `E014` names counts a carriage return and the blanks after it at the start of a line.
+
+- `migrate` ignores a `Format` line inside a raw body, which is the block's content and not the file's version. C `migrate` also finds the line in a file that starts with a BOM. A file naming an older format before `migrate`'s own stamp is no longer stamped again on every run.
+
 - `set --write` no longer replaces a file that turned up at the path while it waited for ops on stdin. It had decided the file was new before the wait, so the other file was replaced by the info block and the edits, at exit 0. It exits 8 now and leaves that file alone, and a save that finds nothing at the path never replaces a file that appears there before it finishes.
 
 - `set --no-banner` without `--write` is a usage error, like `--lossy` there. It was accepted and did nothing.
 
 - The help and the man page name the right subcommands for `--strictness`, `--layer`, `--set` and `--write`, and `migrate`'s synopsis lists `--lossy`.
 
+- Python: a file whose name holds no character start in its first 64 bytes can be saved. The temporary name fell back to the whole path, directory and all.
+
+- C: a default form on a path that already holds a value gives back the memory it checked the value in. A 4 MB default held 12 MB until the document was freed.
+
+- C: a `shcl_tokens` reused with another document grows its arrays in that document's memory. It kept writing into the first document's, and after that one was freed, into memory nobody owned.
+
 - C: a setter refused for its value no longer keeps the memory it checked the value in. A loop of refused writes grew the document until it was freed.
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.
 
-- `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one.
+- `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one. That includes a default that names another instance than its path selects.
 
 - A commented `init` line under a commented parent with a `default` selects the parent by that value, as a live line under a live parent does. `# srv: web` and `# srv.port: 80` became two `srv` instances once both were uncommented; the second line is now `# srv[web].port: 80`.
 

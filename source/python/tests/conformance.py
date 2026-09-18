@@ -1276,6 +1276,28 @@ def main():
 				raise SystemExit("save replaced the dangling link")
 			if _read(os.path.join(td, "real", "c.shcl")) != "a: 1\n":
 				raise SystemExit("save did not create the file behind the link")
+			# A name whose first 64 bytes hold no character start: the cut backs
+			# off to nothing, and the temp name used to fall back to the whole
+			# path, directory and all, so the save failed. Python-only: the
+			# other three have no fallback to reach.
+			os.mkdir(os.path.join(td, "sub"))
+			odd = os.path.join(td, "sub", os.fsdecode(b"\xc3" + b"\x80" * 70))
+			# A filesystem that holds UTF-8 names only, such as ZFS with
+			# utf8only, refuses this name whatever the temp is called.
+			try:
+				with open(odd, "w"):
+					pass
+				os.remove(odd)
+				takes_odd = True
+			except OSError:
+				takes_odd = False
+				print("conformance: skipping the non-UTF-8 name save (this filesystem refuses the name)")
+			if takes_odd:
+				werr = shcl.write_file_atomic(odd, "a: 1\n")
+				if werr is not None:
+					raise SystemExit(f"save of a name with no early character start failed: {werr}")
+				if _read(odd) != "a: 1\n":
+					raise SystemExit("save of a name with no early character start wrote the wrong text")
 		if os.name != "nt":
 			# Two links pointing at each other resolve to nothing, so the save
 			# fails and says why. It must not "fix" the cycle by dropping a

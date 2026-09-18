@@ -1204,6 +1204,13 @@ fn one_line(s: &str) -> String {
 		.replace('\t', "\\t")
 }
 
+/// Schema text for a diagnostic or a generated comment: a path or a type as the
+/// schema wrote it, with a line break spelled `\n`, so one diagnostic stays one
+/// line. Only the break is escaped, so a path reads the way it was written.
+fn schema_text(s: &str) -> String {
+	s.replace('\n', "\\n")
+}
+
 /// Escape processing (string reads): \t \n \\ \" \'; unknown escapes stay literal.
 fn apply_escapes(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
@@ -1469,16 +1476,47 @@ struct Migrating {
 /// The major a `##    Format   N` line names, if the document carries one.
 /// Digits that do not fit read as "newer than this", since whatever wrote them
 /// was not 2.x. Only `migrate` reads this line.
+///
+/// Raw bodies are skipped exactly where the rewrite skips them, by walking the
+/// lines through the same `migrate_line`. A Format line pasted into a block is
+/// that block's content, and taking it as the file's would rewrite a current
+/// file, or leave an old one alone. A file naming this format on any line has
+/// nothing to migrate, so the highest line decides: the stamp `migrate` adds
+/// comes after an older one, and the next run has to see it.
 fn format_version(text: &str) -> Option<u32> {
-	text.split('\n').find_map(|line| {
-		let n = line
-			.trim_end_matches(is_wsp)
-			.strip_prefix(FORMAT_LINE_HEAD)?;
-		// More digits than fit is not a 2.x file either, so it reads as this
-		// major and there is nothing to migrate.
-		(!n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
-			.then(|| n.parse().unwrap_or(FORMAT_MAJOR))
-	})
+	let mut tok = Tokens::default();
+	let mut fence: Option<(u8, usize)> = None;
+	// Only the blocks a line opens are wanted here, not what it counts.
+	let mut dry = Migrating {
+		from_v2: true,
+		ambiguous: 0,
+		lost: 0,
+	};
+	let mut found: Option<u32> = None;
+	for line in text.split('\n') {
+		let body = line.trim_end_matches('\r');
+		if let Some((ch, len)) = fence {
+			if is_fence_close(body, ch, len) {
+				fence = None;
+			}
+			continue;
+		}
+		if let Some(n) = line.trim_end_matches(is_wsp).strip_prefix(FORMAT_LINE_HEAD) {
+			// More digits than fit is not a 2.x file either, so it reads as
+			// this major and there is nothing to migrate.
+			if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) {
+				let v = n.parse().unwrap_or(FORMAT_MAJOR);
+				if v >= FORMAT_MAJOR {
+					return Some(v);
+				}
+				found = found.max(Some(v));
+				continue;
+			}
+		}
+		let rest = trim_wsp_end(&body[leading_ws(body).len()..]);
+		migrate_line(rest, &mut tok, &mut fence, &mut dry);
+	}
+	found
 }
 
 /// Rewrite a document written under the 2.x rules so this parser reads the
@@ -2371,6 +2409,36 @@ impl Parser {
 		);
 	}
 
+	/// Where the parse resumes after a refused field line. Every arm that
+	/// skips one comes through here, so a skipped line whose value opens a
+	/// raw block takes the body with it: read as lines, the body would bind
+	/// or be refused line by line, and its closing fence would open a block
+	/// that runs to the end of the file. A line whose path did not parse has
+	/// no value to read, so it goes alone.
+	fn skip_field_line(
+		&mut self,
+		lines: &[&str],
+		i: usize,
+		indent: &str,
+		tok: &Tokens,
+		rest: &str,
+	) -> usize {
+		if tok.fault.is_some() || tok.sep.is_none() {
+			return i + 1;
+		}
+		// A capped scan zeroed the value, and a fence is told by its leading
+		// run alone.
+		let value = if tok.capped {
+			trim_wsp(&rest[tok.value.0..])
+		} else {
+			&rest[tok.value.0..tok.value.1]
+		};
+		match fence_open(value) {
+			Some(fence) => self.consume_raw(lines, i + 1, i + 1, indent, fence).1,
+			None => i + 1,
+		}
+	}
+
 	/// Walk path segments under `parent`, select-or-creating; returns the node
 	/// for the last segment carrying `value`. None aborts the line (diagnosed).
 	fn attach_path(
@@ -2996,12 +3064,12 @@ impl Parser {
 					Outcome::Dropped,
 					indent,
 				);
-				i += 1;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			};
 			if parent == DEAD {
 				self.skip_under_dead(lineno, indent);
-				i += 1;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			}
 			let scan = match path_of(&tok, rest) {
@@ -3027,7 +3095,7 @@ impl Parser {
 						format!(
 							"malformed line skipped: {}, at column {}",
 							reason,
-							indent.len() + at + 1
+							indent.len() + lead + at + 1
 						),
 						outcome,
 						indent,
@@ -3052,12 +3120,7 @@ impl Parser {
 					Outcome::Dropped,
 					indent,
 				);
-				// A fence's body goes with its line, or it would read as live
-				// lines.
-				if let Some(fence) = fence_open(trim_wsp(&rest[tok.value.0..])) {
-					next = self.consume_raw(&lines, i + 1, lineno, indent, fence).1;
-				}
-				i = next;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			}
 			// A selector body takes the same open-quote rule as a value
@@ -6474,7 +6537,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				faults,
 				node.line,
 				"V093",
-				format!("bad schema path: {}", path),
+				format!("bad schema path: {}", schema_text(&path)),
 			);
 			return None;
 		}
@@ -6527,7 +6590,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 						faults,
 						kid.line,
 						"V091",
-						format!("unknown schema type '{}'", t),
+						format!("unknown schema type '{}'", schema_text(&t)),
 					);
 				}
 				None => vdiag(
@@ -7047,7 +7110,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			code: "V097",
 			message: format!(
 				"required path cannot be generated: {} ({})",
-				c.path.replace('\n', "\\n"),
+				schema_text(&c.path),
 				why_unwritable(c)
 			),
 		})
@@ -7068,7 +7131,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
-			wild.push((c.path.replace('\n', "\\n"), tyname));
+			wild.push((schema_text(&c.path), tyname));
 			continue;
 		}
 		// A filled wildcard emits in dotted form, targeting the materialized
@@ -7120,7 +7183,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		block.push_str("## ");
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		block.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
+		block.push_str(&schema_text(&gen_annotation(c, &tyname)));
 		block.push('\n');
 		let prefix = if must_exist(c) { "" } else { "# " };
 		match &c.default_text {
@@ -7226,7 +7289,10 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// A commented default fails the same check once someone uncomments it. Each
 	// line is read back alone and only its value is checked: uncommenting every
 	// line at once would pair a valued parent with a dotted child, which names
-	// a second instance, and fault a schema whose lines each work.
+	// a second instance, and fault a schema whose lines each work. The value is
+	// found through the field's own path, the way validation finds it, so a
+	// default naming another instance than the path selects is caught here
+	// as it is for a required field.
 	for (i, line) in &commented {
 		let one = Document::parse(line);
 		bad.extend(
@@ -7240,15 +7306,28 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 					message: format!("generated text does not load: {} {}", d.code, d.message),
 				}),
 		);
-		let mut leaf = ROOT;
-		while let Some(&k) = one.arena[leaf].children.first() {
-			leaf = k;
+		if one.arena[ROOT].children.is_empty() {
+			continue;
 		}
-		if leaf == ROOT {
+		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
+		one.v_contexts(vec![ROOT], &cons[*i].segs, 0, &mut ctxs);
+		let nodes: Vec<usize> = ctxs.into_iter().flat_map(|(_, f)| f).collect();
+		if nodes.is_empty() {
+			bad.push(Diagnostic {
+				line: 0,
+				severity: Severity::Error,
+				code: "V097",
+				message: format!(
+					"generated value fails the schema that produced it: default does not name the instance its path selects: {}",
+					schema_text(&cons[*i].path)
+				),
+			});
 			continue;
 		}
 		let mut found = Vec::new();
-		one.v_node(&cons[*i], leaf, &mut found);
+		for n in nodes {
+			one.v_node(&cons[*i], n, &mut found);
+		}
 		bad.extend(
 			found
 				.into_iter()
@@ -7426,7 +7505,7 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if stack.iter().any(|x| x == fr) || stack.len() >= MAX_DEPTH {
-					cuts.push((path.replace('\n', "\\n"), fr.clone()));
+					cuts.push((schema_text(&path), fr.clone()));
 				} else if let Some(fcs) = def.frags.get(fr) {
 					stack.push(fr.clone());
 					go(fcs, def, Some((&path, &segs)), stack, out, cuts);
@@ -7603,7 +7682,7 @@ impl Document {
 					out,
 					*anchor,
 					"V002",
-					format!("required path missing: {}", c.path),
+					format!("required path missing: {}", schema_text(&c.path)),
 				);
 			}
 			if let Some((lo, hi)) = c.repeat {
@@ -7615,7 +7694,10 @@ impl Document {
 						"V007",
 						format!(
 							"instance count out of bounds at '{}': {} not in {}..{}",
-							c.path, n, lo, hi
+							schema_text(&c.path),
+							n,
+							lo,
+							hi
 						),
 					);
 				}
@@ -7655,7 +7737,7 @@ impl Document {
 				"V003",
 				format!(
 					"wrong type at '{}': value is not a valid {}",
-					c.path,
+					schema_text(&c.path),
 					kind.unwrap_or("string")
 				),
 			);
@@ -7678,7 +7760,11 @@ impl Document {
 						out,
 						line,
 						"V004",
-						format!("value not allowed at '{}': {}", c.path, one_line(content)),
+						format!(
+							"value not allowed at '{}': {}",
+							schema_text(&c.path),
+							one_line(content)
+						),
 					);
 				}
 			}
@@ -7712,7 +7798,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7727,7 +7813,7 @@ impl Document {
 								format!(
 									"value below min {} at '{}': {}",
 									lo,
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7742,7 +7828,7 @@ impl Document {
 								format!(
 									"value above max {} at '{}': {}",
 									hi,
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7766,7 +7852,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7781,7 +7867,7 @@ impl Document {
 								format!(
 									"value below min {} at '{}': {}",
 									format_f64(lo),
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7796,7 +7882,7 @@ impl Document {
 								format!(
 									"value above max {} at '{}': {}",
 									format_f64(hi),
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7820,7 +7906,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7844,7 +7930,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7863,7 +7949,11 @@ impl Document {
 									out,
 									line,
 									"V004",
-									format!("value not allowed at '{}': {}", c.path, one_line(&b)),
+									format!(
+										"value not allowed at '{}': {}",
+										schema_text(&c.path),
+										one_line(&b)
+									),
 								);
 							}
 						}

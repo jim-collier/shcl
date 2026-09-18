@@ -1239,6 +1239,14 @@ func oneLine(s string) string {
 	return r.Replace(s)
 }
 
+// schemaText is schema text for a diagnostic or a generated comment: a path or
+// a type as the schema wrote it, with a line break spelled `\n`, so one
+// diagnostic stays one line. Only the break is escaped, so a path reads the
+// way it was written.
+func schemaText(s string) string {
+	return strings.ReplaceAll(s, "\n", "\\n")
+}
+
 // applyEscapes handles string reads: \t \n \\ \" \'; unknown escapes stay literal.
 func applyEscapes(s string) string {
 	// Bytes: every escape this recognizes is ASCII, and any other byte - a
@@ -1615,29 +1623,52 @@ type migrating struct {
 // formatVersion is the major a `##    Format   N` line names, if the document
 // carries one. More digits than fit is not a 2.x file either, so it reads as
 // this major and there is nothing to migrate. Only Migrate reads this line.
+//
+// Raw bodies are skipped exactly where the rewrite skips them, by walking the
+// lines through the same migrateLine. A Format line pasted into a block is
+// that block's content, and taking it as the file's would rewrite a current
+// file, or leave an old one alone. A file naming this format on any line has
+// nothing to migrate, so the highest line decides: the stamp Migrate adds comes
+// after an older one, and the next run has to see it.
 func formatVersion(text string) (int, bool) {
+	var tok Tokens
+	var fence openFence
+	// Only the blocks a line opens are wanted here, not what it counts.
+	dry := migrating{fromV2: true}
+	found, has := 0, false
 	for _, line := range strings.Split(text, "\n") {
-		n, ok := strings.CutPrefix(trimEndWS(line), FormatLineHead)
-		if !ok || n == "" {
+		body := strings.TrimRight(line, "\r")
+		if fence.open {
+			if isFenceClose(body, fence.ch, fence.length) {
+				fence.open = false
+			}
 			continue
 		}
-		digits := true
-		for i := 0; i < len(n); i++ {
-			if n[i] < '0' || n[i] > '9' {
-				digits = false
-				break
+		if n, ok := strings.CutPrefix(trimEndWS(line), FormatLineHead); ok && n != "" {
+			digits := true
+			for i := 0; i < len(n); i++ {
+				if n[i] < '0' || n[i] > '9' {
+					digits = false
+					break
+				}
+			}
+			if digits {
+				v, err := strconv.Atoi(n)
+				if err != nil {
+					return FormatMajor, true
+				}
+				if v >= FormatMajor {
+					return v, true
+				}
+				if !has || v > found {
+					found, has = v, true
+				}
+				continue
 			}
 		}
-		if !digits {
-			continue
-		}
-		v, err := strconv.Atoi(n)
-		if err != nil {
-			return FormatMajor, true
-		}
-		return v, true
+		migrateLine(trimEndWS(body[len(leadingWS(body)):]), &tok, &fence, &dry)
 	}
-	return 0, false
+	return found, has
 }
 
 // Migrate rewrites a document written under the 2.x rules so this parser
@@ -2499,6 +2530,29 @@ func (p *parser) skipUnderDead(line int, indent string) {
 	p.refuse(line, "E018", "parent line was skipped; line skipped", outDropped, indent)
 }
 
+// skipFieldLine is where the parse resumes after a refused field line. Every
+// arm that skips one comes through here, so a skipped line whose value opens a
+// raw block takes the body with it: read as lines, the body would bind or be
+// refused line by line, and its closing fence would open a block that runs to
+// the end of the file. A line whose path did not parse has no value to read,
+// so it goes alone.
+func (p *parser) skipFieldLine(lines []string, i int, indent string, tok *Tokens, rest string) int {
+	if tok.Fault >= 0 || tok.Sep < 0 {
+		return i + 1
+	}
+	// A capped scan zeroed the value, and a fence is told by its leading run
+	// alone.
+	v := rest[tok.Value[0]:tok.Value[1]]
+	if tok.Capped {
+		v = trimWsp(rest[tok.Value[0]:])
+	}
+	if ch, length, info, ok := fenceOpen(v); ok {
+		_, next := p.consumeRaw(lines, i+1, i+1, indent, ch, length, info)
+		return next
+	}
+	return i + 1
+}
+
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int, indent string) (int, bool) {
@@ -2962,12 +3016,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		parent, okp := p.resolveParent(indent)
 		if !okp {
 			p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
-			i++
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		if parent == dead {
 			p.skipUnderDead(lineno, indent)
-			i++
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		scan, serr := pathOf(&tok, rest)
@@ -2981,7 +3035,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			}
 			// The column counts bytes from the line start, so all four bindings
 			// spell it the same on non-ASCII text.
-			msg := fmt.Sprintf("malformed line skipped: %s, at column %d", serr.Error(), len(indent)+tok.Fault+1)
+			msg := fmt.Sprintf("malformed line skipped: %s, at column %d", serr.Error(), len(indent)+lead+tok.Fault+1)
 			p.refuse(lineno, "E014", msg, out, indent)
 			i++
 			continue
@@ -2992,11 +3046,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// The scan stopped at the cap, so nothing past it was built either.
 		if tok.Capped {
 			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
-			// A fence's body goes with its line, or it would read as live lines.
-			if ch, length, info, ok := fenceOpen(trimWsp(rest[tok.Value[0]:])); ok {
-				_, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
-			}
-			i = next
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		// A selector body takes the same open-quote rule as a value element,
@@ -6703,7 +6753,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	}
 	scan, err := scanLookup(path)
 	if err != nil || scan.valueText != nil {
-		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", path))
+		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", schemaText(path)))
 		return constraint{}, false
 	}
 	c := constraint{path: path, segs: scan.segments}
@@ -6733,7 +6783,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 					c.ty = t
 				}
 			case ok:
-				vdiag(faults, kid.line, "V091", fmt.Sprintf("unknown schema type '%s'", t))
+				vdiag(faults, kid.line, "V091", fmt.Sprintf("unknown schema type '%s'", schemaText(t)))
 			default:
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 			}
@@ -7252,7 +7302,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		c := &cons[i]
 		cannotSatisfy := c.required || (c.repeat != nil && c.repeat[0] == 1)
 		if cannotSatisfy && unwritable(c) && !hasWild(c) {
-			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n") +
+			msg := "required path cannot be generated: " + schemaText(c.path) +
 				" (" + whyUnwritable(c) + ")"
 			blocked = append(blocked, Diagnostic{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"})
 		}
@@ -7286,7 +7336,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			tyname = "any"
 		}
 		if unwritable(c) || (hasWild(c) && !fill[i]) {
-			wild = append(wild, [2]string{strings.ReplaceAll(c.path, "\n", "\\n"), tyname})
+			wild = append(wild, [2]string{schemaText(c.path), tyname})
 			continue
 		}
 		// A filled wildcard emits in dotted form, targeting the materialized
@@ -7340,7 +7390,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		block.WriteString("## ")
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		block.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
+		block.WriteString(schemaText(genAnnotation(c, tyname)))
 		block.WriteByte('\n')
 		prefix := "# "
 		if mustExist(c) {
@@ -7454,7 +7504,10 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// A commented default fails the same check once someone uncomments it. Each
 	// line is read back alone and only its value is checked: uncommenting every
 	// line at once would pair a valued parent with a dotted child, which names
-	// a second instance, and fault a schema whose lines each work.
+	// a second instance, and fault a schema whose lines each work. The value is
+	// found through the field's own path, the way validation finds it, so a
+	// default naming another instance than the path selects is caught here
+	// as it is for a required field.
 	for _, cm := range commented {
 		one := Parse(cm.line)
 		for _, d := range one.diags {
@@ -7467,15 +7520,28 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				})
 			}
 		}
-		leaf := root
-		for len(one.arena[leaf].children) > 0 {
-			leaf = one.arena[leaf].children[0]
+		if len(one.arena[root].children) == 0 {
+			continue
 		}
-		if leaf == root {
+		var ctxs []vContext
+		one.vContexts([]int{root}, cons[cm.cons].segs, 0, &ctxs)
+		var nodes []int
+		for _, cx := range ctxs {
+			nodes = append(nodes, cx.found...)
+		}
+		if len(nodes) == 0 {
+			bad = append(bad, Diagnostic{
+				Line:     0,
+				Severity: SeverityError,
+				Code:     "V097",
+				Message:  "generated value fails the schema that produced it: default does not name the instance its path selects: " + schemaText(cons[cm.cons].path),
+			})
 			continue
 		}
 		var found []Diagnostic
-		one.vNode(&cons[cm.cons], leaf, &found)
+		for _, n := range nodes {
+			one.vNode(&cons[cm.cons], n, &found)
+		}
 		for _, d := range found {
 			if d.Severity == SeverityError {
 				bad = append(bad, Diagnostic{
@@ -7651,7 +7717,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if onStack || len(stack) >= MaxDepth {
-					cuts = append(cuts, [2]string{strings.ReplaceAll(path, "\n", "\\n"), fr})
+					cuts = append(cuts, [2]string{schemaText(path), fr})
 				} else if fcs, ok := def.frags[fr]; ok {
 					stack = append(stack, fr)
 					walk(fcs, path, segs, true)
@@ -7857,13 +7923,13 @@ func (d *Document) vCheckFrom(
 	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
 		if c.required && len(ctx.found) == 0 {
-			vdiag(out, ctx.anchor, "V002", fmt.Sprintf("required path missing: %s", c.path))
+			vdiag(out, ctx.anchor, "V002", fmt.Sprintf("required path missing: %s", schemaText(c.path)))
 		}
 		if c.repeat != nil {
 			n := uint64(len(ctx.found))
 			if n < c.repeat[0] || n > c.repeat[1] {
 				vdiag(out, ctx.anchor, "V007", fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d",
-					c.path, n, c.repeat[0], c.repeat[1]))
+					schemaText(c.path), n, c.repeat[0], c.repeat[1]))
 			}
 		}
 		for _, n := range ctx.found {
@@ -7894,7 +7960,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 	base := strings.TrimSuffix(c.ty, "-array")
 	isArray := strings.HasSuffix(c.ty, "-array")
 	wrong := func() {
-		vdiag(out, line, "V003", fmt.Sprintf("wrong type at '%s': value is not a valid %s", c.path, c.ty))
+		vdiag(out, line, "V003", fmt.Sprintf("wrong type at '%s': value is not a valid %s", schemaText(c.path), c.ty))
 	}
 	switch node.value.kind {
 	// Empty passes everything; required already counted it as present.
@@ -7908,7 +7974,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 		}
 		if c.allowed != nil && c.allowed.kind == allowStrings {
 			if !containsString(c.allowed.strs, node.value.raw.content) {
-				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(node.value.raw.content)))
+				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(node.value.raw.content)))
 			}
 		}
 	case vCell:
@@ -7937,19 +8003,19 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowInts {
 				for i, v := range vals {
 					if !containsInt(c.allowed.ints, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
 			}
 			if c.minI != nil {
 				if i := firstIntBelow(vals, *c.minI); i >= 0 {
-					vdiag(out, line, "V005", fmt.Sprintf("value below min %d at '%s': %s", *c.minI, c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %d at '%s': %s", *c.minI, schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 			if c.maxI != nil {
 				if i := firstIntAbove(vals, *c.maxI); i >= 0 {
-					vdiag(out, line, "V006", fmt.Sprintf("value above max %d at '%s': %s", *c.maxI, c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %d at '%s': %s", *c.maxI, schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 		case "float":
@@ -7965,19 +8031,19 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowFloats {
 				for i, v := range vals {
 					if !containsFloat(c.allowed.floats, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
 			}
 			if c.minF != nil {
 				if i := firstFloatBelow(vals, *c.minF); i >= 0 {
-					vdiag(out, line, "V005", fmt.Sprintf("value below min %s at '%s': %s", FormatFloat(*c.minF), c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %s at '%s': %s", FormatFloat(*c.minF), schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 			if c.maxF != nil {
 				if i := firstFloatAbove(vals, *c.maxF); i >= 0 {
-					vdiag(out, line, "V006", fmt.Sprintf("value above max %s at '%s': %s", FormatFloat(*c.maxF), c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %s at '%s': %s", FormatFloat(*c.maxF), schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 		case "bool":
@@ -7993,7 +8059,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowBools {
 				for i, v := range vals {
 					if !containsBool(c.allowed.bools, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
@@ -8011,7 +8077,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowDates {
 				for i, v := range vals {
 					if !containsDate(c.allowed.dates, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
@@ -8023,7 +8089,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 				for i := range els {
 					s := els[i].text
 					if !containsString(c.allowed.strs, s) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(s)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(s)))
 						break
 					}
 				}

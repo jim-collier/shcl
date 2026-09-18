@@ -43,6 +43,23 @@ static size_t arena_bytes(const ShclArena *a) {
 	return n;
 }
 
+// What the arena holds from the system, used or not: a reset gives nothing
+// back from the block it keeps.
+static size_t arena_caps(const ShclArena *a) {
+	size_t n = 0;
+	for (const ShclBlock *b = a->head; b; b = b->next) n += b->cap;
+	return n;
+}
+
+// Whether p points into one of the arena's blocks.
+static int arena_holds(const ShclArena *a, const void *p) {
+	for (const ShclBlock *b = a->head; b; b = b->next) {
+		const char *base = (const char *)(b + 1);
+		if ((const char *)p >= base && (const char *)p < base + b->cap) return 1;
+	}
+	return 0;
+}
+
 static int failures = 0;
 // Wall time in milliseconds: clock() is CPU time, and on windows it ticks in
 // whole milliseconds, too coarse for a ratio of two runs.
@@ -324,6 +341,44 @@ int main(void) {
 	if (got.n != wn || memcmp(got.p, wcopy, wn) != 0 || shcl_get_int_or(d, "group.key", 9, -1) != 99999) fail("compaction changed the document");
 	free(wcopy);
 	shcl_free(d);
+
+	// A default form on a present path writes nothing, but judges the value in
+	// its probe document's scratch, and the reset after kept the newest block -
+	// the one that grew for the value. One 4 MB string default held 12 MB until
+	// shcl_free, and the array form 40.
+	{
+		size_t big = (size_t)4 << 20;
+		char *blob = (char *)malloc(big);
+		memset(blob, 'x', big);
+		shcl_doc *d = shcl_parse("b: 1\n", 5);
+		const char *arr[2] = {blob, blob};
+		size_t lens[2] = {big, big};
+		if (!shcl_set_string_default(d, "b", 1, blob, big)) fail("default probe: the string was refused");
+		if (!shcl_set_string_array_default(d, "b", 1, arr, lens, 2)) fail("default probe: the array was refused");
+		size_t held = arena_caps(&d->arena) + arena_caps(&d->scratch) + arena_caps(&d->reads);
+		if (d->probe_doc) held += arena_caps(&d->probe_doc->arena) + arena_caps(&d->probe_doc->scratch) + arena_caps(&d->probe_doc->reads);
+		printf("mem_bounds: default probe: %zu bytes held after two 4 MB defaults\n", held);
+		if (held > 1024 * 1024) fail("a default form that wrote nothing kept the value's working set");
+		if (shcl_get_int_or(d, "b", 1, -1) != 1) fail("default probe: the document changed");
+		shcl_free(d);
+		free(blob);
+	}
+
+	// A tokens struct handed a second document grows in that one's read arena.
+	// Its arrays stayed in the first one's, so freeing the first and tokenizing
+	// again wrote into freed memory.
+	{
+		shcl_doc *da = shcl_parse("a: 1\n", 5), *db = shcl_parse("b: 2\n", 5);
+		shcl_tokens t;
+		memset(&t, 0, sizeof t);
+		shcl_tokenize(da, "a.b: 1, 2", 9, ':', 0, SHCL_RULES_CURRENT, &t);
+		shcl_tokenize(db, "x.y.z: 3, 4, 5", 14, ':', 0, SHCL_RULES_CURRENT, &t);
+		if (!arena_holds(&db->reads, t.segments) || !arena_holds(&db->reads, t.elements)) fail("tokens kept growing in another document's arena");
+		shcl_free(da);
+		shcl_tokenize(db, "p.q.r.s: 6, 7, 8, 9", 19, ':', 0, SHCL_RULES_CURRENT, &t);
+		if (t.nseg != 4 || t.nelem != 4 || t.elements[3].start != 18) fail("tokens reused across documents: wrong result");
+		shcl_free(db);
+	}
 
 	if (failures) return 1;
 	printf("mem_bounds: OK\n");

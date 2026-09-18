@@ -79,11 +79,19 @@ printf '"a\\nb": 1\n"a\\nb": 2\n' > "${tmpDir}/nbname.shcl"
 ## An indented malformed line behind a two-byte character, so the E014 column
 ## counts the indent and bytes rather than characters.
 printf 'a:\n\t"\303\251" x\n' > "${tmpDir}/colbytes.shcl"
+## A malformed line behind a blank run holding a carriage return, which is a
+## blank and never indent. The column left the run out.
+printf '\r  b[c: 2\n' > "${tmpDir}/colcr.shcl"
 ## An int-array whose second element breaks the max, and a float whose bound is
 ## integral. A range diagnostic used to name the field and nothing else.
 printf 'field: ns\n\ttype: int-array\n\tmax: 10\nfield: fs\n\ttype: float-array\n\tmin: 1.0\n' > "${tmpDir}/range.shcl"
 printf 'ns: 5, 20, 3\nfs: 2.0, 0.5, 4.0\n' > "${tmpDir}/outofrange.shcl"
 printf '"x.y": 1\n' > "${tmpDir}/dotname.shcl"
+## Schema paths and a type carrying a line break. Every code that names schema
+## text printed it raw, so one diagnostic arrived as two stderr lines.
+printf 'field: "a.\\"x\\ny\\""\n\trequired: yes\nfield: "b.\\"x\\ny\\""\n\ttype: int\n\tmin: 5\n\tmax: 6\n\tallowed: 5, 6, 1\n\trepeat: 3\nfield: "c.\\"x\\ny\\""\n\ttype: bool\n' > "${tmpDir}/nlschema.shcl"
+printf 'b:\n\t"x\\ny": 9\n\t"x\\ny": 1\nc:\n\t"x\\ny": maybe\n' > "${tmpDir}/nldoc.shcl"
+printf 'field: k\n\ttype: "in\\nt"\nfield: "d.\\"x\\ny\\"."\n' > "${tmpDir}/nlfault.shcl"
 printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 ## A directory a write cannot create a temp file in. The phase is worth naming -
 ## it is the difference between "fix the file" and "fix its directory" - and the
@@ -144,6 +152,18 @@ printf 'ports: [80, 443]\n' > "${tmpDir}/brsrc.shcl"
 ## A file that says which rules wrote it, which is the whole answer: there is
 ## nothing to migrate and a second run must not touch it.
 printf 'p: 1\n##    Format   3\n' > "${tmpDir}/stamped.shcl"
+## A Format line inside a raw body is that block's content. Taken as the
+## file's, the first made a current file look like 2.x and rewrote it at exit
+## 0, and the second made any file look current.
+#  shellcheck disable=2016  ## the backticks are the fence the fixture needs.
+printf 'p: %s\nnote:\n\t```\n##    Format   2\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt2.shcl"
+#  shellcheck disable=2016
+printf 'p: %s\nnote:\n\t```\n##    Format   3\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt3.shcl"
+## A stamped file behind a BOM, whose value 2.x would have read another way.
+printf '\357\273\277##    Format   3\np: %s\n' 'C:\temp' > "${tmpDir}/bomstamped.shcl"
+## An older Format line with migrate's own stamp after it, so the first line
+## found is the older one.
+printf 'a: 1\n##    Format   0\n##    Format   3\n' > "${tmpDir}/twostamps.shcl"
 ## A default on a path whose last segment selects by value. A value after that
 ## selector is ignored, so generation used to write a line that failed its own
 ## check. One default contradicts the selector and one names it.
@@ -154,6 +174,12 @@ printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.sh
 ## checked all at once, srv and srv.port make two srv against a repeat of 1.
 printf 'field: port\n\ttype: int\n\tmax: 10\n\tdefault: 99\n' > "${tmpDir}/optdefbad.shcl"
 printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: c\n' > "${tmpDir}/optdefok.shcl"
+## An optional field whose default names another instance than its path
+## selects. Its line is commented, so the check only looked at the value.
+## The second schema is the optdefok one with `a[b]` defaulting to `b`, which
+## is what that one now has to say to pass.
+printf 'field: env[prod]\n\tdefault: staging\n' > "${tmpDir}/optselbad.shcl"
+printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: b\n' > "${tmpDir}/optdefok2.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -184,15 +210,22 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
+##	%V3B% the same behind a BOM, %V03% an older Format line and then the
+##	current one, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
-##	optional lines that each pass alone,
+##	optional lines that each pass alone, %SH% an optional field whose default
+##	names another instance than its path selects, %SI% the %SE% schema with a
+##	default that names its instance,
 ##	%C% a path with nothing at it, cleared before every binding's run,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
-##	carrying a dot and a schema that declares it as nesting, %CB% a malformed
-##	line indented and behind a non-ASCII name, %SG%/%DG% a schema with an int
+##	carrying a dot and a schema that declares it as nesting, %SL%/%SM% schema
+##	paths and a type carrying a line break, valid and faulted, and %DL% a
+##	document for them, %CB% a malformed
+##	line indented and behind a non-ASCII name, %CR% one behind a carriage
+##	return that is not indent, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
@@ -269,12 +302,19 @@ rows=(
 	## Loose bug from 20260909 item 5: an optional field's bad default went out
 	## commented at exit 0.
 	'init-optional-bad-default|init --schema=%SD%|-|6||V097 generated value fails the schema that produced it: value above max 10 at .port.: 99'
+	## 20260918 item 4: the same for a default that names another instance.
+	'init-optional-selector-default|init --schema=%SH%|-|6||V097 generated value fails the schema that produced it: default does not name the instance its path selects: env\[prod\]$'
 	## Retired 2026-09-17: a commented child of a commented valued parent now
 	## selects the parent's default, so the dotted `srv.port` this row expected
 	## became two instances once both lines were uncommented. The row below is
 	## the same schema and exit code with the new spelling.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv.port: 80\n\n## any\n# a: c\n|-'
-	'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
+	## Retired 2026-09-18 by 20260918 item 4: its `a[b]` carried `default: c`,
+	## which names another instance than the path selects, and the spec says
+	## that fails generation for an optional field too. The row below is the
+	## same schema with the default naming `b`.
+	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
+	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -307,6 +347,15 @@ rows=(
 	## three stderr lines, and a flat `x.y` printed the same as `x` nesting `y`.
 	'diag-name-line-break|check %NB%|-|0|line 2: Hint: H001\nok (1 diagnostic(s))\n|^line 2: Hint: H001 ."a\\nb". repeats'
 	'diag-name-dotted|check --schema=%SN% %DN%|-|6|line 1: Error: V001\nfailed: 1 diagnostic(s), 1 error(s)\n|unknown field ."x\.y".'
+	## 20260918 item 14: the same for schema text, which every code below printed raw.
+	'schema-text-v002|check --schema=%SL% %DL%|-|6|-|V002 required path missing: a\."x\\ny"$'
+	'schema-text-v003|check --schema=%SL% %DL%|-|6|-|V003 wrong type at .c\."x\\ny".: value is not a valid bool$'
+	'schema-text-v004|check --schema=%SL% %DL%|-|6|-|V004 value not allowed at .b\."x\\ny".: 9$'
+	'schema-text-v005|check --schema=%SL% %DL%|-|6|-|V005 value below min 5 at .b\."x\\ny".: 1$'
+	'schema-text-v006|check --schema=%SL% %DL%|-|6|-|V006 value above max 6 at .b\."x\\ny".: 9$'
+	'schema-text-v007|check --schema=%SL% %DL%|-|6|-|V007 instance count out of bounds at .b\."x\\ny".: 2 not in 3\.\.3$'
+	'schema-text-v091|check --schema=%SM% %DL%|-|6|-|V091 unknown schema type .in\\nt.$'
+	'schema-text-v093|check --schema=%SM% %DL%|-|6|-|V093 bad schema path: d\."x\\ny"\.$'
 	'bracket-array-check|check %BA%|-|6|line 1: Error: E019\nfailed: 1 diagnostic(s), 1 error(s)\n|-'
 	'bracket-array-write-kept|fmt --write %BA%|-|0||-'
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
@@ -324,6 +373,15 @@ rows=(
 	## A file that names its format has nothing to migrate, which is what stops
 	## the second run from rewriting the first run's output.
 	'migrate-stamped-noop|migrate %V3%|-|0|p: 1\n##    Format   3\n|nothing to migrate'
+	## 20260918 item 1: the version scan read raw bodies the rewrite skips.
+	'migrate-format-in-raw-old|migrate %RF2%|-|7|-|does not say which it was written for'
+	'migrate-format-in-raw-new|migrate %RF3%|-|7|-|does not say which it was written for'
+	## 20260918 item 2: C looked for the version line before taking off a BOM.
+	'migrate-bom-stamped|migrate %V3B%|-|0|-|nothing to migrate'
+	'migrate-bom-stamped-from-2x|migrate --from-2x %V3B%|-|0|-|nothing to migrate'
+	## Found by the fuzz in the 20260918 fix round: the first Format line decided,
+	## so a file naming an older format was stamped again on every run.
+	'migrate-two-stamps|migrate %V03%|-|0|-|nothing to migrate'
 	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
 	## Leaving the line is the decision; exiting 0 was the defect, since a
 	## scripted migration could not tell "migrated" from "gave up".
@@ -387,6 +445,8 @@ rows=(
 	## a byte column, which the tokenizer computed and the message dropped.
 	'e014-column|check %B%|-|6|-|^line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 3$'
 	'e014-column-bytes|check %CB%|-|6|-|^line 2: Error: E014 malformed line skipped: unexpected character after the path, at column 7$'
+	## 20260918 item 15: the blank run between the indent and the text counts.
+	'e014-column-cr-lead|check %CR%|-|6|-|E014 .*, at column 5$'
 	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
 	## and says which layer it was.
 	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
@@ -512,6 +572,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SC%/${tmpDir}/seldefok.shcl}"
 	argv="${argv//%SD%/${tmpDir}/optdefbad.shcl}"
 	argv="${argv//%SE%/${tmpDir}/optdefok.shcl}"
+	argv="${argv//%SH%/${tmpDir}/optselbad.shcl}"
+	argv="${argv//%SI%/${tmpDir}/optdefok2.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
@@ -521,12 +583,20 @@ for row in "${rows[@]}"; do
 	argv="${argv//%NB%/${tmpDir}/nbname.shcl}"
 	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
+	argv="${argv//%SL%/${tmpDir}/nlschema.shcl}"
+	argv="${argv//%SM%/${tmpDir}/nlfault.shcl}"
+	argv="${argv//%DL%/${tmpDir}/nldoc.shcl}"
 	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
+	argv="${argv//%CR%/${tmpDir}/colcr.shcl}"
 	argv="${argv//%SG%/${tmpDir}/range.shcl}"
 	argv="${argv//%DG%/${tmpDir}/outofrange.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
+	argv="${argv//%V3B%/${tmpDir}/bomstamped.shcl}"
+	argv="${argv//%V03%/${tmpDir}/twostamps.shcl}"
+	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
+	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1

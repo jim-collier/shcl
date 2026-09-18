@@ -80,48 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
-		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
-		- Note: the reverse holds too. A raw body holding `##    Format   3`, such as a pasted `init` banner, makes any file report nothing to migrate.
-		- Cause: `format_version` scans every line and does not skip fence bodies the way the migrate loop does.
-		- Sites: `lib.rs:1472`, `shcl.go:1618`, `shcl.py:1390`, `shcl.h:1804`.
-		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16), 20260909 item 4's second half. Not seen before. Confirmed.
-		- Against: the spec's Migrating section, that the Format line decides and that `migrate` never damages a file that was already correct.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 2: C `migrate` misses the version line when the file starts with a BOM, so it restamps or rewrites a current file.
-		- Reproduced in C only. A BOM, `##    Format   3`, `p: C:\temp`: the other three say nothing to migrate at exit 0, and C exits 7 as ambiguous. With `--from-2x`, C writes `p: "C:\temp"` and a second Format line at exit 0, and `get p` is `C:`, a tab, `emp`. A BOM, the Format line and `a: 1` gets a duplicate Format line at exit 0.
-		- Cause: `format_version(text)` runs before the BOM is stripped.
-		- Sites: `shcl.h:1831` against `:1837`.
-		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16). Confirmed.
-		- Against: the spec, that a file carrying the Format line has nothing to migrate, and parity with the reference.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
-		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
-		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
-		- Sites: `lib.rs:2991-3004`, `shcl.go:2962-2972`, `shcl.py:2443-2452`, `shcl.h:3277-3278`.
-		- Origin: `8821735` (2026-08-29) for the E018 arm; the E012 arm is older. 20260901 item 1 fixed the child-indent fence arm and 20260909 item 11 the E021 arm, so this is their sibling. Not seen before. Confirmed.
-		- Note: the ninth item in this class. The fix should be one rule for every skip arm, that a skipped line opening a fence takes its body with it, rather than one more arm.
-		- Against: `spec.md:135`, "a fence line there takes its whole body with it", and the E018 row at `spec.md:445`.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
-		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
-		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
-		- Sites: `lib.rs:7230`, `shcl.go:7458`, `shcl.py:6182`, `shcl.h:7559`.
-		- Origin: `533ca3e` (Merge optional-default, 2026-09-15) over `faf5adf` (Merge init-selfcheck, 2026-09-14). This is where 20260909 item 5 and the optional-default fix meet. Confirmed.
-		- Against: `spec.md:667`, a default that does not name the instance its path selects fails generation with V097, "That holds for an optional field too".
-		- Opened: 20260918-133258
-
-	- 🔘 Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
-		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
-		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
-		- Sites: `shcl.h:436-441`, `:1180-1187`, `:1383-1390`.
-		- Origin: `fbbe7ce` (2026-09-07). A coverage gap the 20260909 round named and did not reach. Confirmed.
-		- Against: the `shcl_tokens` contract comment.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
 		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
 		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
@@ -130,22 +88,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
-
-	- 🔘 Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
-		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
-		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
-		- Sites: `shcl.py:4637-4643`.
-		- Origin: `0b94843` (Merge tmpname-bytes, 2026-09-15, 20260909 item 16) made the 2026-07-25 fallback reachable. Confirmed.
-		- Against: 20260909 item 16, and parity with the other three.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
-		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
-		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
-		- Sites: `shcl.h:4077`, `:4239-4251`.
-		- Origin: `fa6de87` (2026-09-15, 20260909 item 15). Same class as 20260909 item 22. Confirmed.
-		- Against: the arena rule at `shcl.h:4066-4072`.
-		- Opened: 20260918-133258
 
 	- 🔘 Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
 		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
@@ -186,22 +128,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
-
-	- 🔘 Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
-		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
-		- Cause: these print the schema path or type raw. V097 already escapes the same path.
-		- Sites: `lib.rs:7606`, `:7617`, `:7657`, `:7681-7866`, `:6530`; `shcl.go:7860`, `:7865`, `:7897`, `:7947-7975`, `:6736`; `shcl.py:4172`, `:4177`, `:4203`, `:4241-4259`, `:5722`; `shcl.h:5959`, `:5964`, `:5803`, `:5457`.
-		- Origin: `30120bc` (2026-07-23). 20260909 item 18 routed every document field name through `diag_name` and missed these schema-text sites; V005 and V006 were reworded in `544b345` (2026-09-17) and kept the raw path. Confirmed.
-		- Against: 20260909 item 18's fix note.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
-		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
-		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
-		- Sites: `lib.rs:3030`, `shcl.go:2984`, `shcl.py:2462`, `shcl.h:3284`.
-		- Origin: `bac2498` (Merge e014-column, 2026-09-17). Confirmed.
-		- Against: 20260909 item 34's fix, a byte column from the line start, indent included, and the help text at `main.rs:273`.
-		- Opened: 20260918-133258
 
 	- 🔘 Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
 		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
@@ -315,6 +241,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ `migrate` stamps a file again on every run when an older `Format` line comes before its own stamp.
+	- Reproduced in all four. `a: 1` and `##    Format   0`: `migrate` appends `##    Format   3`, and a second run appends another, at exit 0 both times.
+	- Cause: the first Format line decided, and the stamp goes at the end of the file.
+	- Note: found by the fuzz in the 20260918 fix round, once corpus `126` moved the seeds. It predates the round, from `7040ab7` (Merge migrate-version).
+	- Fixed: the highest Format line decides, in `format_version` (Rust, C), `formatVersion` (Go) and `_format_version` (Python). The spec says so.
+	- Pinned by: `cli-regress.bash` row `migrate-two-stamps`, which fails in all four on the old code, and the migrate fixpoint check in `fuzz_smoke.rs`.
+	- Opened: 20260918-154016
+	- Closed: 20260918-154016
 
 - ✅ The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
 	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
@@ -528,6 +463,114 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260918:
+
+	- Items are here as they close. The rest of the round is under Bugs and Features and enhancements, with the round's own notes.
+
+	- ✅ Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
+		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
+		- Note: the reverse holds too. A raw body holding `##    Format   3`, such as a pasted `init` banner, makes any file report nothing to migrate.
+		- Cause: `format_version` scans every line and does not skip fence bodies the way the migrate loop does.
+		- Sites: `lib.rs:1472`, `shcl.go:1618`, `shcl.py:1390`, `shcl.h:1804`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16), 20260909 item 4's second half. Not seen before. Confirmed.
+		- Against: the spec's Migrating section, that the Format line decides and that `migrate` never damages a file that was already correct.
+		- Fixed: the version scan walks the lines through the rewrite's own line reader, so it skips a raw body exactly where the rewrite does. `format_version` in Rust and C, `formatVersion` in Go, `_format_version` in Python.
+		- Pinned by: `cli-regress.bash` rows `migrate-format-in-raw-old` and `migrate-format-in-raw-new`. Both fail in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153113
+
+	- ✅ Item 2: C `migrate` misses the version line when the file starts with a BOM, so it restamps or rewrites a current file.
+		- Reproduced in C only. A BOM, `##    Format   3`, `p: C:\temp`: the other three say nothing to migrate at exit 0, and C exits 7 as ambiguous. With `--from-2x`, C writes `p: "C:\temp"` and a second Format line at exit 0, and `get p` is `C:`, a tab, `emp`. A BOM, the Format line and `a: 1` gets a duplicate Format line at exit 0.
+		- Cause: `format_version(text)` runs before the BOM is stripped.
+		- Sites: `shcl.h:1831` against `:1837`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16). Confirmed.
+		- Against: the spec, that a file carrying the Format line has nothing to migrate, and parity with the reference.
+		- Fixed: C `migrate` takes the BOM off before the version scan, as the other three do.
+		- Pinned by: rows `migrate-bom-stamped` and `migrate-bom-stamped-from-2x`. Both fail in C on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153113
+
+	- ✅ Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
+		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
+		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
+		- Sites: `lib.rs:2991-3004`, `shcl.go:2962-2972`, `shcl.py:2443-2452`, `shcl.h:3277-3278`.
+		- Origin: `8821735` (2026-08-29) for the E018 arm; the E012 arm is older. 20260901 item 1 fixed the child-indent fence arm and 20260909 item 11 the E021 arm, so this is their sibling. Not seen before. Confirmed.
+		- Note: the ninth item in this class. The fix should be one rule for every skip arm, that a skipped line opening a fence takes its body with it, rather than one more arm.
+		- Against: `spec.md:135`, "a fence line there takes its whole body with it", and the E018 row at `spec.md:445`.
+		- Fixed: one rule for every arm that skips a field line. `skip_field_line` (Rust, C), `skipFieldLine` (Go) and `_skip_field_line` (Python) take a fence's body with the line, and the E012, E018 and E021 arms all call it. A line whose path did not parse still goes alone, as the review decided for E014.
+		- Pinned by: corpus `126-skipped-line-fence`, which all four runners fail on the old code, and `raw_bodies_stay_content` in `fuzz_smoke.rs`, a property that no diagnostic lands on a raw body line. It fails on the old code at iteration 4.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153943
+
+	- ✅ Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
+		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
+		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
+		- Sites: `lib.rs:7230`, `shcl.go:7458`, `shcl.py:6182`, `shcl.h:7559`.
+		- Origin: `533ca3e` (Merge optional-default, 2026-09-15) over `faf5adf` (Merge init-selfcheck, 2026-09-14). This is where 20260909 item 5 and the optional-default fix meet. Confirmed.
+		- Against: `spec.md:667`, a default that does not name the instance its path selects fails generation with V097, "That holds for an optional field too".
+		- Fixed: each commented line is read back through its field's own path, the way validation reads it, rather than through the first leaf the line binds. A line that binds nothing on that path is V097, "default does not name the instance its path selects". In the `generate` self-check of all four: `generate` in Rust and Python, `Generate` in Go, `shcl_generate` in C.
+		- Pinned by: `cli-regress.bash` row `init-optional-selector-default`, which fails in all four on the old code.
+		- Note: `init-optional-defaults-ok` expected an optional `a[b]` with `default: c` to generate, which is this defect. It is commented out with the reason, and `init-optional-defaults-ok-named` has the same schema with `default: b`. The generation grid count in `fuzz_smoke.rs` went from 1171 to 1039, all 132 of them optional fields with a contradicting default.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154454
+
+	- ✅ Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
+		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
+		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
+		- Sites: `shcl.h:436-441`, `:1180-1187`, `:1383-1390`.
+		- Origin: `fbbe7ce` (2026-09-07). A coverage gap the 20260909 round named and did not reach. Confirmed.
+		- Against: the `shcl_tokens` contract comment.
+		- Fixed: the struct records the read arena its arrays live in, and `shcl_tokenize` or `shcl_tokenize_value` with another document starts them over in that one's arena, through `tok_adopt`. The header says so. C only: the other three hold these in their own memory.
+		- Pinned by: a block in `mem_bounds.c` that tokenizes with two documents, checks which arena holds the arrays, frees the first and tokenizes again. It fails on the old header, and `sanitize-c.bash` reports the use-after-free there under ASan.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154720
+
+	- ✅ Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
+		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
+		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
+		- Sites: `shcl.py:4637-4643`.
+		- Origin: `0b94843` (Merge tmpname-bytes, 2026-09-15, 20260909 item 16) made the 2026-07-25 fallback reachable. Confirmed.
+		- Against: 20260909 item 16, and parity with the other three.
+		- Fixed: `write_file_atomic` falls back to the whole path only when the name is empty, before the cut, as Rust does. A cut that backs off to nothing leaves nothing, as in Go and C.
+		- Pinned by: a POSIX block in the Python runner that saves a name of `\xc3` and 70 `\x80` bytes under `sub/`. It fails on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154909
+
+	- ✅ Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
+		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
+		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
+		- Sites: `shcl.h:4077`, `:4239-4251`.
+		- Origin: `fa6de87` (2026-09-15, 20260909 item 15). Same class as 20260909 item 22. Confirmed.
+		- Against: the arena rule at `shcl.h:4066-4072`.
+		- Fixed: `arena_reset_smallest` keeps the smallest block rather than the newest. `w_set_marked` calls it on the probe document's scratch as soon as the probe has its verdict, and `w_default_probe` before each probe. C only: the other three free what they do not keep.
+		- Measured: after a 4 MB string default and a two-element array default of 4 MB each on a present path, the document and its probe hold 192 KB, against 42 MB before.
+		- Pinned by: a block in `mem_bounds.c` with a 1 MB ceiling on everything the document and its probe hold. It fails on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155114
+
+	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
+		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
+		- Cause: these print the schema path or type raw. V097 already escapes the same path.
+		- Sites: `lib.rs:7606`, `:7617`, `:7657`, `:7681-7866`, `:6530`; `shcl.go:7860`, `:7865`, `:7897`, `:7947-7975`, `:6736`; `shcl.py:4172`, `:4177`, `:4203`, `:4241-4259`, `:5722`; `shcl.h:5959`, `:5964`, `:5803`, `:5457`.
+		- Origin: `30120bc` (2026-07-23). 20260909 item 18 routed every document field name through `diag_name` and missed these schema-text sites; V005 and V006 were reworded in `544b345` (2026-09-17) and kept the raw path. Confirmed.
+		- Against: 20260909 item 18's fix note.
+		- Fixed: one helper per binding spells schema text for a diagnostic, with a line break written `\n` and nothing else changed: `schema_text` in Rust and C, `schemaText` in Go, `_schema_text` in Python. V002 to V007, V091 and V093 go through it, and so do the V097 messages and the generator's comment lines, which had their own copies of the same escape. C's `g_escape_nl` became `schema_text`.
+		- Sweep: V093, "bad schema path", printed its path raw too and was not in the review. V090, V094 and V095 already go through `diag_name`, and V092 names a fixed key.
+		- Pinned by: `cli-regress.bash` rows `schema-text-v002` to `schema-text-v007`, `schema-text-v091` and `schema-text-v093`. All eight fail in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155459
+
+	- ✅ Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
+		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
+		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
+		- Sites: `lib.rs:3030`, `shcl.go:2984`, `shcl.py:2462`, `shcl.h:3284`.
+		- Origin: `bac2498` (Merge e014-column, 2026-09-17). Confirmed.
+		- Against: 20260909 item 34's fix, a byte column from the line start, indent included, and the help text at `main.rs:273`.
+		- Fixed: the column adds the blank run between the indent and the text, in the E014 arm of each parser. The run is ASCII blanks, so its length is its byte count in Python too.
+		- Pinned by: `cli-regress.bash` row `e014-column-cr-lead`, which fails in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155713
 
 - Code review 20260909:
 

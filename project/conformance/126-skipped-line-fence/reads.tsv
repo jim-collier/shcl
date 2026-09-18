@@ -1,0 +1,12 @@
+query	type	expected	status
+-	load	ok	-
+-	load	fail	-	strict
+port	int	80	Good
+name	string	web	Good
+a.b	int	1	Good
+servers	count	0	Good
+script	count	0	Good
+a.run	count	0	Good
+a.name	count	0	Good
+-	paths	port|a|a.b|name	-
+-	lost	2	-
