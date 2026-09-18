@@ -92,6 +92,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
+- 🔘 The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
+	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
+	- Note: a count of nodes walked would not flake the way a clock does.
+	- Opened: 20260917-190500
+
 ### Features and enhancements
 
 - Code review 20260909:

@@ -69,6 +69,10 @@ TOOL_PINS=(
 	## export data from a Go newer than the release it was cut against, so the
 	## two move together.
 	"go|1.26|go version"
+	## Only check-readme needs zig (the Zig example), and only shell-regress
+	## needs Pillow (the demo gif's output order). Both fail a skip under --ci.
+	"zig|0.16.0|zig version"
+	"pillow|11.1.0|python3 -c 'import PIL; print(PIL.__version__)'"
 )
 ## The PyPI wheel that carries the pinned cppcheck binary has its own version,
 ## and that is the one pip installs (ci.yml, install-dev.bash). Bump it with
