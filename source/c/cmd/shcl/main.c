@@ -2113,17 +2113,17 @@ static int cli_main(int argc, char **argv) {
 	}
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }
-	// A value option in space form takes the next word, so `check --schema FILE`
-	// leaves no FILE and the usage line alone never says where it went. init is
-	// the one command that wants no positional of its own.
-	if (strcmp(cmd, "init") != 0 && o.nargs == 0 && o.swallowed_opt) {
-		fprintf(stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
-			o.swallowed_opt, o.swallowed_value, o.swallowed_opt);
-		opts_free(&o);
-		return 1;
-	}
 	int rc;
 	if (check_opts(cmd, &o)) rc = 1;
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. Judged
+	// after the options, so an option the command does not take is named as
+	// that. init and explain want no FILE.
+	else if (strcmp(cmd, "init") != 0 && strcmp(cmd, "explain") != 0 && o.nargs == 0 && o.swallowed_opt) {
+		fprintf(stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
+			o.swallowed_opt, o.swallowed_value, o.swallowed_opt);
+		rc = 1;
+	}
 	else if (!strcmp(cmd, "get")) rc = do_get(&o);
 	else if (!strcmp(cmd, "set")) rc = do_set(&o);
 	else if (!strcmp(cmd, "fmt")) rc = do_fmt(&o);

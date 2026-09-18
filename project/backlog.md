@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
-		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
-		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
-		- Sites: `main.rs:2491`, `main.go:2595`, `main.py:1849`, `main.c:2111`.
-		- Origin: `e230886` (Merge init-v097, 2026-09-17, 20260909 item 59). Confirmed.
-		- Against: `style-guide_ui-ux.md:67` and `:69`, a message names what went wrong, and a fix it names has to work.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
 		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
 		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
@@ -577,6 +569,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `cli-regress.bash` row `e014-column-cr-lead`, which fails in all four on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-155713
+
+	- ✅ Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
+		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
+		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
+		- Sites: `main.rs:2491`, `main.go:2595`, `main.py:1849`, `main.c:2111`.
+		- Origin: `e230886` (Merge init-v097, 2026-09-17, 20260909 item 59). Confirmed.
+		- Against: `style-guide_ui-ux.md:67` and `:69`, a message names what went wrong, and a fix it names has to work.
+		- Fixed: the "no FILE is left" refusal runs after the option check, so an option the command does not take is named as that first, and explain joins init as a command that wants no FILE. In `run` (Rust), `run` (Go), `run` (Python) and `cli_main` (C).
+		- Pinned by: rows `explain-opt-refused-first` and `migrate-opt-refused-first`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161540
 
 - Code review 20260909:
 

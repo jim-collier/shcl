@@ -1848,16 +1848,17 @@ def run(argv):
 	except ValueError as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	# A value option in space form takes the next word, so `check --schema FILE`
-	# leaves no FILE and the usage line alone never says where it went. init is
-	# the one command that wants no positional of its own.
-	if cmd != "init" and not o.args and o.swallowed is not None:
-		name, value = o.swallowed
-		sys.stderr.write(f"option {name} took '{value}' as its value, so no FILE is left; spell it {name}=VALUE\n")
-		return 1
 	code = check_opts(cmd, o)
 	if code is not None:
 		return code
+	# A value option in space form takes the next word, so `check --schema FILE`
+	# leaves no FILE and the usage line alone never says where it went. Judged
+	# after the options, so an option the command does not take is named as
+	# that. init and explain want no FILE.
+	if cmd not in ("init", "explain") and not o.args and o.swallowed is not None:
+		name, value = o.swallowed
+		sys.stderr.write(f"option {name} took '{value}' as its value, so no FILE is left; spell it {name}=VALUE\n")
+		return 1
 	if cmd == "get":
 		return do_get(o)
 	if cmd == "set":

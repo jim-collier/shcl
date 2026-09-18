@@ -2287,6 +2287,23 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
 		return code;
 	}
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. Judged
+	// after the options, so an option the command does not take is named as
+	// that. init and explain want no FILE.
+	if cmd != "init"
+		&& cmd != "explain"
+		&& o.args.is_empty()
+		&& let Some((name, v)) = &o.swallowed
+	{
+		errln!(
+			"option {} took '{}' as its value, so no FILE is left; spell it {}=VALUE",
+			name,
+			v,
+			name
+		);
+		return 1;
+	}
 	// Every command spelled out, and the last arm a refusal rather than a
 	// fall-through: with a catch-all, adding a name to COMMANDS without adding
 	// an arm here quietly ran whichever command the catch-all named, with no
@@ -2492,21 +2509,6 @@ fn run_cli() -> u8 {
 			return 1;
 		}
 	};
-	// A value option in space form takes the next word, so `check --schema FILE`
-	// leaves no FILE and the usage line alone never says where it went. init is
-	// the one command that wants no positional of its own.
-	if cmd != "init"
-		&& o.args.is_empty()
-		&& let Some((name, v)) = &o.swallowed
-	{
-		errln!(
-			"option {} took '{}' as its value, so no FILE is left; spell it {}=VALUE",
-			name,
-			v,
-			name
-		);
-		return 1;
-	}
 	#[cfg(feature = "profiling")]
 	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
 		return run_profiled(&cmd, &o, &out);

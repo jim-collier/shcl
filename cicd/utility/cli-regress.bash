@@ -324,6 +324,10 @@ rows=(
 	'help-help-flag|help --help|-|0|-|^$'
 	'help-h-flag|help -h|-|0|-|^$'
 	'help-cmd-help-flag|help get --help|-|0|-|^$'
+	## 20260918 item 16: the "no FILE is left" refusal came before the option
+	## check, so it named the wrong fault and a fix that did not work.
+	'explain-opt-refused-first|explain --layer E001|-|1||^option --layer not valid for explain'
+	'migrate-opt-refused-first|migrate --layer x|-|1||^option --layer not valid for migrate'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'

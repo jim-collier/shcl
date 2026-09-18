@@ -2599,16 +2599,17 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if code := checkOpts(argv[0], o); code != 0 {
+		return code
+	}
 	// A value option in space form takes the next word, so `check --schema FILE`
-	// leaves no FILE and the usage line alone never says where it went. init is
-	// the one command that wants no positional of its own.
-	if cmd != "init" && len(o.args) == 0 && o.swallowedOpt != "" {
+	// leaves no FILE and the usage line alone never says where it went. Judged
+	// after the options, so an option the command does not take is named as
+	// that. init and explain want no FILE.
+	if cmd != "init" && cmd != "explain" && len(o.args) == 0 && o.swallowedOpt != "" {
 		fmt.Fprintf(os.Stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
 			o.swallowedOpt, o.swallowedValue, o.swallowedOpt)
 		return 1
-	}
-	if code := checkOpts(argv[0], o); code != 0 {
-		return code
 	}
 	// Every command spelled out, and the last arm a refusal rather than a
 	// fall-through: with a default arm, adding a name to commands without
