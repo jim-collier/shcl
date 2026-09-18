@@ -624,6 +624,12 @@ fn option_names() -> Vec<&'static str> {
 	v
 }
 
+/// A real option by any spelling, `-w` included. The suggestions draw on
+/// `option_names` alone, which leaves the short form out.
+fn known_option(name: &str) -> bool {
+	name == "-w" || option_names().contains(&name)
+}
+
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: Kind::String,
@@ -729,6 +735,11 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				// The suggestion is against the name half: `--stricness=1` is a
 				// typo in the option, not in a spelling that includes a value.
 				let name = a.split('=').next().unwrap_or(a);
+				// Every value option is matched above, so a real name here is a
+				// flag given a value. Calling it unknown would suggest it back.
+				if known_option(name) {
+					return Err(format!("option {} takes no value (see --help)", name));
+				}
 				return Err(format!(
 					"unknown option: {}{} (see --help)",
 					a,
@@ -2484,7 +2495,7 @@ fn run_cli() -> u8 {
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
 			let name = cmd.split('=').next().unwrap_or(&cmd);
-			if option_names().contains(&name) {
+			if known_option(name) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
 				// nothing about what is actually wrong.

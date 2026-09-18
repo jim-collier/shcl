@@ -1504,6 +1504,16 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 static size_t option_names(const char **v, size_t cap);
 static void suggest(char *out, size_t outsz, const char **cands, size_t ncands, const char *word);
 
+// A real option by any spelling, -w included. The suggestions draw on
+// option_names alone, which leaves the short form out.
+static int known_option(const char *name) {
+	if (!strcmp(name, "-w")) return 1;
+	const char *cands[64];
+	size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
+	for (size_t k = 0; k < n; k++) if (!strcmp(cands[k], name)) return 1;
+	return 0;
+}
+
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
@@ -1552,6 +1562,9 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 			if (len >= sizeof name) len = sizeof name - 1;
 			memcpy(name, a, len);
 			name[len] = '\0';
+			// Every value option is matched above, so a real name here is a flag
+			// given a value. Calling it unknown would suggest it back.
+			if (known_option(name)) { fprintf(stderr, "option %s takes no value (see --help)\n", name); return 1; }
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
 			suggest(hint, sizeof hint, cands, n, name);
 			fprintf(stderr, "unknown option: %s%s (see --help)\n", a, hint);
@@ -2096,9 +2109,7 @@ static int cli_main(int argc, char **argv) {
 			memcpy(name, cmd, len);
 			name[len] = '\0';
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
-			int is_opt = 0;
-			for (size_t k = 0; k < n; k++) if (!strcmp(cands[k], name)) { is_opt = 1; break; }
-			if (is_opt) {
+			if (known_option(name)) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
 				// nothing about what is actually wrong.

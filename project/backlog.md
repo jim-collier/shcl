@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
-		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
-		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
-		- Sites: `main.rs:604`, `:726`, `:2459`; `main.go:734`, `:856`, `:2576`; `main.py:549`, `:632`, `:1835`; `main.c:1806`, `:1554`, `:2094`.
-		- Origin: `e230886` (Merge init-v097) and `c78d41d` (Merge cli-help), both 2026-09-17. Confirmed.
-		- Against: 20260909 item 59, that calling an option unknown and suggesting it back says nothing, and `style-guide_ui-ux.md:25`.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 23: three usage errors neither end with `(see --help)` nor name their fix.
 		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
 		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
@@ -596,6 +588,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the second time a transcript drifted, after 20260909 item 34, so the check is for the class.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161754
+
+	- ✅ Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
+		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
+		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
+		- Sites: `main.rs:604`, `:726`, `:2459`; `main.go:734`, `:856`, `:2576`; `main.py:549`, `:632`, `:1835`; `main.c:1806`, `:1554`, `:2094`.
+		- Origin: `e230886` (Merge init-v097) and `c78d41d` (Merge cli-help), both 2026-09-17. Confirmed.
+		- Against: 20260909 item 59, that calling an option unknown and suggesting it back says nothing, and `style-guide_ui-ux.md:25`.
+		- Fixed: one `known_option` per CLI (`knownOption` in Go) counts `-w` as a real option. Before the subcommand `-w` gets "goes after the subcommand", and a real flag spelled with `=VALUE` gets "option --write takes no value (see --help)" rather than unknown.
+		- Pinned by: rows `short-write-before-cmd`, `flag-given-value` and `type-flag-given-value`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161831
 
 - Code review 20260909:
 

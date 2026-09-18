@@ -334,6 +334,10 @@ rows=(
 	## 20260918 item 17: Go and Python folded a non-ASCII code by Unicode rules
 	## and suggested a code for it.
 	'explain-non-ascii-no-suggestion|explain %LS%001|-|1||!did you mean'
+	## 20260918 item 22: two real options still called unknown.
+	'short-write-before-cmd|-w fmt %F%|-|1||^option -w goes after the subcommand \(see --help\)$'
+	'flag-given-value|fmt --write=yes %F%|-|1||^option --write takes no value \(see --help\)$'
+	'type-flag-given-value|get --int=5 %F% a|-|1||^option --int takes no value \(see --help\)$'
 	## 20260918 items 19 and 20: explain gave a file spelling that is a comment,
 	## and left out the V097 a user meets most.
 	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n|-'

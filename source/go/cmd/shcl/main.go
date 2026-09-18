@@ -774,6 +774,20 @@ func optionNames() []string {
 	return v
 }
 
+// knownOption is a real option by any spelling, -w included. The suggestions
+// draw on optionNames alone, which leaves the short form out.
+func knownOption(name string) bool {
+	if name == "-w" {
+		return true
+	}
+	for _, n := range optionNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 func parseOpts(argv []string) (*opts, error) {
 	o := &opts{kind: kindString, onBad: onBadFlag, strictness: shcl.Standard}
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -868,8 +882,14 @@ func parseOpts(argv []string) (*opts, error) {
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			// The suggestion is against the name half: `--stricness=1` is a typo
 			// in the option, not in a spelling that includes a value.
+			name := strings.SplitN(a, "=", 2)[0]
+			// Every value option is matched above, so a real name here is a flag
+			// given a value. Calling it unknown would suggest it back.
+			if knownOption(name) {
+				return nil, fmt.Errorf("option %s takes no value (see --help)", name)
+			}
 			return nil, fmt.Errorf("unknown option: %s%s (see --help)", a,
-				suggest(optionNames(), strings.SplitN(a, "=", 2)[0]))
+				suggest(optionNames(), name))
 		default:
 			o.args = append(o.args, a)
 		}
@@ -2587,14 +2607,7 @@ func run() int {
 		// as that and not as an option the wrong command cannot take.
 		if strings.HasPrefix(cmd, "-") && cmd != "--" {
 			name := strings.SplitN(cmd, "=", 2)[0]
-			isOpt := false
-			for _, n := range optionNames() {
-				if n == name {
-					isOpt = true
-					break
-				}
-			}
-			if isOpt {
+			if knownOption(name) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
 				// nothing about what is actually wrong.

@@ -425,6 +425,12 @@ def _ascii_upper(s):
 	return "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in s)
 
 
+def known_option(name):
+	# A real option by any spelling, -w included. The suggestions draw on
+	# option_names alone, which leaves the short form out.
+	return name == "-w" or name in option_names()
+
+
 def _set_value_opt(o, name, v):
 	if name == "--default":
 		o.default = v
@@ -638,7 +644,12 @@ def parse_opts(argv):
 		elif a.startswith("-") and len(a) > 1:
 			# The suggestion is against the name half: `--stricness=1` is a typo
 			# in the option, not in a spelling that includes a value.
-			raise ValueError(f"unknown option: {a}{suggest(option_names(), a.split('=')[0])} (see --help)")
+			name = a.split("=")[0]
+			# Every value option is matched above, so a real name here is a flag
+			# given a value. Calling it unknown would suggest it back.
+			if known_option(name):
+				raise ValueError(f"option {name} takes no value (see --help)")
+			raise ValueError(f"unknown option: {a}{suggest(option_names(), name)} (see --help)")
 		else:
 			o.args.append(a)
 		i += 1
@@ -1842,7 +1853,7 @@ def run(argv):
 		# as that and not as an option the wrong command cannot take.
 		if cmd.startswith("-") and cmd != "--":
 			name = cmd.split("=")[0]
-			if name in option_names():
+			if known_option(name):
 				# It is a real option, just in front of the subcommand. Calling
 				# it unknown and then suggesting the same spelling back says
 				# nothing about what is actually wrong.
