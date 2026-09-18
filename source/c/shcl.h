@@ -301,7 +301,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 	"## \"Simple Hierarchical Config Language\"\n" \
 	"##    Format   3\n" \
 	"##    Home     https://github.com/jim-collier/shcl\n" \
-	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n" \
+	"##    Syntax   https://github.com/jim-collier/shcl/blob/v3.0.0/project/spec.md\n" \
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n" \
 	"##\n"
 
@@ -466,7 +466,8 @@ size_t shcl_tokens_element_count(const shcl_tokens *t);
 // The format major the info block names. It moves with the format, not with
 // the header: a file says which rule set it was written for, and nothing else
 // does. SHCL_FORMAT_LINE_HEAD is what shcl_migrate matches to find the line,
-// so a later major can still read an older file's number.
+// so a later major can still read an older file's number. The banner's Syntax
+// link names the tag that opened this major, and moves with it.
 #define SHCL_FORMAT_MAJOR 3
 #define SHCL_FORMAT_LINE_HEAD "##    Format   "
 #define SHCL_FORMAT_LINE "##    Format   3"

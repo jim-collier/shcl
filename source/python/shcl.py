@@ -6221,13 +6221,15 @@ GEN_BANNER = (
 	'## "Simple Hierarchical Config Language"\n'
 	"##    Format   3\n"
 	"##    Home     https://github.com/jim-collier/shcl\n"
-	"##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md\n"
+	"##    Syntax   https://github.com/jim-collier/shcl/blob/v3.0.0/project/spec.md\n"
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n"
 	"##\n"
 )
 
 # The format major the info block names. It moves with the format, not with the
 # package: a file says which rule set it was written for, and nothing else does.
+# The banner's Syntax link names the tag that opened this major, and moves with
+# it.
 FORMAT_MAJOR = 3
 
 # The start of the block's version line, up to the number. migrate matches on

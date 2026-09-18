@@ -100,11 +100,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
-	- 🔘 Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
-		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
-		- Done in part: the block carries a `Format` line naming the format's major, added with item 4, which needed it to tell a 3.0 file from a 2.x one. The spec-link half is still open.
-		- Opened: 20260909-105600
-
 - 🔘 Cut 3.0.0.
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
 	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
@@ -3469,6 +3464,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 57: the generated info block carries no dialect marker and points at the spec on `main`.
+		- A file written by 3.0 and read by 2.x is the case the whole cut is about, and the block is the one place a version could be recorded. The spec link resolves to whatever `main` holds rather than to the release that wrote the file.
+		- Done in part: the block carries a `Format` line naming the format's major, added with item 4, which needed it to tell a 3.0 file from a 2.x one.
+		- Decided: the `Syntax` link names the tag of the release that opened the format major, `v3.0.0` for format 3, and moves only with the `Format` line. The link is dead until 3.0.0 is cut.
+		- Fixed: the banner in all four bindings, the spec, the README and the `init` goldens.
+		- Opened: 20260909-105600
+		- Closed: 20260918-111153
 
 	- ✅ Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
 		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
