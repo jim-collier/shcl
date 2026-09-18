@@ -7288,13 +7288,15 @@ pub const GEN_BANNER: &str = "\
 ## \"Simple Hierarchical Config Language\"
 ##    Format   3
 ##    Home     https://github.com/jim-collier/shcl
-##    Syntax   https://github.com/jim-collier/shcl/blob/main/project/spec.md
+##    Syntax   https://github.com/jim-collier/shcl/blob/v3.0.0/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ";
 
 /// The format major the info block names. Bumped with the format, not with the
 /// crate: a file says which rule set it was written for, and nothing else.
+/// The banner's Syntax link names the tag that opened this major, and moves
+/// with it.
 pub const FORMAT_MAJOR: u32 = 3;
 
 /// The start of the block's version line, up to the number. `migrate` matches
