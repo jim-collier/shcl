@@ -1615,27 +1615,41 @@ type migrating struct {
 // formatVersion is the major a `##    Format   N` line names, if the document
 // carries one. More digits than fit is not a 2.x file either, so it reads as
 // this major and there is nothing to migrate. Only Migrate reads this line.
+//
+// Raw bodies are skipped exactly where the rewrite skips them, by walking the
+// lines through the same migrateLine. A Format line pasted into a block is
+// that block's content, and taking it as the file's would rewrite a current
+// file, or leave an old one alone.
 func formatVersion(text string) (int, bool) {
+	var tok Tokens
+	var fence openFence
+	// Only the blocks a line opens are wanted here, not what it counts.
+	dry := migrating{fromV2: true}
 	for _, line := range strings.Split(text, "\n") {
-		n, ok := strings.CutPrefix(trimEndWS(line), FormatLineHead)
-		if !ok || n == "" {
+		body := strings.TrimRight(line, "\r")
+		if fence.open {
+			if isFenceClose(body, fence.ch, fence.length) {
+				fence.open = false
+			}
 			continue
 		}
-		digits := true
-		for i := 0; i < len(n); i++ {
-			if n[i] < '0' || n[i] > '9' {
-				digits = false
-				break
+		if n, ok := strings.CutPrefix(trimEndWS(line), FormatLineHead); ok && n != "" {
+			digits := true
+			for i := 0; i < len(n); i++ {
+				if n[i] < '0' || n[i] > '9' {
+					digits = false
+					break
+				}
+			}
+			if digits {
+				v, err := strconv.Atoi(n)
+				if err != nil {
+					return FormatMajor, true
+				}
+				return v, true
 			}
 		}
-		if !digits {
-			continue
-		}
-		v, err := strconv.Atoi(n)
-		if err != nil {
-			return FormatMajor, true
-		}
-		return v, true
+		migrateLine(trimEndWS(body[len(leadingWS(body)):]), &tok, &fence, &dry)
 	}
 	return 0, false
 }

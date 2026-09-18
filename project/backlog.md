@@ -80,23 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
-		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
-		- Note: the reverse holds too. A raw body holding `##    Format   3`, such as a pasted `init` banner, makes any file report nothing to migrate.
-		- Cause: `format_version` scans every line and does not skip fence bodies the way the migrate loop does.
-		- Sites: `lib.rs:1472`, `shcl.go:1618`, `shcl.py:1390`, `shcl.h:1804`.
-		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16), 20260909 item 4's second half. Not seen before. Confirmed.
-		- Against: the spec's Migrating section, that the Format line decides and that `migrate` never damages a file that was already correct.
-		- Opened: 20260918-133258
-
-	- 🔘 Item 2: C `migrate` misses the version line when the file starts with a BOM, so it restamps or rewrites a current file.
-		- Reproduced in C only. A BOM, `##    Format   3`, `p: C:\temp`: the other three say nothing to migrate at exit 0, and C exits 7 as ambiguous. With `--from-2x`, C writes `p: "C:\temp"` and a second Format line at exit 0, and `get p` is `C:`, a tab, `emp`. A BOM, the Format line and `a: 1` gets a duplicate Format line at exit 0.
-		- Cause: `format_version(text)` runs before the BOM is stripped.
-		- Sites: `shcl.h:1831` against `:1837`.
-		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16). Confirmed.
-		- Against: the spec, that a file carrying the Format line has nothing to migrate, and parity with the reference.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
 		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
 		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
@@ -528,6 +511,33 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260918:
+
+	- Items are here as they close. The rest of the round is under Bugs and Features and enhancements, with the round's own notes.
+
+	- ✅ Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
+		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
+		- Note: the reverse holds too. A raw body holding `##    Format   3`, such as a pasted `init` banner, makes any file report nothing to migrate.
+		- Cause: `format_version` scans every line and does not skip fence bodies the way the migrate loop does.
+		- Sites: `lib.rs:1472`, `shcl.go:1618`, `shcl.py:1390`, `shcl.h:1804`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16), 20260909 item 4's second half. Not seen before. Confirmed.
+		- Against: the spec's Migrating section, that the Format line decides and that `migrate` never damages a file that was already correct.
+		- Fixed: the version scan walks the lines through the rewrite's own line reader, so it skips a raw body exactly where the rewrite does. `format_version` in Rust and C, `formatVersion` in Go, `_format_version` in Python.
+		- Pinned by: `cli-regress.bash` rows `migrate-format-in-raw-old` and `migrate-format-in-raw-new`. Both fail in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153113
+
+	- ✅ Item 2: C `migrate` misses the version line when the file starts with a BOM, so it restamps or rewrites a current file.
+		- Reproduced in C only. A BOM, `##    Format   3`, `p: C:\temp`: the other three say nothing to migrate at exit 0, and C exits 7 as ambiguous. With `--from-2x`, C writes `p: "C:\temp"` and a second Format line at exit 0, and `get p` is `C:`, a tab, `emp`. A BOM, the Format line and `a: 1` gets a duplicate Format line at exit 0.
+		- Cause: `format_version(text)` runs before the BOM is stripped.
+		- Sites: `shcl.h:1831` against `:1837`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16). Confirmed.
+		- Against: the spec, that a file carrying the Format line has nothing to migrate, and parity with the reference.
+		- Fixed: C `migrate` takes the BOM off before the version scan, as the other three do.
+		- Pinned by: rows `migrate-bom-stamped` and `migrate-bom-stamped-from-2x`. Both fail in C on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153113
 
 - Code review 20260909:
 

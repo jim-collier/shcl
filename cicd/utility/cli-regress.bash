@@ -144,6 +144,15 @@ printf 'ports: [80, 443]\n' > "${tmpDir}/brsrc.shcl"
 ## A file that says which rules wrote it, which is the whole answer: there is
 ## nothing to migrate and a second run must not touch it.
 printf 'p: 1\n##    Format   3\n' > "${tmpDir}/stamped.shcl"
+## A Format line inside a raw body is that block's content. Taken as the
+## file's, the first made a current file look like 2.x and rewrote it at exit
+## 0, and the second made any file look current.
+#  shellcheck disable=2016  ## the backticks are the fence the fixture needs.
+printf 'p: %s\nnote:\n\t```\n##    Format   2\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt2.shcl"
+#  shellcheck disable=2016
+printf 'p: %s\nnote:\n\t```\n##    Format   3\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt3.shcl"
+## A stamped file behind a BOM, whose value 2.x would have read another way.
+printf '\357\273\277##    Format   3\np: %s\n' 'C:\temp' > "${tmpDir}/bomstamped.shcl"
 ## A default on a path whose last segment selects by value. A value after that
 ## selector is ignored, so generation used to write a line that failed its own
 ## check. One default contradicts the selector and one names it.
@@ -184,6 +193,7 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
+##	%V3B% the same behind a BOM, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone,
@@ -324,6 +334,12 @@ rows=(
 	## A file that names its format has nothing to migrate, which is what stops
 	## the second run from rewriting the first run's output.
 	'migrate-stamped-noop|migrate %V3%|-|0|p: 1\n##    Format   3\n|nothing to migrate'
+	## 20260918 item 1: the version scan read raw bodies the rewrite skips.
+	'migrate-format-in-raw-old|migrate %RF2%|-|7|-|does not say which it was written for'
+	'migrate-format-in-raw-new|migrate %RF3%|-|7|-|does not say which it was written for'
+	## 20260918 item 2: C looked for the version line before taking off a BOM.
+	'migrate-bom-stamped|migrate %V3B%|-|0|-|nothing to migrate'
+	'migrate-bom-stamped-from-2x|migrate --from-2x %V3B%|-|0|-|nothing to migrate'
 	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
 	## Leaving the line is the decision; exiting 0 was the defect, since a
 	## scripted migration could not tell "migrated" from "gave up".
@@ -527,6 +543,9 @@ for row in "${rows[@]}"; do
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
+	argv="${argv//%V3B%/${tmpDir}/bomstamped.shcl}"
+	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
+	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1

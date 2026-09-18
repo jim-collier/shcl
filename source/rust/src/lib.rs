@@ -1469,16 +1469,39 @@ struct Migrating {
 /// The major a `##    Format   N` line names, if the document carries one.
 /// Digits that do not fit read as "newer than this", since whatever wrote them
 /// was not 2.x. Only `migrate` reads this line.
+///
+/// Raw bodies are skipped exactly where the rewrite skips them, by walking the
+/// lines through the same `migrate_line`. A Format line pasted into a block is
+/// that block's content, and taking it as the file's would rewrite a current
+/// file, or leave an old one alone.
 fn format_version(text: &str) -> Option<u32> {
-	text.split('\n').find_map(|line| {
-		let n = line
-			.trim_end_matches(is_wsp)
-			.strip_prefix(FORMAT_LINE_HEAD)?;
-		// More digits than fit is not a 2.x file either, so it reads as this
-		// major and there is nothing to migrate.
-		(!n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
-			.then(|| n.parse().unwrap_or(FORMAT_MAJOR))
-	})
+	let mut tok = Tokens::default();
+	let mut fence: Option<(u8, usize)> = None;
+	// Only the blocks a line opens are wanted here, not what it counts.
+	let mut dry = Migrating {
+		from_v2: true,
+		ambiguous: 0,
+		lost: 0,
+	};
+	for line in text.split('\n') {
+		let body = line.trim_end_matches('\r');
+		if let Some((ch, len)) = fence {
+			if is_fence_close(body, ch, len) {
+				fence = None;
+			}
+			continue;
+		}
+		if let Some(n) = line.trim_end_matches(is_wsp).strip_prefix(FORMAT_LINE_HEAD) {
+			// More digits than fit is not a 2.x file either, so it reads as
+			// this major and there is nothing to migrate.
+			if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) {
+				return Some(n.parse().unwrap_or(FORMAT_MAJOR));
+			}
+		}
+		let rest = trim_wsp_end(&body[leading_ws(body).len()..]);
+		migrate_line(rest, &mut tok, &mut fence, &mut dry);
+	}
+	None
 }
 
 /// Rewrite a document written under the 2.x rules so this parser reads the

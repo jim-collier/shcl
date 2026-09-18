@@ -1800,21 +1800,40 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 /* The major a `##    Format   N` line names, or -1 when the document carries
    none. Once the running value is past this major it stops accumulating: the
    comparison below only asks which side of this major it falls, and that keeps
-   a line of many digits from overflowing. Only migrate reads this line. */
-static long format_version(ShclStr text) {
+   a line of many digits from overflowing. Only migrate reads this line.
+   Raw bodies are skipped exactly where the rewrite skips them, by walking the
+   lines through the same migrate_line. A Format line pasted into a block is
+   that block's content, and taking it as the file's would rewrite a current
+   file, or leave an old one alone. */
+static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclTokens *tok) {
 	size_t headn = sizeof(SHCL_FORMAT_LINE_HEAD) - 1, start = 0;
+	int fence_on = 0; unsigned char fence_ch = 0; size_t fence_len = 0;
+	/* Only the blocks a line opens are wanted here, not what it counts. */
+	ShclMigrating dry; dry.from_v2 = 1; dry.ambiguous = 0; dry.lost = 0;
 	for (size_t i = 0; i <= text.n; i++) {
 		if (i < text.n && text.p[i] != '\n') continue;
-		ShclStr line = trim_wsp_end(s_slice(text, start, i));
+		ShclStr raw = s_slice(text, start, i);
 		start = i + 1;
-		if (line.n <= headn || memcmp(line.p, SHCL_FORMAT_LINE_HEAD, headn) != 0) continue;
-		ShclStr n = s_slice(line, headn, line.n);
-		long v = 0; int ok = 1;
-		for (size_t k = 0; k < n.n; k++) {
-			if (!is_adigit((unsigned char)n.p[k])) { ok = 0; break; }
-			if (v <= SHCL_FORMAT_MAJOR) v = v * 10 + (n.p[k] - '0');
+		size_t bn = raw.n;
+		while (bn > 0 && raw.p[bn - 1] == '\r') bn--;
+		ShclStr body = s_slice(raw, 0, bn);
+		if (fence_on) {
+			if (is_fence_close(body, fence_ch, fence_len)) fence_on = 0;
+			continue;
 		}
-		if (ok) return v;
+		ShclStr line = trim_wsp_end(raw);
+		if (line.n > headn && memcmp(line.p, SHCL_FORMAT_LINE_HEAD, headn) == 0) {
+			ShclStr n = s_slice(line, headn, line.n);
+			long v = 0; int ok = 1;
+			for (size_t k = 0; k < n.n; k++) {
+				if (!is_adigit((unsigned char)n.p[k])) { ok = 0; break; }
+				if (v <= SHCL_FORMAT_MAJOR) v = v * 10 + (n.p[k] - '0');
+			}
+			if (ok) return v;
+		}
+		arena_reset(sc);
+		ShclStr indent = leading_ws(body);
+		migrate_line(ta, sc, trim_wsp_end(s_slice(body, indent.n, body.n)), tok, &fence_on, &fence_ch, &fence_len, &dry);
 	}
 	return -1;
 }
@@ -1828,17 +1847,19 @@ static long format_version(ShclStr text) {
    over. A rewritten file is stamped with the version line, so the second run
    has an answer the first one did not. */
 static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating *st, int *current) {
-	long version = format_version(text);
-	if (version >= SHCL_FORMAT_MAJOR) { *current = 1; return text; }
-	if (version >= 0) st->from_v2 = 1;
-	int changed = 0;
-	ShclSB out = {0};
-	sb_reserve(a, &out, text.n + 96);
+	ShclStr whole = text, bom = s_empty();
 	if (text.n >= 3 && (unsigned char)text.p[0] == 0xEF && (unsigned char)text.p[1] == 0xBB && (unsigned char)text.p[2] == 0xBF) {
-		sb_put(a, &out, text.p, 3);
+		bom = s_slice(text, 0, 3);
 		text = s_slice(text, 3, text.n);
 	}
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	long version = format_version(a, sc, text, &tok);
+	if (version >= SHCL_FORMAT_MAJOR) { *current = 1; return whole; }
+	if (version >= 0) st->from_v2 = 1;
+	int changed = 0;
+	ShclSB out = {0};
+	sb_reserve(a, &out, whole.n + 96);
+	sb_putS(a, &out, bom);
 	int fence_on = 0; unsigned char fence_ch = 0; size_t fence_len = 0;
 	size_t start = 0, lineno = 0;
 	for (size_t i = 0; i <= text.n; i++) {

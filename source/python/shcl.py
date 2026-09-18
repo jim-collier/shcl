@@ -1389,14 +1389,28 @@ class _Migrating:
 
 def _format_version(text):
 	"""The major a `##    Format   N` line names, if the document carries one.
-	Only migrate reads this line."""
+	Only migrate reads this line.
+
+	Raw bodies are skipped exactly where the rewrite skips them, by walking the
+	lines through the same _migrate_line. A Format line pasted into a block is
+	that block's content, and taking it as the file's would rewrite a current
+	file, or leave an old one alone."""
+	tok = Tokens()
+	fence = None
+	# Only the blocks a line opens are wanted here, not what it counts.
+	dry = _Migrating(True)
 	for line in text.split("\n"):
-		head = _trim_wsp_end(line)
-		if not head.startswith(FORMAT_LINE_HEAD):
+		body = line.rstrip("\r")
+		if fence is not None:
+			if _is_fence_close(body, fence[0], fence[1]):
+				fence = None
 			continue
-		n = head[len(FORMAT_LINE_HEAD):]
-		if n and all("0" <= c <= "9" for c in n):
-			return int(n)
+		head = _trim_wsp_end(line)
+		if head.startswith(FORMAT_LINE_HEAD):
+			n = head[len(FORMAT_LINE_HEAD):]
+			if n and all("0" <= c <= "9" for c in n):
+				return int(n)
+		_, fence = _migrate_line(_trim_wsp_end(body[len(_leading_ws(body)):]), tok, fence, dry)
 	return None
 
 
