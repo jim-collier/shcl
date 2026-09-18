@@ -2413,11 +2413,18 @@ fn run_cli() -> u8 {
 		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		// flag form the command is the first word, which a bare `--help` is not.
 		let topic = if first == Some("help") {
-			if argv.len() > 2 {
+			// A help flag after `help` asks for the same thing twice, so it is
+			// no topic: `help --help` and `help get -h` print what they name.
+			let words: Vec<&str> = argv[1..]
+				.iter()
+				.map(|s| s.as_str())
+				.filter(|w| !matches!(*w, "-h" | "--help"))
+				.collect();
+			if words.len() > 1 {
 				errln!("usage: shcl help [CMD] (see --help)");
 				return 1;
 			}
-			argv.get(1).map(|s| s.as_str())
+			words.first().copied()
 		} else {
 			first.filter(|f| !f.starts_with('-'))
 		};

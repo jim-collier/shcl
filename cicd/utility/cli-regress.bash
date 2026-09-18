@@ -217,7 +217,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	optional lines that each pass alone, %SH% an optional field whose default
 ##	names another instance than its path selects, %SI% the %SE% schema with a
 ##	default that names its instance,
-##	%C% a path with nothing at it, cleared before every binding's run,
+##	%C% a path with nothing at it, cleared before every binding's run, %E% an
+##	empty argument, %LS% a long s (U+017F), which Unicode upper-cases to S,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
@@ -315,6 +316,14 @@ rows=(
 	## same schema with the default naming `b`.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
 	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
+	## 20260918 item 9: an empty topic is an unknown command, as in the
+	## reference; the ports read it as no topic and printed the help at exit 0.
+	'help-empty-topic|help %E%|-|1||^unknown command:  \(see --help\)$'
+	'empty-cmd-help|%E% --help|-|1||^unknown command:  \(see --help\)$'
+	## 20260918 item 10: a help flag after `help` was taken for the topic.
+	'help-help-flag|help --help|-|0|-|^$'
+	'help-h-flag|help -h|-|0|-|^$'
+	'help-cmd-help-flag|help get --help|-|0|-|^$'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -654,6 +663,9 @@ for row in "${rows[@]}"; do
 		continue
 	fi
 	read -r -a args <<<"${argv}"
+	for k in "${!args[@]}"; do
+		if [[ "${args[k]}" == "%E%" ]]; then args[k]=""; fi
+	done
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"

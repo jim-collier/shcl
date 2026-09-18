@@ -1796,16 +1796,21 @@ def run(argv):
 	if asked == "help" or argv[0] == "help":
 		# `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		# flag form the command is the first word, which a bare `--help` is not.
+		# An empty word is still a topic, as it is in the reference: `help ''`
+		# names no command, which is not the same as naming none.
 		if argv[0] == "help":
-			if len(argv) > 2:
+			# A help flag after `help` asks for the same thing twice, so it is no
+			# topic: `help --help` and `help get -h` print what they name.
+			words = [w for w in argv[1:] if w not in ("-h", "--help")]
+			if len(words) > 1:
 				sys.stderr.write("usage: shcl help [CMD] (see --help)\n")
 				return 1
-			topic = argv[1] if len(argv) == 2 else ""
+			topic = words[0] if words else None
 		else:
-			topic = "" if argv[0].startswith("-") else argv[0]
+			topic = None if argv[0].startswith("-") else argv[0]
 		# The informational words are the full help's own last two lines, so
 		# there is nothing narrower to show for them.
-		if topic in ("", "help", "version", "about", "donate"):
+		if topic is None or topic in ("help", "version", "about", "donate"):
 			sys.stdout.write("\n" + HELP + "\n")
 			return 0
 		if topic in COMMANDS:

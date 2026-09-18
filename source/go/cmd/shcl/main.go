@@ -2509,22 +2509,32 @@ func run() int {
 	if asked == "help" || argv[0] == "help" {
 		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		// flag form the command is the first word, which a bare `--help` is not.
-		topic := ""
+		// An empty word is still a topic, as it is in the reference: `help ''`
+		// names no command, which is not the same as naming none.
+		topic, hasTopic := "", false
 		if argv[0] == "help" {
-			if len(argv) > 2 {
+			// A help flag after `help` asks for the same thing twice, so it is
+			// no topic: `help --help` and `help get -h` print what they name.
+			var words []string
+			for _, w := range argv[1:] {
+				if w != "-h" && w != "--help" {
+					words = append(words, w)
+				}
+			}
+			if len(words) > 1 {
 				fmt.Fprintln(os.Stderr, "usage: shcl help [CMD] (see --help)")
 				return 1
 			}
-			if len(argv) == 2 {
-				topic = argv[1]
+			if len(words) == 1 {
+				topic, hasTopic = words[0], true
 			}
 		} else if !strings.HasPrefix(argv[0], "-") {
-			topic = argv[0]
+			topic, hasTopic = argv[0], true
 		}
 		// The informational words are the full help's own last two lines, so
 		// there is nothing narrower to show for them.
-		switch topic {
-		case "", "help", "version", "about", "donate":
+		switch {
+		case !hasTopic, topic == "help", topic == "version", topic == "about", topic == "donate":
 			outf("\n%s\n", help)
 			return 0
 		}

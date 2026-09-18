@@ -89,22 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
-		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
-		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
-		- Sites: `main.rs:2415`, `main.go:2512`, `main.py:1803`, `main.c:2053`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 44). Confirmed.
-		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 10: `shcl help --help`, `help -h` and `help get --help` exit 1, where they printed the help before 20260909 item 44.
-		- Reproduced in all four. `help --help` prints `unknown command: --help; did you mean 'help'?` at exit 1, suggesting the word already typed. `help -h` and `help get --help` fail the same way. At `0090046` all three printed the help at exit 0, and `shcl version --help` still does.
-		- Cause: when the first word is `help`, the second becomes the topic before the flag scan's answer is used.
-		- Sites: `main.rs:2410-2440`, `main.go:2510-2538`, `main.py:1798-1815`, `main.c:2050-2068`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of the older behavior. Confirmed.
-		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
 		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
 		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
@@ -548,6 +532,28 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a block in `mem_bounds.c` with a 1 MB ceiling on everything the document and its probe hold. It fails on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-155114
+
+	- ✅ Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
+		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
+		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
+		- Sites: `main.rs:2415`, `main.go:2512`, `main.py:1803`, `main.c:2053`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 44). Confirmed.
+		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
+		- Fixed: the ports hold "no topic" apart from an empty one, as the reference does: `hasTopic` in Go, `None` in Python, a NULL topic in C. `shcl help ''` and `shcl '' --help` are an unknown command at exit 1 in all four.
+		- Pinned by: `cli-regress.bash` rows `help-empty-topic` and `empty-cmd-help`, which fail in Go, Python and C on the old code. A `%E%` in a row now stands for an empty argument, which a row could not spell before.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161509
+
+	- ✅ Item 10: `shcl help --help`, `help -h` and `help get --help` exit 1, where they printed the help before 20260909 item 44.
+		- Reproduced in all four. `help --help` prints `unknown command: --help; did you mean 'help'?` at exit 1, suggesting the word already typed. `help -h` and `help get --help` fail the same way. At `0090046` all three printed the help at exit 0, and `shcl version --help` still does.
+		- Cause: when the first word is `help`, the second becomes the topic before the flag scan's answer is used.
+		- Sites: `main.rs:2410-2440`, `main.go:2510-2538`, `main.py:1798-1815`, `main.c:2050-2068`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of the older behavior. Confirmed.
+		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
+		- Fixed: after `help`, a `-h` or `--help` is dropped before the topic is chosen, in the help branch of all four CLIs. `help --help` and `help -h` print the full help, and `help get --help` prints get's.
+		- Pinned by: rows `help-help-flag`, `help-h-flag` and `help-cmd-help-flag`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161509
 
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.

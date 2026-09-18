@@ -2050,14 +2050,22 @@ static int cli_main(int argc, char **argv) {
 	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) {
 		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		// flag form the command is the first word, which a bare `--help` is not.
-		const char *topic = "";
+		// An empty word is still a topic, as it is in the reference: `help ''`
+		// names no command, which is not the same as naming none.
+		const char *topic = NULL;
 		if (!strcmp(argv[1], "help")) {
-			if (argc > 3) { fprintf(stderr, "usage: shcl help [CMD] (see --help)\n"); return 1; }
-			if (argc == 3) topic = argv[2];
+			// A help flag after `help` asks for the same thing twice, so it is no
+			// topic: `help --help` and `help get -h` print what they name.
+			int nwords = 0;
+			for (int k = 2; k < argc; k++) {
+				if (!strcmp(argv[k], "-h") || !strcmp(argv[k], "--help")) continue;
+				if (nwords++ == 0) topic = argv[k];
+			}
+			if (nwords > 1) { fprintf(stderr, "usage: shcl help [CMD] (see --help)\n"); return 1; }
 		} else if (argv[1][0] != '-') topic = argv[1];
 		// The informational words are the full help's own last two lines, so
 		// there is nothing narrower to show for them.
-		if (!*topic || !strcmp(topic, "help") || !strcmp(topic, "version")
+		if (!topic || !strcmp(topic, "help") || !strcmp(topic, "version")
 		    || !strcmp(topic, "about") || !strcmp(topic, "donate")) { printf("\n%s\n", HELP); return 0; }
 		if (is_command(topic)) { print_help_for(topic); return 0; }
 		const char *cands[32];
