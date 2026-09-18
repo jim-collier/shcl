@@ -100,17 +100,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- Code review 20260918:
-
-	- The round's one enhancement. The defects are under Bugs.
-
-	- 🔘 Item 24: nothing fails when a hold-back on the green record is removed, or when the hook's gate flags are weakened.
-		- Reproduced in a scratch clone. With `cicd.bash`'s `if ((quick || gate_partial))` made `if ((0))` and its skip-file test made `false`, shell-regress still passes, since its only check greps for `record_green=0`. With the hook's `--ci --no-largedoc` made `--quick --no-lint`, `check-push-gate.bash` still passes, since its stub gate ignores its arguments. Removing check-readme's skip note also passes, since the note list names four gates by hand.
-		- Sites: `cicd/cicd.bash:106-107`, `:153-154`, `:389`; `cicd/hooks/pre-push:108`; `cicd/utility/check-push-gate.bash:53-57`; `cicd/utility/shell-regress.bash:1026-1029`.
-		- Origin: `6ad45f8` (Merge pushgate, 2026-09-14); the check-readme note is `be84553` (2026-09-17). Confirmed.
-		- Note: nothing written is violated, so this is an enhancement. The helper and the hook's skip did catch both faults put in front of them.
-		- Opened: 20260918-132951
-
 - Code review 20260909:
 
 	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
@@ -3756,6 +3745,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260918:
+
+	- The round's one enhancement. The defects are under Done - Bugs.
+
+	- ✅ Item 24: nothing fails when a hold-back on the green record is removed, or when the hook's gate flags are weakened.
+		- Reproduced in a scratch clone. With `cicd.bash`'s `if ((quick || gate_partial))` made `if ((0))` and its skip-file test made `false`, shell-regress still passes, since its only check greps for `record_green=0`. With the hook's `--ci --no-largedoc` made `--quick --no-lint`, `check-push-gate.bash` still passes, since its stub gate ignores its arguments. Removing check-readme's skip note also passes, since the note list names four gates by hand.
+		- Sites: `cicd/cicd.bash:106-107`, `:153-154`, `:389`; `cicd/hooks/pre-push:108`; `cicd/utility/check-push-gate.bash:53-57`; `cicd/utility/shell-regress.bash:1026-1029`.
+		- Origin: `6ad45f8` (Merge pushgate, 2026-09-14); the check-readme note is `be84553` (2026-09-17). Confirmed.
+		- Note: nothing written is violated, so this is an enhancement. The helper and the hook's skip did catch both faults put in front of them.
+		- Done: `check-push-gate.bash` runs the real `cicd.bash` and config on a throwaway repository with every stage stubbed. A `--ci` run records its tree, and a `--quick` run, a run with `--no-lint` or `--no-fmt`, and a run whose gate noted a skip record nothing. The hook's stub gate now logs its arguments, which have to be `--ci --no-largedoc`. The check-readme note is covered by 20260918 item 11's per-skip rule.
+		- Pinned by: each of the three faults above, put back one at a time, now fails `check-push-gate.bash` or shell-regress.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163719
 
 - Code review 20260909:
 
