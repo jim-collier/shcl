@@ -105,14 +105,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Done in part: the block carries a `Format` line naming the format's major, added with item 4, which needed it to tell a 3.0 file from a 2.x one. The spec-link half is still open.
 		- Opened: 20260909-105600
 
-	- 🔘 Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
-		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
-		- Opened: 20260909-105700
-
-- 🔘 No UI and UX style guide for the CLI, and README.md points at none.
-	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
-	- Opened: 20260914-145320
-
 - 🔘 Cut 3.0.0.
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
 	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
@@ -2818,6 +2810,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
+- ✅ An unknown option is the one usage error that does not end with `(see --help)`.
+	- Reproduced: `shcl fmt --zzzzzz f` prints `unknown option: --zzzzzz`, where `shcl zzzzzz f` prints `unknown command: zzzzzz (see --help)` and `--lossy` without `--write` ends the same way. The did-you-mean form, `unknown option: --stricness=strict; did you mean '--strictness'?`, has no pointer either.
+	- Note: found writing `project/style-guide_ui-ux.md`, which says a usage error ends with the pointer. It is a message change in all four CLIs, plus any `cli-regress` row that pins the old text.
+	- Fixed: the pointer is on the unknown-option message and on the four bad-value messages from the same option parser (`--on-bad`, `--strictness`, `--remove`, `--set` and its three siblings), in `parse_opts` and `set_value_opt` in Rust and C, `parse_opts` and `_set_value_opt` in Python, and `parseOpts` and `setValueOpt` in Go. A message that names its own fix, like `missing value for X (try X=VALUE)`, is left as it is, and the guide says so.
+	- Pinned by: six `cli-regress.bash` rows, `help-ptr-*`, which fail on the old Rust, Go and C builds.
+	- Opened: 20260917-202211
+	- Closed: 20260917-202504
+
+- ✅ No UI and UX style guide for the CLI, and README.md points at none.
+	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
+	- Fixed: `project/style-guide_ui-ux.md` covers commands, options, help layout, streams, message wording, exit codes and in-place writes, each checked against the Rust CLI's output. README.md lists it with the other docs.
+	- Left alone: the one straggler found, an unknown option without `(see --help)`, is filed as its own item.
+	- Opened: 20260914-145320
+	- Closed: 20260917-202211
+
 - ✅ The C++ veneer keeps its C handle private, so a C++ caller can't reach any C call the veneer leaves out.
 	- Note: a document loaded or parsed through the veneer can't be written at all, since the veneer has no setters. The only way to write is to parse through C, keep that pointer, and go on using it after handing it to `Document`. The veneer's own smoke test does exactly that.
 	- Note: a `c()` accessor, like the one `Datetime` has, is the whole change.
@@ -3462,6 +3469,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 58: `check`'s summary line shares stdout with the machine-readable diagnostic lines.
+		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
+		- Decided: the summary stays on stdout. `spec.md` makes stdout the contract, item 42 decided nothing on that line could move, and every `expected-diags.txt` pins it. Every diagnostic line starts with `line ` and the summary never does, so a script can split them by that prefix. Chosen while the call was pending, as the option that changes no output. Moving the summary is still open to reverse before 3.0.
+		- Fixed: `spec.md` and the man page say what stdout holds, with both spellings of the summary.
+		- Pinned by: the corpus goldens, which already hold the summary line.
+		- Opened: 20260909-105700
+		- Closed: 20260917-202038
 
 	- ✅ Item 61: two measurement tools report numbers that are wrong in a knowable direction.
 		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.

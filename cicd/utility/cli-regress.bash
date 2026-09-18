@@ -464,6 +464,14 @@ rows=(
 	'suggest-option-space|get --slot %F% a|-|1|-|did you mean .--slots.'
 	'suggest-code|explain E19|-|1|-|did you mean .E019.'
 	'suggest-none|zzzzzzzz %F%|-|1|-|!did you mean'
+	## An unknown option and a bad option value end with the help pointer, like
+	## the other usage errors that do not name their own fix.
+	'help-ptr-unknown-option|get --nope %F% a|-|1|-|^unknown option: --nope \(see --help\)$'
+	'help-ptr-suggest-option|get --stricness=1 %F% a|-|1|-|did you mean .--strictness..? \(see --help\)$'
+	'help-ptr-on-bad|get --on-bad=zz %F% a|-|1|-|^bad --on-bad value: zz \(see --help\)$'
+	'help-ptr-strictness|get --strictness=9 %F% a|-|1|-|^bad --strictness value: 9 \(see --help\)$'
+	'help-ptr-remove|set --remove= %F2%|-|1|-|^bad --remove value \(want PATH\) \(see --help\)$'
+	'help-ptr-set|set --set==1 %F2%|-|1|-|^bad --set value .*: =1 \(see --help\)$'
 	## 20260909 item 44: help narrows to one subcommand, by name or by the flag
 	## after it, and refuses a name that is not one.
 	'help-subcommand|help get|-|0|-|-'

@@ -141,7 +141,11 @@ and print its diagnostics. With
 .BI \-\-schema= SCHEMA
 it also validates the file against a schema, which is itself an ordinary
 .B .shcl
-file. Exits 6 when anything was found at error severity.
+file. Each diagnostic is one stdout line that starts with the word
+.B line
+and a number, with its prose on stderr. The last stdout line is a summary.
+Exits 6 when
+anything was found at error severity.
 .TP
 .B init
 Print a commented starter config generated from a schema: required fields live,

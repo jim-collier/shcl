@@ -424,14 +424,14 @@ def _set_value_opt(o, name, v):
 	elif name == "--on-bad":
 		low = _ascii_lower(v)
 		if low not in ("error", "default", "flag"):
-			raise ValueError(f"bad --on-bad value: {v}")
+			raise ValueError(f"bad --on-bad value: {v} (see --help)")
 		o.on_bad = low
 		o.on_bad_arg = low
 		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
 		if s is None:
-			raise ValueError(f"bad --strictness value: {v}")
+			raise ValueError(f"bad --strictness value: {v} (see --help)")
 		o.strictness = s
 		o.seen.append("--strictness")
 	elif name == "--schema":
@@ -442,13 +442,13 @@ def _set_value_opt(o, name, v):
 		o.seen.append("--layer")
 	elif name == "--remove":
 		if v == "":
-			raise ValueError("bad --remove value (want PATH)")
+			raise ValueError("bad --remove value (want PATH) (see --help)")
 		o.sets.append(_SetOpt(v, "", "--remove"))
 		o.seen.append("--remove")
 	elif name in ("--set", "--set-literal", "--set-default", "--set-literal-default"):
 		ps = split_set(v)
 		if ps is None or ps[0] == "":
-			raise ValueError(f"bad {name} value (want PATH=VALUE, quotes and brackets balanced): {v}")
+			raise ValueError(f"bad {name} value (want PATH=VALUE, quotes and brackets balanced): {v} (see --help)")
 		o.sets.append(_SetOpt(ps[0], ps[1], name))
 		o.seen.append(name)
 
@@ -629,7 +629,7 @@ def parse_opts(argv):
 		elif a.startswith("-") and len(a) > 1:
 			# The suggestion is against the name half: `--stricness=1` is a typo
 			# in the option, not in a spelling that includes a value.
-			raise ValueError(f"unknown option: {a}{suggest(option_names(), a.split('=')[0])}")
+			raise ValueError(f"unknown option: {a}{suggest(option_names(), a.split('=')[0])} (see --help)")
 		else:
 			o.args.append(a)
 		i += 1

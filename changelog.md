@@ -48,6 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- An unknown option or a bad option value ends with `(see --help)`, like the other usage errors. Those were the ones that left a user nowhere to go.
+
 - `V005` and `V006` name the bound and the value that broke it, not just the field. A long report meant opening the schema for every range failure. The element named is the one that broke the bound, so an array says which slot.
 
 - Python's `Diagnostic` and `Read` print their fields instead of an object address. Printing a value is how Python gets debugged, and the other three bindings already printed readably.
