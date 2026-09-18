@@ -1046,7 +1046,7 @@ func checkOpts(cmd string, o *opts) int {
 				// so it always loads at Standard - the same rule `check --schema`
 				// follows for the schema half.
 				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at "+
-					"standard strictness, being a program artifact rather than user data")
+					"standard strictness, being a program artifact rather than user data (see --help)")
 			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal") {
 				// The one refusal a user is likely to want anyway: check reports
 				// line numbers, and a merged document has no single file to
@@ -1100,7 +1100,7 @@ func checkOpts(cmd string, o *opts) int {
 	if cmd == "set" {
 		for _, l := range o.layers {
 			if l == "-" {
-				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)")
+				fmt.Fprintln(os.Stderr, "--layer=- is not valid for set: stdin carries the ops script or the document (see --help)")
 				return 1
 			}
 		}
@@ -1388,7 +1388,7 @@ func doGet(o *opts) int {
 			status = r.Status
 			slots = r.Slots
 		case kindRaw, kindRawInfo:
-			fmt.Fprintf(os.Stderr, "--%s has no --array form\n", o.kind.name())
+			fmt.Fprintf(os.Stderr, "--%s has no --array form (see --help)\n", o.kind.name())
 			return 1
 		default:
 			r := doc.ReadStringArray(path)

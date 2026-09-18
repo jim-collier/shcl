@@ -870,7 +870,7 @@ def check_opts(cmd, o):
 				# so it always loads at Standard - the same rule `check --schema`
 				# follows for the schema half.
 				sys.stderr.write(
-					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n"
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n"
 				)
 			elif cmd == "check" and s in ("--layer", "--set", "--set-literal"):
 				# The one refusal a user is likely to want anyway: check reports
@@ -914,7 +914,7 @@ def check_opts(cmd, o):
 		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
-		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script or the document)\n")
+		sys.stderr.write("--layer=- is not valid for set: stdin carries the ops script or the document (see --help)\n")
 		return 1
 	# Stdin reads once; a second '-' would silently get an empty document.
 	stdin_uses = sum(1 for lf in o.layers if lf == "-") + int(o.schema == "-") + int(bool(o.args) and o.args[0] == "-")
@@ -999,7 +999,7 @@ def do_get(o):
 			r = doc.read_datetime_array(path)
 			lines = [str(v) for v in r.value]
 		elif o.kind in ("raw", "rawinfo"):
-			sys.stderr.write(f"--{o.kind} has no --array form\n")
+			sys.stderr.write(f"--{o.kind} has no --array form (see --help)\n")
 			return 1
 		else:
 			r = doc.read_string_array(path)

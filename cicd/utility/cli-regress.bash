@@ -338,6 +338,11 @@ rows=(
 	'short-write-before-cmd|-w fmt %F%|-|1||^option -w goes after the subcommand \(see --help\)$'
 	'flag-given-value|fmt --write=yes %F%|-|1||^option --write takes no value \(see --help\)$'
 	'type-flag-given-value|get --int=5 %F% a|-|1||^option --int takes no value \(see --help\)$'
+	## 20260918 item 23: three usage errors that neither said the fix nor
+	## pointed at the help.
+	'raw-array-see-help|get --raw --array %F% a|-|1||has no --array form \(see --help\)$'
+	'layer-stdin-set-see-help|set --layer=- %F%|-|1||^--layer=- is not valid for set: .*\(see --help\)$'
+	'init-strictness-see-help|init --strictness=1 --schema=%S2%|-|1||^option --strictness not valid for init: .*\(see --help\)$'
 	## 20260918 items 19 and 20: explain gave a file spelling that is a comment,
 	## and left out the V097 a user meets most.
 	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n|-'

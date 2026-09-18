@@ -680,7 +680,7 @@ static int do_get(Opts *o) {
 		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
 		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
-		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form\n", o->kind); free(lines); layered_free(&L); return 1; }
+		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form (see --help)\n", o->kind); free(lines); layered_free(&L); return 1; }
 		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
 	} else {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64 r = shcl_read_int(d, path, plen); status = r.status; PUSHLINE_FMT("%" PRId64, r.value); }
@@ -1653,7 +1653,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 			// it always loads at Standard - the same rule `check --schema`
 			// follows for the schema half.
 			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
-				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n");
+				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n");
 			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
 				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
@@ -1700,7 +1700,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	if (!strcmp(cmd, "set")) {
 		for (int i = 0; i < o->nlayers; i++) {
 			if (!strcmp(o->layers[i], "-")) {
-				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)\n");
+				fprintf(stderr, "--layer=- is not valid for set: stdin carries the ops script or the document (see --help)\n");
 				return 1;
 			}
 		}

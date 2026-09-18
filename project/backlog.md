@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 23: three usage errors neither end with `(see --help)` nor name their fix.
-		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
-		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
-		- Sites: `main.rs:1306`, `:1027`, `:963`; `main.go:1356`, `:1068`, `:1013`; `main.py:982`, `:897`, `:853`; `main.c:680`, `:1687`, `:1640`.
-		- Origin: the messages predate `0090046`; the rule is `9d7a4f4` (Merge cli-guide, 2026-09-17). Confirmed.
-		- Against: `style-guide_ui-ux.md:69`.
-		- Opened: 20260918-135050
-
 - Code review 20260909:
 
 	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check can't see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
@@ -599,6 +591,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: rows `short-write-before-cmd`, `flag-given-value` and `type-flag-given-value`, which fail in all four on the old code.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161831
+
+	- ✅ Item 23: three usage errors neither end with `(see --help)` nor name their fix.
+		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
+		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
+		- Sites: `main.rs:1306`, `:1027`, `:963`; `main.go:1356`, `:1068`, `:1013`; `main.py:982`, `:897`, `:853`; `main.c:680`, `:1687`, `:1640`.
+		- Origin: the messages predate `0090046`; the rule is `9d7a4f4` (Merge cli-guide, 2026-09-17). Confirmed.
+		- Against: `style-guide_ui-ux.md:69`.
+		- Fixed: the three messages end with `(see --help)` in all four, and the `--layer=-` one drops its parentheses for a colon, so it does not carry two in a row.
+		- Pinned by: rows `raw-array-see-help`, `layer-stdin-set-see-help` and `init-strictness-see-help`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161904
 
 - Code review 20260909:
 

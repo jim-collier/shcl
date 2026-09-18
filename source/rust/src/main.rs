@@ -974,7 +974,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 				// so it always loads at Standard - the same rule `check --schema`
 				// follows for the schema half.
 				errln!(
-					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data"
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)"
 				);
 			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
 				// The one refusal a user is likely to want anyway: check reports
@@ -1038,7 +1038,9 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
-		errln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
+		errln!(
+			"--layer=- is not valid for set: stdin carries the ops script or the document (see --help)"
+		);
 		return Err(1);
 	}
 	// Stdin reads once; a second '-' would silently get an empty document.
@@ -1317,7 +1319,7 @@ fn do_get(o: &Opts) -> u8 {
 				)
 			}
 			Kind::Raw | Kind::RawInfo => {
-				errln!("--{} has no --array form", o.kind.name());
+				errln!("--{} has no --array form (see --help)", o.kind.name());
 				return 1;
 			}
 			Kind::String => {
