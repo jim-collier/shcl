@@ -74,6 +74,202 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260918:
+
+	- A pass aimed at what changed since the 20260909 round began (`0090046`, about 10,000 lines), at the siblings of each fix, and at the last round's coverage gaps: the create-path race, a C `shcl_tokens` handle reused, Go on invalid UTF-8, and thread safety. Split three ways: the libraries, the CLIs and user docs, and the gates, hooks and installers. Twenty-three defects here and one enhancement under Features and enhancements. Twenty-two were reproduced on this box; item 13 needs Windows and is Plausible.
+
+	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
+
+	- 🔘 Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
+		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
+		- Note: the reverse holds too. A raw body holding `##    Format   3`, such as a pasted `init` banner, makes any file report nothing to migrate.
+		- Cause: `format_version` scans every line and does not skip fence bodies the way the migrate loop does.
+		- Sites: `lib.rs:1472`, `shcl.go:1618`, `shcl.py:1390`, `shcl.h:1804`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16), 20260909 item 4's second half. Not seen before. Confirmed.
+		- Against: the spec's Migrating section, that the Format line decides and that `migrate` never damages a file that was already correct.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 2: C `migrate` misses the version line when the file starts with a BOM, so it restamps or rewrites a current file.
+		- Reproduced in C only. A BOM, `##    Format   3`, `p: C:\temp`: the other three say nothing to migrate at exit 0, and C exits 7 as ambiguous. With `--from-2x`, C writes `p: "C:\temp"` and a second Format line at exit 0, and `get p` is `C:`, a tab, `emp`. A BOM, the Format line and `a: 1` gets a duplicate Format line at exit 0.
+		- Cause: `format_version(text)` runs before the BOM is stripped.
+		- Sites: `shcl.h:1831` against `:1837`.
+		- Origin: `7040ab7` (Merge migrate-version, 2026-09-16). Confirmed.
+		- Against: the spec, that a file carrying the Format line has nothing to migrate, and parity with the reference.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
+		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
+		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
+		- Sites: `lib.rs:2991-3004`, `shcl.go:2962-2972`, `shcl.py:2443-2452`, `shcl.h:3277-3278`.
+		- Origin: `8821735` (2026-08-29) for the E018 arm; the E012 arm is older. 20260901 item 1 fixed the child-indent fence arm and 20260909 item 11 the E021 arm, so this is their sibling. Not seen before. Confirmed.
+		- Note: the ninth item in this class. The fix should be one rule for every skip arm, that a skipped line opening a fence takes its body with it, rather than one more arm.
+		- Against: `spec.md:135`, "a fence line there takes its whole body with it", and the E018 row at `spec.md:445`.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
+		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
+		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
+		- Sites: `lib.rs:7230`, `shcl.go:7458`, `shcl.py:6182`, `shcl.h:7559`.
+		- Origin: `533ca3e` (Merge optional-default, 2026-09-15) over `faf5adf` (Merge init-selfcheck, 2026-09-14). This is where 20260909 item 5 and the optional-default fix meet. Confirmed.
+		- Against: `spec.md:667`, a default that does not name the instance its path selects fails generation with V097, "That holds for an optional field too".
+		- Opened: 20260918-133258
+
+	- 🔘 Item 5: a C `shcl_tokens` reused with a second document writes into the first document's memory, a use-after-free once that one is freed.
+		- Reproduced in C under ASan. Tokenize with document A, then with B on the same struct, free A, tokenize with B again: `heap-use-after-free WRITE of size 8` in `tok_push_seg`.
+		- Cause: the arrays stay in the arena of the document that first grew them. The header says they grow in "the document's read arena", which reads as the one passed on the current call. The C++ veneer uses a fresh struct per call and is safe.
+		- Sites: `shcl.h:436-441`, `:1180-1187`, `:1383-1390`.
+		- Origin: `fbbe7ce` (2026-09-07). A coverage gap the 20260909 round named and did not reach. Confirmed.
+		- Against: the `shcl_tokens` contract comment.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
+		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
+		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
+		- Note: latent today, since main's tree has no drift check yet. The 3.0.0 cut puts it on main, and the cut's own main push hits it if dev holds an installer change main lacks.
+		- Sites: `cicd/utility/check-docs.bash:352-362`, `cicd/hooks/pre-push:108`, `cicd/cicd.bash:606-613`.
+		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
+		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
+		- Opened: 20260918-132951
+
+	- 🔘 Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
+		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
+		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
+		- Sites: `shcl.py:4637-4643`.
+		- Origin: `0b94843` (Merge tmpname-bytes, 2026-09-15, 20260909 item 16) made the 2026-07-25 fallback reachable. Confirmed.
+		- Against: 20260909 item 16, and parity with the other three.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
+		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
+		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
+		- Sites: `shcl.h:4077`, `:4239-4251`.
+		- Origin: `fa6de87` (2026-09-15, 20260909 item 15). Same class as 20260909 item 22. Confirmed.
+		- Against: the arena rule at `shcl.h:4066-4072`.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
+		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
+		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
+		- Sites: `main.rs:2415`, `main.go:2512`, `main.py:1803`, `main.c:2053`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 44). Confirmed.
+		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 10: `shcl help --help`, `help -h` and `help get --help` exit 1, where they printed the help before 20260909 item 44.
+		- Reproduced in all four. `help --help` prints `unknown command: --help; did you mean 'help'?` at exit 1, suggesting the word already typed. `help -h` and `help get --help` fail the same way. At `0090046` all three printed the help at exit 0, and `shcl version --help` still does.
+		- Cause: when the first word is `help`, the second becomes the topic before the flag scan's answer is used.
+		- Sites: `main.rs:2410-2440`, `main.go:2510-2538`, `main.py:1798-1815`, `main.c:2050-2068`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of the older behavior. Confirmed.
+		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
+		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
+		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
+		- Sites: `cicd/utility/cli-regress.bash:697-709`, `cicd/utility/shell-regress.bash:1017-1028`.
+		- Origin: `1c4b8af` (2026-09-08). It became a hole in the record with `6ad45f8` (Merge pushgate, 2026-09-14). Not seen before. Confirmed.
+		- Against: `cicd.bash`'s header, that a skipped tool keeps a run from recording, and 20260909 item 53's fix.
+		- Opened: 20260918-132951
+
+	- 🔘 Item 12: check-migrate passes with no fuzz document compared.
+		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
+		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
+		- Sites: `cicd/utility/check-migrate.bash:101-102`, `:177`, `:230-233`.
+		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
+		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
+		- Opened: 20260918-132951
+
+	- 🔘 Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
+		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
+		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
+		- Sites: `cicd/packaging/shcl.nsi:119-125`.
+		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
+		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
+		- Opened: 20260918-132951
+
+	- 🔘 Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
+		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
+		- Cause: these print the schema path or type raw. V097 already escapes the same path.
+		- Sites: `lib.rs:7606`, `:7617`, `:7657`, `:7681-7866`, `:6530`; `shcl.go:7860`, `:7865`, `:7897`, `:7947-7975`, `:6736`; `shcl.py:4172`, `:4177`, `:4203`, `:4241-4259`, `:5722`; `shcl.h:5959`, `:5964`, `:5803`, `:5457`.
+		- Origin: `30120bc` (2026-07-23). 20260909 item 18 routed every document field name through `diag_name` and missed these schema-text sites; V005 and V006 were reworded in `544b345` (2026-09-17) and kept the raw path. Confirmed.
+		- Against: 20260909 item 18's fix note.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
+		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
+		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
+		- Sites: `lib.rs:3030`, `shcl.go:2984`, `shcl.py:2462`, `shcl.h:3284`.
+		- Origin: `bac2498` (Merge e014-column, 2026-09-17). Confirmed.
+		- Against: 20260909 item 34's fix, a byte column from the line start, indent included, and the help text at `main.rs:273`.
+		- Opened: 20260918-133258
+
+	- 🔘 Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
+		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
+		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
+		- Sites: `main.rs:2491`, `main.go:2595`, `main.py:1849`, `main.c:2111`.
+		- Origin: `e230886` (Merge init-v097, 2026-09-17, 20260909 item 59). Confirmed.
+		- Against: `style-guide_ui-ux.md:67` and `:69`, a message names what went wrong, and a fix it names has to work.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
+		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
+		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
+		- Sites: `main.go:1660`, `main.py:1214`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 42). Confirmed.
+		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
+		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
+		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
+		- Cause: an "all but" list names only the exclusions, so a new subcommand that takes none of these options joins it silently.
+		- Sites: `main.rs:145`, `:149`, `:153`; `main.go:153`, `:157`, `:161`; `main.py:146`, `:150`, `:154`; `main.c:129`, `:133`, `:137`; `source/man/shcl.1:341`. Usage line: `main.rs:1497`, `main.go:1546`, `main.py:1132`, `main.c:853`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
+		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
+		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
+		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.
+		- Cause: the spec row predates the 2026-09-10 comment rule and was missed when it went in. The explain table copied it.
+		- Sites: the E003 entry at `main.rs:243`, `main.go:245`, `main.py:239`, `main.c:257`; `project/spec.md:430`.
+		- Origin: `e58fe9f` (2026-09-07) for the spec row, `c78d41d` (Merge cli-help, 2026-09-17) for explain. Confirmed.
+		- Note: this does not reopen the settled `#` rule. It brings two lines into line with it.
+		- Against: `design.md:457` and `spec.md:99`.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 20: `shcl explain V097` never mentions a required path nothing can generate, the V097 a user now meets most.
+		- Reproduced in all four. A required `srv[#1].port` makes `init` print `V097 required path cannot be generated: srv[#1].port (...)`. `explain V097` speaks only of output that does not load and of a default outside its constraints.
+		- Cause: the table was cut from `spec.md:589` without its third cause.
+		- Sites: `main.rs:345`, `main.go:347`, `main.py:341`, `main.c:359`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). Confirmed.
+		- Against: `spec.md:589`, and the table's own comment that it is the spec's rules cut to fit a terminal.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
+		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
+		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
+		- Sites: `README.md:499-503`, `README.md:532-536`, `project/spec.md:423`.
+		- Origin: `c78d41d` (Merge cli-help) and `9d7a4f4` (Merge cli-guide), both 2026-09-17. Same class as 20260909 item 34. Confirmed.
+		- Against: the README transcripts as real output, and item 58's "both spellings".
+		- Opened: 20260918-135050
+
+	- 🔘 Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
+		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
+		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
+		- Sites: `main.rs:604`, `:726`, `:2459`; `main.go:734`, `:856`, `:2576`; `main.py:549`, `:632`, `:1835`; `main.c:1806`, `:1554`, `:2094`.
+		- Origin: `e230886` (Merge init-v097) and `c78d41d` (Merge cli-help), both 2026-09-17. Confirmed.
+		- Against: 20260909 item 59, that calling an option unknown and suggesting it back says nothing, and `style-guide_ui-ux.md:25`.
+		- Opened: 20260918-135050
+
+	- 🔘 Item 23: three usage errors neither end with `(see --help)` nor name their fix.
+		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
+		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
+		- Sites: `main.rs:1306`, `:1027`, `:963`; `main.go:1356`, `:1068`, `:1013`; `main.py:982`, `:897`, `:853`; `main.c:680`, `:1687`, `:1640`.
+		- Origin: the messages predate `0090046`; the rule is `9d7a4f4` (Merge cli-guide, 2026-09-17). Confirmed.
+		- Against: `style-guide_ui-ux.md:69`.
+		- Opened: 20260918-135050
+
 - Code review 20260909:
 
 	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check can't see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
@@ -93,6 +289,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
+
+- Code review 20260918:
+
+	- The round's one enhancement. The defects are under Bugs.
+
+	- 🔘 Item 24: nothing fails when a hold-back on the green record is removed, or when the hook's gate flags are weakened.
+		- Reproduced in a scratch clone. With `cicd.bash`'s `if ((quick || gate_partial))` made `if ((0))` and its skip-file test made `false`, shell-regress still passes, since its only check greps for `record_green=0`. With the hook's `--ci --no-largedoc` made `--quick --no-lint`, `check-push-gate.bash` still passes, since its stub gate ignores its arguments. Removing check-readme's skip note also passes, since the note list names four gates by hand.
+		- Sites: `cicd/cicd.bash:106-107`, `:153-154`, `:389`; `cicd/hooks/pre-push:108`; `cicd/utility/check-push-gate.bash:53-57`; `cicd/utility/shell-regress.bash:1026-1029`.
+		- Origin: `6ad45f8` (Merge pushgate, 2026-09-14); the check-readme note is `be84553` (2026-09-17). Confirmed.
+		- Note: nothing written is violated, so this is an enhancement. The helper and the hook's skip did catch both faults put in front of them.
+		- Opened: 20260918-132951
 
 - Code review 20260909:
 
