@@ -427,7 +427,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 | :--: | :--
 | `E001` | field line under a parent already holding stacked `*` list elements (field kept)
 | `E002` | value after a last-segment selector (`a.b[X]: v`) - the value is ignored
-| `E003` | selector names an instance that does not exist: `a[5].b` or `a[#5].b` where there is one `a`. Both index spellings reach it from a file; an index selects an existing instance by position and never creates one, which is why a binding line should select by value. On a write path the same situation comes back as the `NoSuchIndex` write reason rather than as a diagnostic
+| `E003` | selector names an instance that does not exist: `a[5].b` where there is one `a`. From a file only the bare `[5]` reaches it, since a `#` there opens a comment and `a[#5].b` is `E014`; an index selects an existing instance by position and never creates one, which is why a binding line should select by value. On a write path the same situation comes back as the `NoSuchIndex` write reason rather than as a diagnostic
 | `E004` | wildcard selector on a binding line (wildcards are query-only)
 | `E005` | unterminated raw block (closing fence never found)
 | `E006` | raw-block fence with no parent field to bind to

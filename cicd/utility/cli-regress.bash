@@ -328,6 +328,13 @@ rows=(
 	## check, so it named the wrong fault and a fix that did not work.
 	'explain-opt-refused-first|explain --layer E001|-|1||^option --layer not valid for explain'
 	'migrate-opt-refused-first|migrate --layer x|-|1||^option --layer not valid for migrate'
+	## 20260918 item 17: Go and Python folded a non-ASCII code by Unicode rules
+	## and suggested a code for it.
+	'explain-non-ascii-no-suggestion|explain %LS%001|-|1||!did you mean'
+	## 20260918 items 19 and 20: explain gave a file spelling that is a comment,
+	## and left out the V097 a user meets most.
+	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n|-'
+	'explain-v097|explain V097|-|0|\nV097  error       generated output does not load, or fails its own schema\n  init checks its own output before returning it, so a starter config that\n  would fail its first check is a fault instead. A default outside its\n  field'"'"'s constraints is one cause. A required path nothing can generate is\n  the other, such as one with a [#N] selector or a * name. Line 0.\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -641,6 +648,7 @@ for row in "${rows[@]}"; do
 		argv="${argv//%LW%/${tmpDir}/${wideName}}"
 	fi
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
+	argv="${argv//%LS%/$'\xc5\xbf'}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	## A device that is always full exists on linux and not on windows; the

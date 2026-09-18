@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
-		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
-		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
-		- Sites: `main.go:1660`, `main.py:1214`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 42). Confirmed.
-		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
 		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
 		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
@@ -129,23 +121,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
 		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
 		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
-		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.
-		- Cause: the spec row predates the 2026-09-10 comment rule and was missed when it went in. The explain table copied it.
-		- Sites: the E003 entry at `main.rs:243`, `main.go:245`, `main.py:239`, `main.c:257`; `project/spec.md:430`.
-		- Origin: `e58fe9f` (2026-09-07) for the spec row, `c78d41d` (Merge cli-help, 2026-09-17) for explain. Confirmed.
-		- Note: this does not reopen the settled `#` rule. It brings two lines into line with it.
-		- Against: `design.md:457` and `spec.md:99`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 20: `shcl explain V097` never mentions a required path nothing can generate, the V097 a user now meets most.
-		- Reproduced in all four. A required `srv[#1].port` makes `init` print `V097 required path cannot be generated: srv[#1].port (...)`. `explain V097` speaks only of output that does not load and of a default outside its constraints.
-		- Cause: the table was cut from `spec.md:589` without its third cause.
-		- Sites: `main.rs:345`, `main.go:347`, `main.py:341`, `main.c:359`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). Confirmed.
-		- Against: `spec.md:589`, and the table's own comment that it is the spec's rules cut to fit a terminal.
 		- Opened: 20260918-135050
 
 	- 🔘 Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
@@ -580,6 +555,40 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: rows `explain-opt-refused-first` and `migrate-opt-refused-first`, which fail in all four on the old code.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161540
+
+	- ✅ Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
+		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
+		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
+		- Sites: `main.go:1660`, `main.py:1214`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 42). Confirmed.
+		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
+		- Fixed: `explain` upper-cases the code by ASCII only, through a new `asciiUpper` in Go and `_ascii_upper` in Python, as Rust and C already did.
+		- Pinned by: row `explain-non-ascii-no-suggestion`, which fails in Go and Python on the old code. A `%LS%` in a row stands for the long s.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
+
+	- ✅ Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
+		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.
+		- Cause: the spec row predates the 2026-09-10 comment rule and was missed when it went in. The explain table copied it.
+		- Sites: the E003 entry at `main.rs:243`, `main.go:245`, `main.py:239`, `main.c:257`; `project/spec.md:430`.
+		- Origin: `e58fe9f` (2026-09-07) for the spec row, `c78d41d` (Merge cli-help, 2026-09-17) for explain. Confirmed.
+		- Note: this does not reopen the settled `#` rule. It brings two lines into line with it.
+		- Against: `design.md:457` and `spec.md:99`.
+		- Fixed: the E003 entry in all four explain tables gives `a[5].b`, and says a file names the index bare since a `#` opens a comment. The spec row says the same, and that `a[#5].b` in a file is E014.
+		- Pinned by: row `explain-e003`, whose stdout is the whole entry. It fails in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
+
+	- ✅ Item 20: `shcl explain V097` never mentions a required path nothing can generate, the V097 a user now meets most.
+		- Reproduced in all four. A required `srv[#1].port` makes `init` print `V097 required path cannot be generated: srv[#1].port (...)`. `explain V097` speaks only of output that does not load and of a default outside its constraints.
+		- Cause: the table was cut from `spec.md:589` without its third cause.
+		- Sites: `main.rs:345`, `main.go:347`, `main.py:341`, `main.c:359`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). Confirmed.
+		- Against: `spec.md:589`, and the table's own comment that it is the spec's rules cut to fit a terminal.
+		- Fixed: the V097 entry in all four explain tables names the second cause, a required path nothing can generate.
+		- Pinned by: row `explain-v097`, whose stdout is the whole entry. It fails in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
 
 - Code review 20260909:
 

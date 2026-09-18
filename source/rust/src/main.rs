@@ -241,9 +241,9 @@ E002|error|value after a last-segment selector (a.b[X]: v)
   The selector already says which instance, so the value has nowhere to go
   and is ignored. Put the value on the line that creates the instance.
 E003|error|selector names an instance that does not exist
-  a[5].b or a[#5].b where there is one a. An index selects an existing
-  instance by position and never creates one, so a binding line should
-  select by value instead.
+  a[5].b where there is one a. An index selects an existing instance by
+  position and never creates one, so a binding line should select by value
+  instead. In a file the index is the bare [5], since a # opens a comment.
 E004|error|wildcard selector on a binding line
   Wildcards read every instance, so there is no single one to write to.
   They are query-only.
@@ -345,7 +345,8 @@ V096|error|schema expands to more fields than generation allows
 V097|error|generated output does not load, or fails its own schema
   init checks its own output before returning it, so a starter config that
   would fail its first check is a fault instead. A default outside its
-  field's constraints is the usual cause. Line 0.
+  field's constraints is one cause. A required path nothing can generate is
+  the other, such as one with a [#N] selector or a * name. Line 0.
 V099|error|schema failed to load
   The schema had error diagnostics of its own; they are printed above this
   with their own line numbers. Line 0.
