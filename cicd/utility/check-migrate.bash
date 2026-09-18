@@ -30,13 +30,15 @@
 ##		A compared document also has to migrate at exit 0, and a document whose
 ##		only unclean lines are bracket arrays has to be refused over exactly
 ##		that many lost lines. The corpus half has its own floor, since the fuzz
-##		dump alone can meet the overall one.
+##		dump alone can meet the overall one, and so does the fuzz half, since the
+##		corpus alone can meet it too.
 ##	Syntax:
-##		check-migrate.bash [--corpus DIR] [--iters N] [--min N] [--min-corpus N]
+##		check-migrate.bash [--corpus DIR] [--iters N] [--min N] [--min-corpus N] [--min-fuzz N]
 ##		  --corpus DIR  conformance corpus root (default project/conformance)
 ##		  --iters N     fuzz iterations to dump (default 2000)
 ##		  --min N       fail unless at least N documents were compared (default 100)
 ##		  --min-corpus N  and at least N of them corpus cases (default 80)
+##		  --min-fuzz N  and at least N of them fuzz-dumped (default 200)
 ##	Exit: 0 = every compared document equal, 1 = a divergence, 2 = usage or a build failure.
 ##	History: At bottom of script.
 
@@ -50,12 +52,13 @@ set -Eeuo pipefail
 
 meDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd -- "${meDir}/../.." && pwd)"
-corpus="${root}/project/conformance"; declare -i iters=2000 minCompared=100 minCorpus=80
+corpus="${root}/project/conformance"; declare -i iters=2000 minCompared=100 minCorpus=80 minFuzz=200
 while (($#)); do case "$1" in
 	--corpus)  corpus="${2:-}"; shift 2 ;;
 	--iters)   iters="${2:-2000}"; shift 2 ;;
 	--min)     minCompared="${2:-100}"; shift 2 ;;
 	--min-corpus) minCorpus="${2:-80}"; shift 2 ;;
+	--min-fuzz) minFuzz="${2:-200}"; shift 2 ;;
 	-h|--help) grep -E '^##' "$0" | sed 's/^##\t\?//'; exit 0 ;;
 	*)         echo "check-migrate: unknown argument: $1" >&2; exit 2 ;;
 esac; done
@@ -100,6 +103,10 @@ newCli="${root}/source/rust/target/debug/shcl"
 dump="${tmpDir}/dump"; mkdir -p "${dump}"
 ( cd "${root}/source/rust" && SHCL_FUZZ_DUMP="${dump}" SHCL_FUZZ_ITERS="${iters}" SHCL_FUZZ_DUMP_MAX=500 \
 	cargo test --quiet --test fuzz_smoke mutated_inputs >/dev/null 2>&1 ) || { echo "check-migrate: the fuzz dump failed" >&2; exit 2; }
+##	A test filter that matches nothing passes and writes nothing, and the corpus
+##	alone meets the overall floor, so an empty dump has to be caught here.
+nDumped="$(find "${dump}" -maxdepth 1 -name '*.shcl' | wc -l)"
+((nDumped > 0)) || { echo "check-migrate: the fuzz dump wrote no documents" >&2; exit 2; }
 
 ##	The lines 2.x did not read cleanly, by number. A line is clean when every
 ##	code 2.x reports on it binds the line: E001 (field kept), E005 (fence
@@ -227,18 +234,20 @@ fInfoHashLabel "${corpus}/068-info-hash-spellings/input.shcl" 2>/dev/null \
 	|| { echo "check-migrate: 068-info-hash-spellings no longer carries a fence label holding a #" >&2; nBad+=1; }
 fCrMidLine "${corpus}/094-unicode-space/input.shcl" 2>/dev/null \
 	|| { echo "check-migrate: 094-unicode-space no longer carries a mid-line carriage return" >&2; nBad+=1; }
-if ((nCompared < minCompared || nCorpus < minCorpus)); then
-	echo "check-migrate: only ${nCompared} document(s) compared, ${nCorpus} of them corpus cases; need ${minCompared} and ${minCorpus} (${nSkipped} skipped)" >&2
+if ((nCompared < minCompared || nCorpus < minCorpus || nCompared - nCorpus < minFuzz)); then
+	echo "check-migrate: only ${nCompared} document(s) compared, ${nCorpus} of them corpus cases and $((nCompared - nCorpus)) fuzz-dumped; need ${minCompared}, ${minCorpus} and ${minFuzz} (${nSkipped} skipped)" >&2
 	exit 2
 fi
 if ((nBad)); then
 	echo "check-migrate: ${nBad} divergence(s) over ${nCompared} document(s) (${nSkipped} skipped)" >&2
 	exit 1
 fi
-echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read, ${nCorpus} corpus cases and ${nTrimmed} with lines taken out first; ${nLostChecked} lost count(s) match; ${nSkipped} skipped"
+echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read, ${nCorpus} corpus cases, $((nCompared - nCorpus)) fuzz-dumped and ${nTrimmed} with lines taken out first; ${nLostChecked} lost count(s) match; ${nSkipped} skipped"
 
 ##	History:
 ##		2026-09-08  Created with the 3.0 lexical cut, pinned on the funnel merge.
 ##		2026-09-15  The 2.x build reads the migrated text too.
 ##		2026-09-16  Lines 2.x could not read come out rather than the whole
 ##		            document; exit code, lost count and a corpus floor checked.
+##		2026-09-18  A floor for the fuzz half and an empty dump refused, after a
+##		            dump that wrote nothing passed on the corpus alone.

@@ -89,14 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 12: check-migrate passes with no fuzz document compared.
-		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
-		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
-		- Sites: `cicd/utility/check-migrate.bash:101-102`, `:177`, `:230-233`.
-		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
-		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
-		- Opened: 20260918-132951
-
 	- 🔘 Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
 		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
 		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
@@ -490,6 +482,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a shell-regress rule, per skip rather than per file, that each skip over a missing tool reads the strict flag just above it and notes itself just after. It fails on the old cli-regress at the man page skip. With `man` taken off `PATH`, a strict cli-regress now fails and the skip file names the check.
 		- Opened: 20260918-132951
 		- Closed: 20260918-162245
+
+	- ✅ Item 12: check-migrate passes with no fuzz document compared.
+		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
+		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
+		- Sites: `cicd/utility/check-migrate.bash:101-102`, `:177`, `:230-233`.
+		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
+		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
+		- Fixed: check-migrate refuses a dump that wrote no documents, at exit 2 as crosscheck does, and has a floor for the fuzz half, `--min-fuzz`, default 200. A normal run compares about 440.
+		- Pinned by: with a `cargo` first on `PATH` that writes nothing, the gate now exits 2 naming the empty dump, where the old one reported OK on the corpus alone.
+		- Opened: 20260918-132951
+		- Closed: 20260918-162501
 
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
