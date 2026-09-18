@@ -1026,6 +1026,20 @@ done
 for g in check-c-compilers.bash check-locale.bash check-docs.bash cli-regress.bash; do
 	grep -qF 'SHCL_GATE_SKIPS:-/dev/null' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer notes a local skip in SHCL_GATE_SKIPS"
 done
+##	20260918 item 11: both rules above are per file, so a second skip in a file
+##	that guards its first went out bare, and cli-regress's man page check did.
+##	Each skip over a missing tool has to read the strict flag in the lines just
+##	above it and note itself in SHCL_GATE_SKIPS in the lines just after.
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	while IFS=: read -r n _; do
+		from=$((n > 6 ? n - 6 : 1))
+		# shellcheck disable=SC2016  ## the literal expansion is the pattern
+		sed -n "${from},$((n - 1))p" "${g}" | grep -qF '${SHCL_GATE_STRICT' \
+			|| fBad "${g##*/}:${n} skips over a missing tool without reading SHCL_GATE_STRICT just above"
+		sed -n "$((n + 1)),$((n + 2))p" "${g}" | grep -qF 'SHCL_GATE_SKIPS:-/dev/null' \
+			|| fBad "${g##*/}:${n} skips over a missing tool without noting it in SHCL_GATE_SKIPS"
+	done < <(grep -nE '^[[:space:]]*echo ".*skipping .*\(no ' "${g}" || true)
+done
 grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
 
 ##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through

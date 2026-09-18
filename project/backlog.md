@@ -89,14 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
-		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
-		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
-		- Sites: `cicd/utility/cli-regress.bash:697-709`, `cicd/utility/shell-regress.bash:1017-1028`.
-		- Origin: `1c4b8af` (2026-09-08). It became a hole in the record with `6ad45f8` (Merge pushgate, 2026-09-14). Not seen before. Confirmed.
-		- Against: `cicd.bash`'s header, that a skipped tool keeps a run from recording, and 20260909 item 53's fix.
-		- Opened: 20260918-132951
-
 	- 🔘 Item 12: check-migrate passes with no fuzz document compared.
 		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
 		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
@@ -487,6 +479,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: rows `help-help-flag`, `help-h-flag` and `help-cmd-help-flag`, which fail in all four on the old code.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161509
+
+	- ✅ Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
+		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
+		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
+		- Sites: `cicd/utility/cli-regress.bash:697-709`, `cicd/utility/shell-regress.bash:1017-1028`.
+		- Origin: `1c4b8af` (2026-09-08). It became a hole in the record with `6ad45f8` (Merge pushgate, 2026-09-14). Not seen before. Confirmed.
+		- Against: `cicd.bash`'s header, that a skipped tool keeps a run from recording, and 20260909 item 53's fix.
+		- Fixed: under `SHCL_GATE_STRICT` a missing `man` fails cli-regress, except on Windows, and the skip is noted in `SHCL_GATE_SKIPS` either way.
+		- Pinned by: a shell-regress rule, per skip rather than per file, that each skip over a missing tool reads the strict flag just above it and notes itself just after. It fails on the old cli-regress at the man page skip. With `man` taken off `PATH`, a strict cli-regress now fails and the skip file names the check.
+		- Opened: 20260918-132951
+		- Closed: 20260918-162245
 
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
