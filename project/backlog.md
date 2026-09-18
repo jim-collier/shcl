@@ -89,14 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
-		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
-		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
-		- Sites: `shcl.py:4637-4643`.
-		- Origin: `0b94843` (Merge tmpname-bytes, 2026-09-15, 20260909 item 16) made the 2026-07-25 fallback reachable. Confirmed.
-		- Against: 20260909 item 16, and parity with the other three.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
 		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
 		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
@@ -557,6 +549,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a block in `mem_bounds.c` that tokenizes with two documents, checks which arena holds the arrays, frees the first and tokenizes again. It fails on the old header, and `sanitize-c.bash` reports the use-after-free there under ASan.
 		- Opened: 20260918-133258
 		- Closed: 20260918-154720
+
+	- ✅ Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
+		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
+		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
+		- Sites: `shcl.py:4637-4643`.
+		- Origin: `0b94843` (Merge tmpname-bytes, 2026-09-15, 20260909 item 16) made the 2026-07-25 fallback reachable. Confirmed.
+		- Against: 20260909 item 16, and parity with the other three.
+		- Fixed: `write_file_atomic` falls back to the whole path only when the name is empty, before the cut, as Rust does. A cut that backs off to nothing leaves nothing, as in Go and C.
+		- Pinned by: a POSIX block in the Python runner that saves a name of `\xc3` and 70 `\x80` bytes under `sub/`. It fails on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-154909
 
 - Code review 20260909:
 

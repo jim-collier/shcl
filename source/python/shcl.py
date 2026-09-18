@@ -4664,6 +4664,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	if d == "":
 		d = "."
 	base = os.path.basename(target)
+	if base == "":
+		base = target
 	# At most the first 64 bytes of the name, cut where a character starts, so the
 	# temp's own length is fixed. Carrying the whole name put the temp over the
 	# filesystem's 255 bytes at a target name in the low 240s - and the exact
@@ -4675,9 +4677,9 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	cut = min(len(raw), TMP_NAME_BYTES)
 	while 0 < cut < len(raw) and (raw[cut] & 0xC0) == 0x80:
 		cut -= 1
+	# A cut that backs off to nothing leaves nothing, as in the other three: the
+	# empty-name fallback above is for a name that was never there.
 	base = os.fsdecode(raw[:cut])
-	if base == "":
-		base = target
 	# Exclusive create: the name is predictable, so anything already sitting
 	# there - including a symlink someone else planted - must make this fail
 	# rather than be written through. Retry past a stale collision, then give
