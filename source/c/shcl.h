@@ -3012,6 +3012,22 @@ static ShclValue consume_raw(ShclParser *P, const ShclStr *lines, size_t nlines,
 	return v;
 }
 
+/* Where the parse resumes after a refused field line. Every arm that skips one
+   comes through here, so a skipped line whose value opens a raw block takes the
+   body with it: read as lines, the body would bind or be refused line by line,
+   and its closing fence would open a block that runs to the end of the file. A
+   line whose path did not parse has no value to read, so it goes alone. */
+static size_t skip_field_line(ShclParser *P, const ShclStr *lines, size_t nlines, size_t i, ShclStr indent, const ShclTokens *tok, ShclStr rest) {
+	if (tok->has_fault || !tok->has_sep) return i + 1;
+	/* A capped scan zeroed the value, and a fence is told by its leading run
+	   alone. */
+	ShclFence f = fence_open(tok->capped ? s_trim_wsp(s_slice(rest, tok->value_start, rest.n)) : s_slice(rest, tok->value_start, tok->value_end));
+	if (!f.ok) return i + 1;
+	size_t next;
+	(void)consume_raw(P, lines, nlines, i + 1, i + 1, indent, f, &next);
+	return next;
+}
+
 /* Returns the node the block landed on ((size_t)-1 = no parent, diagnosed). */
 static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t line, ShclStr indent) {
 	if (parent == ROOT) { p_refuse(P, line, "E006", s_lit("raw block with no parent field"), out_kind(OUT_DROPPED), indent); return (size_t)-1; }
@@ -3295,8 +3311,8 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		tokenize(P.tmp, rest, ':', 0, SHCL_RULES_CURRENT, &tok);
 		ShclStr comment = tok.has_comment ? s_slice(rest, tok.comment, rest.n) : s_empty();
 		size_t parent;
-		if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
-		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
+		if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
+		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
 		ShclPathScan scan = path_of(&own->line, &tok, rest);
 		if (!scan.ok) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err);
@@ -3317,10 +3333,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (tok.capped) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
 			p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
-			/* A fence's body goes with its line, or it would read as live lines. */
-			ShclFence cf = fence_open(s_trim_wsp(s_slice(rest, tok.value_start, rest.n)));
-			if (cf.ok) (void)consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, cf, &next);
-			i = next; continue;
+			i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue;
 		}
 		/* A selector body takes the same open-quote rule as a value element,
 		   and the same code: the body is read bare, quotes and all, so the line

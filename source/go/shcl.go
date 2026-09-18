@@ -2513,6 +2513,29 @@ func (p *parser) skipUnderDead(line int, indent string) {
 	p.refuse(line, "E018", "parent line was skipped; line skipped", outDropped, indent)
 }
 
+// skipFieldLine is where the parse resumes after a refused field line. Every
+// arm that skips one comes through here, so a skipped line whose value opens a
+// raw block takes the body with it: read as lines, the body would bind or be
+// refused line by line, and its closing fence would open a block that runs to
+// the end of the file. A line whose path did not parse has no value to read,
+// so it goes alone.
+func (p *parser) skipFieldLine(lines []string, i int, indent string, tok *Tokens, rest string) int {
+	if tok.Fault >= 0 || tok.Sep < 0 {
+		return i + 1
+	}
+	// A capped scan zeroed the value, and a fence is told by its leading run
+	// alone.
+	v := rest[tok.Value[0]:tok.Value[1]]
+	if tok.Capped {
+		v = trimWsp(rest[tok.Value[0]:])
+	}
+	if ch, length, info, ok := fenceOpen(v); ok {
+		_, next := p.consumeRaw(lines, i+1, i+1, indent, ch, length, info)
+		return next
+	}
+	return i + 1
+}
+
 // attachPath walks path segments under parent, select-or-creating; returns the
 // node for the last segment carrying v. ok=false aborts the line (diagnosed).
 func (p *parser) attachPath(parent int, segs []segment, v value, line int, indent string) (int, bool) {
@@ -2976,12 +2999,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		parent, okp := p.resolveParent(indent)
 		if !okp {
 			p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
-			i++
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		if parent == dead {
 			p.skipUnderDead(lineno, indent)
-			i++
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		scan, serr := pathOf(&tok, rest)
@@ -3006,11 +3029,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// The scan stopped at the cap, so nothing past it was built either.
 		if tok.Capped {
 			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
-			// A fence's body goes with its line, or it would read as live lines.
-			if ch, length, info, ok := fenceOpen(trimWsp(rest[tok.Value[0]:])); ok {
-				_, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
-			}
-			i = next
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		// A selector body takes the same open-quote rule as a value element,

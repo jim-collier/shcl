@@ -406,6 +406,61 @@ fn lost_count_follows_the_outcome_table() {
 	);
 }
 
+/// A raw body is content, whatever becomes of the line that opened it. A
+/// skipped field line whose value opened a block left the body to be read as
+/// lines, and its closing fence then opened a block of its own; nine review
+/// items were some arm of that. So no diagnostic may land on a body line or a
+/// closing fence, unless the opening line has no value to read: a `*` name,
+/// which is no field at all, or a path that did not parse (E014). Shape 7 is
+/// the only fence in the soup, and it closes on the line after its body.
+#[test]
+fn raw_bodies_stay_content() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	let mut rng = Rng(0x5EED_57A7_1C00_0008);
+	let (mut seen, mut skipped) = (0usize, 0usize);
+	for i in 0..iters {
+		let text = structural(&mut rng);
+		let doc = Document::parse(&text);
+		let diags = doc.diagnostics();
+		for (k, line) in text.lines().enumerate() {
+			if !line.ends_with(": ```") || line.trim_start_matches([' ', '\t']).starts_with('*') {
+				continue;
+			}
+			let opener = k + 1;
+			let on = |n: usize, codes: &[&str]| {
+				diags
+					.iter()
+					.any(|d| d.line == n && (codes.is_empty() || codes.contains(&d.code)))
+			};
+			if on(opener, &["E014"]) {
+				continue;
+			}
+			seen += 1;
+			if on(opener, &["E012", "E018"]) {
+				skipped += 1;
+			}
+			for body in [opener + 1, opener + 2] {
+				assert!(
+					!on(body, &[]),
+					"diagnostic on raw body line {} at iteration {}:\n{}",
+					body,
+					i,
+					text
+				);
+			}
+		}
+	}
+	assert!(seen > iters / 8, "the soup opened only {} blocks", seen);
+	assert!(
+		skipped > iters / 60,
+		"the soup skipped only {} block openers",
+		skipped
+	);
+}
+
 /// Layered merge over mutated soup: overlaying one document on another must
 /// never panic and the merged result must be a formatter fixpoint - the same
 /// guarantee `fmt` gives, now for the composed document.

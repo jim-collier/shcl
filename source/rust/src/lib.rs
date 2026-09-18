@@ -2394,6 +2394,36 @@ impl Parser {
 		);
 	}
 
+	/// Where the parse resumes after a refused field line. Every arm that
+	/// skips one comes through here, so a skipped line whose value opens a
+	/// raw block takes the body with it: read as lines, the body would bind
+	/// or be refused line by line, and its closing fence would open a block
+	/// that runs to the end of the file. A line whose path did not parse has
+	/// no value to read, so it goes alone.
+	fn skip_field_line(
+		&mut self,
+		lines: &[&str],
+		i: usize,
+		indent: &str,
+		tok: &Tokens,
+		rest: &str,
+	) -> usize {
+		if tok.fault.is_some() || tok.sep.is_none() {
+			return i + 1;
+		}
+		// A capped scan zeroed the value, and a fence is told by its leading
+		// run alone.
+		let value = if tok.capped {
+			trim_wsp(&rest[tok.value.0..])
+		} else {
+			&rest[tok.value.0..tok.value.1]
+		};
+		match fence_open(value) {
+			Some(fence) => self.consume_raw(lines, i + 1, i + 1, indent, fence).1,
+			None => i + 1,
+		}
+	}
+
 	/// Walk path segments under `parent`, select-or-creating; returns the node
 	/// for the last segment carrying `value`. None aborts the line (diagnosed).
 	fn attach_path(
@@ -3019,12 +3049,12 @@ impl Parser {
 					Outcome::Dropped,
 					indent,
 				);
-				i += 1;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			};
 			if parent == DEAD {
 				self.skip_under_dead(lineno, indent);
-				i += 1;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			}
 			let scan = match path_of(&tok, rest) {
@@ -3075,12 +3105,7 @@ impl Parser {
 					Outcome::Dropped,
 					indent,
 				);
-				// A fence's body goes with its line, or it would read as live
-				// lines.
-				if let Some(fence) = fence_open(trim_wsp(&rest[tok.value.0..])) {
-					next = self.consume_raw(&lines, i + 1, lineno, indent, fence).1;
-				}
-				i = next;
+				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			}
 			// A selector body takes the same open-quote rule as a value

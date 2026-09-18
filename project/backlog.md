@@ -80,15 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
-		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
-		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
-		- Sites: `lib.rs:2991-3004`, `shcl.go:2962-2972`, `shcl.py:2443-2452`, `shcl.h:3277-3278`.
-		- Origin: `8821735` (2026-08-29) for the E018 arm; the E012 arm is older. 20260901 item 1 fixed the child-indent fence arm and 20260909 item 11 the E021 arm, so this is their sibling. Not seen before. Confirmed.
-		- Note: the ninth item in this class. The fix should be one rule for every skip arm, that a skipped line opening a fence takes its body with it, rather than one more arm.
-		- Against: `spec.md:135`, "a fence line there takes its whole body with it", and the E018 row at `spec.md:445`.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 4: `init` writes an optional field whose default names another instance than its path selects, at exit 0.
 		- Reproduced in all four. `field: env[prod]` with `default: staging` generates `# env: staging` at exit 0. With `required: true` it exits 6 with V097.
 		- Cause: the commented-line check runs `v_node` on the leaf. That checks type, allowed, min and max, not whether the leaf is the selected instance.
@@ -538,6 +529,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: rows `migrate-bom-stamped` and `migrate-bom-stamped-from-2x`. Both fail in C on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-153113
+
+	- ✅ Item 3: a skipped field line whose value opens a raw block hides the rest of the file from every read.
+		- Reproduced in all four. `servers: [a, b]`, then a tab-indented `script: ```sh` block, then `port: 80` and `name: web`. `get port` exits 3 and `paths` prints nothing. `check` gives E019, E018 three times, and E005 unterminated raw block. A bad-indent E012 field line opening a fence loses the tail the same way. `fmt` prints the file without its tail at exit 0; `fmt --write` refuses at exit 7.
+		- Cause: the field-line arm refuses E012 and E018 before it reads the value and moves on one line. The body is parsed as lines, and its closing fence opens a block that never closes. The child-indent fence arm and the E021 arm consume the body first; these two do not.
+		- Sites: `lib.rs:2991-3004`, `shcl.go:2962-2972`, `shcl.py:2443-2452`, `shcl.h:3277-3278`.
+		- Origin: `8821735` (2026-08-29) for the E018 arm; the E012 arm is older. 20260901 item 1 fixed the child-indent fence arm and 20260909 item 11 the E021 arm, so this is their sibling. Not seen before. Confirmed.
+		- Note: the ninth item in this class. The fix should be one rule for every skip arm, that a skipped line opening a fence takes its body with it, rather than one more arm.
+		- Against: `spec.md:135`, "a fence line there takes its whole body with it", and the E018 row at `spec.md:445`.
+		- Fixed: one rule for every arm that skips a field line. `skip_field_line` (Rust, C), `skipFieldLine` (Go) and `_skip_field_line` (Python) take a fence's body with the line, and the E012, E018 and E021 arms all call it. A line whose path did not parse still goes alone, as the review decided for E014.
+		- Pinned by: corpus `126-skipped-line-fence`, which all four runners fail on the old code, and `raw_bodies_stay_content` in `fuzz_smoke.rs`, a property that no diagnostic lands on a raw body line. It fails on the old code at iteration 4.
+		- Opened: 20260918-133258
+		- Closed: 20260918-153943
 
 - Code review 20260909:
 

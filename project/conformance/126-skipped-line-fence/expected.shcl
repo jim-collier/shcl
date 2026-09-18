@@ -1,0 +1,5 @@
+servers: [a, b]
+port: 80
+a:
+	b: 1
+name: web

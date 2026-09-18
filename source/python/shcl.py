@@ -2079,6 +2079,26 @@ class _Parser:
 		level stays dead so deeper lines go the same way."""
 		self._refuse(line, "E018", "parent line was skipped; line skipped", OUT_DROPPED, indent)
 
+	def _skip_field_line(self, lines, i, indent, tok):
+		"""Where the parse resumes after a refused field line. Every arm that
+		skips one comes through here, so a skipped line whose value opens a raw
+		block takes the body with it: read as lines, the body would bind or be
+		refused line by line, and its closing fence would open a block that runs
+		to the end of the file. A line whose path did not parse has no value to
+		read, so it goes alone."""
+		if tok.fault is not None or tok.sep is None:
+			return i + 1
+		# A capped scan zeroed the value, and a fence is told by its leading run
+		# alone.
+		if tok.capped:
+			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8"))
+		else:
+			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8")
+		fence = _fence_open(v)
+		if fence is None:
+			return i + 1
+		return self._consume_raw(lines, i + 1, i + 1, indent, fence)[1]
+
 	def _attach_path(self, parent, segs, value, line, indent):
 		"""Walk path segments under `parent`, select-or-creating; returns the node
 		for the last segment carrying `value`. None aborts the line (diagnosed)."""
@@ -2457,11 +2477,11 @@ class _Parser:
 			parent = self._resolve_parent(indent)
 			if parent is None:
 				self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
-				i += 1
+				i = self._skip_field_line(lines, i, indent, tok)
 				continue
 			if parent == DEAD:
 				self._skip_under_dead(lineno, indent)
-				i += 1
+				i = self._skip_field_line(lines, i, indent, tok)
 				continue
 			try:
 				segments, value_text = _path_of(tok, s)
@@ -2484,11 +2504,7 @@ class _Parser:
 			# built either.
 			if tok.capped:
 				self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
-				# A fence's body goes with its line, or it would read as live lines.
-				cfence = _fence_open(_trim_wsp(tok.src[tok.value[0]:].decode("utf-8")))
-				if cfence is not None:
-					nxt = self._consume_raw(lines, i + 1, lineno, indent, cfence)[1]
-				i = nxt
+				i = self._skip_field_line(lines, i, indent, tok)
 				continue
 			# A selector body takes the same open-quote rule as a value
 			# element, and the same code: the body is read bare, quotes and
