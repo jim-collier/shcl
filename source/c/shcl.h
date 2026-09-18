@@ -747,6 +747,18 @@ static void arena_reset_largest(ShclArena *a) {
 	if (best) { best->next = NULL; best->used = 0; }
 	a->last = NULL; a->last_n = 0; a->growing = 0;
 }
+/* And the other way: the block kept is the smallest. A default form's probe
+   judges one value in scratch and keeps nothing, and the newest block there is
+   the one that grew for the last value, so arena_reset would hold three times
+   the largest value ever defaulted until the document is freed. */
+static void arena_reset_smallest(ShclArena *a) {
+	ShclBlock *best = NULL, *b;
+	for (b = a->head; b; b = b->next) if (!best || b->cap < best->cap) best = b;
+	for (b = a->head; b;) { ShclBlock *n = b->next; if (b != best) free(b); b = n; }
+	a->head = best;
+	if (best) { best->next = NULL; best->used = 0; }
+	a->last = NULL; a->last_n = 0; a->growing = 0;
+}
 
 #define DEFINE_VEC(Name, T) \
 	typedef struct { T *data; size_t len, cap; } Name; \
@@ -4129,7 +4141,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	size_t idx;
 	if (!value_reads_back(&d->scratch, &v)) { arena_release(&d->arena, m); arena_reset(&d->scratch); return 0; }
-	if (d->probe) { arena_release(&d->arena, m); return 1; }
+	if (d->probe) { arena_release(&d->arena, m); arena_reset_smallest(&d->scratch); return 1; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
 	w_collapse_dup(d, idx);
@@ -4301,7 +4313,7 @@ static shcl_doc *w_default_probe(shcl_doc *d, const char *path, size_t plen) {
 	}
 	/* A refused value leaves its working set in scratch, and nothing else
 	   ever resets a probe's. */
-	arena_reset(&d->probe_doc->scratch);
+	arena_reset_smallest(&d->probe_doc->scratch);
 	return d->probe_doc;
 }
 int shcl_set_int_default(shcl_doc *d, const char *path, size_t plen, int64_t v) { if (!shcl_exists(d, path, plen)) return shcl_set_int(d, path, plen, v); shcl_doc *e = w_default_probe(d, path, plen); return e && shcl_set_int(e, "v", 1, v); }

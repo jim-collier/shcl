@@ -89,14 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
-		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
-		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
-		- Sites: `shcl.h:4077`, `:4239-4251`.
-		- Origin: `fa6de87` (2026-09-15, 20260909 item 15). Same class as 20260909 item 22. Confirmed.
-		- Against: the arena rule at `shcl.h:4066-4072`.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
 		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
 		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
@@ -560,6 +552,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a POSIX block in the Python runner that saves a name of `\xc3` and 70 `\x80` bytes under `sub/`. It fails on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-154909
+
+	- ✅ Item 8: a C default form that writes nothing keeps about three times the value's size until the document is freed.
+		- Reproduced in C. With `b` present, one 4 MB `shcl_set_string_default` leaves 12.2 MB held, and the array form with two 4 MB strings 32 to 41 MB. At `0090046` both left 128 KB. It does not grow with more calls.
+		- Cause: the probe branch of `w_set_marked` releases the arena but not `scratch`, and the next reset keeps the newest block, which is the large one.
+		- Sites: `shcl.h:4077`, `:4239-4251`.
+		- Origin: `fa6de87` (2026-09-15, 20260909 item 15). Same class as 20260909 item 22. Confirmed.
+		- Against: the arena rule at `shcl.h:4066-4072`.
+		- Fixed: `arena_reset_smallest` keeps the smallest block rather than the newest. `w_set_marked` calls it on the probe document's scratch as soon as the probe has its verdict, and `w_default_probe` before each probe. C only: the other three free what they do not keep.
+		- Measured: after a 4 MB string default and a two-element array default of 4 MB each on a present path, the document and its probe hold 192 KB, against 42 MB before.
+		- Pinned by: a block in `mem_bounds.c` with a 1 MB ceiling on everything the document and its probe hold. It fails on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155114
 
 - Code review 20260909:
 
