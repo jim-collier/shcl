@@ -80,6 +80,10 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
+	- The fix round closed all twenty-three on 2026-09-18, and the enhancement. Items 3 and 18 got class fixes: one skip helper that every refused field line goes through, with a fuzz property over raw bodies, and a check that asks each CLI which subcommands take each option. The fuzz also found a loose bug in `migrate`, filed and closed under Done - Bugs. Item 13 was pinned from the compiled setup on Linux and has not been run on Windows.
+
+	- Finished items are under Done - Bugs, and the enhancement under Done - Features and enhancements, each in a bullet of the same name.
+
 - Code review 20260909:
 
 	- A full adversarial pass over the whole codebase, including the copied-in scripts, judged against the spec and the grammar rather than against the other bindings. Aimed at the 3.0 work that has no soak time (the funnel, the tokenizer and the lexical cut, the setters, `migrate`, the info block), at the ground the last two rounds recorded as unread (the gates whose own claims had never been tested, the installers, the packaging, the copied scripts), and at the classes a four-way check can't see. Forty defects here, twenty-two enhancements under Features and enhancements. Every item was reproduced on this box; two carry a stated exception and say so.
@@ -339,7 +343,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260918:
 
-	- Items are here as they close. The rest of the round is under Bugs and Features and enhancements, with the round's own notes.
+	- All twenty-three items. The enhancement is under Done - Features and enhancements, and the round's own notes are under Bugs.
 
 	- ✅ Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
 		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
