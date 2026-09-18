@@ -80,15 +80,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
-		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
-		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
-		- Note: latent today, since main's tree has no drift check yet. The 3.0.0 cut puts it on main, and the cut's own main push hits it if dev holds an installer change main lacks.
-		- Sites: `cicd/utility/check-docs.bash:352-362`, `cicd/hooks/pre-push:108`, `cicd/cicd.bash:606-613`.
-		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
-		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
-		- Opened: 20260918-132951
-
 	- 🔘 Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
 		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
 		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
@@ -426,6 +417,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a block in `mem_bounds.c` that tokenizes with two documents, checks which arena holds the arrays, frees the first and tokenizes again. It fails on the old header, and `sanitize-c.bash` reports the use-after-free there under ASan.
 		- Opened: 20260918-133258
 		- Closed: 20260918-154720
+
+	- ✅ Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
+		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
+		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
+		- Note: latent today, since main's tree has no drift check yet. The 3.0.0 cut puts it on main, and the cut's own main push hits it if dev holds an installer change main lacks.
+		- Sites: `cicd/utility/check-docs.bash:352-362`, `cicd/hooks/pre-push:108`, `cicd/cicd.bash:606-613`.
+		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
+		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
+		- Fixed: the pre-push hook tells the gate which ref it stands in for, through `SHCL_GATE_REF`. For a push to main, check-docs compares the tree under test with `origin/dev`, since `origin/main` has not moved yet. Anywhere else it compares the two refs, as before. The green-tree header says the refs are the one thing it reads from outside the tree.
+		- Pinned by: `check-push-gate.bash` checks that the hook passes `main` to the gate, and runs this checkout's check-docs in a clone with the refs as they stand between the dev push and the main push. The main push that brings the installers level passes, one that leaves them behind fails, and a run outside the hook still sees dev ahead. All three fail on the old hook and check-docs.
+		- Left alone: the dev-run check in `cicd.bash` after a publish, which compares the working tree with `origin/main` and is meant to go red until the main merge.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163005
 
 	- ✅ Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
 		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.

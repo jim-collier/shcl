@@ -4,7 +4,9 @@
 ##		Remember the trees a gate passed, so the pre-push hook can let through a
 ##		commit with the same tree instead of running the gate on it again. A tree
 ##		hash covers every tracked byte and file mode, so two commits that share
-##		one cannot differ in anything the gate reads from the repo.
+##		one cannot differ in anything the gate reads from the repo. The one thing
+##		it reads from outside the tree is the installer drift check's pair of
+##		remote refs, and a push to main judges the tree it pushes, not the refs.
 ##	Syntax:
 ##		green-tree.bash tree DIR          the tree `git add --all` would commit in DIR
 ##		green-tree.bash record DIR TREE   remember TREE, if DIR still holds it

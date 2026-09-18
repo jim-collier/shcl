@@ -105,7 +105,10 @@ for i in "${!gatedShas[@]}"; do
 		echo "[ pre-push: WARNING: could not check ${sha:0:12} out into a worktree; gating the working tree instead ]" >&2
 		gateRoot="${root}"
 	fi
-	if ! "${gateRoot}/cicd/cicd.bash" --ci --no-largedoc; then
+	## The gate is told which ref it stands in for: the installer drift check
+	## has to judge this tree as main, since git moves origin/main only after
+	## the hook returns.
+	if ! SHCL_GATE_REF="${gatedRefs[i]}" "${gateRoot}/cicd/cicd.bash" --ci --no-largedoc; then
 		echo
 		echo "[ pre-push: the gate failed on ${sha:0:12} - push refused (--no-verify overrides) ]" >&2
 		echo
