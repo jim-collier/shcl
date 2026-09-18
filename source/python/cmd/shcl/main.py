@@ -83,8 +83,8 @@ Usage:
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
                                          rules (print it, rewrite FILE in place
-                                         with --write, or name the lines it
-                                         would change with --check)
+                                         with --write or -w, or name the lines
+                                         it would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl explain [CODE]                    what a diagnostic code means (every
@@ -143,22 +143,24 @@ Options (the subcommands each belongs to are in parentheses):
   --check                                (migrate) print nothing, name each
                                          line the rewrite would change on
                                          stderr, and exit 6 when there is one
-  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3
-                                         (default standard)
+  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
+                                         children/paths) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (all but check/init/migrate/tokens)
-                                         merge a lower-priority layer under
-                                         FILE; repeatable, earlier = lower
-                                         priority
-  --set=PATH=VALUE                       (all but check/init/migrate/tokens)
-                                         override one path as the top layer,
-                                         after all files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE goes
-                                         in as data: its type still follows the
-                                         text (8 is an int), but a comma or
-                                         quote in it is content, not syntax
+  --layer=FILE                           (get/set/fmt/count/instances/children/
+                                         paths) merge a lower-priority layer
+                                         under FILE; repeatable, earlier =
+                                         lower priority
+  --set=PATH=VALUE                       (get/set/fmt/count/instances/children/
+                                         paths) override one path as the top
+                                         layer, after all files; repeatable. On
+                                         'set' it is an edit to the document
+                                         itself, so it persists with --write.
+                                         VALUE goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
@@ -1136,7 +1138,7 @@ def do_migrate(o):
 	# the load after it is for the diagnostics and the save gate, the same
 	# gate fmt --write goes through.
 	if len(o.args) != 1:
-		sys.stderr.write("usage: shcl migrate [--write|-w] FILE (see --help)\n")
+		sys.stderr.write("usage: shcl migrate [options] FILE (see --help)\n")
 		return 1
 	file = o.args[0]
 	if o.write and file == "-":

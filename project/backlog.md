@@ -113,16 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
-		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
-		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
-		- Cause: an "all but" list names only the exclusions, so a new subcommand that takes none of these options joins it silently.
-		- Sites: `main.rs:145`, `:149`, `:153`; `main.go:153`, `:157`, `:161`; `main.py:146`, `:150`, `:154`; `main.c:129`, `:133`, `:137`; `source/man/shcl.1:341`. Usage line: `main.rs:1497`, `main.go:1546`, `main.py:1132`, `main.c:853`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
-		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
-		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
 		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
 		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
@@ -566,6 +556,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: row `explain-non-ascii-no-suggestion`, which fails in Go and Python on the old code. A `%LS%` in a row stands for the long s.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161626
+
+	- ✅ Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
+		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
+		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
+		- Cause: an "all but" list names only the exclusions, so a new subcommand that takes none of these options joins it silently.
+		- Sites: `main.rs:145`, `:149`, `:153`; `main.go:153`, `:157`, `:161`; `main.py:146`, `:150`, `:154`; `main.c:129`, `:133`, `:137`; `source/man/shcl.1:341`. Usage line: `main.rs:1497`, `main.go:1546`, `main.py:1132`, `main.c:853`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
+		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
+		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
+		- Fixed: the help names the subcommands of `--strictness`, `--layer` and `--set` in full, as the man page does for the last two, and the man page's `--strictness` line does too. migrate's usage line reads `[options] FILE` like its help line, and the help says `-w` works there. In all four CLIs.
+		- Pinned by: a check in `cli-regress.bash` that asks each CLI which subcommands take each option, by whether it answers "not valid for", and compares that with the parentheses the help prints. It fails on 7 options with the old help, and a new subcommand can no longer join an option's list unseen. Row `migrate-usage-line` pins the usage line.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161713
 
 	- ✅ Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
 		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.

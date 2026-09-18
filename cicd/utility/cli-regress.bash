@@ -417,6 +417,9 @@ rows=(
 	'migrate-check-from-2x|migrate --check --from-2x %BS%|-|6||bs\.shcl:1: migrate would rewrite'
 	'migrate-check-write|migrate --check --write %W%|-|1|-|--check cannot be combined with --write'
 	'migrate-write-says|migrate --write %W%|-|0||migrated, 1 line\(s\) rewritten'
+	## 20260918 item 18: the usage line said [--write|-w] where the help line
+	## says [options].
+	'migrate-usage-line|migrate|-|1||^usage: shcl migrate \[options\] FILE \(see --help\)$'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
 	## 20260909 item 16.
@@ -780,6 +783,72 @@ for b in "${bindings[@]}"; do
 			echo "cli-regress: help-width [${name}]: ${cmd} line ${wide}" >&2; nBad+=1
 		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${text}")
 	done
+done
+
+## Each option names in parentheses the subcommands it belongs to, and three of
+## them used to say "all but" a list, so each new subcommand that took none of
+## those options joined them unseen - three times over. What a subcommand takes
+## is asked of the CLI itself, since an option it does not use is refused as
+## "not valid for CMD", and the parentheses have to name exactly that set.
+## "(same)", or no parentheses at all, carries the entry above.
+for b in "${bindings[@]}"; do
+	name="${b%%|*}"; cli="${b#*|}"
+	mapfile -t cmds < <("${cli}" help 2>/dev/null </dev/null | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	nOpts=0
+	claim=""
+	while IFS=$'\t' read -r spell par; do
+		opt="${spell%%=*}"
+		if [[ -n "${par}" && "${par}" != "(same"* ]]; then
+			claim=""
+			for w in ${par//[^a-z]/ }; do
+				for c in "${cmds[@]}"; do
+					if [[ "${w}" == "${c}" ]]; then claim+="${c} "; fi
+				done
+			done
+			claim="$(tr ' ' '\n' <<<"${claim}" | sort -u | xargs)"
+		fi
+		probe="${opt}"
+		if [[ "${spell}" == *=* ]]; then
+			v="${spell#*=}"
+			case "${v}" in
+				*'|'*) v="${v%%|*}" ;;
+				*=*)   v="a=1" ;;
+				*)     v="x" ;;
+			esac
+			probe="${opt}=${v}"
+		fi
+		takes=""
+		for c in "${cmds[@]}"; do
+			## Captured first: under pipefail the refusal's own exit 1 would fail
+			## a pipe into grep whatever grep found.
+			said="$("${cli}" "${c}" "${probe}" </dev/null 2>&1 >/dev/null || true)"
+			grep -qF "not valid for ${c}" <<<"${said}" || takes+="${c} "
+		done
+		takes="$(tr ' ' '\n' <<<"${takes}" | sort -u | xargs)"
+		nOpts=$((nOpts + 1)); nRun+=1
+		if [[ "${claim}" != "${takes}" ]]; then
+			echo "cli-regress: option-scopes [${name}]: ${opt}: the help names (${claim}), the CLI takes it on (${takes})" >&2; nBad+=1
+		fi
+	done < <("${cli}" help 2>/dev/null </dev/null | awk '
+		/^Options \(/ { on = 1; next }
+		on && /^[^ ]/ { on = 0 }
+		!on { next }
+		/^  --/ {
+			if (spell != "") print spell "\t" par
+			spell = $1; par = ""; inpar = 0
+			d = substr($0, 42)
+			if (substr(d, 1, 1) == "(") { inpar = 1 }
+			if (inpar) { par = d; if (index(d, ")")) { par = substr(d, 1, index(d, ")")); inpar = 0 } }
+			next
+		}
+		inpar {
+			d = substr($0, 42)
+			if (index(d, ")")) { par = par substr(d, 1, index(d, ")")); inpar = 0 } else { par = par d }
+		}
+		END { if (spell != "") print spell "\t" par }')
+	if ((nOpts < 10)); then
+		echo "cli-regress: option-scopes [${name}]: only ${nOpts} option(s) found in the help" >&2; nBad+=1
+	fi
 done
 
 ## The man page sits next to that help and had nothing holding it to the same

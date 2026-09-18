@@ -66,8 +66,8 @@ static const char *HELP =
 	"                                         per line\n"
 	"  shcl migrate [options] FILE            rewrite a 2.x file for the current\n"
 	"                                         rules (print it, rewrite FILE in place\n"
-	"                                         with --write, or name the lines it\n"
-	"                                         would change with --check)\n"
+	"                                         with --write or -w, or name the lines\n"
+	"                                         it would change with --check)\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
 	"                                         why the parser read a line as it did\n"
 	"  shcl explain [CODE]                    what a diagnostic code means (every\n"
@@ -126,22 +126,24 @@ static const char *HELP =
 	"  --check                                (migrate) print nothing, name each\n"
 	"                                         line the rewrite would change on\n"
 	"                                         stderr, and exit 6 when there is one\n"
-	"  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3\n"
-	"                                         (default standard)\n"
+	"  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/\n"
+	"                                         children/paths) or 1|2|3 (default\n"
+	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
-	"  --layer=FILE                           (all but check/init/migrate/tokens)\n"
-	"                                         merge a lower-priority layer under\n"
-	"                                         FILE; repeatable, earlier = lower\n"
-	"                                         priority\n"
-	"  --set=PATH=VALUE                       (all but check/init/migrate/tokens)\n"
-	"                                         override one path as the top layer,\n"
-	"                                         after all files; repeatable. On 'set'\n"
-	"                                         it is an edit to the document itself,\n"
-	"                                         so it persists with --write. VALUE goes\n"
-	"                                         in as data: its type still follows the\n"
-	"                                         text (8 is an int), but a comma or\n"
-	"                                         quote in it is content, not syntax\n"
+	"  --layer=FILE                           (get/set/fmt/count/instances/children/\n"
+	"                                         paths) merge a lower-priority layer\n"
+	"                                         under FILE; repeatable, earlier =\n"
+	"                                         lower priority\n"
+	"  --set=PATH=VALUE                       (get/set/fmt/count/instances/children/\n"
+	"                                         paths) override one path as the top\n"
+	"                                         layer, after all files; repeatable. On\n"
+	"                                         'set' it is an edit to the document\n"
+	"                                         itself, so it persists with --write.\n"
+	"                                         VALUE goes in as data: its type still\n"
+	"                                         follows the text (8 is an int), but a\n"
+	"                                         comma or quote in it is content, not\n"
+	"                                         syntax\n"
 	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
@@ -851,7 +853,7 @@ static size_t rewritten_lines(const char *file, const char *before, size_t blen,
 // the load after it is for the diagnostics and the save gate, the same gate
 // `fmt --write` goes through.
 static int do_migrate(const Opts *o) {
-	if (o->nargs != 1) { fprintf(stderr, "usage: shcl migrate [--write|-w] FILE (see --help)\n"); return 1; }
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl migrate [options] FILE (see --help)\n"); return 1; }
 	const char *file = o->args[0];
 	if (o->write && strcmp(file, "-") == 0) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
