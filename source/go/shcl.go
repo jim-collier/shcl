@@ -1239,6 +1239,14 @@ func oneLine(s string) string {
 	return r.Replace(s)
 }
 
+// schemaText is schema text for a diagnostic or a generated comment: a path or
+// a type as the schema wrote it, with a line break spelled `\n`, so one
+// diagnostic stays one line. Only the break is escaped, so a path reads the
+// way it was written.
+func schemaText(s string) string {
+	return strings.ReplaceAll(s, "\n", "\\n")
+}
+
 // applyEscapes handles string reads: \t \n \\ \" \'; unknown escapes stay literal.
 func applyEscapes(s string) string {
 	// Bytes: every escape this recognizes is ASCII, and any other byte - a
@@ -6745,7 +6753,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 	}
 	scan, err := scanLookup(path)
 	if err != nil || scan.valueText != nil {
-		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", path))
+		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", schemaText(path)))
 		return constraint{}, false
 	}
 	c := constraint{path: path, segs: scan.segments}
@@ -6775,7 +6783,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 					c.ty = t
 				}
 			case ok:
-				vdiag(faults, kid.line, "V091", fmt.Sprintf("unknown schema type '%s'", t))
+				vdiag(faults, kid.line, "V091", fmt.Sprintf("unknown schema type '%s'", schemaText(t)))
 			default:
 				vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 			}
@@ -7294,7 +7302,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		c := &cons[i]
 		cannotSatisfy := c.required || (c.repeat != nil && c.repeat[0] == 1)
 		if cannotSatisfy && unwritable(c) && !hasWild(c) {
-			msg := "required path cannot be generated: " + strings.ReplaceAll(c.path, "\n", "\\n") +
+			msg := "required path cannot be generated: " + schemaText(c.path) +
 				" (" + whyUnwritable(c) + ")"
 			blocked = append(blocked, Diagnostic{Line: 0, Severity: SeverityError, Message: msg, Code: "V097"})
 		}
@@ -7328,7 +7336,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 			tyname = "any"
 		}
 		if unwritable(c) || (hasWild(c) && !fill[i]) {
-			wild = append(wild, [2]string{strings.ReplaceAll(c.path, "\n", "\\n"), tyname})
+			wild = append(wild, [2]string{schemaText(c.path), tyname})
 			continue
 		}
 		// A filled wildcard emits in dotted form, targeting the materialized
@@ -7382,7 +7390,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		block.WriteString("## ")
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		block.WriteString(strings.ReplaceAll(genAnnotation(c, tyname), "\n", "\\n"))
+		block.WriteString(schemaText(genAnnotation(c, tyname)))
 		block.WriteByte('\n')
 		prefix := "# "
 		if mustExist(c) {
@@ -7526,7 +7534,7 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				Line:     0,
 				Severity: SeverityError,
 				Code:     "V097",
-				Message:  "generated value fails the schema that produced it: default does not name the instance its path selects: " + strings.ReplaceAll(cons[cm.cons].path, "\n", "\\n"),
+				Message:  "generated value fails the schema that produced it: default does not name the instance its path selects: " + schemaText(cons[cm.cons].path),
 			})
 			continue
 		}
@@ -7709,7 +7717,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if onStack || len(stack) >= MaxDepth {
-					cuts = append(cuts, [2]string{strings.ReplaceAll(path, "\n", "\\n"), fr})
+					cuts = append(cuts, [2]string{schemaText(path), fr})
 				} else if fcs, ok := def.frags[fr]; ok {
 					stack = append(stack, fr)
 					walk(fcs, path, segs, true)
@@ -7915,13 +7923,13 @@ func (d *Document) vCheckFrom(
 	d.vContexts([]int{start}, c.segs, anchor0, &ctxs)
 	for _, ctx := range ctxs {
 		if c.required && len(ctx.found) == 0 {
-			vdiag(out, ctx.anchor, "V002", fmt.Sprintf("required path missing: %s", c.path))
+			vdiag(out, ctx.anchor, "V002", fmt.Sprintf("required path missing: %s", schemaText(c.path)))
 		}
 		if c.repeat != nil {
 			n := uint64(len(ctx.found))
 			if n < c.repeat[0] || n > c.repeat[1] {
 				vdiag(out, ctx.anchor, "V007", fmt.Sprintf("instance count out of bounds at '%s': %d not in %d..%d",
-					c.path, n, c.repeat[0], c.repeat[1]))
+					schemaText(c.path), n, c.repeat[0], c.repeat[1]))
 			}
 		}
 		for _, n := range ctx.found {
@@ -7952,7 +7960,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 	base := strings.TrimSuffix(c.ty, "-array")
 	isArray := strings.HasSuffix(c.ty, "-array")
 	wrong := func() {
-		vdiag(out, line, "V003", fmt.Sprintf("wrong type at '%s': value is not a valid %s", c.path, c.ty))
+		vdiag(out, line, "V003", fmt.Sprintf("wrong type at '%s': value is not a valid %s", schemaText(c.path), c.ty))
 	}
 	switch node.value.kind {
 	// Empty passes everything; required already counted it as present.
@@ -7966,7 +7974,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 		}
 		if c.allowed != nil && c.allowed.kind == allowStrings {
 			if !containsString(c.allowed.strs, node.value.raw.content) {
-				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(node.value.raw.content)))
+				vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(node.value.raw.content)))
 			}
 		}
 	case vCell:
@@ -7995,19 +8003,19 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowInts {
 				for i, v := range vals {
 					if !containsInt(c.allowed.ints, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
 			}
 			if c.minI != nil {
 				if i := firstIntBelow(vals, *c.minI); i >= 0 {
-					vdiag(out, line, "V005", fmt.Sprintf("value below min %d at '%s': %s", *c.minI, c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %d at '%s': %s", *c.minI, schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 			if c.maxI != nil {
 				if i := firstIntAbove(vals, *c.maxI); i >= 0 {
-					vdiag(out, line, "V006", fmt.Sprintf("value above max %d at '%s': %s", *c.maxI, c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %d at '%s': %s", *c.maxI, schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 		case "float":
@@ -8023,19 +8031,19 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowFloats {
 				for i, v := range vals {
 					if !containsFloat(c.allowed.floats, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
 			}
 			if c.minF != nil {
 				if i := firstFloatBelow(vals, *c.minF); i >= 0 {
-					vdiag(out, line, "V005", fmt.Sprintf("value below min %s at '%s': %s", FormatFloat(*c.minF), c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V005", fmt.Sprintf("value below min %s at '%s': %s", FormatFloat(*c.minF), schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 			if c.maxF != nil {
 				if i := firstFloatAbove(vals, *c.maxF); i >= 0 {
-					vdiag(out, line, "V006", fmt.Sprintf("value above max %s at '%s': %s", FormatFloat(*c.maxF), c.path, oneLine(els[i].text)))
+					vdiag(out, line, "V006", fmt.Sprintf("value above max %s at '%s': %s", FormatFloat(*c.maxF), schemaText(c.path), oneLine(els[i].text)))
 				}
 			}
 		case "bool":
@@ -8051,7 +8059,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowBools {
 				for i, v := range vals {
 					if !containsBool(c.allowed.bools, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
@@ -8069,7 +8077,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 			if c.allowed != nil && c.allowed.kind == allowDates {
 				for i, v := range vals {
 					if !containsDate(c.allowed.dates, v) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(els[i].text)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(els[i].text)))
 						break
 					}
 				}
@@ -8081,7 +8089,7 @@ func (d *Document) vNode(c *constraint, n int, out *[]Diagnostic) {
 				for i := range els {
 					s := els[i].text
 					if !containsString(c.allowed.strs, s) {
-						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", c.path, oneLine(s)))
+						vdiag(out, line, "V004", fmt.Sprintf("value not allowed at '%s': %s", schemaText(c.path), oneLine(s)))
 						break
 					}
 				}

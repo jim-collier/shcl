@@ -129,14 +129,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
-		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
-		- Cause: these print the schema path or type raw. V097 already escapes the same path.
-		- Sites: `lib.rs:7606`, `:7617`, `:7657`, `:7681-7866`, `:6530`; `shcl.go:7860`, `:7865`, `:7897`, `:7947-7975`, `:6736`; `shcl.py:4172`, `:4177`, `:4203`, `:4241-4259`, `:5722`; `shcl.h:5959`, `:5964`, `:5803`, `:5457`.
-		- Origin: `30120bc` (2026-07-23). 20260909 item 18 routed every document field name through `diag_name` and missed these schema-text sites; V005 and V006 were reworded in `544b345` (2026-09-17) and kept the raw path. Confirmed.
-		- Against: 20260909 item 18's fix note.
-		- Opened: 20260918-133258
-
 	- 🔘 Item 15: the E014 column is short by the blank run after the indent when that run holds a carriage return.
 		- Reproduced in all four. For the line CR, two spaces, `b[c: 2`, the `[` is at byte 5 and all four print "at column 2".
 		- Cause: the column is indent plus fault plus one and leaves out the blank run. The nearby test for a spaced name counts it.
@@ -564,6 +556,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a block in `mem_bounds.c` with a 1 MB ceiling on everything the document and its probe hold. It fails on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-155114
+
+	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
+		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
+		- Cause: these print the schema path or type raw. V097 already escapes the same path.
+		- Sites: `lib.rs:7606`, `:7617`, `:7657`, `:7681-7866`, `:6530`; `shcl.go:7860`, `:7865`, `:7897`, `:7947-7975`, `:6736`; `shcl.py:4172`, `:4177`, `:4203`, `:4241-4259`, `:5722`; `shcl.h:5959`, `:5964`, `:5803`, `:5457`.
+		- Origin: `30120bc` (2026-07-23). 20260909 item 18 routed every document field name through `diag_name` and missed these schema-text sites; V005 and V006 were reworded in `544b345` (2026-09-17) and kept the raw path. Confirmed.
+		- Against: 20260909 item 18's fix note.
+		- Fixed: one helper per binding spells schema text for a diagnostic, with a line break written `\n` and nothing else changed: `schema_text` in Rust and C, `schemaText` in Go, `_schema_text` in Python. V002 to V007, V091 and V093 go through it, and so do the V097 messages and the generator's comment lines, which had their own copies of the same escape. C's `g_escape_nl` became `schema_text`.
+		- Sweep: V093, "bad schema path", printed its path raw too and was not in the review. V090, V094 and V095 already go through `diag_name`, and V092 names a fixed key.
+		- Pinned by: `cli-regress.bash` rows `schema-text-v002` to `schema-text-v007`, `schema-text-v091` and `schema-text-v093`. All eight fail in all four on the old code.
+		- Opened: 20260918-133258
+		- Closed: 20260918-155459
 
 - Code review 20260909:
 

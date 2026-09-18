@@ -84,6 +84,11 @@ printf 'a:\n\t"\303\251" x\n' > "${tmpDir}/colbytes.shcl"
 printf 'field: ns\n\ttype: int-array\n\tmax: 10\nfield: fs\n\ttype: float-array\n\tmin: 1.0\n' > "${tmpDir}/range.shcl"
 printf 'ns: 5, 20, 3\nfs: 2.0, 0.5, 4.0\n' > "${tmpDir}/outofrange.shcl"
 printf '"x.y": 1\n' > "${tmpDir}/dotname.shcl"
+## Schema paths and a type carrying a line break. Every code that names schema
+## text printed it raw, so one diagnostic arrived as two stderr lines.
+printf 'field: "a.\\"x\\ny\\""\n\trequired: yes\nfield: "b.\\"x\\ny\\""\n\ttype: int\n\tmin: 5\n\tmax: 6\n\tallowed: 5, 6, 1\n\trepeat: 3\nfield: "c.\\"x\\ny\\""\n\ttype: bool\n' > "${tmpDir}/nlschema.shcl"
+printf 'b:\n\t"x\\ny": 9\n\t"x\\ny": 1\nc:\n\t"x\\ny": maybe\n' > "${tmpDir}/nldoc.shcl"
+printf 'field: k\n\ttype: "in\\nt"\nfield: "d.\\"x\\ny\\"."\n' > "${tmpDir}/nlfault.shcl"
 printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 ## A directory a write cannot create a temp file in. The phase is worth naming -
 ## it is the difference between "fix the file" and "fix its directory" - and the
@@ -213,7 +218,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
-##	carrying a dot and a schema that declares it as nesting, %CB% a malformed
+##	carrying a dot and a schema that declares it as nesting, %SL%/%SM% schema
+##	paths and a type carrying a line break, valid and faulted, and %DL% a
+##	document for them, %CB% a malformed
 ##	line indented and behind a non-ASCII name, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
@@ -336,6 +343,15 @@ rows=(
 	## three stderr lines, and a flat `x.y` printed the same as `x` nesting `y`.
 	'diag-name-line-break|check %NB%|-|0|line 2: Hint: H001\nok (1 diagnostic(s))\n|^line 2: Hint: H001 ."a\\nb". repeats'
 	'diag-name-dotted|check --schema=%SN% %DN%|-|6|line 1: Error: V001\nfailed: 1 diagnostic(s), 1 error(s)\n|unknown field ."x\.y".'
+	## 20260918 item 14: the same for schema text, which every code below printed raw.
+	'schema-text-v002|check --schema=%SL% %DL%|-|6|-|V002 required path missing: a\."x\\ny"$'
+	'schema-text-v003|check --schema=%SL% %DL%|-|6|-|V003 wrong type at .c\."x\\ny".: value is not a valid bool$'
+	'schema-text-v004|check --schema=%SL% %DL%|-|6|-|V004 value not allowed at .b\."x\\ny".: 9$'
+	'schema-text-v005|check --schema=%SL% %DL%|-|6|-|V005 value below min 5 at .b\."x\\ny".: 1$'
+	'schema-text-v006|check --schema=%SL% %DL%|-|6|-|V006 value above max 6 at .b\."x\\ny".: 9$'
+	'schema-text-v007|check --schema=%SL% %DL%|-|6|-|V007 instance count out of bounds at .b\."x\\ny".: 2 not in 3\.\.3$'
+	'schema-text-v091|check --schema=%SM% %DL%|-|6|-|V091 unknown schema type .in\\nt.$'
+	'schema-text-v093|check --schema=%SM% %DL%|-|6|-|V093 bad schema path: d\."x\\ny"\.$'
 	'bracket-array-check|check %BA%|-|6|line 1: Error: E019\nfailed: 1 diagnostic(s), 1 error(s)\n|-'
 	'bracket-array-write-kept|fmt --write %BA%|-|0||-'
 	'sugar-check|check %W%|-|6|line 1: Error: E019\nline 2: Error: E018\nfailed: 2 diagnostic(s), 2 error(s)\n|-'
@@ -561,6 +577,9 @@ for row in "${rows[@]}"; do
 	argv="${argv//%NB%/${tmpDir}/nbname.shcl}"
 	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"
+	argv="${argv//%SL%/${tmpDir}/nlschema.shcl}"
+	argv="${argv//%SM%/${tmpDir}/nlfault.shcl}"
+	argv="${argv//%DL%/${tmpDir}/nldoc.shcl}"
 	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
 	argv="${argv//%SG%/${tmpDir}/range.shcl}"
 	argv="${argv//%DG%/${tmpDir}/outofrange.shcl}"

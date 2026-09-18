@@ -1204,6 +1204,13 @@ fn one_line(s: &str) -> String {
 		.replace('\t', "\\t")
 }
 
+/// Schema text for a diagnostic or a generated comment: a path or a type as the
+/// schema wrote it, with a line break spelled `\n`, so one diagnostic stays one
+/// line. Only the break is escaped, so a path reads the way it was written.
+fn schema_text(s: &str) -> String {
+	s.replace('\n', "\\n")
+}
+
 /// Escape processing (string reads): \t \n \\ \" \'; unknown escapes stay literal.
 fn apply_escapes(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
@@ -6530,7 +6537,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 				faults,
 				node.line,
 				"V093",
-				format!("bad schema path: {}", path),
+				format!("bad schema path: {}", schema_text(&path)),
 			);
 			return None;
 		}
@@ -6583,7 +6590,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 						faults,
 						kid.line,
 						"V091",
-						format!("unknown schema type '{}'", t),
+						format!("unknown schema type '{}'", schema_text(&t)),
 					);
 				}
 				None => vdiag(
@@ -7103,7 +7110,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 			code: "V097",
 			message: format!(
 				"required path cannot be generated: {} ({})",
-				c.path.replace('\n', "\\n"),
+				schema_text(&c.path),
 				why_unwritable(c)
 			),
 		})
@@ -7124,7 +7131,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	for (i, c) in cons.iter().enumerate() {
 		let tyname = c.ty.clone().unwrap_or_else(|| "any".to_string());
 		if unwritable(c) || (has_wild(c) && !fill[i]) {
-			wild.push((c.path.replace('\n', "\\n"), tyname));
+			wild.push((schema_text(&c.path), tyname));
 			continue;
 		}
 		// A filled wildcard emits in dotted form, targeting the materialized
@@ -7176,7 +7183,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		block.push_str("## ");
 		// The annotation is a comment: a newline smuggled in via an allowed
 		// string value must not break out of it.
-		block.push_str(&gen_annotation(c, &tyname).replace('\n', "\\n"));
+		block.push_str(&schema_text(&gen_annotation(c, &tyname)));
 		block.push('\n');
 		let prefix = if must_exist(c) { "" } else { "# " };
 		match &c.default_text {
@@ -7312,7 +7319,7 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 				code: "V097",
 				message: format!(
 					"generated value fails the schema that produced it: default does not name the instance its path selects: {}",
-					cons[*i].path.replace('\n', "\\n")
+					schema_text(&cons[*i].path)
 				),
 			});
 			continue;
@@ -7498,7 +7505,7 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if stack.iter().any(|x| x == fr) || stack.len() >= MAX_DEPTH {
-					cuts.push((path.replace('\n', "\\n"), fr.clone()));
+					cuts.push((schema_text(&path), fr.clone()));
 				} else if let Some(fcs) = def.frags.get(fr) {
 					stack.push(fr.clone());
 					go(fcs, def, Some((&path, &segs)), stack, out, cuts);
@@ -7675,7 +7682,7 @@ impl Document {
 					out,
 					*anchor,
 					"V002",
-					format!("required path missing: {}", c.path),
+					format!("required path missing: {}", schema_text(&c.path)),
 				);
 			}
 			if let Some((lo, hi)) = c.repeat {
@@ -7687,7 +7694,10 @@ impl Document {
 						"V007",
 						format!(
 							"instance count out of bounds at '{}': {} not in {}..{}",
-							c.path, n, lo, hi
+							schema_text(&c.path),
+							n,
+							lo,
+							hi
 						),
 					);
 				}
@@ -7727,7 +7737,7 @@ impl Document {
 				"V003",
 				format!(
 					"wrong type at '{}': value is not a valid {}",
-					c.path,
+					schema_text(&c.path),
 					kind.unwrap_or("string")
 				),
 			);
@@ -7750,7 +7760,11 @@ impl Document {
 						out,
 						line,
 						"V004",
-						format!("value not allowed at '{}': {}", c.path, one_line(content)),
+						format!(
+							"value not allowed at '{}': {}",
+							schema_text(&c.path),
+							one_line(content)
+						),
 					);
 				}
 			}
@@ -7784,7 +7798,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7799,7 +7813,7 @@ impl Document {
 								format!(
 									"value below min {} at '{}': {}",
 									lo,
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7814,7 +7828,7 @@ impl Document {
 								format!(
 									"value above max {} at '{}': {}",
 									hi,
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7838,7 +7852,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7853,7 +7867,7 @@ impl Document {
 								format!(
 									"value below min {} at '{}': {}",
 									format_f64(lo),
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7868,7 +7882,7 @@ impl Document {
 								format!(
 									"value above max {} at '{}': {}",
 									format_f64(hi),
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7892,7 +7906,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7916,7 +7930,7 @@ impl Document {
 								"V004",
 								format!(
 									"value not allowed at '{}': {}",
-									c.path,
+									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
 							);
@@ -7935,7 +7949,11 @@ impl Document {
 									out,
 									line,
 									"V004",
-									format!("value not allowed at '{}': {}", c.path, one_line(&b)),
+									format!(
+										"value not allowed at '{}': {}",
+										schema_text(&c.path),
+										one_line(&b)
+									),
 								);
 							}
 						}

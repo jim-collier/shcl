@@ -5417,6 +5417,20 @@ static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, const char *code
 	ShclVecDiag_push(a, out, dg);
 }
 static ShclStr v_msgz(ShclArena *a, const char *z) { ShclStr s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
+/* Schema text for a diagnostic or a generated comment: a path or a type as the
+   schema wrote it, with a line break spelled `\n`, so one diagnostic stays one
+   line. Only the break is escaped, so a path reads the way it was written. */
+static ShclStr schema_text(ShclArena *a, ShclStr s) {
+	int has = 0;
+	for (size_t k = 0; k < s.n; k++) if (s.p[k] == '\n') { has = 1; break; }
+	if (!has) return s;
+	ShclSB b = {0, 0, 0};
+	for (size_t k = 0; k < s.n; k++) {
+		if (s.p[k] == '\n') sb_puts(a, &b, "\\n");
+		else sb_putc(a, &b, s.p[k]);
+	}
+	return sb_S(&b);
+}
 static ShclStr v_msg3(ShclArena *a, const char *pre, ShclStr mid, const char *post) {
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, pre); sb_putS(a, &s, mid); sb_puts(a, &s, post);
@@ -5496,7 +5510,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 	}
 	ShclPathScan ps = scan_lookup(a, path);
 	if (!ps.ok || ps.has_value) {
-		v_diag(a, faults, node->line, "V093", v_msg3(a, "bad schema path: ", path, ""));
+		v_diag(a, faults, node->line, "V093", v_msg3(a, "bad schema path: ", schema_text(a, path), ""));
 		return 0;
 	}
 	ShclVCons c; memset(&c, 0, sizeof c);
@@ -5521,7 +5535,7 @@ static int v_parse_field(ShclArena *a, shcl_doc *schema, size_t f, ShclVecDiag *
 					if (c.ty) v_diag(a, faults, kid->line, "V092", v_msg_key(a, "type"));
 					else c.ty = canon;
 				} else {
-					v_diag(a, faults, kid->line, "V091", v_msg3(a, "unknown schema type '", low, "'"));
+					v_diag(a, faults, kid->line, "V091", v_msg3(a, "unknown schema type '", schema_text(a, low), "'"));
 				}
 			} else {
 				v_diag(a, faults, kid->line, "V092", v_msg_key(a, "type"));
@@ -5867,7 +5881,7 @@ static void v_contexts(ShclArena *a, shcl_doc *d, const size_t *start, size_t ns
 
 static void v_wrong_type(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c) {
 	ShclSB s = {0, 0, 0};
-	sb_puts(a, &s, "wrong type at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, "wrong type at '"); sb_putS(a, &s, schema_text(a, c->path));
 	sb_puts(a, &s, "': value is not a valid "); sb_puts(a, &s, c->ty ? c->ty : "string");
 	v_diag(a, out, line, "V003", sb_S(&s));
 }
@@ -5890,7 +5904,7 @@ static ShclStr v_one_line(ShclArena *a, ShclStr t) {
 }
 static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, ShclStr text) {
 	ShclSB s = {0, 0, 0};
-	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, "value not allowed at '"); sb_putS(a, &s, schema_text(a, c->path));
 	sb_puts(a, &s, "': "); sb_putS(a, &s, v_one_line(a, text));
 	v_diag(a, out, line, "V004", sb_S(&s));
 }
@@ -5900,7 +5914,7 @@ static void v_not_allowed(ShclArena *a, ShclVecDiag *out, size_t line, const Shc
 static void v_out_of_range(ShclArena *a, ShclVecDiag *out, size_t line, const ShclVCons *c, const char *code, const char *rel, ShclStr bound, ShclStr text) {
 	ShclSB s = {0, 0, 0};
 	sb_puts(a, &s, "value "); sb_puts(a, &s, rel); sb_putS(a, &s, bound);
-	sb_puts(a, &s, " at '"); sb_putS(a, &s, c->path);
+	sb_puts(a, &s, " at '"); sb_putS(a, &s, schema_text(a, c->path));
 	sb_puts(a, &s, "': "); sb_putS(a, &s, v_one_line(a, text));
 	v_diag(a, out, line, code, sb_S(&s));
 }
@@ -6023,12 +6037,12 @@ static void v_check_from(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCo
 	for (size_t i = 0; i < ctxs.len; i++) {
 		ShclVCtx *ctx = &ctxs.data[i];
 		if (c->required && ctx->found.len == 0)
-			v_diag(a, out, ctx->anchor, "V002", v_msg3(a, "required path missing: ", c->path, ""));
+			v_diag(a, out, ctx->anchor, "V002", v_msg3(a, "required path missing: ", schema_text(a, c->path), ""));
 		if (c->has_repeat) {
 			uint64_t n = (uint64_t)ctx->found.len;
 			if (n < c->rep_lo || n > c->rep_hi) {
 				ShclSB s = {0, 0, 0};
-				sb_puts(a, &s, "instance count out of bounds at '"); sb_putS(a, &s, c->path);
+				sb_puts(a, &s, "instance count out of bounds at '"); sb_putS(a, &s, schema_text(a, c->path));
 				sb_puts(a, &s, "': "); sb_put_u64(a, &s, n);
 				sb_puts(a, &s, " not in "); sb_put_u64(a, &s, c->rep_lo);
 				sb_puts(a, &s, ".."); sb_put_u64(a, &s, c->rep_hi);
@@ -7130,19 +7144,6 @@ static int g_path_has_nl(const ShclVCons *c) {
 	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
 	return 0;
 }
-// s with every '\n' escaped to backslash-n (comments and annotations must stay
-// one line no matter what an allowed value smuggles in).
-static ShclStr g_escape_nl(ShclArena *a, ShclStr s) {
-	int has = 0;
-	for (size_t k = 0; k < s.n; k++) if (s.p[k] == '\n') { has = 1; break; }
-	if (!has) return s;
-	ShclSB b = {0, 0, 0};
-	for (size_t k = 0; k < s.n; k++) {
-		if (s.p[k] == '\n') sb_puts(a, &b, "\\n");
-		else sb_putc(a, &b, s.p[k]);
-	}
-	return sb_S(&b);
-}
 // A default carrying a literal newline cannot sit on a value line; the quoted
 // escaped spelling reads back to the same string.
 static ShclStr g_default_text(ShclArena *a, ShclStr v) {
@@ -7274,7 +7275,7 @@ static void g_expand_go(ShclArena *a, const ShclVecVCons *list, const ShclVSchem
 			// A chain long enough to outrun the stack, or a mount that
 			// re-enters, stops here and is noted instead of expanded.
 			if (cycling || stack->len >= SHCL_MAX_DEPTH) {
-				ShclVecS_push(a, cut_path, g_escape_nl(a, path));
+				ShclVecS_push(a, cut_path, schema_text(a, path));
 				ShclVecS_push(a, cut_frag, c->inherits);
 			} else {
 				const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
@@ -7415,7 +7416,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		if (!g_cannot_satisfy(c) || !g_unwritable(c) || g_has_wild(c)) continue;
 		ShclSB m = {0, 0, 0};
 		sb_puts(a, &m, "required path cannot be generated: ");
-		sb_putS(a, &m, g_escape_nl(a, c->path));
+		sb_putS(a, &m, schema_text(a, c->path));
 		sb_puts(a, &m, " (");
 		sb_puts(a, &m, g_why_unwritable(c));
 		sb_puts(a, &m, ")");
@@ -7447,7 +7448,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		ShclStr tyname;
 		if (c->ty) { tyname.p = c->ty; tyname.n = strlen(c->ty); } else tyname = s_lit("any");
 		if (g_unwritable(c) || (g_has_wild(c) && !fill[i])) {
-			ShclVecS_push(a, &wild_path, g_escape_nl(a, c->path)); ShclVecS_push(a, &wild_type, tyname);
+			ShclVecS_push(a, &wild_path, schema_text(a, c->path)); ShclVecS_push(a, &wild_type, tyname);
 			continue;
 		}
 		// A filled wildcard emits in dotted form, targeting the materialized
@@ -7492,7 +7493,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 				}
 			}
 		}
-		sb_puts(a, &blk, "## "); sb_putS(a, &blk, g_escape_nl(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
+		sb_puts(a, &blk, "## "); sb_putS(a, &blk, schema_text(a, v_gen_annotation(a, c, tyname))); sb_putc(a, &blk, '\n');
 		ShclSB ln = {0};
 		sb_putS(a, &ln, path);
 		if (c->has_default) { sb_puts(a, &ln, ": "); sb_putS(a, &ln, g_default_text(a, c->default_text)); }
@@ -7650,7 +7651,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 				if (!nfound) {
 					ShclSB m = {0, 0, 0};
 					sb_puts(a, &m, "generated value fails the schema that produced it: default does not name the instance its path selects: ");
-					sb_putS(a, &m, g_escape_nl(a, cc->path));
+					sb_putS(a, &m, schema_text(a, cc->path));
 					push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
 					nbad++;
 				}

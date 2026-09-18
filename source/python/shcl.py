@@ -1225,6 +1225,14 @@ def _one_line(s):
 	return s.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
 
+def _schema_text(s):
+	# Schema text for a diagnostic or a generated comment: a path or a type as
+	# the schema wrote it, with a line break spelled `\n`, so one diagnostic
+	# stays one line. Only the break is escaped, so a path reads the way it was
+	# written.
+	return s.replace("\n", "\\n")
+
+
 def _first_where(xs, pred):
 	# The reference's Iterator::position, so a range diagnostic can name the
 	# value that broke the bound.
@@ -4206,12 +4214,12 @@ class Document:
 			elif job[0] == "ctx":
 				_, c, anchor, found = job
 				if c.required and not found:
-					_vdiag(out, anchor, "V002", f"required path missing: {c.path}")
+					_vdiag(out, anchor, "V002", f"required path missing: {_schema_text(c.path)}")
 				if c.repeat is not None:
 					lo, hi = c.repeat
 					n = len(found)
 					if n < lo or n > hi:
-						_vdiag(out, anchor, "V007", f"instance count out of bounds at '{c.path}': {n} not in {lo}..{hi}")
+						_vdiag(out, anchor, "V007", f"instance count out of bounds at '{_schema_text(c.path)}': {n} not in {lo}..{hi}")
 				for n in reversed(found):
 					stack.append(("node", c, n))
 			else:
@@ -4237,7 +4245,7 @@ class Document:
 		is_array = c.ty is not None and c.ty.endswith("-array")
 
 		def wrong():
-			_vdiag(out, line, "V003", f"wrong type at '{c.path}': value is not a valid {c.ty}")
+			_vdiag(out, line, "V003", f"wrong type at '{_schema_text(c.path)}': value is not a valid {c.ty}")
 
 		if node.value.kind == "empty":
 			# Empty passes everything; required already counted it as present.
@@ -4250,7 +4258,7 @@ class Document:
 				return
 			if c.allowed is not None and c.allowed[0] == "strings":
 				if node.value.content not in c.allowed[1]:
-					_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(node.value.content)}")
+					_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(node.value.content)}")
 			return
 		els = node.value.els
 		if base == "raw":
@@ -4270,16 +4278,16 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "ints":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
+						_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 						break
 			if c.min_i is not None:
 				i = _first_where(vals, lambda v: v < c.min_i)
 				if i >= 0:
-					_vdiag(out, line, "V005", f"value below min {c.min_i} at '{c.path}': {_one_line(els[i].text)}")
+					_vdiag(out, line, "V005", f"value below min {c.min_i} at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 			if c.max_i is not None:
 				i = _first_where(vals, lambda v: v > c.max_i)
 				if i >= 0:
-					_vdiag(out, line, "V006", f"value above max {c.max_i} at '{c.path}': {_one_line(els[i].text)}")
+					_vdiag(out, line, "V006", f"value above max {c.max_i} at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 		elif base == "float":
 			vals = [_parse_float_text(e, self._strictness) for e in els]
 			if any(v is None for v in vals):
@@ -4288,16 +4296,16 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "floats":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
+						_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 						break
 			if c.min_f is not None:
 				i = _first_where(vals, lambda v: v < c.min_f)
 				if i >= 0:
-					_vdiag(out, line, "V005", f"value below min {format_float(c.min_f)} at '{c.path}': {_one_line(els[i].text)}")
+					_vdiag(out, line, "V005", f"value below min {format_float(c.min_f)} at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 			if c.max_f is not None:
 				i = _first_where(vals, lambda v: v > c.max_f)
 				if i >= 0:
-					_vdiag(out, line, "V006", f"value above max {format_float(c.max_f)} at '{c.path}': {_one_line(els[i].text)}")
+					_vdiag(out, line, "V006", f"value above max {format_float(c.max_f)} at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 		elif base == "bool":
 			vals = [_parse_bool_text(e.text, self._strictness) for e in els]
 			if any(v is None for v in vals):
@@ -4306,7 +4314,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "bools":
 				for i, v in enumerate(vals):
 					if v not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
+						_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 						break
 		elif base == "datetime":
 			vals = [parse_datetime(e.text) for e in els]
@@ -4316,7 +4324,7 @@ class Document:
 			if c.allowed is not None and c.allowed[0] == "dates":
 				for i, v in enumerate(vals):
 					if not any(_same_moment(v, a) for a in c.allowed[1]):
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(els[i].text)}")
+						_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(els[i].text)}")
 						break
 		else:
 			# string kind or untyped: every element coerces; only the allowed
@@ -4325,7 +4333,7 @@ class Document:
 				for e in els:
 					s = e.text
 					if s not in c.allowed[1]:
-						_vdiag(out, line, "V004", f"value not allowed at '{c.path}': {_one_line(s)}")
+						_vdiag(out, line, "V004", f"value not allowed at '{_schema_text(c.path)}': {_one_line(s)}")
 						break
 
 	def _v_unknown(self, sdef, out):
@@ -5734,7 +5742,7 @@ def _parse_field(schema, f, faults):
 	except _PathError:
 		segs, value_text = None, None
 	if segs is None or value_text is not None:
-		_vdiag(faults, node.line, "V093", f"bad schema path: {path}")
+		_vdiag(faults, node.line, "V093", f"bad schema path: {_schema_text(path)}")
 		return None
 	c = _Constraint(path, segs)
 	# Deferred so `min: 1` may precede `type: int` in the file.
@@ -5758,7 +5766,7 @@ def _parse_field(schema, f, faults):
 				else:
 					c.ty = t
 			elif t is not None:
-				_vdiag(faults, kid.line, "V091", f"unknown schema type '{t}'")
+				_vdiag(faults, kid.line, "V091", f"unknown schema type '{_schema_text(t)}'")
 			else:
 				_vdiag(faults, kid.line, "V092", "bad schema constraint 'type'")
 		elif kid.name == "required":
@@ -6097,7 +6105,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				0,
 				"V097",
 				"required path cannot be generated: "
-				+ c.path.replace("\n", "\\n")
+				+ _schema_text(c.path)
 				+ " ("
 				+ why_unwritable(c)
 				+ ")",
@@ -6118,7 +6126,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	for i, c in enumerate(cons):
 		tyname = c.ty if c.ty is not None else "any"
 		if unwritable(c) or (has_wild(c) and not fill[i]):
-			wild.append((c.path.replace("\n", "\\n"), tyname))
+			wild.append((_schema_text(c.path), tyname))
 			continue
 		# A filled wildcard emits in dotted form, targeting the materialized
 		# instance - by its value when the materializing line carries one.
@@ -6152,7 +6160,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 				block.append(("## " if line else "##") + line + "\n")
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
-		block.append("## " + _gen_annotation(c, tyname).replace("\n", "\\n") + "\n")
+		block.append("## " + _schema_text(_gen_annotation(c, tyname)) + "\n")
 		prefix = "" if must_exist(c) else "# "
 		if c.default_text is not None:
 			line = f"{path}: {_gen_default_text(c.default_text)}\n"
@@ -6234,7 +6242,7 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		one._v_contexts([ROOT], cons[i].segs, 0, ctxs)
 		nodes = [n for _, f in ctxs for n in f]
 		if not nodes:
-			path = cons[i].path.replace("\n", "\\n")
+			path = _schema_text(cons[i].path)
 			bad.append(Diagnostic(0, Severity.Error, "generated value fails the schema that produced it: default does not name the instance its path selects: " + path, "V097"))
 			continue
 		found: list[Diagnostic] = []
@@ -6391,7 +6399,7 @@ def _expand_mounts(sdef):
 			# A chain long enough to outrun the stack, or a mount that
 			# re-enters, stops here and is noted instead of expanded.
 			if c.inherits in chain or len(chain) >= MAX_DEPTH:
-				cuts.append((path.replace("\n", "\\n"), c.inherits))
+				cuts.append((_schema_text(path), c.inherits))
 			else:
 				fcs = sdef.frags.get(c.inherits)
 				if fcs is not None:
