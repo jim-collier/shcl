@@ -4742,10 +4742,13 @@ static int needs_quotes(ShclStr t) {
 		while (i < t.n) { uint32_t c; size_t l = utf8_decode(t.p, t.n, i, &c); i += l;
 			if (c == ' ' || c == '\t' || c == '\n' || c == ',' || c == ':' || c == '#' || c == '"' || c == '\'' || c == '[' || c == ']') { needs = 1; break; } }
 	}
-	/* Edge whitespace beyond the space/tab above still has to force quotes: the
-	   parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
-	   ideographic space) at either end would not survive the reload. Edges only
-	   - interior whitespace is never trimmed and quoting it would move bytes. */
+	/* Edge whitespace still has to force quotes, for the carriage return: it is
+	   a blank, so a piece ending in one loses it to the reload. Space and tab
+	   are already in the list above. The test is the whole Unicode whitespace
+	   set rather than those three, which only ever adds quoting - the parser
+	   itself trims no wider than is_wsp, so a leading no-break space is
+	   content. Edges only: interior whitespace is never trimmed and quoting it
+	   would move bytes. */
 	if (!needs && t.n) {
 		uint32_t f, l; utf8_decode(t.p, t.n, 0, &f); utf8_last(t, &l);
 		if (is_ws(f) || is_ws(l)) needs = 1;

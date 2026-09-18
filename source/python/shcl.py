@@ -4826,10 +4826,13 @@ def _needs_quotes(t):
 	# isdisjoint iterates the text in C and stops at the first hit; the generator
 	# it replaced made one Python call per character of every element emitted.
 	needs = (not t) or not _RESERVED.isdisjoint(t) or (_fence_open(t) is not None)
-	# Edge whitespace beyond the space/tab in _RESERVED still has to force quotes:
-	# the parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
-	# ideographic space) at either end would not survive the reload. Edges only -
-	# interior whitespace is never trimmed and quoting it would move bytes.
+	# Edge whitespace still has to force quotes, for the carriage return: it is
+	# a blank, so a piece ending in one loses it to the reload. Space and tab
+	# are already in the list above. The test is the whole Unicode whitespace
+	# set rather than those three, which only ever adds quoting - the parser
+	# itself trims no wider than is_wsp, so a leading no-break space is
+	# content. Edges only: interior whitespace is never trimmed and quoting it
+	# would move bytes.
 	if not needs and t and (t[0] in _WS_SET or t[-1] in _WS_SET):
 		needs = True
 	return needs

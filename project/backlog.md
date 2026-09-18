@@ -109,14 +109,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
 		- Opened: 20260909-105700
 
-	- 🔘 Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
-		- Both are cases where the CLI knows more than it says.
-		- Opened: 20260909-105800
-
-	- 🔘 Item 60: three refusal messages name neither the half of the operation that failed nor the cause.
-		- The `raw` op's message conflates four causes. `emit_element`'s justifying comment is wrong in all four and contradicts the comment on `is_wsp` in the same file, though the clause it justifies is still needed for the carriage-return reason it omits.
-		- Opened: 20260909-105900
-
 	- 🔘 Item 61: two measurement tools report numbers that are wrong in a knowable direction.
 		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
 		- Opened: 20260909-110000
@@ -3463,6 +3455,23 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
+		- Both are cases where the CLI knows more than it says.
+		- Fixed: an option in front of the subcommand that is a real option now reads `option --schema goes after the subcommand`. It used to be called unknown and then handed its own spelling back as a did-you-mean.
+		- Fixed: a value option in space form records the word it took when that word was the last on the line. With no positional left, the refusal names the option, the word it ate and the `=VALUE` spelling. `init` is exempt, since it is the one command that wants no FILE.
+		- Pinned by: `cli-regress.bash` rows `opt-before-cmd`, `unknown-opt-before-cmd`, `opt-space-ate-file` and `opt-space-init-ok`. The first and third were watched to fail against the old code; the last holds the space form that has to keep working.
+		- Opened: 20260909-105800
+		- Closed: 20260917-233000
+
+	- ✅ Item 60: three refusal messages name neither the half of the operation that failed nor the cause.
+		- The `raw` op's message conflates four causes. `emit_element`'s justifying comment is wrong in all four and contradicts the comment on `is_wsp` in the same file, though the clause it justifies is still needed for the carriage-return reason it omits.
+		- Fixed: the `raw` op's refusal names the half and its causes. Which half is asked of the library rather than re-derived in the CLI - an empty info string always reads back, so a write that still fails with one is the body's fault - through `raw_refusal` in each of the four.
+		- Fixed: the `needs_quotes` comment in all four. It claimed the parser trims the whole Unicode whitespace set, which `is_wsp`'s own comment three screens up contradicts. The real reason is the carriage return, which is a blank and is trimmed; the wide test stays, since it only ever adds quoting.
+		- Note: the fence-close cause is all but unreachable, because `choose_fence` always picks a fence longer than any run in the body. It is named anyway, since a body line ending in a carriage return can reach it.
+		- Pinned by: `cli-regress.bash` rows `ops-raw-bad-info` and `ops-raw-bad-body`, both watched to fail against the one old message.
+		- Opened: 20260909-105900
+		- Closed: 20260917-233000
 
 	- ✅ Item 55: the spec says nothing about `migrate`.
 		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.

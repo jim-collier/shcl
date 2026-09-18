@@ -382,7 +382,7 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "check", "no_banner", "schema", "layers", "sets", "args", "seen")
+	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "check", "no_banner", "schema", "layers", "sets", "args", "seen", "swallowed")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
@@ -405,6 +405,9 @@ class _Opts:
 		self.sets = []           # final override layer: _SetOpt, in the order given
 		self.args = []           # positional: FILE [PATH]
 		self.seen = []           # canonical names of options given, for per-command validation
+		# A value option in space form that took the LAST word on the line. That
+		# word is usually the FILE, and the usage line alone never says so.
+		self.swallowed = None    # (option, value)
 
 
 def _ascii_lower(s):
@@ -601,6 +604,8 @@ def parse_opts(argv):
 			if i >= len(argv):
 				raise ValueError(f"missing value for {a} (try {a}=VALUE)")
 			_set_value_opt(o, a, argv[i])
+			if i + 1 == len(argv):
+				o.swallowed = (a, argv[i])
 		elif a.startswith("--default="):
 			_set_value_opt(o, "--default", a[len("--default="):])
 		elif a.startswith("--on-bad="):
@@ -1491,10 +1496,23 @@ def apply_op(doc, line):
 		elif op == "comment":
 			unwritable = "the comment text is not one line"
 		elif op in ("raw", "raw-default"):
-			unwritable = "the info string or the block body has no fence spelling"
+			unwritable = _raw_refusal(_unescape_ops(get(3)))
 		else:
 			unwritable = "the value has no spelling that reads back"
 		raise ValueError(f"cannot write {path}: {describe_refusal(doc, path, unwritable)}")
+
+
+def _raw_refusal(content):
+	"""Which half of a `raw` op had no spelling, and why. The half is asked of the
+
+	library rather than worked out here: an empty info string always reads back,
+	so a write that still fails with one is the body's fault. Re-deriving the
+	rule in the CLI is how the two copies drift.
+	"""
+	probe = shcl.Document.new()
+	if not probe.set_raw("p", content, ""):
+		return "the block body has no spelling that reads back: a line ending in a carriage return is trimmed on the way back in, and a line spelling the closing fence would end the block early"
+	return "the info string has no spelling that reads back: a '#' in it opens a comment, and a line break has no inline spelling"
 
 
 def do_set(o):
@@ -1809,7 +1827,14 @@ def run(argv):
 		# Before the options are judged, so a typo in the command is reported
 		# as that and not as an option the wrong command cannot take.
 		if cmd.startswith("-") and cmd != "--":
-			sys.stderr.write(f"unknown option: {cmd}{suggest(option_names(), cmd.split('=')[0])} (see --help)\n")
+			name = cmd.split("=")[0]
+			if name in option_names():
+				# It is a real option, just in front of the subcommand. Calling
+				# it unknown and then suggesting the same spelling back says
+				# nothing about what is actually wrong.
+				sys.stderr.write(f"option {name} goes after the subcommand (see --help)\n")
+			else:
+				sys.stderr.write(f"unknown option: {cmd}{suggest(option_names(), name)} (see --help)\n")
 		else:
 			sys.stderr.write(f"unknown command: {cmd}{suggest(command_names(), cmd)} (see --help)\n")
 		return 1
@@ -1817,6 +1842,13 @@ def run(argv):
 		o = parse_opts(argv[1:])
 	except ValueError as e:
 		sys.stderr.write(str(e) + "\n")
+		return 1
+	# A value option in space form takes the next word, so `check --schema FILE`
+	# leaves no FILE and the usage line alone never says where it went. init is
+	# the one command that wants no positional of its own.
+	if cmd != "init" and not o.args and o.swallowed is not None:
+		name, value = o.swallowed
+		sys.stderr.write(f"option {name} took '{value}' as its value, so no FILE is left; spell it {name}=VALUE\n")
 		return 1
 	code = check_opts(cmd, o)
 	if code is not None:

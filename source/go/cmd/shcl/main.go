@@ -527,6 +527,10 @@ type opts struct {
 	sets        []setOpt // final override layer, in the order given
 	args        []string // positional: FILE [PATH]
 	seen        []string // canonical names of options given, for per-command validation
+	// A value option in space form that took the LAST word on the line. That
+	// word is usually the FILE, and the usage line alone never says so.
+	swallowedOpt   string
+	swallowedValue string
 }
 
 // askedFor: did the command line ask for one of the informational outputs? Only
@@ -802,6 +806,9 @@ func parseOpts(argv []string) (*opts, error) {
 			}
 			if err := setValueOpt(o, a, argv[i]); err != nil {
 				return nil, err
+			}
+			if i+1 == len(argv) {
+				o.swallowedOpt, o.swallowedValue = a, argv[i]
 			}
 		case strings.HasPrefix(a, "--layer="):
 			if err := setValueOpt(o, "--layer", a[len("--layer="):]); err != nil {
@@ -2138,11 +2145,23 @@ func applyOp(doc *shcl.Document, line string) error {
 		case "comment":
 			unwritable = "the comment text is not one line"
 		case "raw", "raw-default":
-			unwritable = "the info string or the block body has no fence spelling"
+			unwritable = rawRefusal(unescapeOps(get(3)))
 		}
 		return fmt.Errorf("cannot write %s: %s", path, describeRefusal(doc, path, unwritable))
 	}
 	return nil
+}
+
+// rawRefusal: Which half of a `raw` op had no spelling, and why. The half is asked of the
+// library rather than worked out here: an empty info string always reads back,
+// so a write that still fails with one is the body's fault. Re-deriving the
+// rule in the CLI is how the two copies drift.
+func rawRefusal(content string) string {
+	probe := shcl.New()
+	if !probe.SetRaw("p", content, "") {
+		return "the block body has no spelling that reads back: a line ending in a carriage return is trimmed on the way back in, and a line spelling the closing fence would end the block early"
+	}
+	return "the info string has no spelling that reads back: a '#' in it opens a comment, and a line break has no inline spelling"
 }
 
 func doSet(o *opts) int {
@@ -2542,8 +2561,23 @@ func run() int {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if strings.HasPrefix(cmd, "-") && cmd != "--" {
-			fmt.Fprintf(os.Stderr, "unknown option: %s%s (see --help)\n",
-				cmd, suggest(optionNames(), strings.SplitN(cmd, "=", 2)[0]))
+			name := strings.SplitN(cmd, "=", 2)[0]
+			isOpt := false
+			for _, n := range optionNames() {
+				if n == name {
+					isOpt = true
+					break
+				}
+			}
+			if isOpt {
+				// It is a real option, just in front of the subcommand. Calling
+				// it unknown and then suggesting the same spelling back says
+				// nothing about what is actually wrong.
+				fmt.Fprintf(os.Stderr, "option %s goes after the subcommand (see --help)\n", name)
+			} else {
+				fmt.Fprintf(os.Stderr, "unknown option: %s%s (see --help)\n",
+					cmd, suggest(optionNames(), name))
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "unknown command: %s%s (see --help)\n",
 				cmd, suggest(commandNames(), cmd))
@@ -2553,6 +2587,14 @@ func run() int {
 	o, err := parseOpts(argv[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. init is
+	// the one command that wants no positional of its own.
+	if cmd != "init" && len(o.args) == 0 && o.swallowedOpt != "" {
+		fmt.Fprintf(os.Stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
+			o.swallowedOpt, o.swallowedValue, o.swallowedOpt)
 		return 1
 	}
 	if code := checkOpts(argv[0], o); code != 0 {

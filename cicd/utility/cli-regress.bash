@@ -224,6 +224,14 @@ rows=(
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
 	## 20260830 round: an unknown command is judged before its options.
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
+	## 20260909 item 59: a real option in front of the subcommand was called
+	## unknown and then handed its own spelling back as a suggestion, and a value
+	## option in space form that ate the filename got only the usage line.
+	'opt-before-cmd|--schema=x check %F%|-|1||^option --schema goes after the subcommand'
+	'unknown-opt-before-cmd|--nope check %F%|-|1||^unknown option: --nope'
+	'opt-space-ate-file|check --schema %F%|-|1||took .* as its value, so no FILE is left'
+	## init takes no FILE, so the space form has to keep working there.
+	'opt-space-init-ok|init --no-banner --schema %S2%|-|0|-|^$'
 	## 20260829 item 10: Python recursed a frame per level in three places.
 	'deep-nesting|fmt %P%|-|0|-|^$'
 	## 20260830b item 4: init emitted a config that fails the schema that made it.
@@ -390,6 +398,10 @@ rows=(
 	## 20260902 item 41: extra tab-separated fields were dropped, so a raw whose
 	## content held a literal tab lost everything after it at exit 0.
 	'ops-extra-fields-raw|set %F%|raw\tk\t\tbody\twith\ttabs\n|1|-|raw takes 4 tab-separated'
+	## 20260909 item 60: one message covered four causes across both halves of
+	## the op, so a refusal never said which half to look at.
+	'ops-raw-bad-info|set %F%|raw\tk\tc#x\tbody\n|1|-|the info string has no spelling that reads back'
+	'ops-raw-bad-body|set %F%|raw\tk\tc\tbody\r\\nmore\n|1|-|the block body has no spelling that reads back'
 	'ops-extra-fields-int|set %F%|int\tk\t1\textra\n|1|-|int takes 3 tab-separated'
 	'ops-array-takes-any|set %F%|int-array\tk\t1\t2\t3\n|0|a: 1\n\nk: 1, 2, 3\n|-'
 	## 20260902 item 41: --default and --on-bad=error each overwrote the other's

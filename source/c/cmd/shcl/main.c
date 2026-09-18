@@ -232,6 +232,9 @@ typedef struct {
 	SetOpt *sets; int nsets;          // final override layer, in the order given (unbounded)
 	const char **args; int nargs;     // positional: FILE [PATH]
 	const char *seen[16]; int nseen;  // distinct canonical option names, for per-command validation
+	// A value option in space form that took the LAST word on the line. That
+	// word is usually the FILE, and the usage line alone never says so.
+	const char *swallowed_opt, *swallowed_value;   // NULL if none
 } Opts;
 
 // A file or stream that could not be read or written. Its own code since a
@@ -992,6 +995,22 @@ static size_t unescape_ops(const char *in, size_t inlen, char *out) {
 	return w;
 }
 
+// Which half of a `raw` op had no spelling, and why. The half is asked of the
+// library rather than worked out here: an empty info string always reads back,
+// so a write that still fails with one is the body's fault. Re-deriving the
+// rule in the CLI is how the two copies drift.
+static const char *raw_refusal(const char *content, size_t contn) {
+	char *b = (char *)xrealloc(NULL, contn ? contn : 1);
+	size_t m = unescape_ops(content, contn, b);
+	shcl_doc *probe = shcl_new();
+	int body_ok = probe && shcl_set_raw(probe, "p", 1, b, m, "", 0);
+	shcl_free(probe);
+	free(b);
+	return body_ok ? "the info string has no spelling that reads back: a '#' in it opens a comment, and a line break has no inline spelling"
+	               : "the block body has no spelling that reads back: a line ending in a carriage return is trimmed on the way back in, and a line spelling the closing fence would end the block early";
+}
+
+
 // Reference-equivalent op-value gates: the same grammar Rust's i64/f64 FromStr
 // accepts, checked before conversion, so `abc`, `0x10`, `1_0`, padded or
 // non-ASCII digits, and out-of-range magnitudes are rejected instead of being
@@ -1141,7 +1160,7 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 		const char *unwritable = "the value has no spelling that reads back";
 		if (OP("literal")) unwritable = "the value text is not one value";
 		else if (OP("comment")) unwritable = "the comment text is not one line";
-		else if (OP("raw")) unwritable = "the info string or the block body has no fence spelling";
+		else if (OP("raw")) unwritable = raw_refusal(nf > 3 ? fp[3] : "", nf > 3 ? fn[3] : 0);
 		op_err(lineno, "cannot write %.*s: %s", (int)plen, path, describe_refusal(d, path, plen, unwritable));
 		rc = 1;
 	}
@@ -1486,6 +1505,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
+	o->swallowed_opt = o->swallowed_value = NULL;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
 	for (int i = from; i < argc; i++) {
 		const char *a = argv[i];
@@ -1507,6 +1527,7 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 		else if (!strcmp(a, "--default") || !strcmp(a, "--on-bad") || !strcmp(a, "--strictness") || !strcmp(a, "--schema") || !strcmp(a, "--layer") || !strcmp(a, "--set") || !strcmp(a, "--set-literal") || !strcmp(a, "--set-default") || !strcmp(a, "--set-literal-default") || !strcmp(a, "--remove")) {
 			if (i + 1 >= argc) { fprintf(stderr, "missing value for %s (try %s=VALUE)\n", a, a); return 1; }
 			if (set_value_opt(o, a, argv[++i])) return 1;
+			if (i + 1 == argc) { o->swallowed_opt = a; o->swallowed_value = argv[i]; }
 		}
 		else if (!strncmp(a, "--default=", 10)) { if (set_value_opt(o, "--default", a + 10)) return 1; }
 		else if (!strncmp(a, "--on-bad=", 9)) { if (set_value_opt(o, "--on-bad", a + 9)) return 1; }
@@ -2064,8 +2085,17 @@ static int cli_main(int argc, char **argv) {
 			memcpy(name, cmd, len);
 			name[len] = '\0';
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
-			suggest(hint, sizeof hint, cands, n, name);
-			fprintf(stderr, "unknown option: %s%s (see --help)\n", cmd, hint);
+			int is_opt = 0;
+			for (size_t k = 0; k < n; k++) if (!strcmp(cands[k], name)) { is_opt = 1; break; }
+			if (is_opt) {
+				// It is a real option, just in front of the subcommand. Calling
+				// it unknown and then suggesting the same spelling back says
+				// nothing about what is actually wrong.
+				fprintf(stderr, "option %s goes after the subcommand (see --help)\n", name);
+			} else {
+				suggest(hint, sizeof hint, cands, n, name);
+				fprintf(stderr, "unknown option: %s%s (see --help)\n", cmd, hint);
+			}
 		} else {
 			size_t n = command_names(cands, sizeof cands / sizeof cands[0]);
 			suggest(hint, sizeof hint, cands, n, cmd);
@@ -2075,6 +2105,15 @@ static int cli_main(int argc, char **argv) {
 	}
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. init is
+	// the one command that wants no positional of its own.
+	if (strcmp(cmd, "init") != 0 && o.nargs == 0 && o.swallowed_opt) {
+		fprintf(stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
+			o.swallowed_opt, o.swallowed_value, o.swallowed_opt);
+		opts_free(&o);
+		return 1;
+	}
 	int rc;
 	if (check_opts(cmd, &o)) rc = 1;
 	else if (!strcmp(cmd, "get")) rc = do_get(&o);

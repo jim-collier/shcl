@@ -4050,10 +4050,13 @@ pub fn suppress_declared_reopens(schema: &Document, diags: &mut Vec<Diagnostic>)
 
 /// Minimal quoting: bare unless a reserved character (or lookalike hazard) forces it.
 fn needs_quotes(t: &str) -> bool {
-	// Edge whitespace beyond the space/tab above still has to force quotes: the
-	// parser trims the full White_Space set, so a bare NBSP (or VT, FF, NEL,
-	// ideographic space) at either end would not survive the reload. Edges only
-	// - interior whitespace is never trimmed and quoting it would move bytes.
+	// Edge whitespace still has to force quotes, for the carriage return: it is
+	// a blank, so a piece ending in one loses it to the reload. Space and tab
+	// are already in the list above. The test is the whole Unicode whitespace
+	// set rather than those three, which only ever adds quoting - the parser
+	// itself trims no wider than is_wsp, so a leading no-break space is
+	// content. Edges only: interior whitespace is never trimmed and quoting it
+	// would move bytes.
 	t.is_empty()
 		|| t.chars().any(|c| {
 			matches!(
