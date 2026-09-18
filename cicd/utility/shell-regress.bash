@@ -936,6 +936,45 @@ print(len(sys.path) - len(before))
 PYEOF
 )"
 	[[ "${dups}" == "1" ]] || fBad "pyworker.py load_shcl added ${dups} path entries over two calls, expected 1"
+	## 20260909 item 61: lxml's parser wants bytes where every other loader here
+	## wants text, and the encode used to sit inside the timed parse - about 28%
+	## on a 7 MB document, charged to lxml. A loader's fourth element prepares the
+	## source once, before the clock starts, and the parse must see that.
+	prep="$(python3 - "${worker}" "${tmpDir}/w.shcl" <<'PYEOF'
+import contextlib, io, runpy, sys
+mod = runpy.run_path(sys.argv[1])
+seen = []
+def parse(x):
+	seen.append(x)
+	return x
+mod["ENTRIES"]["probe"] = (lambda: ("v", parse, None, lambda t: ("PREPARED", t)), "x", "x", "x", "x")
+with contextlib.redirect_stdout(io.StringIO()):
+	mod["run"]("probe", sys.argv[2], 2)
+ok = bool(seen) and all(isinstance(x, tuple) and x[0] == "PREPARED" for x in seen)
+print("ok" if ok else "raw")
+PYEOF
+)"
+	[[ "${prep}" == "ok" ]] || fBad "pyworker.py run() hands the parser the file text, not what the loader prepared"
+fi
+
+##	20260909 item 61: the demo captured stdout and stderr separately and stuck
+##	one after the other, so every stderr line landed under every stdout line -
+##	an order no terminal produces. The two share a pipe now.
+gif="${repoDir}/cicd/utility/gen-demo-gif.py"
+if [[ -f "${gif}" ]] && python3 -c 'import PIL' 2>/dev/null; then
+	merged="$(python3 - "${gif}" <<'PYEOF'
+import runpy, sys
+mod = runpy.run_path(sys.argv[1])
+step = {"show": "x", "run": "echo one; echo TWO >&2; echo three"}
+print("|".join(mod["fRunStep"](step, "shcl", "/bin/true")))
+PYEOF
+)"
+	[[ "${merged}" == "one|TWO|three" ]] || fBad "gen-demo-gif.py does not render a step's output in emission order: ${merged}"
+elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+	fBad "the demo output order cannot be checked here, and the gate requires it"
+else
+	echo "shell-regress: skipping the demo output order (no Pillow here)"
+	echo shell-regress >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 
 ##	The completions check against a subcommand that takes no options. One side

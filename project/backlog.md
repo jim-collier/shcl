@@ -109,10 +109,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- A script parsing diagnostics has to know to drop the last line. Sending the summary to stderr, or gating it behind a flag, is the conventional split.
 		- Opened: 20260909-105700
 
-	- 🔘 Item 61: two measurement tools report numbers that are wrong in a knowable direction.
-		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
-		- Opened: 20260909-110000
-
 - 🔘 No UI and UX style guide for the CLI, and README.md points at none.
 	- Note: the CLI's conventions (option spelling, help layout, exit codes, what goes to stdout and what to stderr) are stated piecemeal. A guide at `project/style-guide_ui-ux.md` would write down what the four CLIs already do. Bringing any straggler into line is a separate item.
 	- Opened: 20260914-145320
@@ -3455,6 +3451,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 61: two measurement tools report numbers that are wrong in a knowable direction.
+		- The comparison tool inflates lxml's parse time by about 20%, and the demo gif shows an output order no terminal produces.
+		- Reproduced, 2026-09-17. On a 7.4 MB XML document the comparison worker timed lxml at 0.115 s where the same parse without the encode is 0.090 s, so about 28% of what it reported was work no other loader was charged for. lxml's entry point wants bytes; every other loader here takes the file's text.
+		- Fixed: a loader may hand back a fourth element that turns the file's text into whatever its parser wants. It runs once, before the baseline and before the clock, so neither the time nor the memory figure carries it.
+		- Fixed: the demo runs a step with stderr on the same pipe as stdout. It used to capture the two separately and concatenate, which put every stderr line under every stdout line - the order `set` prints its stdin note in, among others. No current step writes to stderr, so the published gif does not change; the next one that does would have been wrong.
+		- Pinned by: two `shell-regress.bash` checks, both watched to fail. The worker one hands `run()` a loader that marks what it prepared and asserts the parser saw the mark; the demo one runs a step that writes to both streams and asserts the order, skipping out loud where Pillow is absent.
+		- Opened: 20260909-110000
+		- Closed: 20260918-000000
 
 	- ✅ Item 59: "unknown option" is used for an option that exists but is in the wrong position, and a value option in space form that swallowed the filename reports only the generic usage line.
 		- Both are cases where the CLI knows more than it says.

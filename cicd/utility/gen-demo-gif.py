@@ -227,12 +227,16 @@ def fLoadScenario(path: str) -> dict[str, Any]:
 
 
 def fRunStep(step: dict[str, Any], prog: str, binpath: str) -> list[str]:
-	##	Execute the step's command for real; merged stdout+stderr becomes the
-	##	demo output, so notes the program prints on stderr show up too.
+	##	Execute the step's command for real; stderr goes down the same pipe as
+	##	stdout, so notes the program prints on stderr show up where a terminal
+	##	would show them. Capturing the two separately and concatenating put every
+	##	stderr line after every stdout line, which is an order no terminal
+	##	produces - the stdin note `set` prints came out under its own output.
 	cmd = step.get("run", step["show"])
 	cmd = cmd.replace("{bin}", shlex.quote(binpath)).replace("{prog}", shlex.quote(binpath))
 	try:
-		res = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
+		res = subprocess.run(["bash", "-c", cmd], stdout=subprocess.PIPE,
+		                     stderr=subprocess.STDOUT, text=True,
 		                     timeout=30, errors="replace")
 	except subprocess.TimeoutExpired:
 		fSkip(f"command timed out: {cmd}")
@@ -242,7 +246,7 @@ def fRunStep(step: dict[str, Any], prog: str, binpath: str) -> list[str]:
 	expect = step.get("expect_exit", 0)
 	if res.returncode != expect:
 		fSkip(f"step exited {res.returncode}, expected {expect}: {cmd}")
-	out = ANSI_RE.sub("", res.stdout + res.stderr)
+	out = ANSI_RE.sub("", res.stdout)
 	return [ln.expandtabs(8).rstrip() for ln in out.rstrip("\n").split("\n")]
 
 
