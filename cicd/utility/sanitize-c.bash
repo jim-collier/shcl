@@ -8,8 +8,10 @@
 ##		overflow that happens not to change stdout passes every other gate and
 ##		fails here. The test programs run as they are; the CLI is driven the way
 ##		crosscheck.bash drives it, over every dimension the corpus has: fmt,
-##		check, check --schema, the write-ops and bad-ops scripts, the layered
-##		load, init --schema, and every reads.tsv row as the CLI call it names.
+##		check, check --schema, tokens, migrate, the write-ops and bad-ops
+##		scripts, the layered load, init --schema, every reads.tsv row as the CLI
+##		call it names, and the in-place writes - fmt --write, migrate --write,
+##		set --write, and a set --write that creates the file - on copies.
 ##	Syntax:
 ##		sanitize-c.bash [CORPUS_DIR]
 ##		  CORPUS_DIR  conformance corpus root (default project/conformance)
@@ -154,6 +156,24 @@ for caseDir in "${corpus}"/*/; do
 		fCli init "--schema=${caseDir}init-schema.shcl"
 		fCli init --no-banner "--schema=${caseDir}init-schema.shcl"
 	fi
+	## The lexical spans, and a read under the 2.x rules. Both go through code no
+	## other run here reaches.
+	fCli tokens "${input}"
+	fCli migrate "${input}"
+	fCli migrate --check "${input}"
+	## The write path: the temp file, the publish, the ops replay through it, and
+	## the create. Every run above prints and touches nothing, so the whole file
+	## tier was outside this gate. The copies are the gate's own.
+	cp -- "${input}" "${work}/w.shcl"
+	fCli fmt --write "${work}/w.shcl"
+	cp -- "${input}" "${work}/w.shcl"
+	fCli migrate --write --from-2x "${work}/w.shcl"
+	if [[ -f "${caseDir}write.ops" ]]; then
+		cp -- "${input}" "${work}/w.shcl"
+		fCli set --write "${work}/w.shcl" < "${caseDir}write.ops"
+		rm -f "${work}/new.shcl"
+		fCli set --write "${work}/new.shcl" < "${caseDir}write.ops"
+	fi
 	if [[ -f "${caseDir}reads.tsv" ]]; then
 		while IFS= read -r row || [[ -n "$row" ]]; do
 			[[ -z "$row" || "$row" == query$'\t'* ]] && continue
@@ -176,3 +196,5 @@ exit "${rc}"
 ##		  optimized gate had been passing.
 ##		- 2026-08-30 JC: The CLI now covers reads.tsv, init --schema, the layered
 ##		  load and the bad-ops scripts, and the C++ veneer smoke runs too.
+##		- 2026-09-17 JC: tokens, migrate and the four write paths added. The file
+##		  tier had never run under the sanitizers.

@@ -485,6 +485,8 @@ typedef struct { char *text; size_t len; int current; size_t ambiguous; size_t l
 // the same tree; everything the two rule sets agree on comes through as
 // written. from_v2 says the file really is 2.x, which is the only thing that
 // can settle the spellings the two rule sets read differently.
+// An allocation failure inside it frees its own working memory before SHCL_OOM
+// runs, so a hook that longjmps out is not left holding the two arenas.
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2);
 
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
@@ -1874,17 +1876,41 @@ static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating 
 	return sb_S(&out);
 }
 
+/* The two arenas a migration builds in. They sit off the frame so the recovery
+   point below can still reach them: a longjmping SHCL_OOM skips this frame, and
+   an ordinary local is indeterminate by the time the jump lands. */
+typedef struct { ShclArena a, sc; } ShclMigrateOwn;
+
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
-	ShclArena a, sc; memset(&a, 0, sizeof a); memset(&sc, 0, sizeof sc);
+	ShclMigrateOwn *volatile own = (ShclMigrateOwn *)calloc(1, sizeof *own);
+	if (!own) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		/* An allocation failed below. Drop what the two arenas hold - about two
+		   megabytes on a large file - then hand the failure on: the allocation
+		   still failed, so the hook gets its say with nothing left behind. */
+		ShclMigrateOwn *bad = own;
+		arena_free(&bad->a); arena_free(&bad->sc); free(bad);
+		SHCL_OOM();
+		abort();
+	}
+	arena_guard(&own->a, &panic); arena_guard(&own->sc, &panic);
 	ShclStr in; in.p = text ? text : ""; in.n = len;
 	ShclMigrating st; st.from_v2 = from_v2; st.ambiguous = 0; st.lost = 0;
 	shcl_migration m; m.current = 0;
-	ShclStr r = migrate(&a, &sc, in, &st, &m.current);
+	ShclStr r = migrate(&own->a, &own->sc, in, &st, &m.current);
 	m.ambiguous = st.ambiguous; m.lost = st.lost; m.len = r.n;
 	m.text = (char *)malloc(r.n + 1);
-	if (!m.text) { arena_free(&a); arena_free(&sc); SHCL_OOM(); abort(); }
+	if (!m.text) {
+		ShclMigrateOwn *bad = own;
+		arena_free(&bad->a); arena_free(&bad->sc); free(bad);
+		SHCL_OOM(); abort();
+	}
 	memcpy(m.text, r.p, r.n); m.text[r.n] = 0;
-	arena_free(&a); arena_free(&sc);
+	/* The recovery point is this frame's; the arenas go with it, so nothing is
+	   left holding a jmp_buf that has gone out of scope. */
+	ShclMigrateOwn *done = own;
+	arena_free(&done->a); arena_free(&done->sc); free(done);
 	return m;
 }
 

@@ -99,17 +99,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
-	- 🔘 Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
-		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
-		- Note: the recorded rule is that a transient arena armed on a recovery point has to be reachable from it, or the unwind skips its frame.
-		- Opened: 20260909-105000
-
-	- 🔘 Item 52: the C sanitizer gate never runs the commands the last three rounds added.
-		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
-		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
-		- Note: that `mem_bounds.c` half was done with bug item 22.
-		- Opened: 20260909-105100
-
 	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
 		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
 		- Site: `shell-regress.bash:824`.
@@ -3491,6 +3480,24 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
+		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
+		- Note: the recorded rule is that a transient arena armed on a recovery point has to be reachable from it, or the unwind skips its frame.
+		- Fixed: the two arenas live in a small `ShclMigrateOwn` off the frame, reached through a volatile pointer, and `shcl_migrate` arms its own recovery point over them. An allocation failure now lands there, frees both and the owner, then calls `SHCL_OOM` so the hook still gets its unwind with nothing left behind.
+		- Note: the arenas had to leave the frame. An ordinary local is indeterminate once the jump lands, which is the same reason `do_parse` holds its two through volatile pointers.
+		- Pinned by: `oom_hook.c` counts live blocks now and asserts a cut-short migration ends where it started. Watched to fail: with the guards dropped it reports the leak at the first budget.
+		- Opened: 20260909-105000
+		- Closed: 20260917-213000
+
+	- ✅ Item 52: the C sanitizer gate never runs the commands the last three rounds added.
+		- `sanitize-c.bash` runs no `tokens`, no `migrate`, no `--write` and no create. All 920 of those are clean, so this is coverage rather than a live defect - but the next round should not have to establish that again by hand.
+		- Note: `mem_bounds.c` needs the matching change for bug item 22, since its refused-setter test reads only the document arena and makes only path refusals.
+		- Note: that `mem_bounds.c` half was done with bug item 22.
+		- Fixed: `sanitize-c.bash` runs `tokens`, `migrate`, `migrate --check` and the four write paths - `fmt --write`, `migrate --write`, `set --write`, and a `set --write` that creates the file - on its own copies. 2,486 CLI runs where there were 920.
+		- Note: all clean, as the finding predicted. The whole file tier had never run under the sanitizers, which is what this closes.
+		- Opened: 20260909-105100
+		- Closed: 20260917-213000
 
 	- ✅ Item 47: two quadratic shapes remain in the unknown-field sweep, and `check --schema` builds the schema three times.
 		- Measured curves are in `details.md`. The 20260905 fix to the chain matcher holds; these are different shapes.
