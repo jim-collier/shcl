@@ -963,8 +963,22 @@ grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
-for g in check-c-compilers.bash check-locale.bash check-docs.bash package.bash shell-regress.bash cli-regress.bash; do
-	grep -q 'SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+##	The grep is for the expansion, not the name: a history line or a comment
+##	mentioning the flag satisfied the old pattern, so a gate could lose its
+##	guard and stay on the list. -F because the pattern carries braces.
+# shellcheck disable=SC2016  ## the literal expansion is the pattern
+for g in check-c-compilers.bash check-locale.bash check-docs.bash check-readme.bash package.bash shell-regress.bash cli-regress.bash; do
+	grep -qF '${SHCL_GATE_STRICT' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer reads SHCL_GATE_STRICT"
+done
+##	20260909 item 53: the list above was five gates of fourteen, and every skip
+##	the round found was outside it. A hand list drifts, so the rule is derived:
+##	a gate that says it is skipping because a tool is not here has to be able to
+##	call that a failure. Input-shaped skips (crosscheck's NUL cases,
+##	check-migrate's untrimmable documents) are not environment and stay out.
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	grep -qE 'skipping .*\(no ' "${g}" || continue
+	# shellcheck disable=SC2016  ## the literal expansion is the pattern
+	grep -qF '${SHCL_GATE_STRICT' "${g}" || fBad "${g##*/} skips over a missing tool without reading SHCL_GATE_STRICT"
 done
 ##	The same skips outside the gate have to be noted, or a local run that
 ##	skipped one records its tree as though it ran everything. This file is not

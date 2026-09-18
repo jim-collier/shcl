@@ -99,16 +99,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Item 45, and the second half of item 47, are under Future and/or deferred.
 
-	- 🔘 Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
-		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
-		- Site: `shell-regress.bash:824`.
-		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
-		- Opened: 20260909-105200
-
-	- 🔘 Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
-		- Corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed and expects zero diagnostics. Adding the unclosed case is what would have caught bug item 1.
-		- Opened: 20260909-105300
-
 	- 🔘 Item 55: the spec says nothing about `migrate`.
 		- A command that is the only path across a breaking change has no normative description: what it guarantees, what it leaves alone, and what its exit code means.
 		- Opened: 20260909-105400
@@ -3480,6 +3470,25 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Closed: 20260713-065600
 
 - Code review 20260909:
+
+	- ✅ Item 53: `SHCL_GATE_STRICT` is required of five gates out of fourteen.
+		- The flag exists to turn a skip into a failure. Every gate with a confirmed silent skip this round is outside the enforced list.
+		- Site: `shell-regress.bash:824`.
+		- Note: `check-docs.bash` joined the list with bug item 28. `largedoc.bash` and `check-migrate.bash` are still outside it.
+		- Fixed: `check-readme.bash`'s zig skip is a failure under the flag and is noted in `SHCL_GATE_SKIPS`, which was the one skip left that turns on what is installed. `check-migrate.bash`'s untrimmable documents and `crosscheck.bash`'s NUL cases are properties of the input, not of the box, so both stay out and say why.
+		- Fixed: the hand list is backed by a derived rule. Any gate whose text says it is skipping because a tool is not here has to read the flag, so the list cannot fall behind again.
+		- Note: both greps now match the expansion rather than the name. The first attempt matched `SHCL_GATE_STRICT` anywhere, and the history line added in the same edit satisfied it - the guard could be deleted and the gate stayed green. Caught by watching it fail.
+		- Pinned by: `shell-regress.bash`, watched to fail with the guard taken out of `check-readme.bash`.
+		- Opened: 20260909-105200
+		- Closed: 20260917-220000
+
+	- ✅ Item 54: the corpus asserts the selector-quote rule in every direction but the one that fails.
+		- Corpus `105-quote-in-selector` covers a quote mid-body and a quote properly closed and expects zero diagnostics. Adding the unclosed case is what would have caught bug item 1.
+		- Already done, by the fix for bug item 1. Corpus `116-selector-open-quote` holds four unclosed selector quotes across three shapes, with the fmt golden, the diagnostics and the reads, and a strict `load` row.
+		- Checked rather than assumed: dropping the `E017` the selector half emits was watched to fail the corpus with `116` present and `126` absent. A case written for this was drafted and thrown away as a duplicate - it asserted nothing `116` did not, and a corpus change costs a fuzz-seed round.
+		- Note: the finding named `105-quote-in-selector`, which is the all-clean case and stays that way.
+		- Opened: 20260909-105300
+		- Closed: 20260917-220000
 
 	- ✅ Item 51: `shcl_migrate`'s two arenas are frame locals and are lost permanently after a longjmping `SHCL_OOM`.
 		- 1.98 MB is leaked, where the same hook across a write leaks nothing after `shcl_free`. The header points embedders at exactly this hook.
