@@ -1619,12 +1619,15 @@ type migrating struct {
 // Raw bodies are skipped exactly where the rewrite skips them, by walking the
 // lines through the same migrateLine. A Format line pasted into a block is
 // that block's content, and taking it as the file's would rewrite a current
-// file, or leave an old one alone.
+// file, or leave an old one alone. A file naming this format on any line has
+// nothing to migrate, so the highest line decides: the stamp Migrate adds comes
+// after an older one, and the next run has to see it.
 func formatVersion(text string) (int, bool) {
 	var tok Tokens
 	var fence openFence
 	// Only the blocks a line opens are wanted here, not what it counts.
 	dry := migrating{fromV2: true}
+	found, has := 0, false
 	for _, line := range strings.Split(text, "\n") {
 		body := strings.TrimRight(line, "\r")
 		if fence.open {
@@ -1646,12 +1649,18 @@ func formatVersion(text string) (int, bool) {
 				if err != nil {
 					return FormatMajor, true
 				}
-				return v, true
+				if v >= FormatMajor {
+					return v, true
+				}
+				if !has || v > found {
+					found, has = v, true
+				}
+				continue
 			}
 		}
 		migrateLine(trimEndWS(body[len(leadingWS(body)):]), &tok, &fence, &dry)
 	}
-	return 0, false
+	return found, has
 }
 
 // Migrate rewrites a document written under the 2.x rules so this parser

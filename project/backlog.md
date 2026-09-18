@@ -290,6 +290,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Bugs
 
+- ✅ `migrate` stamps a file again on every run when an older `Format` line comes before its own stamp.
+	- Reproduced in all four. `a: 1` and `##    Format   0`: `migrate` appends `##    Format   3`, and a second run appends another, at exit 0 both times.
+	- Cause: the first Format line decided, and the stamp goes at the end of the file.
+	- Note: found by the fuzz in the 20260918 fix round, once corpus `126` moved the seeds. It predates the round, from `7040ab7` (Merge migrate-version).
+	- Fixed: the highest Format line decides, in `format_version` (Rust, C), `formatVersion` (Go) and `_format_version` (Python). The spec says so.
+	- Pinned by: `cli-regress.bash` row `migrate-two-stamps`, which fails in all four on the old code, and the migrate fixpoint check in `fuzz_smoke.rs`.
+	- Opened: 20260918-154016
+	- Closed: 20260918-154016
+
 - ✅ The Go index-rebuild timing test failed once on the hosted windows runner, by 5 ms.
 	- Reproduced: `TestIndexRebuildIgnoresRemovedNodes` took 492.3 ms churned against 9.5 ms fresh, where the bound is 487.5 ms. Nothing on the branch it ran for touches merge or the index.
 	- Note: a count of nodes walked would not flake the way a clock does.

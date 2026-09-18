@@ -153,6 +153,9 @@ printf 'p: %s\nnote:\n\t```\n##    Format   2\n\t```\n' "'C:\temp'" > "${tmpDir}
 printf 'p: %s\nnote:\n\t```\n##    Format   3\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt3.shcl"
 ## A stamped file behind a BOM, whose value 2.x would have read another way.
 printf '\357\273\277##    Format   3\np: %s\n' 'C:\temp' > "${tmpDir}/bomstamped.shcl"
+## An older Format line with migrate's own stamp after it, so the first line
+## found is the older one.
+printf 'a: 1\n##    Format   0\n##    Format   3\n' > "${tmpDir}/twostamps.shcl"
 ## A default on a path whose last segment selects by value. A value after that
 ## selector is ignored, so generation used to write a line that failed its own
 ## check. One default contradicts the selector and one names it.
@@ -193,7 +196,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
-##	%V3B% the same behind a BOM, %RF2%/%RF3% a raw body holding a Format line,
+##	%V3B% the same behind a BOM, %V03% an older Format line and then the
+##	current one, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone,
@@ -340,6 +344,9 @@ rows=(
 	## 20260918 item 2: C looked for the version line before taking off a BOM.
 	'migrate-bom-stamped|migrate %V3B%|-|0|-|nothing to migrate'
 	'migrate-bom-stamped-from-2x|migrate --from-2x %V3B%|-|0|-|nothing to migrate'
+	## Found by the fuzz in the 20260918 fix round: the first Format line decided,
+	## so a file naming an older format was stamped again on every run.
+	'migrate-two-stamps|migrate %V03%|-|0|-|nothing to migrate'
 	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
 	## Leaving the line is the decision; exiting 0 was the defect, since a
 	## scripted migration could not tell "migrated" from "gave up".
@@ -544,6 +551,7 @@ for row in "${rows[@]}"; do
 	## copy below.
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
 	argv="${argv//%V3B%/${tmpDir}/bomstamped.shcl}"
+	argv="${argv//%V03%/${tmpDir}/twostamps.shcl}"
 	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
 	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	freshCopy=0

@@ -1804,9 +1804,12 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
    Raw bodies are skipped exactly where the rewrite skips them, by walking the
    lines through the same migrate_line. A Format line pasted into a block is
    that block's content, and taking it as the file's would rewrite a current
-   file, or leave an old one alone. */
+   file, or leave an old one alone. A file naming this format on any line has
+   nothing to migrate, so the highest line decides: the stamp migrate adds
+   comes after an older one, and the next run has to see it. */
 static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclTokens *tok) {
 	size_t headn = sizeof(SHCL_FORMAT_LINE_HEAD) - 1, start = 0;
+	long found = -1;
 	int fence_on = 0; unsigned char fence_ch = 0; size_t fence_len = 0;
 	/* Only the blocks a line opens are wanted here, not what it counts. */
 	ShclMigrating dry; dry.from_v2 = 1; dry.ambiguous = 0; dry.lost = 0;
@@ -1829,13 +1832,17 @@ static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclToken
 				if (!is_adigit((unsigned char)n.p[k])) { ok = 0; break; }
 				if (v <= SHCL_FORMAT_MAJOR) v = v * 10 + (n.p[k] - '0');
 			}
-			if (ok) return v;
+			if (ok) {
+				if (v >= SHCL_FORMAT_MAJOR) return v;
+				if (v > found) found = v;
+				continue;
+			}
 		}
 		arena_reset(sc);
 		ShclStr indent = leading_ws(body);
 		migrate_line(ta, sc, trim_wsp_end(s_slice(body, indent.n, body.n)), tok, &fence_on, &fence_ch, &fence_len, &dry);
 	}
-	return -1;
+	return found;
 }
 
 /* Which file this is cannot be read off the text: `p: 'C:\temp'` is one value

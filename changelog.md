@@ -174,7 +174,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A skipped line whose value opens a raw block takes the block with it. The body used to be read as lines, and its closing fence opened a block that hid the rest of the file.
 
-- `migrate` ignores a `Format` line inside a raw body, which is the block's content and not the file's version. C `migrate` also finds the line in a file that starts with a BOM.
+- `migrate` ignores a `Format` line inside a raw body, which is the block's content and not the file's version. C `migrate` also finds the line in a file that starts with a BOM. A file naming an older format before `migrate`'s own stamp is no longer stamped again on every run.
 
 - `set --write` no longer replaces a file that turned up at the path while it waited for ops on stdin. It had decided the file was new before the wait, so the other file was replaced by the info block and the edits, at exit 0. It exits 8 now and leaves that file alone, and a save that finds nothing at the path never replaces a file that appears there before it finishes.
 

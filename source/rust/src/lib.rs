@@ -1473,7 +1473,9 @@ struct Migrating {
 /// Raw bodies are skipped exactly where the rewrite skips them, by walking the
 /// lines through the same `migrate_line`. A Format line pasted into a block is
 /// that block's content, and taking it as the file's would rewrite a current
-/// file, or leave an old one alone.
+/// file, or leave an old one alone. A file naming this format on any line has
+/// nothing to migrate, so the highest line decides: the stamp `migrate` adds
+/// comes after an older one, and the next run has to see it.
 fn format_version(text: &str) -> Option<u32> {
 	let mut tok = Tokens::default();
 	let mut fence: Option<(u8, usize)> = None;
@@ -1483,6 +1485,7 @@ fn format_version(text: &str) -> Option<u32> {
 		ambiguous: 0,
 		lost: 0,
 	};
+	let mut found: Option<u32> = None;
 	for line in text.split('\n') {
 		let body = line.trim_end_matches('\r');
 		if let Some((ch, len)) = fence {
@@ -1495,13 +1498,18 @@ fn format_version(text: &str) -> Option<u32> {
 			// More digits than fit is not a 2.x file either, so it reads as
 			// this major and there is nothing to migrate.
 			if !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) {
-				return Some(n.parse().unwrap_or(FORMAT_MAJOR));
+				let v = n.parse().unwrap_or(FORMAT_MAJOR);
+				if v >= FORMAT_MAJOR {
+					return Some(v);
+				}
+				found = found.max(Some(v));
+				continue;
 			}
 		}
 		let rest = trim_wsp_end(&body[leading_ws(body).len()..]);
 		migrate_line(rest, &mut tok, &mut fence, &mut dry);
 	}
-	None
+	found
 }
 
 /// Rewrite a document written under the 2.x rules so this parser reads the

@@ -1394,11 +1394,14 @@ def _format_version(text):
 	Raw bodies are skipped exactly where the rewrite skips them, by walking the
 	lines through the same _migrate_line. A Format line pasted into a block is
 	that block's content, and taking it as the file's would rewrite a current
-	file, or leave an old one alone."""
+	file, or leave an old one alone. A file naming this format on any line has
+	nothing to migrate, so the highest line decides: the stamp migrate adds
+	comes after an older one, and the next run has to see it."""
 	tok = Tokens()
 	fence = None
 	# Only the blocks a line opens are wanted here, not what it counts.
 	dry = _Migrating(True)
+	found = None
 	for line in text.split("\n"):
 		body = line.rstrip("\r")
 		if fence is not None:
@@ -1409,9 +1412,13 @@ def _format_version(text):
 		if head.startswith(FORMAT_LINE_HEAD):
 			n = head[len(FORMAT_LINE_HEAD):]
 			if n and all("0" <= c <= "9" for c in n):
-				return int(n)
+				v = int(n)
+				if v >= FORMAT_MAJOR:
+					return v
+				found = v if found is None else max(found, v)
+				continue
 		_, fence = _migrate_line(_trim_wsp_end(body[len(_leading_ws(body)):]), tok, fence, dry)
-	return None
+	return found
 
 
 def migrate(text: str, from_v2: bool) -> Migration:
