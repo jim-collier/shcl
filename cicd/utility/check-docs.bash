@@ -151,6 +151,18 @@ while IFS= read -r hit; do
 done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
 	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
 
+##	The style guide says every source file starts with the SPDX line and the
+##	copyright, and files added later kept arriving without them. "Starts with"
+##	means the header block, which in a script comes after the purpose text, so
+##	the first 80 lines are searched.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	while IFS= read -r f; do
+		[[ -f "${repoDir}/${f}" ]] || continue
+		head -n 80 "${repoDir}/${f}" | grep -q 'SPDX-License-Identifier' || fBad "${f} has no SPDX line in its header"
+		head -n 80 "${repoDir}/${f}" | grep -q 'Copyright' || fBad "${f} has no copyright line in its header"
+	done < <(git -C "${repoDir}" ls-files -- '*.rs' '*.go' '*.py' '*.c' '*.h' '*.hpp' '*.cpp' '*.bash' '*.ps1' || true)
+fi
+
 ##	The grammar is the oracle harnesses are written against. It has to read as
 ##	ABNF and derive what the parser reads; the samples live in check-abnf.py.
 python3 "${repoDir}/cicd/utility/check-abnf.py" "${repoDir}/project/grammar.abnf" >/dev/null \
@@ -448,3 +460,4 @@ echo "check-docs: OK"
 ##		2026-09-19  The man page date is no older than its last commit.
 ##		2026-09-19  grammar.abnf reads as ABNF and derives the fence labels
 ##		            the parser reads.
+##		2026-09-19  Every tracked source file carries the SPDX and copyright lines.

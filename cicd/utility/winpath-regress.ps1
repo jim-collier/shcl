@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 ## winpath-regress.ps1 - the Windows installers' PATH handling, against the real
 ## registry, so it only runs on the hosted windows job (win-runners.bash guards
 ## that). Two subjects, both the shipped text rather than a copy of the logic:
@@ -9,6 +9,11 @@
 ## saved first and restored in a finally.
 ##
 ## Exit: 0 = all checks pass, 1 = a check failed (named), 2 = cannot set up.
+##
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Licensed under The MIT License (MIT). Full text at:
+##		https://mit-license.org/
+##	SPDX-License-Identifier: MIT
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'runs the function text lifted from the shipped installer')]
 param()
