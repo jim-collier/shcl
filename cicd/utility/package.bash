@@ -166,9 +166,23 @@ else
 	fWarn "nfpm not installed; .deb/.rpm skipped"
 fi
 
+## The setup's uninstaller removes the payload by name, one NSIS Delete line
+## per file, so a file someone else keeps in code\ or scripts\ stays, as it
+## does with both script installers.
+fUninstallList(){
+	local f rel
+	for f in "$1"/code/* "$1"/scripts/*; do
+		rel="${f#"$1"/}"
+		# shellcheck disable=SC2016  ## $INSTDIR is NSIS's, not the shell's
+		printf 'Delete "$INSTDIR\\%s"\n' "${rel//\//\\}"
+	done
+}
+
 ## Windows: an NSIS setup per built .exe. The x86 installer stub runs fine on
 ## ARM64 Windows (emulated), so one .nsi covers both.
 if command -v makensis >/dev/null 2>&1; then
+	## Beside the payload rather than in it; nfpm packs only the subdirectories.
+	fUninstallList "${payload}" > "${payload}/uninstall.nsh"
 	## Same icon the executables carry. Absent is not an error - the setup just
 	## falls back to the NSIS default.
 	icoArg=""; [[ -f "${root}/assets/shcl.ico" ]] && icoArg="${root}/assets/shcl.ico"
@@ -180,7 +194,7 @@ if command -v makensis >/dev/null 2>&1; then
 		fPinMtime "${exe}"
 		out="${artDir}/shcl-${ver}-windows-${osarch}-setup.exe"
 		makensis -V2 -DVERSION="${ver}" -DVERQUAD="$(fVersionQuad "${ver}")" \
-			-DSRCEXE="${exe}" -DPAYLOAD="${payload}" -DOUTFILE="${out}" \
+			-DSRCEXE="${exe}" -DPAYLOAD="${payload}" -DOUTFILE="${out}" -DUNINSTLIST="${payload}/uninstall.nsh" \
 			${icoArg:+-DICON="${icoArg}"} "${meDir}/../packaging/shcl.nsi" >/dev/null
 		fEcho "OK: package: $(basename "${out}") ($(du -h --apparent-size "${out}" | cut -f1))"
 		built=$((built + 1))

@@ -20,6 +20,9 @@
 !ifndef VERQUAD
 	!error "pass /DVERQUAD="
 !endif
+!ifndef UNINSTLIST
+	!error "pass /DUNINSTLIST="
+!endif
 
 Unicode true
 Name "SHCL ${VERSION}"
@@ -117,8 +120,10 @@ Section "Uninstall"
 	DetailPrint "PATH cleanup failed; remove $INSTDIR from the machine PATH manually"
 	SendMessage ${HWND_BROADCAST} ${WM_WININICHANGE} 0 "STR:Environment" /TIMEOUT=5000
 	Delete "$INSTDIR\shcl.exe"
-	Delete "$INSTDIR\code\*.*"
-	Delete "$INSTDIR\scripts\*.*"
+	; The payload by name, written by package.bash from the file set the
+	; install copies. A glob took anything else kept in code\ or scripts\ as
+	; well, where both script installers remove only what they laid down.
+	!include "${UNINSTLIST}"
 	RMDir "$INSTDIR\code"
 	RMDir "$INSTDIR\scripts"
 	Delete "$INSTDIR\uninstall.exe"

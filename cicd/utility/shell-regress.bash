@@ -546,6 +546,7 @@ done
 ##	`:dir:`, so a PATH element written with a trailing slash was not seen.
 eval "$(sed -n '/^fOnPath()/,/^}/p' "${repoDir}/install.bash")"
 (
+	# shellcheck disable=SC2030  ## the subshell is there to keep this PATH to itself
 	PATH="/usr/bin:${tmpDir}/pbin/:/bin"
 	fOnPath "${tmpDir}/pbin"  || fBad "install.bash: a PATH element with a trailing slash was not seen"
 	fOnPath "${tmpDir}/pbin/" || fBad "install.bash: a directory asked for with a trailing slash was not seen"
@@ -898,6 +899,27 @@ if fHave makensis; then
 	else
 		fBad "packaging a prerelease failed: $(cat "${tmpDir}/pkg.log")"
 	fi
+	##	20260918 item 13: the uninstaller deleted code\*.* and scripts\*.*, so a
+	##	file someone else kept there went too. What makensis compiles into it
+	##	has to name each payload file, through the list package.bash writes,
+	##	and hold no wildcard.
+	nsiPay="${tmpDir}/nsipay"; mkdir -p "${nsiPay}/code" "${nsiPay}/scripts"
+	: > "${nsiPay}/code/lib.rs"; : > "${nsiPay}/scripts/shcl.ps1"; : > "${tmpDir}/fake.exe"
+	eval "$(sed -n '/^fUninstallList()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
+	if declare -F fUninstallList >/dev/null; then
+		fUninstallList "${nsiPay}" > "${tmpDir}/uninstall.nsh"
+		nsiOut="$(makensis -V4 -DVERSION=1.0.0 -DVERQUAD=1.0.0.0 -DSRCEXE="${tmpDir}/fake.exe" -DPAYLOAD="${nsiPay}" \
+			-DOUTFILE="${tmpDir}/un-setup.exe" -DUNINSTLIST="${tmpDir}/uninstall.nsh" "${repoDir}/cicd/packaging/shcl.nsi" 2>&1 || true)"
+		# shellcheck disable=SC2016  ## $INSTDIR is NSIS's, not the shell's
+		if ! grep -qF 'Delete: "$INSTDIR\code\lib.rs"' <<<"${nsiOut}" || ! grep -qF 'Delete: "$INSTDIR\scripts\shcl.ps1"' <<<"${nsiOut}"; then
+			fBad "the setup's uninstaller does not name each payload file: $(grep -E '^Delete' <<<"${nsiOut}" | tr '\n' ' ' || true)"
+		fi
+		if grep -qE '^Delete: .*\*' <<<"${nsiOut}"; then
+			fBad "the setup's uninstaller deletes by wildcard: $(grep -E '^Delete: .*\*' <<<"${nsiOut}" | tr '\n' ' ' || true)"
+		fi
+	else
+		fBad "package.bash no longer carries fUninstallList, which the setup's uninstall list comes from"
+	fi
 else
 	echo "shell-regress: makensis not installed - packaging row skipped"
 fi
@@ -1026,6 +1048,20 @@ done
 for g in check-c-compilers.bash check-locale.bash check-docs.bash cli-regress.bash; do
 	grep -qF 'SHCL_GATE_SKIPS:-/dev/null' "${repoDir}/cicd/utility/${g}" || fBad "${g} no longer notes a local skip in SHCL_GATE_SKIPS"
 done
+##	20260918 item 11: both rules above are per file, so a second skip in a file
+##	that guards its first went out bare, and cli-regress's man page check did.
+##	Each skip over a missing tool has to read the strict flag in the lines just
+##	above it and note itself in SHCL_GATE_SKIPS in the lines just after.
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	while IFS=: read -r n _; do
+		from=$((n > 6 ? n - 6 : 1))
+		# shellcheck disable=SC2016  ## the literal expansion is the pattern
+		sed -n "${from},$((n - 1))p" "${g}" | grep -qF '${SHCL_GATE_STRICT' \
+			|| fBad "${g##*/}:${n} skips over a missing tool without reading SHCL_GATE_STRICT just above"
+		sed -n "$((n + 1)),$((n + 2))p" "${g}" | grep -qF 'SHCL_GATE_SKIPS:-/dev/null' \
+			|| fBad "${g##*/}:${n} skips over a missing tool without noting it in SHCL_GATE_SKIPS"
+	done < <(grep -nE '^[[:space:]]*echo ".*skipping .*\(no ' "${g}" || true)
+done
 grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
 
 ##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
@@ -1056,6 +1092,22 @@ rm -f "${tmpDir}"/onecc/gcc-* "${tmpDir}/onecc/clang" "${tmpDir}/onecc/cc" "${tm
 ln -sf "$(command -v gcc || command -v cc)" "${tmpDir}/onecc/gcc"
 out="$(PATH="${tmpDir}/onecc" SHCL_GATE_STRICT=1 "${BASH}" "${repoDir}/cicd/utility/check-c-compilers.bash" "${repoDir}" 2>&1 || true)"
 [[ "${out}" == *"needs two versioned gccs and clang"* ]] || fBad "check-c-compilers passed the gate with one compiler: ${out@Q}"
+
+##	20260918 item 12: check-migrate reported OK on the corpus alone when its fuzz
+##	dump wrote nothing, which is what a test filter matching no test does. The
+##	cargo here passes a build through and writes nothing for a test.
+if realCargo="$(command -v cargo)"; then
+	mkdir -p "${tmpDir}/nodump"
+	printf '#!/bin/sh\ncase " $* " in *" test "*) exit 0 ;; esac\nexec "%s" "$@"\n' "${realCargo}" > "${tmpDir}/nodump/cargo"
+	chmod +x "${tmpDir}/nodump/cargo"
+	rc=0
+	# shellcheck disable=SC2031  ## this is the script's own PATH; the subshell above keeps its change
+	out="$(PATH="${tmpDir}/nodump:${PATH}" "${BASH}" "${repoDir}/cicd/utility/check-migrate.bash" 2>&1)" || rc=$?
+	[[ "${rc}" == 2 && "${out}" == *"the fuzz dump wrote no documents"* ]] \
+		|| fBad "check-migrate passed with an empty fuzz dump (exit ${rc}): $(tail -c 200 <<<"${out}")"
+else
+	fHave cargo || true
+fi
 
 ##	20260904 item 24: the publish script ran `git config user.name` as a bare
 ##	statement under set -e, so a repository with no identity died in the trap

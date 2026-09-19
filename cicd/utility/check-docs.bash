@@ -349,8 +349,18 @@ grep -qF '// The write side'"'"'s one rule: what is written has to read back' "$
 ##	rested on remembering the docs-only exception at every merge. Skipped rather
 ##	than failed where the refs are not both present: a shallow CI clone or a
 ##	fork has no origin/main to compare against, and a missing ref is not drift.
+##	Under the pre-push hook for main, the tree here is what main is about to
+##	become and origin/main is still the old one, so the refs would refuse the
+##	very push that brings the installers level. That tree stands in for main.
 installers=(install.bash install.ps1 install-dev.bash)
-if git -C "${repoDir}" rev-parse --verify -q origin/main >/dev/null && git -C "${repoDir}" rev-parse --verify -q origin/dev >/dev/null; then
+if [[ "${SHCL_GATE_REF:-}" == main ]] && git -C "${repoDir}" rev-parse --verify -q origin/dev >/dev/null; then
+	drifted="$(git -C "${repoDir}" diff --name-only origin/dev -- "${installers[@]}" || true)"
+	if [[ -n "${drifted}" ]]; then
+		while IFS= read -r f; do
+			fBad "installer differs between this push to main and dev: ${f}"
+		done <<<"${drifted}"
+	fi
+elif git -C "${repoDir}" rev-parse --verify -q origin/main >/dev/null && git -C "${repoDir}" rev-parse --verify -q origin/dev >/dev/null; then
 	drifted="$(git -C "${repoDir}" diff --name-only origin/main origin/dev -- "${installers[@]}" || true)"
 	if [[ -n "${drifted}" ]]; then
 		while IFS= read -r f; do
@@ -373,4 +383,6 @@ echo "check-docs: OK"
 ##		2026-09-05  The crossed-range entry must agree with the spec's table.
 ##		2026-09-08  The tokenizer sentence in the style guide and the reference.
 ##		2026-09-08  The installers on main must match the ones on dev.
+##		2026-09-18  Under the hook for a push to main, the tree under test
+##		            stands in for main, since origin/main has not moved yet.
 ##		2026-09-10  The comment-rule example is no longer required; the rule is 2.x's.

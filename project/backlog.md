@@ -80,38 +80,9 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- 🔘 Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
-		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
-		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
-		- Note: latent today, since main's tree has no drift check yet. The 3.0.0 cut puts it on main, and the cut's own main push hits it if dev holds an installer change main lacks.
-		- Sites: `cicd/utility/check-docs.bash:352-362`, `cicd/hooks/pre-push:108`, `cicd/cicd.bash:606-613`.
-		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
-		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
-		- Opened: 20260918-132951
+	- The fix round closed all twenty-three on 2026-09-18, and the enhancement. Items 3 and 18 got class fixes: one skip helper that every refused field line goes through, with a fuzz property over raw bodies, and a check that asks each CLI which subcommands take each option. The fuzz also found a loose bug in `migrate`, filed and closed under Done - Bugs. Item 13 was pinned from the compiled setup on Linux and has not been run on Windows.
 
-	- 🔘 Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
-		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
-		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
-		- Sites: `cicd/utility/cli-regress.bash:697-709`, `cicd/utility/shell-regress.bash:1017-1028`.
-		- Origin: `1c4b8af` (2026-09-08). It became a hole in the record with `6ad45f8` (Merge pushgate, 2026-09-14). Not seen before. Confirmed.
-		- Against: `cicd.bash`'s header, that a skipped tool keeps a run from recording, and 20260909 item 53's fix.
-		- Opened: 20260918-132951
-
-	- 🔘 Item 12: check-migrate passes with no fuzz document compared.
-		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
-		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
-		- Sites: `cicd/utility/check-migrate.bash:101-102`, `:177`, `:230-233`.
-		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
-		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
-		- Opened: 20260918-132951
-
-	- 🔘 Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
-		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
-		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
-		- Sites: `cicd/packaging/shcl.nsi:119-125`.
-		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
-		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
-		- Opened: 20260918-132951
+	- Finished items are under Done - Bugs, and the enhancement under Done - Features and enhancements, each in a bullet of the same name.
 
 - Code review 20260909:
 
@@ -132,17 +103,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
-
-- Code review 20260918:
-
-	- The round's one enhancement. The defects are under Bugs.
-
-	- 🔘 Item 24: nothing fails when a hold-back on the green record is removed, or when the hook's gate flags are weakened.
-		- Reproduced in a scratch clone. With `cicd.bash`'s `if ((quick || gate_partial))` made `if ((0))` and its skip-file test made `false`, shell-regress still passes, since its only check greps for `record_green=0`. With the hook's `--ci --no-largedoc` made `--quick --no-lint`, `check-push-gate.bash` still passes, since its stub gate ignores its arguments. Removing check-readme's skip note also passes, since the note list names four gates by hand.
-		- Sites: `cicd/cicd.bash:106-107`, `:153-154`, `:389`; `cicd/hooks/pre-push:108`; `cicd/utility/check-push-gate.bash:53-57`; `cicd/utility/shell-regress.bash:1026-1029`.
-		- Origin: `6ad45f8` (Merge pushgate, 2026-09-14); the check-readme note is `be84553` (2026-09-17). Confirmed.
-		- Note: nothing written is violated, so this is an enhancement. The helper and the hook's skip did catch both faults put in front of them.
-		- Opened: 20260918-132951
 
 - Code review 20260909:
 
@@ -383,7 +343,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260918:
 
-	- Items are here as they close. The rest of the round is under Bugs and Features and enhancements, with the round's own notes.
+	- All twenty-three items. The enhancement is under Done - Features and enhancements, and the round's own notes are under Bugs.
 
 	- ✅ Item 1: `migrate` takes a `Format` line inside a raw body as the file's version line, and rewrites a correct 3.0 file at exit 0.
 		- Reproduced in all four. `p: 'C:\temp'`, then a raw block whose body holds `##    Format   2`. `check` is clean and `get p` is `C:\temp`. `migrate --write` with no `--from-2x` says 1 line rewritten, exits 0, and `get p` is now `C:`, a tab, `emp`.
@@ -443,6 +403,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-133258
 		- Closed: 20260918-154720
 
+	- ✅ Item 6: the installer drift check judges the remote refs, not the tree under test, so the push gate refuses the very main push that ends the drift.
+		- Reproduced in a scratch clone at `d491b91`. With `origin/main` at `fcf1669` and `origin/dev` at `9d91fc0`, 20260909 item 38's state between its dev push and its main push, `check-docs.bash` exits 1 naming both installers. With `origin/main` moved to `9d91fc0` and the tree unchanged, it exits 0.
+		- Cause: the check diffs `origin/main` against `origin/dev`. The pre-push hook runs before git moves `origin/main`, so a main push that brings the installers level is judged against the old main. Every run on that tree fails the same way, so the green record cannot help, and only `--no-verify` gets through.
+		- Note: latent today, since main's tree has no drift check yet. The 3.0.0 cut puts it on main, and the cut's own main push hits it if dev holds an installer change main lacks.
+		- Sites: `cicd/utility/check-docs.bash:352-362`, `cicd/hooks/pre-push:108`, `cicd/cicd.bash:606-613`.
+		- Origin: `20a6431` (2026-09-08, 20260904 item 37), meeting `6ad45f8` (Merge pushgate, 2026-09-14) and `84a9b3b` (Merge gate-main, 2026-09-16). Not seen before. Confirmed for the check; the hook half follows from git's pre-push order.
+		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
+		- Fixed: the pre-push hook tells the gate which ref it stands in for, through `SHCL_GATE_REF`. For a push to main, check-docs compares the tree under test with `origin/dev`, since `origin/main` has not moved yet. Anywhere else it compares the two refs, as before. The green-tree header says the refs are the one thing it reads from outside the tree.
+		- Pinned by: `check-push-gate.bash` checks that the hook passes `main` to the gate, and runs this checkout's check-docs in a clone with the refs as they stand between the dev push and the main push. The main push that brings the installers level passes, one that leaves them behind fails, and a run outside the hook still sees dev ahead. All three fail on the old hook and check-docs.
+		- Left alone: the dev-run check in `cicd.bash` after a publish, which compares the working tree with `origin/main` and is meant to go red until the main merge.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163005
+
 	- ✅ Item 7: Python's save uses the whole target path as the temp name when the 64-byte cut lands on nothing, and the save fails.
 		- Reproduced in Python only. A name of `\xc3` and 70 `\x80` bytes under `sub/` fails with "cannot create temporary file", and the temp name holds `sub/` again. C writes the file.
 		- Cause: the cut backs off to zero bytes, and the older fallback `if base == "": base = target` then puts the whole path in.
@@ -487,6 +460,39 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: rows `help-help-flag`, `help-h-flag` and `help-cmd-help-flag`, which fail in all four on the old code.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161509
+
+	- ✅ Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
+		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
+		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
+		- Sites: `cicd/utility/cli-regress.bash:697-709`, `cicd/utility/shell-regress.bash:1017-1028`.
+		- Origin: `1c4b8af` (2026-09-08). It became a hole in the record with `6ad45f8` (Merge pushgate, 2026-09-14). Not seen before. Confirmed.
+		- Against: `cicd.bash`'s header, that a skipped tool keeps a run from recording, and 20260909 item 53's fix.
+		- Fixed: under `SHCL_GATE_STRICT` a missing `man` fails cli-regress, except on Windows, and the skip is noted in `SHCL_GATE_SKIPS` either way.
+		- Pinned by: a shell-regress rule, per skip rather than per file, that each skip over a missing tool reads the strict flag just above it and notes itself just after. It fails on the old cli-regress at the man page skip. With `man` taken off `PATH`, a strict cli-regress now fails and the skip file names the check.
+		- Opened: 20260918-132951
+		- Closed: 20260918-162245
+
+	- ✅ Item 12: check-migrate passes with no fuzz document compared.
+		- Reproduced in a scratch clone, with a `cargo` first on `PATH` that writes nothing, which is what the dump step gets when its test filter matches no test. The gate reports OK on 121 documents, all from the corpus, and exits 0.
+		- Cause: nothing counts what the dump produced, and the overall floor of 100 is met by the corpus alone. 20260909 item 25 gave the corpus half a floor and not the fuzz half. `crosscheck.bash` exits 2 on an empty dump.
+		- Sites: `cicd/utility/check-migrate.bash:101-102`, `:177`, `:230-233`.
+		- Origin: `d13e32c` (Merge migrate-gate, 2026-09-16) over `e58fe9f` (2026-09-07). Same class as 20260718 item 16 in crosscheck. Confirmed.
+		- Against: the gate's own purpose, every corpus input and every fuzz-dumped document.
+		- Fixed: check-migrate refuses a dump that wrote no documents, at exit 2 as crosscheck does, and has a floor for the fuzz half, `--min-fuzz`, default 200. A normal run compares about 440.
+		- Pinned by: a shell-regress case that runs check-migrate with a `cargo` whose test step writes nothing. It expects exit 2 naming the empty dump, and fails on the old script, which reported OK on the corpus alone.
+		- Opened: 20260918-132951
+		- Closed: 20260918-162501
+
+	- ✅ Item 13: the Windows setup's uninstaller deletes every file in `code\` and `scripts\`, where both script installers now remove only what they laid down.
+		- Not run. The Uninstall section runs `Delete "$INSTDIR\code\*.*"` and the same for `scripts\`, so a file someone else put there goes too.
+		- Cause: 20260909 item 38 moved `install.bash` and `install.ps1` to removal by name and left the setup's glob.
+		- Sites: `cicd/packaging/shcl.nsi:119-125`.
+		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
+		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
+		- Fixed: the uninstaller removes the payload by name. `fUninstallList` in `package.bash` writes one Delete line per file from the same payload the setup copies, and `shcl.nsi` includes it in place of the two globs.
+		- Pinned by: shell-regress compiles `shcl.nsi` at makensis `-V4` against a scratch payload and the list package.bash writes, and requires a Delete naming each file and none with a wildcard. It fails on the old `.nsi` and on the old package.bash.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163344
 
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
@@ -3743,6 +3749,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260918:
+
+	- The round's one enhancement. The defects are under Done - Bugs.
+
+	- ✅ Item 24: nothing fails when a hold-back on the green record is removed, or when the hook's gate flags are weakened.
+		- Reproduced in a scratch clone. With `cicd.bash`'s `if ((quick || gate_partial))` made `if ((0))` and its skip-file test made `false`, shell-regress still passes, since its only check greps for `record_green=0`. With the hook's `--ci --no-largedoc` made `--quick --no-lint`, `check-push-gate.bash` still passes, since its stub gate ignores its arguments. Removing check-readme's skip note also passes, since the note list names four gates by hand.
+		- Sites: `cicd/cicd.bash:106-107`, `:153-154`, `:389`; `cicd/hooks/pre-push:108`; `cicd/utility/check-push-gate.bash:53-57`; `cicd/utility/shell-regress.bash:1026-1029`.
+		- Origin: `6ad45f8` (Merge pushgate, 2026-09-14); the check-readme note is `be84553` (2026-09-17). Confirmed.
+		- Note: nothing written is violated, so this is an enhancement. The helper and the hook's skip did catch both faults put in front of them.
+		- Done: `check-push-gate.bash` runs the real `cicd.bash` and config on a throwaway repository with every stage stubbed. A `--ci` run records its tree, and a `--quick` run, a run with `--no-lint` or `--no-fmt`, and a run whose gate noted a skip record nothing. The hook's stub gate now logs its arguments, which have to be `--ci --no-largedoc`. The check-readme note is covered by 20260918 item 11's per-skip rule.
+		- Pinned by: each of the three faults above, put back one at a time, now fails `check-push-gate.bash` or shell-regress.
+		- Opened: 20260918-132951
+		- Closed: 20260918-163719
 
 - Code review 20260909:
 

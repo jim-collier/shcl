@@ -880,7 +880,14 @@ if [[ -f "${manPage}" ]] && command -v man >/dev/null 2>&1; then
 		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${rendered}")
 	fi
 else
+	##	Under the gate a missing man is a failure, as the /dev/full rows are: this
+	##	is the only check holding the page to 80 columns. Git Bash on windows has
+	##	no man, which is a fact of the platform rather than a missing tool.
+	if [[ -n "${SHCL_GATE_STRICT:-}" && "${onWindows}" == 0 ]]; then
+		echo "cli-regress: man-width: no man here and the gate requires it" >&2; nBad+=1
+	fi
 	echo "cli-regress: skipping the man page width check (no man here)"
+	echo "cli-regress man-width" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
 
 if ((nBad)); then
