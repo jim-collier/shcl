@@ -697,6 +697,21 @@ fPinsRun 's#^([[:space:]]*)(echo "8c3be12b)#\1\# \2#' && fBad "check-pins.bash p
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1curl -fsSL https://example.com/x.tgz | tar xz#' && fBad "check-pins.bash passed curl piped to tar"
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1wget -O x.tgz https://example.com/x.tgz#' && fBad "check-pins.bash passed wget -O"
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1gh release download v1 -R a/b#' && fBad "check-pins.bash passed gh release download"
+##	20260918b item 45: the reverse check read its three install families in one
+##	group under errexit, so with no pip or npm line the go and PowerShell ones
+##	were never read and an unpinned `go install` passed. The run fails anyway
+##	here, since the pip pins lose their line; the message is what is checked.
+sed -E -e '/(pip|npm) install/d' -e 's#^([[:space:]]*)(go install honnef\.co.*)$#\1\2\n\1go install example.com/x/cmd/unpinnedtool@v1.0.0#' \
+	"${repoDir}/.github/workflows/ci.yml" > "${pinsYml}"
+pinsOut="$(bash "${tmpDir}/pins/cicd/utility/check-pins.bash" 2>&1 || true)"
+[[ "${pinsOut}" == *"installs unpinnedtool at a pinned version"* ]] \
+	|| fBad "check-pins.bash missed an unpinned go install once ci.yml had no pip line: $(tail -n 3 <<<"${pinsOut}")"
+##	And a family whose line is there but spelled so its pattern reads no name
+##	has gone blind; that is a failure too, not an empty list.
+fPinsRun 's#pip install ruff==.*$#pip install -r requirements.txt#' || true
+pinsOut="$(bash "${tmpDir}/pins/cicd/utility/check-pins.bash" 2>&1 || true)"
+[[ "${pinsOut}" == *"has a pip install line and no pinned name was read"* ]] \
+	|| fBad "check-pins.bash read no pip pins from a pip line and said nothing: $(tail -n 3 <<<"${pinsOut}")"
 ##	20260909 item 24: rotation retagged a graph and left its sidecar under the
 ##	old role, so the caveat vanished. And --check --file wrote the named graph's
 ##	stamp into the shared marker, so one dated ahead left the gate at SEEN for
@@ -1643,3 +1658,4 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##		2026-09-19  fHaveFile, and a scan for a list grown only when a tool or file
 ##		            is here. The lint-report rows cover an unfinished run.
 ##		2026-09-19  The shellcheck list is compared with the tracked shell files.
+##		2026-09-19  check-pins: an empty pip family, and a pip line read blind.

@@ -98,25 +98,35 @@ done < <(grep -oE -- '-o[[:space:]]+/[^[:space:]]+' <<<"${liveLines}" | sed 's/^
 ## config.bash while ci.yml still installs the tool, which is how the one lint
 ## tool with no pin stayed unpinned. Every version-bearing install line in
 ## ci.yml has to name a tool TOOL_PINS knows.
+## Each family is read on its own, guarded. They used to share one group under
+## errexit and pipefail, so the first that matched nothing ended the group and
+## the rest were never read; a process substitution's status is never seen, so
+## nothing said so.
+## pip and npm: name==version, name@version.
+pipNames="$(grep -oE -- 'pip install[^|;]*' "${ciFile}" \
+	| grep -oE -- '[A-Za-z][A-Za-z0-9_.-]*(==|@)[0-9]' | sed -E 's/(==|@)[0-9]$//' || true)"
+npmNames="$(grep -oE -- 'npm install[^|;]*' "${ciFile}" \
+	| grep -oE -- '[A-Za-z][A-Za-z0-9_.-]*(==|@)[0-9]' | sed -E 's/(==|@)[0-9]$//' || true)"
+## go install module/path/cmd/NAME@version.
+goNames="$(grep -oE -- 'go install [^[:space:]]+@[^[:space:]]+' "${ciFile}" \
+	| sed -E 's#.*/([^/@]+)@.*#\1#' || true)"
+## PowerShell modules.
+psNames="$(grep -oE -- 'Install-Module [A-Za-z][A-Za-z0-9_.-]* -RequiredVersion' "${ciFile}" \
+	| sed -E 's/Install-Module ([^ ]+).*/\1/' || true)"
+## A family whose install line is there and whose pattern read no name from it
+## has gone blind, which is this check's own failure rather than a pass.
+for fam in "pip install|${pipNames}" "npm install|${npmNames}" "go install|${goNames}" "Install-Module|${psNames}"; do
+	if grep -qF -- "${fam%%|*}" <<<"${liveLines}" && [[ -z "${fam#*|}" ]]; then
+		echo "check-pins: ci.yml has a ${fam%%|*} line and no pinned name was read from it" >&2; rc=1
+	fi
+done
 while IFS= read -r named; do
 	found=0
 	for pin in "${TOOL_PINS[@]}"; do
 		[[ "${pin%%|*}" == "${named}" ]] && found=1
 	done
 	((found)) || { echo "check-pins: ci.yml installs ${named} at a pinned version and config.bash has no TOOL_PINS entry for it" >&2; rc=1; }
-done < <(
-	{
-		## pip and npm: name==version, name@version.
-		grep -oE -- '(pip|npm) install[^|;]*' "${ciFile}" \
-			| grep -oE -- '[A-Za-z][A-Za-z0-9_.-]*(==|@)[0-9]' | sed -E 's/(==|@)[0-9]$//'
-		## go install module/path/cmd/NAME@version.
-		grep -oE -- 'go install [^[:space:]]+@[^[:space:]]+' "${ciFile}" \
-			| sed -E 's#.*/([^/@]+)@.*#\1#'
-		## PowerShell modules.
-		grep -oE -- 'Install-Module [A-Za-z][A-Za-z0-9_.-]* -RequiredVersion' "${ciFile}" \
-			| sed -E 's/Install-Module ([^ ]+).*/\1/'
-	} | sort -u
-)
+done < <(printf '%s\n%s\n%s\n%s\n' "${pipNames}" "${npmNames}" "${goNames}" "${psNames}" | sed '/^$/d' | sort -u)
 
 ((rc)) || echo "check-pins: OK: every TOOL_PINS entry the hosted gate installs matches ci.yml, every tool ci.yml pins has an entry, and every download it fetches is hashed"
 exit "${rc}"
@@ -129,3 +139,5 @@ exit "${rc}"
 ##		- 2026-08-31 JC: Every archive the workflow downloads has to be hashed.
 ##		- 2026-09-16 JC: A fetch in any other spelling fails, and a commented-out
 ##		  check does not count.
+##		- 2026-09-19 JC: The reverse check reads each install family on its own,
+##		  and a family whose line reads no name fails.
