@@ -46,6 +46,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -3700,6 +3701,13 @@ func WriteFileAtomic(file, data string) error {
 	// goes, setuid/setgid/sticky included, as an editor's rewrite would carry
 	// it.
 	if err == nil && existErr == nil && runtime.GOOS != "windows" {
+		// The group first, because a chown clears setuid/setgid on most
+		// systems. Best effort like the mode: a caller who is not in the old
+		// group keeps its own, which is what it had before this. The owner is
+		// not carried - see the file tier in spec.md.
+		if gid, ok := statGid(existing); ok {
+			_ = f.Chown(-1, gid)
+		}
 		_ = f.Chmod(existing.Mode())
 	}
 	// The sync above is what forces the data out, so a close error here is the
@@ -3810,6 +3818,27 @@ func rawDir(p string) string {
 		return p[:i] // the root keeps its separator
 	}
 	return p[:i-1]
+}
+
+// statGid reads the group off a stat result. syscall.Stat_t does not exist on
+// windows, and this file has to compile there, so the field is read through
+// reflect rather than splitting the file per platform.
+func statGid(fi os.FileInfo) (int, bool) {
+	v := reflect.ValueOf(fi.Sys())
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return 0, false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return 0, false
+	}
+	g := v.FieldByName("Gid")
+	if !g.IsValid() || !g.CanUint() {
+		return 0, false
+	}
+	return int(g.Uint()), true
 }
 
 // setReadOnly toggles the windows read-only attribute, which is all Chmod
@@ -5379,10 +5408,12 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	// list is cloned because the splices below rewrite it as they go.
 	baseKids := append([]int(nil), d.arena[baseParent].children...)
 	hasContainer := map[string]bool{}
+	byName := map[string][]int{}
 	byKey := map[[2]string]int{}
 	for _, b := range baseKids {
 		name := d.arena[b].name
 		hasContainer[name] = hasContainer[name] || len(d.arena[b].children) > 0
+		byName[name] = append(byName[name], b)
 		key := [2]string{name, d.arena[b].value.key()}
 		if _, dup := byKey[key]; !dup {
 			byKey[key] = b
@@ -5420,11 +5451,11 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				// the parser promised to keep, so those move onto the
 				// replacement. A comment starts with `#`, a retained line
 				// never does.
+				// Off the index, not a scan of every base child: N leaves
+				// overridden by the same N names made this quadratic
+				// (20260918b item 58).
 				var kept []lead
-				for _, b := range baseKids {
-					if d.arena[b].name != name {
-						continue
-					}
+				for _, b := range byName[name] {
 					nd := &d.arena[b]
 					for _, list := range [][]lead{nd.leading(), nd.inside(), nd.after()} {
 						for _, l := range list {

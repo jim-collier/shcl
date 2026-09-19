@@ -3849,6 +3849,12 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		// would carry it.
 		#[cfg(unix)]
 		if let Some(m) = &existing {
+			// The group first, because a chown clears setuid/setgid on most
+			// systems. Best effort like the mode: a caller who is not in the
+			// old group keeps its own, which is what it had before this. The
+			// owner is not carried - see the file tier in spec.md.
+			use std::os::unix::fs::MetadataExt;
+			let _ = std::os::unix::fs::fchown(&f, None, Some(m.gid()));
 			let _ = f.set_permissions(m.permissions());
 		}
 		Ok(())
@@ -5300,11 +5306,13 @@ impl Document {
 		// list is cloned because the splices below rewrite it as they go.
 		let base_kids = self.arena[base_parent].children.clone();
 		let mut has_container: HashMap<String, bool> = HashMap::new();
+		let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
 		let mut by_key: HashMap<(String, String), usize> = HashMap::new();
 		for &b in &base_kids {
 			let name = self.arena[b].name.clone();
 			let e = has_container.entry(name.clone()).or_insert(false);
 			*e = *e || !self.arena[b].children.is_empty();
+			by_name.entry(name.clone()).or_default().push(b);
 			by_key.entry((name, self.arena[b].value.key())).or_insert(b);
 		}
 		// Decide per name. A name whose over-side nodes are all leaves is an
@@ -5337,7 +5345,10 @@ impl Document {
 					// onto the replacement. A comment starts with `#`, a
 					// retained line never does.
 					let mut kept: Vec<Lead> = Vec::new();
-					for &b in base_kids.iter().filter(|&&b| self.arena[b].name == *name) {
+					// Off the index, not a scan of every base child: N leaves
+					// overridden by the same N names made this quadratic
+					// (20260918b item 58).
+					for &b in by_name.get(name).map_or(&[][..], |v| v.as_slice()) {
 						let nd = &self.arena[b];
 						for l in nd.leading().iter().chain(nd.inside()).chain(nd.after()) {
 							if !l.text.starts_with('#') {

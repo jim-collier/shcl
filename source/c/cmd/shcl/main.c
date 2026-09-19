@@ -127,9 +127,10 @@ static const char *HELP =
 	"                                         rule sets read differently; without\n"
 	"                                         it those are left alone and migrate\n"
 	"                                         exits 7\n"
-	"  --check                                (migrate) print nothing, name each\n"
-	"                                         line the rewrite would change on\n"
-	"                                         stderr, and exit 6 when there is one\n"
+	"  --check                                (fmt/migrate) print nothing and exit 6\n"
+	"                                         when a rewrite would change the file;\n"
+	"                                         migrate names each line it would\n"
+	"                                         change on stderr\n"
 	"  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/\n"
 	"                                         children/paths) or 1|2|3 (default\n"
 	"                                         standard)\n"
@@ -185,7 +186,7 @@ static const char *HELP =
 	"\n"
 	"Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,\n"
 	"5 multiple instances, 6 check failed, strict load failed, init's schema has\n"
-	"faults, or migrate --check found a line to rewrite, 7 in-place write refused\n"
+	"faults, or --check found a rewrite to make, 7 in-place write refused\n"
 	"(--lossy overrides) or migrate left something behind, 8 a file or stream could\n"
 	"not be read or written.\n";
 
@@ -841,10 +842,28 @@ static int unchanged_since_read(const char *file, const char *before, size_t n) 
 	return same;
 }
 
+// read is the bytes FILE held when the command read it, and NULL when this
+// write is creating FILE.
 static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, size_t read_len) {
 	if (read && !unchanged_since_read(file, read, read_len)) return EXIT_IO;
+	// Nothing to write: what the save would publish is already on disk. A
+	// rewrite would give the file a new inode and mtime for nothing, so an
+	// idempotent --set-default in a provisioning script reported a change on
+	// every run, watchers fired, other hard links broke, and a canonical file
+	// in a read-only directory failed. The refusal comes first: a load that
+	// dropped content refuses the write whatever the bytes say.
+	if (read && (o->lossy || shcl_lost_count(d) == 0)) {
+		shcl_str c = shcl_to_canonical(d);
+		if (c.n == read_len && (c.n == 0 || memcmp(c.p, read, c.n) == 0)) return 0;
+	}
 	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
-	if (r == SHCL_SAVE_OK) return 0;
+	if (r == SHCL_SAVE_OK) {
+		// A created file is the one write with nothing to compare against
+		// afterwards, and a typo in the name used to end at exit 0 with an
+		// empty stderr and a new file nobody asked for.
+		if (!read) fprintf(stderr, "%s: created\n", file);
+		return 0;
+	}
 	// The rule stays in the library; only the wording is the CLI's, because the
 	// override a user has here is a flag, not a function.
 	if (r == SHCL_SAVE_REFUSED) {
@@ -871,7 +890,18 @@ static int do_fmt(Opts *o) {
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	int rc;
-	if (o->write) {
+	// --check is migrate --check's sibling, and the spelling every other
+	// formatter has: print nothing, and say by the exit code whether a rewrite
+	// would change the file. It was `shcl fmt f | cmp -s - f` before.
+	if (o->check) {
+		shcl_str c = shcl_to_canonical(L.doc);
+		const char *was = L.texts[L.ntexts - 1];
+		if (c.n == L.base_len && (c.n == 0 || memcmp(c.p, was, c.n) == 0)) rc = 0;
+		else {
+			fprintf(stderr, "%s: not canonical; fmt --write would rewrite it\n", file);
+			rc = 6;
+		}
+	} else if (o->write) {
 		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len);
 	} else {
 		shcl_str c = shcl_to_canonical(L.doc);
@@ -1651,7 +1681,7 @@ static int do_paths(Opts *o) {
 static const char *const *allowed_opts(const char *cmd) {
 	static const char *get_ok[] = { "--<type>", "--array", "--slots", "--default", "--on-bad", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *set_ok[] = { "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", "--no-banner", NULL };
-	static const char *fmt_ok[] = { "--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
+	static const char *fmt_ok[] = { "--write", "--lossy", "--check", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", NULL };
 	static const char *check_ok[] = { "--strictness", "--schema", NULL };
 	static const char *init_ok[] = { "--schema", "--no-banner", NULL };
 	static const char *migrate_ok[] = { "--write", "--lossy", "--from-2x", "--check", NULL };

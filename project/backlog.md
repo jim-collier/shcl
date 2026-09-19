@@ -144,33 +144,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's eleven enhancements. The defects are under Bugs, and the round bullet there says what was covered. With fifty-three defects open, none of these should be taken in the fix round.
 
-	- 🔘 Item 54: `fmt --check`.
-		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 55: `set --write` says nothing when it creates FILE.
-		- A typo in the file name exits 0 with empty stderr and leaves a new file, where `migrate --write` reports what it did. The create itself is decided. A `FILE: created` note on stderr is what is missing.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 56: `fmt --write` and `set --write` replace the file even when the bytes would not change.
-		- A new inode and mtime on every run, so an idempotent `--set-default` in a provisioning script reports a change each time, watchers fire, and other hard links break for nothing. A canonical file in a read-only directory fails at exit 8 with nothing to write. `migrate --write` already skips a current file.
-		- Note: pairs with bug item 16's second look.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 57: a rewrite keeps the mode and drops the group, and the spec's ownership sentence is wrong about the group.
-		- A `me:www-data 0640` config comes back `me:<primary group> 0640`, so the service loses its read. The spec says lost ownership "only shows when that is not the old file's owner", and the group changes even then.
-		- Keep: 20260829 item 8 decided that ownership is not kept. A best-effort `fchown` to the old group before the `fchmod` would part-reverse that, so it is a decision and not a bug fix. The spec sentence wants correcting either way.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 58: the leaf-override path of `merge` rescans the base children once per overridden name.
-		- Measured: N leaves overridden by the same N. C takes 0.69 s at 16,000, 2.9 s at 32,000 and 13.9 s at 64,000. Disjoint names are linear.
-		- Origin: `157b9aa` (2026-09-05). The comment above `overlay` says the quadratic terms at one parent were removed, and this put one back.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 59: Python's `ShclDateTime` has no `__eq__`, `__hash__` or `__repr__`.
-		- Two parses of the same datetime compare unequal, and it prints as an object address. The reference derives equality and a debug form. 20260909 item 50 gave `__repr__` to `Diagnostic` and `Read` only.
-		- Opened: 20260918-193000
-
 ### Done
 
 #### Done - Bugs
@@ -4370,6 +4343,55 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260918b:
 
 	- Items closed so far. The rest of the round is open under Features and enhancements.
+
+	- ✅ Item 54: `fmt --check`.
+		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.
+		- Fixed: `fmt --check` in all four CLIs. It prints nothing, exits 6 when the canonical form differs from the file's bytes and 0 when it does not, and names the file on stderr. `--check` with `--write` is the usage error it already was for `migrate`. Help, man page, completions and spec say so.
+		- Pinned by: `cli-regress.bash` rows `fmt-check-noncanonical`, `fmt-check-canonical` and `fmt-check-write`. All three fail on the old code (exit 1, "option --check not valid for fmt").
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 55: `set --write` says nothing when it creates FILE.
+		- A typo in the file name exits 0 with empty stderr and leaves a new file, where `migrate --write` reports what it did. The create itself is decided. A `FILE: created` note on stderr is what is missing.
+		- Fixed: a `--write` that created FILE says `FILE: created` on stderr, in all four CLIs. A write over an existing file still says nothing.
+		- Pinned by: `cli-regress.bash` rows `create-says` and `write-existing-quiet`. The first fails on the old code with an empty stderr.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 56: `fmt --write` and `set --write` replace the file even when the bytes would not change.
+		- A new inode and mtime on every run, so an idempotent `--set-default` in a provisioning script reports a change each time, watchers fire, and other hard links break for nothing. A canonical file in a read-only directory fails at exit 8 with nothing to write. `migrate --write` already skips a current file.
+		- Note: pairs with bug item 16's second look.
+		- Fixed: a `--write` whose canonical text equals the bytes read back publishes nothing and exits 0, in all four CLIs. The file keeps its inode, mtime and hard links. The library's save is unchanged, since its caller may want the publish. A load that dropped content still refuses first.
+		- Pinned by: `cli-regress.bash` save-target cases `same` and `differs`, which compare the inode across the run. `same` fails on the old code.
+		- Note: the new Save outcomes table in `design.md` carries both rows.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 57: a rewrite keeps the mode and drops the group, and the spec's ownership sentence is wrong about the group.
+		- A `me:www-data 0640` config comes back `me:<primary group> 0640`, so the service loses its read. The spec says lost ownership "only shows when that is not the old file's owner", and the group changes even then.
+		- Keep: 20260829 item 8 decided that ownership is not kept. A best-effort `fchown` to the old group before the `fchmod` would part-reverse that, so it is a decision and not a bug fix. The spec sentence wants correcting either way.
+		- Decided: the group is carried, best effort, and the owner still is not. A save that is not root cannot set the owner, and 20260829 item 8 stands. A saver outside the old group leaves its own group on the file, which is what happened before.
+		- Fixed: all four bindings chown the group on the temp file before the mode, since a chown clears setuid and setgid. Go reads the gid through reflect, because `syscall.Stat_t` does not exist on windows and `shcl.go` has to compile there.
+		- Fixed: the spec's ownership sentence now says owner rather than ownership, and says the group is carried. `design.md`'s "What is carried" bullet and the Save outcomes table say the same.
+		- Pinned by: `cli-regress.bash` save-target case `group`, which rewrites a `0640` file owned by a second group and reads the group back. It fails on the old code (the group comes back as the caller's own). The case drops out where the caller is in one group only.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152956
+
+	- ✅ Item 58: the leaf-override path of `merge` rescans the base children once per overridden name.
+		- Measured: N leaves overridden by the same N. C takes 0.69 s at 16,000, 2.9 s at 32,000 and 13.9 s at 64,000. Disjoint names are linear.
+		- Origin: `157b9aa` (2026-09-05). The comment above `overlay` says the quadratic terms at one parent were removed, and this put one back.
+		- Fixed: the base pass builds a name to children index alongside the two maps it already built, and the override arm reads the replaced leaf's comments off it. All four bindings. C keeps one posting list per name, which the map entries index. Merge output is byte-identical before and after, on the small shapes and on the big one.
+		- Measured: 32,000 leaves overridden by the same 32,000, `fmt --layer`. C 2.93 s to 0.05 s, rust debug 13.2 s to 0.70 s.
+		- Pinned by: `perf-gate.bash` workload `merge`, two flat files naming the same keys at half the key count. On the old code it is 1041 ms against a 283 ms budget in C and 5161 ms against 969 ms in rust. New code: c 34, go 74, rust 417, python 760, all well inside.
+		- Opened: 20260918-193000
+		- Closed: 20260919-153822
+
+	- ✅ Item 59: Python's `ShclDateTime` has no `__eq__`, `__hash__` or `__repr__`.
+		- Two parses of the same datetime compare unequal, and it prints as an object address. The reference derives equality and a debug form. 20260909 item 50 gave `__repr__` to `Diagnostic` and `Read` only.
+		- Fixed: `ShclDateTime` gets `__eq__`, `__hash__` and `__repr__`, field by field as the reference derives them. Same-moment comparison is a different question and stays in the value code, so `12:00:00Z` and `12:00:00+00:00` are still two values.
+		- Pinned by: the Python runner's repr block, beside the Diagnostic and Read checks 20260909 item 50 left there. With the three methods taken back out it fails with "two parses of one datetime are not equal".
+		- Opened: 20260918-193000
+		- Closed: 20260919-154025
 
 	- ✅ Item 60: `check-wheel.bash` downloads and runs an unpinned setuptools from PyPI on every gate run, the pre-push gate included.
 		- `build` is pinned and `pyproject.toml` says `setuptools>=77`, so each lint stage runs whatever PyPI serves that day, and the gate needs the network. A pinned setuptools with `--no-isolation`, or a hashed constraints file, closes it.

@@ -199,6 +199,9 @@ printf 'k: 1\n' > "${tmpDir}/${longName}"
 ## temp name's cap counted characters, so this one could not be rewritten.
 wideName="$(printf '\xf0\x9f\x98\x80%.0s' $(seq 60)).shcl"
 printf 'k: 1\n' > "${tmpDir}/${wideName}"
+## Loads without a diagnostic, so a --check row's stderr holds only --check's own
+## line. The extra spaces are all that is wrong with it.
+printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
 ##	The last field is optional: when given, %C% must hold exactly that text
@@ -238,7 +241,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	document for them, %CB% a malformed
 ##	line indented and behind a non-ASCII name, %CR% one behind a carriage
 ##	return that is not indent, %SG%/%DG% a schema with an int
-##	and a float range and a document that breaks both.
+##	and a float range and a document that breaks both, %NC% a file that loads
+##	clean and is not canonical.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full,
 ##	'@appear' / '@change' make %C% or change it while the command waits on
@@ -447,6 +451,13 @@ rows=(
 	## 20260909 item 41: telling a file that needs migrating from one that does
 	## not took a diff of the output, and --write said nothing either way.
 	'migrate-check-names|migrate --check %W%|-|6||w\.shcl:1: migrate would rewrite this line'
+	## 20260918b item 54: fmt --check, migrate --check's sibling.
+	'fmt-check-noncanonical|fmt --check %NC%|-|6||noncanon\.shcl: not canonical; fmt --write would rewrite it'
+	'fmt-check-canonical|fmt --check %F%|-|0||!.'
+	'fmt-check-write|fmt --check --write %NC%|-|1|-|--check cannot be combined with --write'
+	## 20260918b item 55: a created file says so, since nothing else does.
+	'create-says|set --write --no-banner %C% --set=a=1|-|0|-|created\.shcl: created|a: 1\n'
+	'write-existing-quiet|fmt --write %W%|-|7|-|!created'
 	'migrate-check-clean|migrate --check %F%|-|0||!.'
 	'migrate-check-stamped|migrate --check %V3%|-|0||nothing to migrate'
 	'migrate-check-ambiguous|migrate --check %BS%|-|7||does not say which it was written for'
@@ -660,6 +671,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%CB%/${tmpDir}/colbytes.shcl}"
 	argv="${argv//%CR%/${tmpDir}/colcr.shcl}"
 	argv="${argv//%SG%/${tmpDir}/range.shcl}"
+	argv="${argv//%NC%/${tmpDir}/noncanon.shcl}"
 	argv="${argv//%DG%/${tmpDir}/outofrange.shcl}"
 	## %W% and %L% are rewritten in place, so each binding gets its own fresh
 	## copy below.
@@ -808,9 +820,15 @@ done
 ## directory, since the save is what is under test, and a timeout, since the old
 ## code blocked reading a FIFO. POSIX fixtures: links and FIFOs.
 saveDir="${tmpDir}/save"
+## A group the caller is in that is not its own, for the group-carry case. A
+## runner with one group has nothing to tell apart, so the case drops out.
+altGroup="$(id -Gn | tr ' ' '\n' | grep -vx "$(id -gn)" | head -1 || true)"
 fSaveSetup() {
 	case "$1" in
 		regular)  printf 'a: 1\n' > f.shcl ;;
+		same)     printf 'a: 1\n' > f.shcl; stat -c %i f.shcl > ino ;;
+		differs)  printf 'a:   1\n' > f.shcl; stat -c %i f.shcl > ino ;;
+		group)    printf 'a:   1\n' > f.shcl; chgrp "${altGroup}" f.shcl; chmod 0640 f.shcl ;;
 		nothing)  : ;;
 		link)     printf 'a: 1\n' > real.shcl; ln -s real.shcl f.shcl ;;
 		dangling) mkdir sub; ln -s sub/x.shcl f.shcl ;;
@@ -824,6 +842,8 @@ fSaveSetup() {
 	esac
 }
 ## id | argv | exit | what must hold afterwards, as a bash test run in the directory
+## The last field is eval'd after the run, so its substitutions stay unexpanded.
+# shellcheck disable=SC2016
 saveCases=(
 	'regular|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
 	'nothing|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
@@ -837,7 +857,19 @@ saveCases=(
 	'fifo|set --write --set b=2 f.shcl|8|[[ -p f.shcl ]]'
 	'fifo-fmt|fmt --write f.shcl|8|[[ -p f.shcl ]]'
 	'device|set --write --set b=2 f.shcl|8|[[ -L f.shcl && -c /dev/null ]]'
+	## 20260918b item 56: a write with nothing to write leaves the file alone,
+	## inode and all, and one with something to write still replaces it.
+	'same|fmt --write f.shcl|0|[[ "$(stat -c %i f.shcl)" == "$(cat ino)" ]]'
+	'differs|fmt --write f.shcl|0|[[ "$(stat -c %i f.shcl)" != "$(cat ino)" ]] && grep -qx "a: 1" f.shcl'
+	## 20260918b item 57: the group comes over with the mode, so a config a
+	## service reads by group keeps that read.
+	'group|fmt --write f.shcl|0|[[ "$(stat -c %G f.shcl)" == "${altGroup}" && "$(stat -c %a f.shcl)" == 640 ]]'
 )
+if [[ -z "${altGroup}" ]]; then
+	echo "cli-regress: skipping the save-group case (the caller is in one group only)"
+	kept=(); for sc in "${saveCases[@]}"; do [[ "${sc}" == group\|* ]] || kept+=("${sc}"); done
+	saveCases=("${kept[@]}")
+fi
 if [[ "${onWindows}" == 1 ]]; then
 	echo "cli-regress: skipping the save-target cases (POSIX fixtures; not judged on windows)"
 else

@@ -250,6 +250,22 @@ class ShclDateTime:
 		self.frac = frac
 		self.zone = zone
 
+	# Field by field, as the reference derives it. Same-moment comparison is a
+	# different question and lives in the value code: `12:00:00Z` and
+	# `12:00:00+00:00` are one moment and two values.
+	def __eq__(self, other: object) -> bool:
+		if not isinstance(other, ShclDateTime):
+			return NotImplemented
+		return (self.date, self.time, self.frac, self.zone) == (
+			other.date, other.time, other.frac, other.zone)
+
+	def __hash__(self) -> int:
+		return hash((self.date, self.time, self.frac, self.zone))
+
+	def __repr__(self) -> str:
+		return (f"ShclDateTime(date={self.date!r}, time={self.time!r}, "
+			f"frac={self.frac!r}, zone={self.zone!r})")
+
 	def __str__(self) -> str:
 		out = []
 		if self.date is not None:
@@ -3762,10 +3778,12 @@ class Document:
 		# list is copied because the splices below rewrite it as they go.
 		base_kids = list(self.arena[base_parent].children)
 		has_container: dict = {}
+		by_name: dict = {}
 		by_key: dict = {}
 		for b in base_kids:
 			name = self.arena[b].name
 			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
+			by_name.setdefault(name, []).append(b)
 			by_key.setdefault((name, self.arena[b].value.key()), b)
 		# Decide per name. A name whose over-side nodes are all leaves is an
 		# override - but only when the base side of the group is leaf-shaped
@@ -3792,10 +3810,11 @@ class Document:
 					# the parser promised to keep, so those move onto the
 					# replacement. A comment starts with `#`, a retained line
 					# never does.
+					# Off the index, not a scan of every base child: N leaves
+					# overridden by the same N names made this quadratic
+					# (20260918b item 58).
 					kept = []
-					for b in base_kids:
-						if self.arena[b].name != name:
-							continue
+					for b in by_name.get(name, ()):
 						nd = self.arena[b]
 						for lead in nd.leading() + nd.inside() + nd.after():
 							if not lead.text.startswith("#"):
@@ -4792,6 +4811,16 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 			# read-only bit the publish handles itself.
 			if existing is not None and os.name != "nt" and hasattr(os, "fchmod"):
 				try:
+					# The group first, because a chown clears setuid/setgid on
+					# most systems. Best effort like the mode: a caller who is
+					# not in the old group keeps its own, which is what it had
+					# before this. The owner is not carried - see the file tier
+					# in spec.md.
+					if hasattr(os, "fchown"):
+						try:
+							os.fchown(f.fileno(), -1, existing.st_gid)
+						except OSError:
+							pass
 					os.fchmod(f.fileno(), stat.S_IMODE(existing.st_mode))
 				except OSError:
 					pass

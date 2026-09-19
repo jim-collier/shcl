@@ -151,9 +151,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
-  --check                                (migrate) print nothing, name each
-                                         line the rewrite would change on
-                                         stderr, and exit 6 when there is one
+  --check                                (fmt/migrate) print nothing and exit 6
+                                         when a rewrite would change the file;
+                                         migrate names each line it would
+                                         change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
                                          children/paths) or 1|2|3 (default
                                          standard)
@@ -209,7 +210,7 @@ layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, init's schema has
-faults, or migrate --check found a line to rewrite, 7 in-place write refused
+faults, or --check found a rewrite to make, 7 in-place write refused
 (--lossy overrides) or migrate left something behind, 8 a file or stream could
 not be read or written.
 `
@@ -923,7 +924,7 @@ func allowedOpts(cmd string) []string {
 		allowed = []string{"--strictness", "--layer", "--set", "--set-literal", "--set-default",
 			"--set-literal-default", "--remove", "--write", "--lossy", "--no-banner"}
 	case "fmt":
-		allowed = []string{"--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal",
+		allowed = []string{"--write", "--lossy", "--check", "--strictness", "--layer", "--set", "--set-literal",
 			"--set-default", "--set-literal-default", "--remove"}
 	case "check":
 		allowed = []string{"--strictness", "--schema"}
@@ -1293,9 +1294,20 @@ func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document,
 // though the command succeeded, and the save runs through the library's own
 // gate rather than a second copy of the rule - the CLI and a consumer program
 // cannot then disagree about which rewrites are safe.
+// writeBack saves the document over FILE. read is the bytes FILE held when the
+// command read it, and nil when this write is creating FILE.
 func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
 	if read != nil && !unchangedSinceRead(file, *read) {
 		return exitIO
+	}
+	// Nothing to write: what the save would publish is already on disk. A
+	// rewrite would give the file a new inode and mtime for nothing, so an
+	// idempotent --set-default in a provisioning script reported a change on
+	// every run, watchers fired, other hard links broke, and a canonical file
+	// in a read-only directory failed. The refusal comes first: a load that
+	// dropped content refuses the write whatever the bytes say.
+	if read != nil && (o.lossy || doc.LostCount() == 0) && doc.ToCanonical() == *read {
+		return 0
 	}
 	var werr error
 	if o.lossy {
@@ -1304,6 +1316,12 @@ func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
 		werr = doc.SaveFile(file)
 	}
 	if werr == nil {
+		// A created file is the one write with nothing to compare against
+		// afterwards, and a typo in the name used to end at exit 0 with an
+		// empty stderr and a new file nobody asked for.
+		if read == nil {
+			fmt.Fprintf(os.Stderr, "%s: created\n", file)
+		}
 		return 0
 	}
 	// The rule stays in the library; only the wording is the CLI's, because the
@@ -1599,6 +1617,16 @@ func doFmt(o *opts) int {
 	doc, read, code := loadLayeredFrom(o, file, nil)
 	if doc == nil {
 		return code
+	}
+	// --check is migrate --check's sibling, and the spelling every other
+	// formatter has: print nothing, and say by the exit code whether a rewrite
+	// would change the file. It was `shcl fmt f | cmp -s - f` before.
+	if o.check {
+		if doc.ToCanonical() == read {
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "%s: not canonical; fmt --write would rewrite it\n", file)
+		return 6
 	}
 	if o.write {
 		return writeBack(doc, file, o, &read)

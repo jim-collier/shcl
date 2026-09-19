@@ -143,9 +143,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
-  --check                                (migrate) print nothing, name each
-                                         line the rewrite would change on
-                                         stderr, and exit 6 when there is one
+  --check                                (fmt/migrate) print nothing and exit 6
+                                         when a rewrite would change the file;
+                                         migrate names each line it would
+                                         change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
                                          children/paths) or 1|2|3 (default
                                          standard)
@@ -201,7 +202,7 @@ layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, init's schema has
-faults, or migrate --check found a line to rewrite, 7 in-place write refused
+faults, or --check found a rewrite to make, 7 in-place write refused
 (--lossy overrides) or migrate left something behind, 8 a file or stream could
 not be read or written.
 ";
@@ -858,6 +859,7 @@ fn allowed_opts(cmd: &str) -> &'static [&'static str] {
 		"fmt" => &[
 			"--write",
 			"--lossy",
+			"--check",
 			"--strictness",
 			"--layer",
 			"--set",
@@ -867,6 +869,7 @@ fn allowed_opts(cmd: &str) -> &'static [&'static str] {
 			"--remove",
 		],
 		"check" => &["--strictness", "--schema"],
+
 		"init" => &["--schema", "--no-banner"],
 		"migrate" => &["--write", "--lossy", "--from-2x", "--check"],
 		"tokens" | "explain" => &[],
@@ -1203,10 +1206,24 @@ fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Docu
 /// than a second copy of the rule - the CLI and a consumer program cannot then
 /// disagree about which rewrites are safe.
 fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
+	// `read` is the bytes FILE held when the command read it, and None when
+	// this write is creating FILE.
 	if let Some(before) = read
 		&& !unchanged_since_read(file, before)
 	{
 		return EXIT_IO;
+	}
+	// Nothing to write: what the save would publish is already on disk. A
+	// rewrite would give the file a new inode and mtime for nothing, so an
+	// idempotent `--set-default` in a provisioning script reported a change on
+	// every run, watchers fired, other hard links broke, and a canonical file
+	// in a read-only directory failed. The refusal comes first: a load that
+	// dropped content refuses the write whatever the bytes say.
+	if let Some(before) = read
+		&& (o.lossy || doc.lost_count() == 0)
+		&& doc.to_canonical() == before
+	{
+		return 0;
 	}
 	let r = if o.lossy {
 		doc.save_file_lossy(file)
@@ -1214,7 +1231,15 @@ fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
 		doc.save_file(file)
 	};
 	match r {
-		Ok(()) => 0,
+		Ok(()) => {
+			// A created file is the one write with nothing to compare against
+			// afterwards, and a typo in the name used to end at exit 0 with an
+			// empty stderr and a new file nobody asked for.
+			if read.is_none() {
+				errln!("{}: created", file);
+			}
+			0
+		}
 		Err(SaveError::Refused { lost, .. }) => {
 			// The rule stays in the library; only the wording is the CLI's,
 			// because the override a user has here is a flag, not a function.
@@ -1527,6 +1552,16 @@ fn do_fmt(o: &Opts) -> u8 {
 		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
+	// `--check` is `migrate --check`'s sibling, and the spelling every other
+	// formatter has: print nothing, and say by the exit code whether a rewrite
+	// would change the file. It was `shcl fmt f | cmp -s - f` before.
+	if o.check {
+		if doc.to_canonical() == read {
+			return 0;
+		}
+		errln!("{}: not canonical; fmt --write would rewrite it", file);
+		return 6;
+	}
 	if o.write {
 		return write_back(&doc, file, o, Some(&read));
 	}
