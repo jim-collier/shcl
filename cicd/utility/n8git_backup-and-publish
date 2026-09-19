@@ -106,12 +106,19 @@ fMain(){
 	## Generic variables
 	local -i wasShown_Copyright=0; local -i wasShown_About=0; wasShown_Syntax=0
 
-	## Check for need to show help
+	## Check for need to show help. Whole arguments only, and never the value of
+	## an option that takes one: matching the joined string took
+	## `--message "pass -v through to rar"` as a request for the version.
 	{ ((atLeastOneArgRequired)) && [[ -z "${1:-}${2:-}${3:-}${4:-}" ]]; } && { fCopyright; fAbout; fSyntax; return 1; }
-	case " ${*,,} " in
-		*" -h "*|*" --help "*)                 fCopyright; fAbout; fSyntax; return 0; ;;
-		*" -v "*|*" --ver "*|*" --version "*)  fCopyright;                  return 0; ;;
-	esac
+	local helpArg=""; local -i skipNext=0
+	for helpArg in "${@}"; do
+		if ((skipNext)); then skipNext=0; continue; fi
+		case "${helpArg,,}" in
+			-h|--help)            fCopyright; fAbout; fSyntax; return 0; ;;
+			-v|--ver|--version)   fCopyright;                  return 0; ;;
+			-m|--msg|--message)   skipNext=1 ;;
+		esac
+	done
 
 	## Validate dependencies
 	fMustBeInPath rar

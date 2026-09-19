@@ -696,6 +696,27 @@ SRVEOF
 	kill "${tokenPid}" 2>/dev/null || true
 fi
 
+##	20260918b item 42: the publish script matched -h and -v anywhere in its
+##	joined arguments, so `--message "pass -v through to rar"` printed the
+##	banner and exited 0 having published nothing. Run from a directory that is
+##	not a repo, so the run can only reach the refusal that comes before any
+##	write. A stub rar stands in, since the script checks for one first.
+nBadBefore="${nBad}"
+(
+	pdir="${tmpDir}/publish"; mkdir -p "${pdir}/bin" "${pdir}/work"
+	printf '#!/bin/sh\nexit 0\n' > "${pdir}/bin/rar"; chmod 755 "${pdir}/bin/rar"
+	fPublish(){ (cd "${pdir}/work" && PATH="${pdir}/bin:${PATH}" bash "${repoDir}/cicd/utility/n8git_backup-and-publish" "$@" 2>&1) ;}
+	rc=0; out="$(fPublish --quiet --message "pass -v through to rar")" || rc=$?
+	[[ "${rc}" != 0 && "${out}" == *"Not in git project base directory"* ]] \
+		|| fBad "n8git_backup-and-publish took a -v inside --message for a version request: rc=${rc} ${out@Q}"
+	rc=0; out="$(fPublish -m "document the -h flag")" || rc=$?
+	[[ "${rc}" != 0 && "${out}" == *"Not in git project base directory"* ]] \
+		|| fBad "n8git_backup-and-publish took a -h inside -m for a help request: rc=${rc} ${out@Q}"
+	rc=0; out="$(fPublish --message x -v)" || rc=$?
+	[[ "${rc}" == 0 && "${out}" == *"Copyright"* ]] || fBad "n8git_backup-and-publish no longer answers a real -v: rc=${rc} ${out@Q}"
+	exit $((nBad - nBadBefore))
+) || nBad=$((nBad + 1))
+
 ##	20260901b item 46: the PowerShell wrapper's header ran one line out to 126
 ##	columns where its bash twin wraps. Comment lines only - the code in both
 ##	carries a couple of long ones on purpose.
