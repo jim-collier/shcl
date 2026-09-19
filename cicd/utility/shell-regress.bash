@@ -325,10 +325,43 @@ if fHave pwsh; then
 	[[ "${out}" == *"three=3"* ]]    || fBad "install.ps1 smoke test lost a nonzero exit: ${out@Q}"
 	[[ "${out}" == *"good=0"* ]]     || fBad "install.ps1 smoke test failed a working binary: ${out@Q}"
 
-	##	20260918b item 11, end to end: the real script with only its Windows
-	##	refusal cut out, every request sent to a proxy that is not there. An
-	##	uninstall needs no release and must not wait on the API. Its PATH edit
-	##	then fails for want of a registry; the row is about what comes before it.
+	##	20260918b item 36: a request with no response at all (DNS, a refused
+	##	port, a proxy) has no status, and reading one threw under strict mode,
+	##	so the network-down message was never printed. A 403 still has to read
+	##	as 403, or a rate limit goes back to looking like a dead network.
+	python3 - "${tmpDir}/httpport" <<'SRVEOF' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+	def do_GET(self):
+		self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers()
+	def log_message(self, *a):
+		pass
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+open(sys.argv[1], 'w').write(str(s.server_address[1]))
+s.serve_forever()
+SRVEOF
+	httpPid=$!
+	for _ in {1..50}; do [[ -s "${tmpDir}/httpport" ]] && break; sleep 0.1; done
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Get-HttpStatus/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "foreach (\$url in 'http://127.0.0.1:9/', 'http://127.0.0.1:$(cat "${tmpDir}/httpport" 2>/dev/null || true)/') {"
+		echo '	try { $null = Invoke-RestMethod -Uri $url -UseBasicParsing; Write-Output "no error" } catch { try { Write-Output ("status=" + (Get-HttpStatus $_)) } catch { Write-Output "threw $_" } }'
+		echo '}'
+	} > "${tmpDir}/status.ps1"
+	out="$(env -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy pwsh -NoProfile -File "${tmpDir}/status.ps1" 2>&1 || true)"
+	kill "${httpPid}" 2>/dev/null || true
+	[[ "${out}" == *"status=0"* ]]   || fBad "install.ps1 cannot read a request that got no response: ${out@Q}"
+	[[ "${out}" == *"status=403"* ]] || fBad "install.ps1 lost the status of a refused request: ${out@Q}"
+
+	##	20260918b items 11 and 36, end to end: the real script with only its
+	##	Windows refusal cut out, every request sent to a proxy that is not
+	##	there. An uninstall needs no release and must not wait on the API, and
+	##	an install with the network down has to say so. The uninstall's PATH
+	##	edit then fails for want of a registry; the rows are about what comes
+	##	before it.
 	#  shellcheck disable=2016  ## PowerShell's own $IsWindows, matched literally.
 	sed '/-and -not \$IsWindows) {$/,/^\t}$/d' "${repoDir}/install.ps1" > "${tmpDir}/nogate.ps1"
 	if (($(wc -l < "${repoDir}/install.ps1") - $(wc -l < "${tmpDir}/nogate.ps1") != 3)) || grep -q 'IsWindows' "${tmpDir}/nogate.ps1"; then
@@ -343,6 +376,9 @@ if fHave pwsh; then
 	[[ "${out}" == *"removing shcl:"* ]] || fBad "install.ps1 -Uninstall needed the network before removing anything: ${out@Q}"
 	[[ -e "${tmpDir}/lad/Programs/Shcl/shcl.exe" || -e "${tmpDir}/lad/Programs/Shcl/code/lib.rs" ]] \
 		&& fBad "install.ps1 -Uninstall left its files with the network down"
+	out="$(fNoNet -Target user -Yes || true)"
+	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
+		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
 	##	20260909 item 38: the setup's PATH script exited 0 when it could not
 	##	write, so the setup's fallback message never showed. There is no

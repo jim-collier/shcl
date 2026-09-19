@@ -143,6 +143,17 @@ file. Nothing unverified is installed.
 		}
 	}
 
+	## The HTTP status behind a failed request, or 0 when there was no response
+	## at all (DNS, a refused connection, a proxy, a timeout). pwsh 7 throws an
+	## HttpRequestException with no Response member and 5.1 a WebException whose
+	## Response is null, and strict mode throws on reading either, so the
+	## network-down message could never be reached.
+	function Get-HttpStatus($ErrorRecord) {
+		$response = $ErrorRecord.Exception.PSObject.Properties['Response']
+		if (-not $response -or -not $response.Value) { return 0 }
+		return [int]$response.Value.StatusCode
+	}
+
 	function Select-ReleaseTag([string]$Channel, $Releases) {
 		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
 		$all = @($all) | Where-Object { -not $_.draft }
@@ -304,7 +315,7 @@ file. Nothing unverified is installed.
 	try {
 		$rel = Invoke-RestMethod -Uri $api -UseBasicParsing -Headers $apiHeaders
 	} catch {
-		$status = [int]$_.Exception.Response.StatusCode
+		$status = Get-HttpStatus $_
 		if ($status -eq 403 -or $status -eq 429) {
 			Exit-Install "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run"
 		}
