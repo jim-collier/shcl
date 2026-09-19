@@ -547,7 +547,7 @@ Several choices deliberately cut against SHCL, so that a favorable result stays 
 
 - **The generated SHCL is canonical**, a `fmt` fixpoint, so the round-trip column reports what the format does rather than how the generator chose to space things.
 
-Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts last in both tiers; that is the measured result, and the reason the order is stated rather than chosen.
+Rows are ordered by the geometric mean of each library's parse time across every shape, fastest first - one order used for every printed table and for the results file, so a row keeps its place from shape to shape. The geometric mean rather than the arithmetic one, so a single large shape cannot decide the whole order; the number it sorts on is recorded beside each library, so the ordering can be re-derived rather than trusted. SHCL sorts fifth of seven in Rust and last in Python; that is the measured result, and the reason the order is stated rather than chosen.
 
 Reading a value by path is deliberately not measured. The five lookup APIs differ enough that the harness would have to write the walk itself for most of them, and the result would be a measurement of harness code.
 
@@ -555,15 +555,15 @@ It is not a pipeline gate. Benchmarks are noisy and slow, and a red build caused
 
 One thing the tool found about a library rather than a format, recorded so nobody re-derives it: `lxml` goes quadratic on the long-and-flat shape, dropping from 59 MiB/s at 3 MiB to 5.7 at 26 - measured with and without `huge_tree`, which makes no difference, so it is not the flag that lifts libxml2's size ceilings. The likely cause is the shape's millions of *distinct* element names against libxml2's name dictionary; the shapes whose names repeat show nothing of the sort, and no other library in either tier does this. It is a good argument for measuring more than one document shape.
 
-What it found, at 64 MiB per shape (rerun after the 2.0 memory work):
+What it found, at 64 MiB per shape (rerun on 2026-09-19; runs before it read the memory figure with two documents alive for five of the seven Rust libraries):
 
-- SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, the five sit within a fifth of each other, so the win is a plain-text one.
+- SHCL writes the smallest file of the five in three shapes of four, and the gap widens with nesting - half the size of JSON and of XML on deep structure. Gzipped, SHCL is within 3% of the smallest file on every shape, so the win is a plain-text one.
 
-- SHCL is still the slowest to load in both tiers by aggregate, six to ten times behind `serde_json`, but now sits near the light end on memory: below TOML and YAML on every shape, below JSON on two of four, and a quarter of `toml_edit`, the one other parser that keeps the file.
+- SHCL loads fifth of seven in Rust and last in Python by aggregate, four to eight times behind `serde_json`. On memory it sits in the middle: below YAML on three shapes of four, below TOML on two, above JSON on all four, and below `toml_edit` on all four, about half of it on the records. `toml_edit` is the one other parser that keeps the file.
 
-- The Python tier says the load cost is the format's rather than one implementation's - against `tomllib`, the tier's one other pure-Python parser, SHCL is 3.5x behind, against 2.1x behind `toml` in Rust. That trade is the design working as intended rather than a defect.
+- The Python tier puts SHCL 3.7x behind `tomllib`, the tier's one other pure-Python parser, against 1.5x behind `toml` in Rust, so part of the Python gap is the implementation rather than the format. The rest of the trade is the design working as intended rather than a defect.
 
-- At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.07 ms and 13 ms.
+- At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.04 ms and 7 ms.
 
 ### CI/CD
 
