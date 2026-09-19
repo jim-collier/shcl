@@ -199,6 +199,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Bugs
 
+- ✅ Under an element cap, a `*` line reported `E021` where the open parse drops it as `E008`.
+	- Reproduced: through `parse_limited` at element cap 1 on the nine lines the fuzz built. The open parse binds a field under the element's field (`E001`) and refuses the element after it as `E008`; the capped parse refuses the field line as `E021`, so the element would join the list and the cap refuses it too.
+	- Decided: no parser change. The cap is right on both lines. The two parses read the same document only up to the first line the cap refuses; after that a dropped line has taken its children's level or its parent's field children with it, which is the same reasoning that already kept `E012` and `E018` out of the property.
+	- Fixed: `a_cap_refuses_only_a_line_that_would_bind` compares the first capped line alone, and skips a bracket line after it. The reason is at the site.
+	- Pinned by: the property itself, watched to fail at iteration 1 with 20260918b item 29's order put back (bracket text judged after the cap), and green at 200000 with the fix in.
+	- Note: found by the fuzz once 20260918b item 64 gave the structural generator its fence shapes. It was out of reach at 300 and at 20000 iterations.
+	- Opened: 20260919-150633
+	- Closed: 20260919-152000
+
 - ✅ `migrate` stamps a file again on every run when an older `Format` line comes before its own stamp.
 	- Reproduced in all four. `a: 1` and `##    Format   0`: `migrate` appends `##    Format   3`, and a second run appends another, at exit 0 both times.
 	- Cause: the first Format line decided, and the stamp goes at the end of the file.
