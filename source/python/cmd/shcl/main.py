@@ -83,8 +83,8 @@ Usage:
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
                                          rules (print it, rewrite FILE in place
-                                         with --write, or name the lines it
-                                         would change with --check)
+                                         with --write or -w, or name the lines
+                                         it would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl explain [CODE]                    what a diagnostic code means (every
@@ -143,22 +143,24 @@ Options (the subcommands each belongs to are in parentheses):
   --check                                (migrate) print nothing, name each
                                          line the rewrite would change on
                                          stderr, and exit 6 when there is one
-  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3
-                                         (default standard)
+  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
+                                         children/paths) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (all but check/init/migrate/tokens)
-                                         merge a lower-priority layer under
-                                         FILE; repeatable, earlier = lower
-                                         priority
-  --set=PATH=VALUE                       (all but check/init/migrate/tokens)
-                                         override one path as the top layer,
-                                         after all files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE goes
-                                         in as data: its type still follows the
-                                         text (8 is an int), but a comma or
-                                         quote in it is content, not syntax
+  --layer=FILE                           (get/set/fmt/count/instances/children/
+                                         paths) merge a lower-priority layer
+                                         under FILE; repeatable, earlier =
+                                         lower priority
+  --set=PATH=VALUE                       (get/set/fmt/count/instances/children/
+                                         paths) override one path as the top
+                                         layer, after all files; repeatable. On
+                                         'set' it is an edit to the document
+                                         itself, so it persists with --write.
+                                         VALUE goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
@@ -237,9 +239,9 @@ E002|error|value after a last-segment selector (a.b[X]: v)
   The selector already says which instance, so the value has nowhere to go
   and is ignored. Put the value on the line that creates the instance.
 E003|error|selector names an instance that does not exist
-  a[5].b or a[#5].b where there is one a. An index selects an existing
-  instance by position and never creates one, so a binding line should
-  select by value instead.
+  a[5].b where there is one a. An index selects an existing instance by
+  position and never creates one, so a binding line should select by value
+  instead. In a file the index is the bare [5], since a # opens a comment.
 E004|error|wildcard selector on a binding line
   Wildcards read every instance, so there is no single one to write to.
   They are query-only.
@@ -341,7 +343,8 @@ V096|error|schema expands to more fields than generation allows
 V097|error|generated output does not load, or fails its own schema
   init checks its own output before returning it, so a starter config that
   would fail its first check is a fault instead. A default outside its
-  field's constraints is the usual cause. Line 0.
+  field's constraints is one cause. A required path nothing can generate is
+  the other, such as one with a [#N] selector or a * name. Line 0.
 V099|error|schema failed to load
   The schema had error diagnostics of its own; they are printed above this
   with their own line numbers. Line 0.
@@ -414,6 +417,18 @@ def _ascii_lower(s):
 	# ASCII-only folding, as the reference's to_ascii_lowercase; str.lower()
 	# folds the whole of Unicode.
 	return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in s)
+
+
+def _ascii_upper(s):
+	# The other way, as to_ascii_uppercase. str.upper() turns a long s into S,
+	# so a word that is not ASCII could look up or suggest a code.
+	return "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in s)
+
+
+def known_option(name):
+	# A real option by any spelling, -w included. The suggestions draw on
+	# option_names alone, which leaves the short form out.
+	return name == "-w" or name in option_names()
 
 
 def _set_value_opt(o, name, v):
@@ -629,7 +644,12 @@ def parse_opts(argv):
 		elif a.startswith("-") and len(a) > 1:
 			# The suggestion is against the name half: `--stricness=1` is a typo
 			# in the option, not in a spelling that includes a value.
-			raise ValueError(f"unknown option: {a}{suggest(option_names(), a.split('=')[0])} (see --help)")
+			name = a.split("=")[0]
+			# Every value option is matched above, so a real name here is a flag
+			# given a value. Calling it unknown would suggest it back.
+			if known_option(name):
+				raise ValueError(f"option {name} takes no value (see --help)")
+			raise ValueError(f"unknown option: {a}{suggest(option_names(), name)} (see --help)")
 		else:
 			o.args.append(a)
 		i += 1
@@ -850,7 +870,7 @@ def check_opts(cmd, o):
 				# so it always loads at Standard - the same rule `check --schema`
 				# follows for the schema half.
 				sys.stderr.write(
-					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n"
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n"
 				)
 			elif cmd == "check" and s in ("--layer", "--set", "--set-literal"):
 				# The one refusal a user is likely to want anyway: check reports
@@ -894,7 +914,7 @@ def check_opts(cmd, o):
 		return 1
 	# The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" and any(lf == "-" for lf in o.layers):
-		sys.stderr.write("--layer=- is not valid for set (stdin carries the ops script or the document)\n")
+		sys.stderr.write("--layer=- is not valid for set: stdin carries the ops script or the document (see --help)\n")
 		return 1
 	# Stdin reads once; a second '-' would silently get an empty document.
 	stdin_uses = sum(1 for lf in o.layers if lf == "-") + int(o.schema == "-") + int(bool(o.args) and o.args[0] == "-")
@@ -979,7 +999,7 @@ def do_get(o):
 			r = doc.read_datetime_array(path)
 			lines = [str(v) for v in r.value]
 		elif o.kind in ("raw", "rawinfo"):
-			sys.stderr.write(f"--{o.kind} has no --array form\n")
+			sys.stderr.write(f"--{o.kind} has no --array form (see --help)\n")
 			return 1
 		else:
 			r = doc.read_string_array(path)
@@ -1129,7 +1149,7 @@ def do_migrate(o):
 	# the load after it is for the diagnostics and the save gate, the same
 	# gate fmt --write goes through.
 	if len(o.args) != 1:
-		sys.stderr.write("usage: shcl migrate [--write|-w] FILE (see --help)\n")
+		sys.stderr.write("usage: shcl migrate [options] FILE (see --help)\n")
 		return 1
 	file = o.args[0]
 	if o.write and file == "-":
@@ -1211,7 +1231,7 @@ def do_explain(o):
 	if len(o.args) > 1:
 		sys.stderr.write("usage: shcl explain [CODE] (see --help)\n")
 		return 1
-	code = o.args[0].upper()
+	code = _ascii_upper(o.args[0])
 	# The entry runs from its head line to the next one. Built up first, since a
 	# code the table does not carry prints nothing at all.
 	body = ""
@@ -1796,16 +1816,21 @@ def run(argv):
 	if asked == "help" or argv[0] == "help":
 		# `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		# flag form the command is the first word, which a bare `--help` is not.
+		# An empty word is still a topic, as it is in the reference: `help ''`
+		# names no command, which is not the same as naming none.
 		if argv[0] == "help":
-			if len(argv) > 2:
+			# A help flag after `help` asks for the same thing twice, so it is no
+			# topic: `help --help` and `help get -h` print what they name.
+			words = [w for w in argv[1:] if w not in ("-h", "--help")]
+			if len(words) > 1:
 				sys.stderr.write("usage: shcl help [CMD] (see --help)\n")
 				return 1
-			topic = argv[1] if len(argv) == 2 else ""
+			topic = words[0] if words else None
 		else:
-			topic = "" if argv[0].startswith("-") else argv[0]
+			topic = None if argv[0].startswith("-") else argv[0]
 		# The informational words are the full help's own last two lines, so
 		# there is nothing narrower to show for them.
-		if topic in ("", "help", "version", "about", "donate"):
+		if topic is None or topic in ("help", "version", "about", "donate"):
 			sys.stdout.write("\n" + HELP + "\n")
 			return 0
 		if topic in COMMANDS:
@@ -1828,7 +1853,7 @@ def run(argv):
 		# as that and not as an option the wrong command cannot take.
 		if cmd.startswith("-") and cmd != "--":
 			name = cmd.split("=")[0]
-			if name in option_names():
+			if known_option(name):
 				# It is a real option, just in front of the subcommand. Calling
 				# it unknown and then suggesting the same spelling back says
 				# nothing about what is actually wrong.
@@ -1843,16 +1868,17 @@ def run(argv):
 	except ValueError as e:
 		sys.stderr.write(str(e) + "\n")
 		return 1
-	# A value option in space form takes the next word, so `check --schema FILE`
-	# leaves no FILE and the usage line alone never says where it went. init is
-	# the one command that wants no positional of its own.
-	if cmd != "init" and not o.args and o.swallowed is not None:
-		name, value = o.swallowed
-		sys.stderr.write(f"option {name} took '{value}' as its value, so no FILE is left; spell it {name}=VALUE\n")
-		return 1
 	code = check_opts(cmd, o)
 	if code is not None:
 		return code
+	# A value option in space form takes the next word, so `check --schema FILE`
+	# leaves no FILE and the usage line alone never says where it went. Judged
+	# after the options, so an option the command does not take is named as
+	# that. init and explain want no FILE.
+	if cmd not in ("init", "explain") and not o.args and o.swallowed is not None:
+		name, value = o.swallowed
+		sys.stderr.write(f"option {name} took '{value}' as its value, so no FILE is left; spell it {name}=VALUE\n")
+		return 1
 	if cmd == "get":
 		return do_get(o)
 	if cmd == "set":

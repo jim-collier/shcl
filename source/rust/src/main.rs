@@ -82,8 +82,8 @@ Usage:
                                          per line
   shcl migrate [options] FILE            rewrite a 2.x file for the current
                                          rules (print it, rewrite FILE in place
-                                         with --write, or name the lines it
-                                         would change with --check)
+                                         with --write or -w, or name the lines
+                                         it would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
   shcl explain [CODE]                    what a diagnostic code means (every
@@ -142,22 +142,24 @@ Options (the subcommands each belongs to are in parentheses):
   --check                                (migrate) print nothing, name each
                                          line the rewrite would change on
                                          stderr, and exit 6 when there is one
-  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3
-                                         (default standard)
+  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
+                                         children/paths) or 1|2|3 (default
+                                         standard)
   --schema=SCHEMA                        (check/init) validate FILE against a
                                          schema; adds V### diagnostics
-  --layer=FILE                           (all but check/init/migrate/tokens)
-                                         merge a lower-priority layer under
-                                         FILE; repeatable, earlier = lower
-                                         priority
-  --set=PATH=VALUE                       (all but check/init/migrate/tokens)
-                                         override one path as the top layer,
-                                         after all files; repeatable. On 'set'
-                                         it is an edit to the document itself,
-                                         so it persists with --write. VALUE goes
-                                         in as data: its type still follows the
-                                         text (8 is an int), but a comma or
-                                         quote in it is content, not syntax
+  --layer=FILE                           (get/set/fmt/count/instances/children/
+                                         paths) merge a lower-priority layer
+                                         under FILE; repeatable, earlier =
+                                         lower priority
+  --set=PATH=VALUE                       (get/set/fmt/count/instances/children/
+                                         paths) override one path as the top
+                                         layer, after all files; repeatable. On
+                                         'set' it is an edit to the document
+                                         itself, so it persists with --write.
+                                         VALUE goes in as data: its type still
+                                         follows the text (8 is an int), but a
+                                         comma or quote in it is content, not
+                                         syntax
   --set-literal=PATH=TEXT                (same subcommands) as --set, except
                                          TEXT goes in as value
                                          syntax the way a file spells it, so
@@ -241,9 +243,9 @@ E002|error|value after a last-segment selector (a.b[X]: v)
   The selector already says which instance, so the value has nowhere to go
   and is ignored. Put the value on the line that creates the instance.
 E003|error|selector names an instance that does not exist
-  a[5].b or a[#5].b where there is one a. An index selects an existing
-  instance by position and never creates one, so a binding line should
-  select by value instead.
+  a[5].b where there is one a. An index selects an existing instance by
+  position and never creates one, so a binding line should select by value
+  instead. In a file the index is the bare [5], since a # opens a comment.
 E004|error|wildcard selector on a binding line
   Wildcards read every instance, so there is no single one to write to.
   They are query-only.
@@ -345,7 +347,8 @@ V096|error|schema expands to more fields than generation allows
 V097|error|generated output does not load, or fails its own schema
   init checks its own output before returning it, so a starter config that
   would fail its first check is a fault instead. A default outside its
-  field's constraints is the usual cause. Line 0.
+  field's constraints is one cause. A required path nothing can generate is
+  the other, such as one with a [#N] selector or a * name. Line 0.
 V099|error|schema failed to load
   The schema had error diagnostics of its own; they are printed above this
   with their own line numbers. Line 0.
@@ -621,6 +624,12 @@ fn option_names() -> Vec<&'static str> {
 	v
 }
 
+/// A real option by any spelling, `-w` included. The suggestions draw on
+/// `option_names` alone, which leaves the short form out.
+fn known_option(name: &str) -> bool {
+	name == "-w" || option_names().contains(&name)
+}
+
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: Kind::String,
@@ -726,6 +735,11 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 				// The suggestion is against the name half: `--stricness=1` is a
 				// typo in the option, not in a spelling that includes a value.
 				let name = a.split('=').next().unwrap_or(a);
+				// Every value option is matched above, so a real name here is a
+				// flag given a value. Calling it unknown would suggest it back.
+				if known_option(name) {
+					return Err(format!("option {} takes no value (see --help)", name));
+				}
 				return Err(format!(
 					"unknown option: {}{} (see --help)",
 					a,
@@ -960,7 +974,7 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 				// so it always loads at Standard - the same rule `check --schema`
 				// follows for the schema half.
 				errln!(
-					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data"
+					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)"
 				);
 			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
 				// The one refusal a user is likely to want anyway: check reports
@@ -1024,7 +1038,9 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	}
 	// The ops script already has stdin, so a layer cannot read it too.
 	if cmd == "set" && o.layers.iter().any(|l| l == "-") {
-		errln!("--layer=- is not valid for set (stdin carries the ops script or the document)");
+		errln!(
+			"--layer=- is not valid for set: stdin carries the ops script or the document (see --help)"
+		);
 		return Err(1);
 	}
 	// Stdin reads once; a second '-' would silently get an empty document.
@@ -1303,7 +1319,7 @@ fn do_get(o: &Opts) -> u8 {
 				)
 			}
 			Kind::Raw | Kind::RawInfo => {
-				errln!("--{} has no --array form", o.kind.name());
+				errln!("--{} has no --array form (see --help)", o.kind.name());
 				return 1;
 			}
 			Kind::String => {
@@ -1494,7 +1510,7 @@ fn rewritten_lines(before: &str, after: &str) -> Vec<usize> {
 /// `fmt --write` goes through.
 fn do_migrate(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
-		errln!("usage: shcl migrate [--write|-w] FILE (see --help)");
+		errln!("usage: shcl migrate [options] FILE (see --help)");
 		return 1;
 	};
 	if o.write && file == "-" {
@@ -2287,6 +2303,23 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 	if let Err(code) = check_opts(cmd, o) {
 		return code;
 	}
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. Judged
+	// after the options, so an option the command does not take is named as
+	// that. init and explain want no FILE.
+	if cmd != "init"
+		&& cmd != "explain"
+		&& o.args.is_empty()
+		&& let Some((name, v)) = &o.swallowed
+	{
+		errln!(
+			"option {} took '{}' as its value, so no FILE is left; spell it {}=VALUE",
+			name,
+			v,
+			name
+		);
+		return 1;
+	}
 	// Every command spelled out, and the last arm a refusal rather than a
 	// fall-through: with a catch-all, adding a name to COMMANDS without adding
 	// an arm here quietly ran whichever command the catch-all named, with no
@@ -2413,11 +2446,18 @@ fn run_cli() -> u8 {
 		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		// flag form the command is the first word, which a bare `--help` is not.
 		let topic = if first == Some("help") {
-			if argv.len() > 2 {
+			// A help flag after `help` asks for the same thing twice, so it is
+			// no topic: `help --help` and `help get -h` print what they name.
+			let words: Vec<&str> = argv[1..]
+				.iter()
+				.map(|s| s.as_str())
+				.filter(|w| !matches!(*w, "-h" | "--help"))
+				.collect();
+			if words.len() > 1 {
 				errln!("usage: shcl help [CMD] (see --help)");
 				return 1;
 			}
-			argv.get(1).map(|s| s.as_str())
+			words.first().copied()
 		} else {
 			first.filter(|f| !f.starts_with('-'))
 		};
@@ -2457,7 +2497,7 @@ fn run_cli() -> u8 {
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
 			let name = cmd.split('=').next().unwrap_or(&cmd);
-			if option_names().contains(&name) {
+			if known_option(name) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
 				// nothing about what is actually wrong.
@@ -2485,21 +2525,6 @@ fn run_cli() -> u8 {
 			return 1;
 		}
 	};
-	// A value option in space form takes the next word, so `check --schema FILE`
-	// leaves no FILE and the usage line alone never says where it went. init is
-	// the one command that wants no positional of its own.
-	if cmd != "init"
-		&& o.args.is_empty()
-		&& let Some((name, v)) = &o.swallowed
-	{
-		errln!(
-			"option {} took '{}' as its value, so no FILE is left; spell it {}=VALUE",
-			name,
-			v,
-			name
-		);
-		return 1;
-	}
 	#[cfg(feature = "profiling")]
 	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
 		return run_profiled(&cmd, &o, &out);

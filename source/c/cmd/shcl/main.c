@@ -66,8 +66,8 @@ static const char *HELP =
 	"                                         per line\n"
 	"  shcl migrate [options] FILE            rewrite a 2.x file for the current\n"
 	"                                         rules (print it, rewrite FILE in place\n"
-	"                                         with --write, or name the lines it\n"
-	"                                         would change with --check)\n"
+	"                                         with --write or -w, or name the lines\n"
+	"                                         it would change with --check)\n"
 	"  shcl tokens FILE                       each line's lexical spans, for seeing\n"
 	"                                         why the parser read a line as it did\n"
 	"  shcl explain [CODE]                    what a diagnostic code means (every\n"
@@ -126,22 +126,24 @@ static const char *HELP =
 	"  --check                                (migrate) print nothing, name each\n"
 	"                                         line the rewrite would change on\n"
 	"                                         stderr, and exit 6 when there is one\n"
-	"  --strictness=loose|standard|strict     (all but init/migrate/tokens) or 1|2|3\n"
-	"                                         (default standard)\n"
+	"  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/\n"
+	"                                         children/paths) or 1|2|3 (default\n"
+	"                                         standard)\n"
 	"  --schema=SCHEMA                        (check/init) validate FILE against a\n"
 	"                                         schema; adds V### diagnostics\n"
-	"  --layer=FILE                           (all but check/init/migrate/tokens)\n"
-	"                                         merge a lower-priority layer under\n"
-	"                                         FILE; repeatable, earlier = lower\n"
-	"                                         priority\n"
-	"  --set=PATH=VALUE                       (all but check/init/migrate/tokens)\n"
-	"                                         override one path as the top layer,\n"
-	"                                         after all files; repeatable. On 'set'\n"
-	"                                         it is an edit to the document itself,\n"
-	"                                         so it persists with --write. VALUE goes\n"
-	"                                         in as data: its type still follows the\n"
-	"                                         text (8 is an int), but a comma or\n"
-	"                                         quote in it is content, not syntax\n"
+	"  --layer=FILE                           (get/set/fmt/count/instances/children/\n"
+	"                                         paths) merge a lower-priority layer\n"
+	"                                         under FILE; repeatable, earlier =\n"
+	"                                         lower priority\n"
+	"  --set=PATH=VALUE                       (get/set/fmt/count/instances/children/\n"
+	"                                         paths) override one path as the top\n"
+	"                                         layer, after all files; repeatable. On\n"
+	"                                         'set' it is an edit to the document\n"
+	"                                         itself, so it persists with --write.\n"
+	"                                         VALUE goes in as data: its type still\n"
+	"                                         follows the text (8 is an int), but a\n"
+	"                                         comma or quote in it is content, not\n"
+	"                                         syntax\n"
 	"  --set-literal=PATH=TEXT                (same subcommands) as --set, except\n"
 	"                                         TEXT goes in as value\n"
 	"                                         syntax the way a file spells it, so\n"
@@ -255,9 +257,9 @@ static const char *CODES =
 	"  The selector already says which instance, so the value has nowhere to go\n"
 	"  and is ignored. Put the value on the line that creates the instance.\n"
 	"E003|error|selector names an instance that does not exist\n"
-	"  a[5].b or a[#5].b where there is one a. An index selects an existing\n"
-	"  instance by position and never creates one, so a binding line should\n"
-	"  select by value instead.\n"
+	"  a[5].b where there is one a. An index selects an existing instance by\n"
+	"  position and never creates one, so a binding line should select by value\n"
+	"  instead. In a file the index is the bare [5], since a # opens a comment.\n"
 	"E004|error|wildcard selector on a binding line\n"
 	"  Wildcards read every instance, so there is no single one to write to.\n"
 	"  They are query-only.\n"
@@ -359,7 +361,8 @@ static const char *CODES =
 	"V097|error|generated output does not load, or fails its own schema\n"
 	"  init checks its own output before returning it, so a starter config that\n"
 	"  would fail its first check is a fault instead. A default outside its\n"
-	"  field's constraints is the usual cause. Line 0.\n"
+	"  field's constraints is one cause. A required path nothing can generate is\n"
+	"  the other, such as one with a [#N] selector or a * name. Line 0.\n"
 	"V099|error|schema failed to load\n"
 	"  The schema had error diagnostics of its own; they are printed above this\n"
 	"  with their own line numbers. Line 0.\n";
@@ -677,7 +680,7 @@ static int do_get(Opts *o) {
 		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
 		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
-		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form\n", o->kind); free(lines); layered_free(&L); return 1; }
+		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form (see --help)\n", o->kind); free(lines); layered_free(&L); return 1; }
 		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
 	} else {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64 r = shcl_read_int(d, path, plen); status = r.status; PUSHLINE_FMT("%" PRId64, r.value); }
@@ -850,7 +853,7 @@ static size_t rewritten_lines(const char *file, const char *before, size_t blen,
 // the load after it is for the diagnostics and the save gate, the same gate
 // `fmt --write` goes through.
 static int do_migrate(const Opts *o) {
-	if (o->nargs != 1) { fprintf(stderr, "usage: shcl migrate [--write|-w] FILE (see --help)\n"); return 1; }
+	if (o->nargs != 1) { fprintf(stderr, "usage: shcl migrate [options] FILE (see --help)\n"); return 1; }
 	const char *file = o->args[0];
 	if (o->write && strcmp(file, "-") == 0) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
@@ -1501,6 +1504,16 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 static size_t option_names(const char **v, size_t cap);
 static void suggest(char *out, size_t outsz, const char **cands, size_t ncands, const char *word);
 
+// A real option by any spelling, -w included. The suggestions draw on
+// option_names alone, which leaves the short form out.
+static int known_option(const char *name) {
+	if (!strcmp(name, "-w")) return 1;
+	const char *cands[64];
+	size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
+	for (size_t k = 0; k < n; k++) if (!strcmp(cands[k], name)) return 1;
+	return 0;
+}
+
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
 	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
@@ -1549,6 +1562,9 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 			if (len >= sizeof name) len = sizeof name - 1;
 			memcpy(name, a, len);
 			name[len] = '\0';
+			// Every value option is matched above, so a real name here is a flag
+			// given a value. Calling it unknown would suggest it back.
+			if (known_option(name)) { fprintf(stderr, "option %s takes no value (see --help)\n", name); return 1; }
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
 			suggest(hint, sizeof hint, cands, n, name);
 			fprintf(stderr, "unknown option: %s%s (see --help)\n", a, hint);
@@ -1637,7 +1653,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 			// it always loads at Standard - the same rule `check --schema`
 			// follows for the schema half.
 			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
-				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data\n");
+				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n");
 			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
 				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
@@ -1684,7 +1700,7 @@ static int check_opts(const char *cmd, const Opts *o) {
 	if (!strcmp(cmd, "set")) {
 		for (int i = 0; i < o->nlayers; i++) {
 			if (!strcmp(o->layers[i], "-")) {
-				fprintf(stderr, "--layer=- is not valid for set (stdin carries the ops script or the document)\n");
+				fprintf(stderr, "--layer=- is not valid for set: stdin carries the ops script or the document (see --help)\n");
 				return 1;
 			}
 		}
@@ -2050,14 +2066,22 @@ static int cli_main(int argc, char **argv) {
 	if ((asked && !strcmp(asked, "help")) || !strcmp(argv[1], "help")) {
 		// `shcl help CMD` and `shcl CMD --help` narrow to one subcommand. In the
 		// flag form the command is the first word, which a bare `--help` is not.
-		const char *topic = "";
+		// An empty word is still a topic, as it is in the reference: `help ''`
+		// names no command, which is not the same as naming none.
+		const char *topic = NULL;
 		if (!strcmp(argv[1], "help")) {
-			if (argc > 3) { fprintf(stderr, "usage: shcl help [CMD] (see --help)\n"); return 1; }
-			if (argc == 3) topic = argv[2];
+			// A help flag after `help` asks for the same thing twice, so it is no
+			// topic: `help --help` and `help get -h` print what they name.
+			int nwords = 0;
+			for (int k = 2; k < argc; k++) {
+				if (!strcmp(argv[k], "-h") || !strcmp(argv[k], "--help")) continue;
+				if (nwords++ == 0) topic = argv[k];
+			}
+			if (nwords > 1) { fprintf(stderr, "usage: shcl help [CMD] (see --help)\n"); return 1; }
 		} else if (argv[1][0] != '-') topic = argv[1];
 		// The informational words are the full help's own last two lines, so
 		// there is nothing narrower to show for them.
-		if (!*topic || !strcmp(topic, "help") || !strcmp(topic, "version")
+		if (!topic || !strcmp(topic, "help") || !strcmp(topic, "version")
 		    || !strcmp(topic, "about") || !strcmp(topic, "donate")) { printf("\n%s\n", HELP); return 0; }
 		if (is_command(topic)) { print_help_for(topic); return 0; }
 		const char *cands[32];
@@ -2085,9 +2109,7 @@ static int cli_main(int argc, char **argv) {
 			memcpy(name, cmd, len);
 			name[len] = '\0';
 			size_t n = option_names(cands, sizeof cands / sizeof cands[0]);
-			int is_opt = 0;
-			for (size_t k = 0; k < n; k++) if (!strcmp(cands[k], name)) { is_opt = 1; break; }
-			if (is_opt) {
+			if (known_option(name)) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
 				// nothing about what is actually wrong.
@@ -2105,17 +2127,17 @@ static int cli_main(int argc, char **argv) {
 	}
 	Opts o;
 	if (parse_opts(argc, argv, 2, &o)) { opts_free(&o); return 1; }
-	// A value option in space form takes the next word, so `check --schema FILE`
-	// leaves no FILE and the usage line alone never says where it went. init is
-	// the one command that wants no positional of its own.
-	if (strcmp(cmd, "init") != 0 && o.nargs == 0 && o.swallowed_opt) {
-		fprintf(stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
-			o.swallowed_opt, o.swallowed_value, o.swallowed_opt);
-		opts_free(&o);
-		return 1;
-	}
 	int rc;
 	if (check_opts(cmd, &o)) rc = 1;
+	// A value option in space form takes the next word, so `check --schema FILE`
+	// leaves no FILE and the usage line alone never says where it went. Judged
+	// after the options, so an option the command does not take is named as
+	// that. init and explain want no FILE.
+	else if (strcmp(cmd, "init") != 0 && strcmp(cmd, "explain") != 0 && o.nargs == 0 && o.swallowed_opt) {
+		fprintf(stderr, "option %s took '%s' as its value, so no FILE is left; spell it %s=VALUE\n",
+			o.swallowed_opt, o.swallowed_value, o.swallowed_opt);
+		rc = 1;
+	}
 	else if (!strcmp(cmd, "get")) rc = do_get(&o);
 	else if (!strcmp(cmd, "set")) rc = do_set(&o);
 	else if (!strcmp(cmd, "fmt")) rc = do_fmt(&o);

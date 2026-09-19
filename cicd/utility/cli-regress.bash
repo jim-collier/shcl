@@ -217,7 +217,8 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	optional lines that each pass alone, %SH% an optional field whose default
 ##	names another instance than its path selects, %SI% the %SE% schema with a
 ##	default that names its instance,
-##	%C% a path with nothing at it, cleared before every binding's run,
+##	%C% a path with nothing at it, cleared before every binding's run, %E% an
+##	empty argument, %LS% a long s (U+017F), which Unicode upper-cases to S,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
@@ -255,6 +256,9 @@ rows=(
 	'read-dir-names-error|fmt %D%|-|8|-|^[^ ]*adir: Is a directory$'
 	## 20260830 item 17: C printed a bare count instead of naming the diagnostics.
 	'strict-load-list|fmt --strictness=strict %B%|-|6|-|strict load failed: 2 error diagnostic'
+	## 20260918 item 21: the spec named two summary spellings for check and a
+	## strict one prints a third.
+	'check-strict-summary|check --strictness=strict %B%|-|6|line 2: Error: E015\nline 3: Error: E014\nstrict load failed: 2 diagnostic(s)\n|-'
 	## 20260830 round: an unknown command is judged before its options.
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
 	## 20260909 item 59: a real option in front of the subcommand was called
@@ -315,6 +319,34 @@ rows=(
 	## same schema with the default naming `b`.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
 	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
+	## 20260918 item 9: an empty topic is an unknown command, as in the
+	## reference; the ports read it as no topic and printed the help at exit 0.
+	'help-empty-topic|help %E%|-|1||^unknown command:  \(see --help\)$'
+	'empty-cmd-help|%E% --help|-|1||^unknown command:  \(see --help\)$'
+	## 20260918 item 10: a help flag after `help` was taken for the topic.
+	'help-help-flag|help --help|-|0|-|^$'
+	'help-h-flag|help -h|-|0|-|^$'
+	'help-cmd-help-flag|help get --help|-|0|-|^$'
+	## 20260918 item 16: the "no FILE is left" refusal came before the option
+	## check, so it named the wrong fault and a fix that did not work.
+	'explain-opt-refused-first|explain --layer E001|-|1||^option --layer not valid for explain'
+	'migrate-opt-refused-first|migrate --layer x|-|1||^option --layer not valid for migrate'
+	## 20260918 item 17: Go and Python folded a non-ASCII code by Unicode rules
+	## and suggested a code for it.
+	'explain-non-ascii-no-suggestion|explain %LS%001|-|1||!did you mean'
+	## 20260918 item 22: two real options still called unknown.
+	'short-write-before-cmd|-w fmt %F%|-|1||^option -w goes after the subcommand \(see --help\)$'
+	'flag-given-value|fmt --write=yes %F%|-|1||^option --write takes no value \(see --help\)$'
+	'type-flag-given-value|get --int=5 %F% a|-|1||^option --int takes no value \(see --help\)$'
+	## 20260918 item 23: three usage errors that neither said the fix nor
+	## pointed at the help.
+	'raw-array-see-help|get --raw --array %F% a|-|1||has no --array form \(see --help\)$'
+	'layer-stdin-set-see-help|set --layer=- %F%|-|1||^--layer=- is not valid for set: .*\(see --help\)$'
+	'init-strictness-see-help|init --strictness=1 --schema=%S2%|-|1||^option --strictness not valid for init: .*\(see --help\)$'
+	## 20260918 items 19 and 20: explain gave a file spelling that is a comment,
+	## and left out the V097 a user meets most.
+	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n|-'
+	'explain-v097|explain V097|-|0|\nV097  error       generated output does not load, or fails its own schema\n  init checks its own output before returning it, so a starter config that\n  would fail its first check is a fault instead. A default outside its\n  field'"'"'s constraints is one cause. A required path nothing can generate is\n  the other, such as one with a [#N] selector or a * name. Line 0.\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -397,6 +429,9 @@ rows=(
 	'migrate-check-from-2x|migrate --check --from-2x %BS%|-|6||bs\.shcl:1: migrate would rewrite'
 	'migrate-check-write|migrate --check --write %W%|-|1|-|--check cannot be combined with --write'
 	'migrate-write-says|migrate --write %W%|-|0||migrated, 1 line\(s\) rewritten'
+	## 20260918 item 18: the usage line said [--write|-w] where the help line
+	## says [options].
+	'migrate-usage-line|migrate|-|1||^usage: shcl migrate \[options\] FILE \(see --help\)$'
 	## 20260904 item 47: the temp beside a long-named file ran past the name limit.
 	'long-name-write|fmt --write %L%|-|0||-'
 	## 20260909 item 16.
@@ -628,6 +663,7 @@ for row in "${rows[@]}"; do
 		argv="${argv//%LW%/${tmpDir}/${wideName}}"
 	fi
 	argv="${argv//%T%/${tmpDir}/tree.shcl}"
+	argv="${argv//%LS%/$'\xc5\xbf'}"
 	argv="${argv//%F2%/${tmpDir}/two.shcl}"
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	## A device that is always full exists on linux and not on windows; the
@@ -654,6 +690,9 @@ for row in "${rows[@]}"; do
 		continue
 	fi
 	read -r -a args <<<"${argv}"
+	for k in "${!args[@]}"; do
+		if [[ "${args[k]}" == "%E%" ]]; then args[k]=""; fi
+	done
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"
 		((freshCopy)) && cp "${tmpDir}/sugar.shcl" "${tmpDir}/w.shcl"
@@ -756,6 +795,72 @@ for b in "${bindings[@]}"; do
 			echo "cli-regress: help-width [${name}]: ${cmd} line ${wide}" >&2; nBad+=1
 		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${text}")
 	done
+done
+
+## Each option names in parentheses the subcommands it belongs to, and three of
+## them used to say "all but" a list, so each new subcommand that took none of
+## those options joined them unseen - three times over. What a subcommand takes
+## is asked of the CLI itself, since an option it does not use is refused as
+## "not valid for CMD", and the parentheses have to name exactly that set.
+## "(same)", or no parentheses at all, carries the entry above.
+for b in "${bindings[@]}"; do
+	name="${b%%|*}"; cli="${b#*|}"
+	mapfile -t cmds < <("${cli}" help 2>/dev/null </dev/null | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	nOpts=0
+	claim=""
+	while IFS=$'\t' read -r spell par; do
+		opt="${spell%%=*}"
+		if [[ -n "${par}" && "${par}" != "(same"* ]]; then
+			claim=""
+			for w in ${par//[^a-z]/ }; do
+				for c in "${cmds[@]}"; do
+					if [[ "${w}" == "${c}" ]]; then claim+="${c} "; fi
+				done
+			done
+			claim="$(tr ' ' '\n' <<<"${claim}" | sort -u | xargs)"
+		fi
+		probe="${opt}"
+		if [[ "${spell}" == *=* ]]; then
+			v="${spell#*=}"
+			case "${v}" in
+				*'|'*) v="${v%%|*}" ;;
+				*=*)   v="a=1" ;;
+				*)     v="x" ;;
+			esac
+			probe="${opt}=${v}"
+		fi
+		takes=""
+		for c in "${cmds[@]}"; do
+			## Captured first: under pipefail the refusal's own exit 1 would fail
+			## a pipe into grep whatever grep found.
+			said="$("${cli}" "${c}" "${probe}" </dev/null 2>&1 >/dev/null || true)"
+			grep -qF "not valid for ${c}" <<<"${said}" || takes+="${c} "
+		done
+		takes="$(tr ' ' '\n' <<<"${takes}" | sort -u | xargs)"
+		nOpts=$((nOpts + 1)); nRun+=1
+		if [[ "${claim}" != "${takes}" ]]; then
+			echo "cli-regress: option-scopes [${name}]: ${opt}: the help names (${claim}), the CLI takes it on (${takes})" >&2; nBad+=1
+		fi
+	done < <("${cli}" help 2>/dev/null </dev/null | awk '
+		/^Options \(/ { on = 1; next }
+		on && /^[^ ]/ { on = 0 }
+		!on { next }
+		/^  --/ {
+			if (spell != "") print spell "\t" par
+			spell = $1; par = ""; inpar = 0
+			d = substr($0, 42)
+			if (substr(d, 1, 1) == "(") { inpar = 1 }
+			if (inpar) { par = d; if (index(d, ")")) { par = substr(d, 1, index(d, ")")); inpar = 0 } }
+			next
+		}
+		inpar {
+			d = substr($0, 42)
+			if (index(d, ")")) { par = par substr(d, 1, index(d, ")")); inpar = 0 } else { par = par d }
+		}
+		END { if (spell != "") print spell "\t" par }')
+	if ((nOpts < 10)); then
+		echo "cli-regress: option-scopes [${name}]: only ${nOpts} option(s) found in the help" >&2; nBad+=1
+	fi
 done
 
 ## The man page sits next to that help and had nothing holding it to the same

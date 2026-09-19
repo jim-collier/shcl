@@ -172,6 +172,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The help names every subcommand each of `--strictness`, `--layer` and `--set` belongs to. It had said "all but" a list that `explain` was missing from, and the man page's `--strictness` line said the same. `migrate`'s usage error matches its help line, which now says `-w` works there.
+
+- `shcl help --help`, `help -h` and `help get --help` print the help again. `help ''` is an unknown command in every build, as it was in the Rust one.
+
+- An option a subcommand does not take is named as that, before the note that a value option took the FILE. `-w` before the subcommand is told to go after it, and a flag given a value is told it takes none, where both were called unknown.
+
+- `explain E003` gives the index spelling a file can use, `explain V097` names a required path nothing can generate, and three usage errors point at `--help`.
+
 - A skipped line whose value opens a raw block takes the block with it. The body used to be read as lines, and its closing fence opened a block that hid the rest of the file.
 
 - A schema path or type holding a line break no longer splits a diagnostic across two lines. It is written `\n`, as `init` already wrote it.

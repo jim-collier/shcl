@@ -126,6 +126,62 @@ else
 	echo "check-readme: skipping the Zig example (no zig here)"
 	echo check-readme >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
+##	The transcripts. A ```console block reads as real output, so every `$ shcl`
+##	line in one is run against the README's own server.shcl and schema, and has
+##	to print what the block shows, stderr included, in the order a terminal
+##	shows it. They drifted twice, each time a new line of output reached no
+##	transcript. Two files the README describes rather than shows are made here:
+##	server.shcl with the colon knocked off line 3, for the block that starts
+##	with `shcl check server.shcl`, and an app.shcl whose line 2 carries the
+##	misspelled key its schema block reports.
+cli="${SHCL_CLI:-${repoDir}/source/rust/target/debug/shcl}"
+[[ -x "${cli}" ]] || { echo "check-readme: no built CLI at ${cli} to run the transcripts with" >&2; exit 2 ;}
+tx="${tmpDir}/tx"
+mkdir -p "${tx}/bin" "${tx}/cases"
+ln -s "${cli}" "${tx}/bin/shcl"
+awk '/^## What a .shcl file looks like/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tx}/server-shown.shcl"
+awk '/^Hand it a schema/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tx}/app-schema.shcl"
+[[ -s "${tx}/server-shown.shcl" && -s "${tx}/app-schema.shcl" ]] \
+	|| { echo "check-readme: the transcripts' server.shcl or schema block is gone from ${readme}" >&2; exit 2 ;}
+sed '3s/://' "${tx}/server-shown.shcl" > "${tx}/server-knocked.shcl"
+printf 'workers: 4\nlog-levle: warn\n' > "${tx}/app.shcl"
+##	One case per command: N.cmd, N.want (the lines under it, less the blank that
+##	ends them) and N.blk (which block it is in).
+awk -v dir="${tx}/cases" '
+	function done_case() { sub(/\n\n$/, "\n", buf); printf "%s", buf > (dir "/" n ".want"); close(dir "/" n ".want"); n = 0 }
+	/^```console$/ { inb = 1; blk++; next }
+	inb && /^```$/ { if (n) done_case(); inb = 0; next }
+	inb && /^\$ / { if (n) done_case(); n = ++cases; print substr($0, 3) > (dir "/" n ".cmd"); close(dir "/" n ".cmd"); print blk > (dir "/" n ".blk"); close(dir "/" n ".blk"); buf = ""; next }
+	inb && n { buf = buf $0 "\n" }' "${readme}"
+nCases=0; nTxBad=0; lastBlk=""
+for cmdFile in $(find "${tx}/cases" -name '*.cmd' | sort -t/ -k1 -V); do
+	base="${cmdFile%.cmd}"
+	cmd="$(cat "${cmdFile}")"
+	blk="$(cat "${base}.blk")"
+	if [[ "${blk}" != "${lastBlk}" ]]; then
+		lastBlk="${blk}"
+		if [[ "${cmd}" == "shcl check server.shcl"* ]]; then
+			cp "${tx}/server-knocked.shcl" "${tx}/server.shcl"
+		else
+			cp "${tx}/server-shown.shcl" "${tx}/server.shcl"
+		fi
+	fi
+	[[ "${cmd}" == shcl\ * ]] || continue
+	want="$(cat "${base}.want")"
+	got="$(cd "${tx}" && PATH="${tx}/bin:${PATH}" bash -c "${cmd}" 2>&1 </dev/null || true)"
+	nCases=$((nCases + 1))
+	if [[ "${got}" != "${want}" ]]; then
+		echo "check-readme: transcript: '${cmd}' prints:" >&2
+		diff <(printf '%s\n' "${want}") <(printf '%s\n' "${got}") | sed 's/^/	/' >&2 || true
+		nTxBad=$((nTxBad + 1))
+	fi
+done
+if ((nCases < 10)); then
+	echo "check-readme: transcript: only ${nCases} command(s) found in the README's console blocks" >&2
+	exit 1
+fi
+((nTxBad == 0)) || exit 1
+echo "check-readme: the ${nCases} transcript command(s) print what the README shows"
 echo "check-readme: OK"
 
 ##	History:
@@ -136,3 +192,5 @@ echo "check-readme: OK"
 ##		2026-09-17  The zig skip is a failure under SHCL_GATE_STRICT and is noted
 ##		            in SHCL_GATE_SKIPS, so a local run that took it is not
 ##		            recorded as having run everything.
+##		2026-09-18  The console transcripts are run and compared, after a new
+##		            line of output reached none of them for the second time.

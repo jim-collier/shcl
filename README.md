@@ -499,6 +499,7 @@ tls
 $ shcl check server.shcl
 line 3: Error: E014
 line 3: Error: E014 malformed line skipped: unexpected character after the path, at column 9
+(run 'shcl explain CODE' for the rule behind a code)
 failed: 1 diagnostic(s), 1 error(s)
 
 $ shcl get server.shcl log-level     # the rest of the file loaded fine
@@ -532,6 +533,7 @@ That catches wrong types, out-of-range numbers, and unknown fields - and for the
 $ shcl check --schema=app-schema.shcl app.shcl
 line 2: Error: V001
 line 2: Error: V001 unknown field 'log-levle'; did you mean 'log-level'?
+(run 'shcl explain CODE' for the rule behind a code)
 failed: 1 diagnostic(s), 1 error(s)
 ```
 

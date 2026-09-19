@@ -89,22 +89,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `green-tree.bash`'s header, that two commits sharing a tree cannot differ in anything the gate reads, and the standing decision that a docs-only dev to main merge is sanctioned.
 		- Opened: 20260918-132951
 
-	- 🔘 Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
-		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
-		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
-		- Sites: `main.rs:2415`, `main.go:2512`, `main.py:1803`, `main.c:2053`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 44). Confirmed.
-		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 10: `shcl help --help`, `help -h` and `help get --help` exit 1, where they printed the help before 20260909 item 44.
-		- Reproduced in all four. `help --help` prints `unknown command: --help; did you mean 'help'?` at exit 1, suggesting the word already typed. `help -h` and `help get --help` fail the same way. At `0090046` all three printed the help at exit 0, and `shcl version --help` still does.
-		- Cause: when the first word is `help`, the second becomes the topic before the flag scan's answer is used.
-		- Sites: `main.rs:2410-2440`, `main.go:2510-2538`, `main.py:1798-1815`, `main.c:2050-2068`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of the older behavior. Confirmed.
-		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
-		- Opened: 20260918-135050
-
 	- 🔘 Item 11: cli-regress's man page width check skips without failing the strict gate or holding back the green record.
 		- Reproduced with `man` taken off `PATH`: `SHCL_GATE_STRICT=1` cli-regress prints the skip, then OK, exits 0, and leaves the skip file empty. A local run with no `man` records its tree as fully gated.
 		- Cause: the skip is a bare echo. 20260909 item 53's rule only asks that a file printing a skip reads the strict flag somewhere, and this file does for its `/dev/full` rows. The fix keeps the skip on Windows, where Git Bash has no `man`.
@@ -128,73 +112,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `8841317` (2026-07-22). The sibling of 20260909 item 38. Plausible, pending the Windows batch.
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Opened: 20260918-132951
-
-	- 🔘 Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
-		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
-		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
-		- Sites: `main.rs:2491`, `main.go:2595`, `main.py:1849`, `main.c:2111`.
-		- Origin: `e230886` (Merge init-v097, 2026-09-17, 20260909 item 59). Confirmed.
-		- Against: `style-guide_ui-ux.md:67` and `:69`, a message names what went wrong, and a fix it names has to work.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
-		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
-		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
-		- Sites: `main.go:1660`, `main.py:1214`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 42). Confirmed.
-		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
-		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
-		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
-		- Cause: an "all but" list names only the exclusions, so a new subcommand that takes none of these options joins it silently.
-		- Sites: `main.rs:145`, `:149`, `:153`; `main.go:153`, `:157`, `:161`; `main.py:146`, `:150`, `:154`; `main.c:129`, `:133`, `:137`; `source/man/shcl.1:341`. Usage line: `main.rs:1497`, `main.go:1546`, `main.py:1132`, `main.c:853`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
-		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
-		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
-		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.
-		- Cause: the spec row predates the 2026-09-10 comment rule and was missed when it went in. The explain table copied it.
-		- Sites: the E003 entry at `main.rs:243`, `main.go:245`, `main.py:239`, `main.c:257`; `project/spec.md:430`.
-		- Origin: `e58fe9f` (2026-09-07) for the spec row, `c78d41d` (Merge cli-help, 2026-09-17) for explain. Confirmed.
-		- Note: this does not reopen the settled `#` rule. It brings two lines into line with it.
-		- Against: `design.md:457` and `spec.md:99`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 20: `shcl explain V097` never mentions a required path nothing can generate, the V097 a user now meets most.
-		- Reproduced in all four. A required `srv[#1].port` makes `init` print `V097 required path cannot be generated: srv[#1].port (...)`. `explain V097` speaks only of output that does not load and of a default outside its constraints.
-		- Cause: the table was cut from `spec.md:589` without its third cause.
-		- Sites: `main.rs:345`, `main.go:347`, `main.py:341`, `main.c:359`.
-		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). Confirmed.
-		- Against: `spec.md:589`, and the table's own comment that it is the spec's rules cut to fit a terminal.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
-		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
-		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
-		- Sites: `README.md:499-503`, `README.md:532-536`, `project/spec.md:423`.
-		- Origin: `c78d41d` (Merge cli-help) and `9d7a4f4` (Merge cli-guide), both 2026-09-17. Same class as 20260909 item 34. Confirmed.
-		- Against: the README transcripts as real output, and item 58's "both spellings".
-		- Opened: 20260918-135050
-
-	- 🔘 Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
-		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
-		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
-		- Sites: `main.rs:604`, `:726`, `:2459`; `main.go:734`, `:856`, `:2576`; `main.py:549`, `:632`, `:1835`; `main.c:1806`, `:1554`, `:2094`.
-		- Origin: `e230886` (Merge init-v097) and `c78d41d` (Merge cli-help), both 2026-09-17. Confirmed.
-		- Against: 20260909 item 59, that calling an option unknown and suggesting it back says nothing, and `style-guide_ui-ux.md:25`.
-		- Opened: 20260918-135050
-
-	- 🔘 Item 23: three usage errors neither end with `(see --help)` nor name their fix.
-		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
-		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
-		- Sites: `main.rs:1306`, `:1027`, `:963`; `main.go:1356`, `:1068`, `:1013`; `main.py:982`, `:897`, `:853`; `main.c:680`, `:1687`, `:1640`.
-		- Origin: the messages predate `0090046`; the rule is `9d7a4f4` (Merge cli-guide, 2026-09-17). Confirmed.
-		- Against: `style-guide_ui-ux.md:69`.
-		- Opened: 20260918-135050
 
 - Code review 20260909:
 
@@ -549,6 +466,28 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-133258
 		- Closed: 20260918-155114
 
+	- ✅ Item 9: an empty help topic exits 1 in the reference and prints the help at exit 0 in the other three.
+		- Reproduced in all four. `shcl help ''` prints `unknown command:  (see --help)` at exit 1 in Rust. Go, Python and C print the full help at exit 0. `shcl '' --help` splits the same way.
+		- Cause: the ports hold the topic as a string and read "" as no topic. Rust keeps an Option.
+		- Sites: `main.rs:2415`, `main.go:2512`, `main.py:1803`, `main.c:2053`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 44). Confirmed.
+		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
+		- Fixed: the ports hold "no topic" apart from an empty one, as the reference does: `hasTopic` in Go, `None` in Python, a NULL topic in C. `shcl help ''` and `shcl '' --help` are an unknown command at exit 1 in all four.
+		- Pinned by: `cli-regress.bash` rows `help-empty-topic` and `empty-cmd-help`, which fail in Go, Python and C on the old code. A `%E%` in a row now stands for an empty argument, which a row could not spell before.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161509
+
+	- ✅ Item 10: `shcl help --help`, `help -h` and `help get --help` exit 1, where they printed the help before 20260909 item 44.
+		- Reproduced in all four. `help --help` prints `unknown command: --help; did you mean 'help'?` at exit 1, suggesting the word already typed. `help -h` and `help get --help` fail the same way. At `0090046` all three printed the help at exit 0, and `shcl version --help` still does.
+		- Cause: when the first word is `help`, the second becomes the topic before the flag scan's answer is used.
+		- Sites: `main.rs:2410-2440`, `main.go:2510-2538`, `main.py:1798-1815`, `main.c:2050-2068`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of the older behavior. Confirmed.
+		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
+		- Fixed: after `help`, a `-h` or `--help` is dropped before the topic is chosen, in the help branch of all four CLIs. `help --help` and `help -h` print the full help, and `help get --help` prints get's.
+		- Pinned by: rows `help-help-flag`, `help-h-flag` and `help-cmd-help-flag`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161509
+
 	- ✅ Item 14: a schema path or type holding a line break splits V002 to V007 and V091 across two stderr lines.
 		- Reproduced in all four. `field: "a.\"x\ny\""` with `required: true` prints `V002 required path missing: a."x` and then `y"` on its own line. V004, V005 and V091 split the same way.
 		- Cause: these print the schema path or type raw. V097 already escapes the same path.
@@ -571,6 +510,98 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `cli-regress.bash` row `e014-column-cr-lead`, which fails in all four on the old code.
 		- Opened: 20260918-133258
 		- Closed: 20260918-155713
+
+	- ✅ Item 16: the "no FILE is left" refusal fires before the option check, so it names the wrong fault on `explain` and on an option the command does not take.
+		- Reproduced in all four. `shcl explain --layer E001` says `--layer` took `E001` as its value, so no FILE is left, and to spell it `--layer=VALUE`. `explain` takes no FILE and no options. `migrate --layer x` says the same, and following the advice then gets `option --layer not valid for migrate`.
+		- Cause: the check runs right after option parsing, before `check_opts`, and exempts only `init`. `explain` wants no FILE either.
+		- Sites: `main.rs:2491`, `main.go:2595`, `main.py:1849`, `main.c:2111`.
+		- Origin: `e230886` (Merge init-v097, 2026-09-17, 20260909 item 59). Confirmed.
+		- Against: `style-guide_ui-ux.md:67` and `:69`, a message names what went wrong, and a fix it names has to work.
+		- Fixed: the "no FILE is left" refusal runs after the option check, so an option the command does not take is named as that first, and explain joins init as a command that wants no FILE. In `run` (Rust), `run` (Go), `run` (Python) and `cli_main` (C).
+		- Pinned by: rows `explain-opt-refused-first` and `migrate-opt-refused-first`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161540
+
+	- ✅ Item 17: `explain` in Go and Python upper-cases a non-ASCII code by Unicode rules, so it suggests a code for a non-ASCII word.
+		- Reproduced in Go and Python. U+017F then `001` gets `unknown diagnostic code: S001; did you mean 'E001'?`. Rust and C echo the argument with no suggestion. Exit 1 in all four, so only stderr differs.
+		- Cause: `strings.ToUpper` and `str.upper()` fold all of Unicode. Both files already have an ASCII-only fold for this reason.
+		- Sites: `main.go:1660`, `main.py:1214`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17, 20260909 item 42). Confirmed.
+		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
+		- Fixed: `explain` upper-cases the code by ASCII only, through a new `asciiUpper` in Go and `_ascii_upper` in Python, as Rust and C already did.
+		- Pinned by: row `explain-non-ascii-no-suggestion`, which fails in Go and Python on the old code. A `%LS%` in a row stands for the long s.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
+
+	- ✅ Item 18: the help and the man page say `--strictness`, `--layer` and `--set` apply to `explain`, which refuses them.
+		- Reproduced in all four. The help reads `(all but init/migrate/tokens)` for `--strictness` and `(all but check/init/migrate/tokens)` for `--layer` and `--set`. The man page's `--strictness` line matches. `shcl explain --strictness=1 E001` exits 1 as not valid for explain.
+		- Note: migrate's usage error still reads `usage: shcl migrate [--write|-w] FILE`, though its help line is now `shcl migrate [options] FILE`, and nothing in `shcl help migrate` says `-w` works there.
+		- Cause: an "all but" list names only the exclusions, so a new subcommand that takes none of these options joins it silently.
+		- Sites: `main.rs:145`, `:149`, `:153`; `main.go:153`, `:157`, `:161`; `main.py:146`, `:150`, `:154`; `main.c:129`, `:133`, `:137`; `source/man/shcl.1:341`. Usage line: `main.rs:1497`, `main.go:1546`, `main.py:1132`, `main.c:853`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). A regression of 20260830 item 21 and 20260909 item 33, each the same staleness after a new subcommand. Confirmed.
+		- Note: the third time. The man page names `--layer` and `--set` by subcommand and stayed right. The fix should do the same in the help, or check each list against `allowed_opts`, so the fourth subcommand cannot repeat it.
+		- Against: `style-guide_ui-ux.md:45`, each option names the subcommands it belongs to, and `changelog.md:179`.
+		- Fixed: the help names the subcommands of `--strictness`, `--layer` and `--set` in full, as the man page does for the last two, and the man page's `--strictness` line does too. migrate's usage line reads `[options] FILE` like its help line, and the help says `-w` works there. In all four CLIs.
+		- Pinned by: a check in `cli-regress.bash` that asks each CLI which subcommands take each option, by whether it answers "not valid for", and compares that with the parentheses the help prints. It fails on 7 options with the old help, and a new subcommand can no longer join an option's list unseen. Row `migrate-usage-line` pins the usage line.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161713
+
+	- ✅ Item 19: `shcl explain E003` and the spec's E003 row say `a[#5].b` in a file reaches E003, but in a file it is E014.
+		- Reproduced in all four. `a: x` then `a[#5].b: 1` checks as E014, since the `#` opens a comment. `explain E003` reads "a[5].b or a[#5].b where there is one a", and `spec.md:430` says both index spellings reach it from a file.
+		- Cause: the spec row predates the 2026-09-10 comment rule and was missed when it went in. The explain table copied it.
+		- Sites: the E003 entry at `main.rs:243`, `main.go:245`, `main.py:239`, `main.c:257`; `project/spec.md:430`.
+		- Origin: `e58fe9f` (2026-09-07) for the spec row, `c78d41d` (Merge cli-help, 2026-09-17) for explain. Confirmed.
+		- Note: this does not reopen the settled `#` rule. It brings two lines into line with it.
+		- Against: `design.md:457` and `spec.md:99`.
+		- Fixed: the E003 entry in all four explain tables gives `a[5].b`, and says a file names the index bare since a `#` opens a comment. The spec row says the same, and that `a[#5].b` in a file is E014.
+		- Pinned by: row `explain-e003`, whose stdout is the whole entry. It fails in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
+
+	- ✅ Item 20: `shcl explain V097` never mentions a required path nothing can generate, the V097 a user now meets most.
+		- Reproduced in all four. A required `srv[#1].port` makes `init` print `V097 required path cannot be generated: srv[#1].port (...)`. `explain V097` speaks only of output that does not load and of a default outside its constraints.
+		- Cause: the table was cut from `spec.md:589` without its third cause.
+		- Sites: `main.rs:345`, `main.go:347`, `main.py:341`, `main.c:359`.
+		- Origin: `c78d41d` (Merge cli-help, 2026-09-17). Confirmed.
+		- Against: `spec.md:589`, and the table's own comment that it is the spec's rules cut to fit a terminal.
+		- Fixed: the V097 entry in all four explain tables names the second cause, a required path nothing can generate.
+		- Pinned by: row `explain-v097`, whose stdout is the whole entry. It fails in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161626
+
+	- ✅ Item 21: the README's two `check` transcripts miss a line `check` now prints, and the spec lists two summary spellings where a strict `check` prints a third.
+		- Reproduced in all four. `check` on a file with a malformed line prints `(run 'shcl explain CODE' for the rule behind a code)` on stderr before the summary, which `README.md:499-503` and `:532-536` lack. `check --strictness=strict` ends with `strict load failed: 1 diagnostic(s)`, and `spec.md:423` names only `ok (...)` and `failed: ...`.
+		- Cause: 20260909 item 42 added the pointer and not to the transcripts. Item 58 wrote two spellings into the spec and missed the strict one.
+		- Sites: `README.md:499-503`, `README.md:532-536`, `project/spec.md:423`.
+		- Origin: `c78d41d` (Merge cli-help) and `9d7a4f4` (Merge cli-guide), both 2026-09-17. Same class as 20260909 item 34. Confirmed.
+		- Against: the README transcripts as real output, and item 58's "both spellings".
+		- Fixed: both README transcripts show the pointer line, and the spec names the third summary, `strict load failed: N diagnostic(s)`.
+		- Pinned by: `check-readme.bash` now runs every `$ shcl` line in the README's console blocks against the README's own files and compares the output, stderr included. It failed on exactly these two transcripts before the README fix. Row `check-strict-summary` pins the strict summary.
+		- Note: the second time a transcript drifted, after 20260909 item 34, so the check is for the class.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161754
+
+	- ✅ Item 22: a real option is still called unknown in two cases: `-w` before the subcommand, and a flag given a value.
+		- Reproduced in all four. `shcl -w fmt f` prints `unknown option: -w`, where `shcl --write fmt f` gets `option --write goes after the subcommand`. `shcl fmt --write=yes f` prints `unknown option: --write=yes; did you mean '--write'?`. Exit 1 throughout.
+		- Cause: the "goes after the subcommand" test knows long spellings only, and a flag spelled with `=` falls to the unknown branch.
+		- Sites: `main.rs:604`, `:726`, `:2459`; `main.go:734`, `:856`, `:2576`; `main.py:549`, `:632`, `:1835`; `main.c:1806`, `:1554`, `:2094`.
+		- Origin: `e230886` (Merge init-v097) and `c78d41d` (Merge cli-help), both 2026-09-17. Confirmed.
+		- Against: 20260909 item 59, that calling an option unknown and suggesting it back says nothing, and `style-guide_ui-ux.md:25`.
+		- Fixed: one `known_option` per CLI (`knownOption` in Go) counts `-w` as a real option. Before the subcommand `-w` gets "goes after the subcommand", and a real flag spelled with `=VALUE` gets "option --write takes no value (see --help)" rather than unknown.
+		- Pinned by: rows `short-write-before-cmd`, `flag-given-value` and `type-flag-given-value`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161831
+
+	- ✅ Item 23: three usage errors neither end with `(see --help)` nor name their fix.
+		- Reproduced in all four, exit 1 each: `--raw has no --array form`, `--layer=- is not valid for set (stdin carries the ops script or the document)`, and `option --strictness not valid for init: a schema always loads at standard strictness...`.
+		- Cause: 20260909 item 58's sweep stopped at the unknown-option and bad-value messages.
+		- Sites: `main.rs:1306`, `:1027`, `:963`; `main.go:1356`, `:1068`, `:1013`; `main.py:982`, `:897`, `:853`; `main.c:680`, `:1687`, `:1640`.
+		- Origin: the messages predate `0090046`; the rule is `9d7a4f4` (Merge cli-guide, 2026-09-17). Confirmed.
+		- Against: `style-guide_ui-ux.md:69`.
+		- Fixed: the three messages end with `(see --help)` in all four, and the `--layer=-` one drops its parentheses for a colon, so it does not carry two in a row.
+		- Pinned by: rows `raw-array-see-help`, `layer-stdin-set-see-help` and `init-strictness-see-help`, which fail in all four on the old code.
+		- Opened: 20260918-135050
+		- Closed: 20260918-161904
 
 - Code review 20260909:
 
