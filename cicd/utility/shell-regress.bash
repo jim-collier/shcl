@@ -1031,17 +1031,23 @@ if command -v nfpm >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1 && com
 	printf 'x\n' > "${pDir}/payload/completions/_shcl"
 	printf 'x\n' | gzip -9nc > "${pDir}/payload/man/shcl.1.gz"
 	printf 'x\n' | gzip -9nc > "${pDir}/payload/doc/changelog.gz"
-	printf 'x\n' > "${pDir}/shcl"
+	##	20260918b item 40: the rpm required a package named libgcc, which
+	##	openSUSE does not have. The stub carries a real binary linked to
+	##	libgcc_s, the way the x86_64 build is, with the names package.bash
+	##	uses, so the read-back can hold them against what rpm generates.
+	cp "${cli}" "${pDir}/p"
+	eval "$(grep -E '^(deb|rpm)GccDep=' "${repoDir}/cicd/utility/package.bash")"
+	[[ -n "${rpmGccDep:-}" ]] || fBad "package.bash names no rpm libgcc dependency"
 	sed -e "s|\${SHCL_VERSION}|9.9.9|g" -e "s|\${SHCL_ARCH}|amd64|g" \
-	    -e "s|\${SHCL_BIN}|${pDir}/shcl|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
-	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}||g" -e "s|\${SHCL_RPM_LIBGCC}||g" \
+	    -e "s|\${SHCL_BIN}|${pDir}/p|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
+	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}|\\n      - ${debGccDep:-}|g" -e "s|\${SHCL_RPM_LIBGCC}|\\n      - ${rpmGccDep:-}|g" \
 	    "${repoDir}/cicd/packaging/nfpm.yaml" > "${pDir}/nfpm.yaml"
 	if nfpm package -f "${pDir}/nfpm.yaml" -p deb -t "${pDir}/p.deb" >/dev/null 2>&1 \
 	   && nfpm package -f "${pDir}/nfpm.yaml" -p rpm -t "${pDir}/p.rpm" >/dev/null 2>&1; then
 		##	The shipped read-back, run on the stub packages.
 		eval "$(sed -n '/^fCheckDeps()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
 		# shellcheck disable=SC2329  ## called from the lifted fCheckDeps
-		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 "" ) \
+		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 1 ) \
 			|| fBad "the packages do not read back the way package.bash requires"
 	else
 		fBad "nfpm could not build a package from cicd/packaging/nfpm.yaml"
