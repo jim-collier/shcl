@@ -8343,7 +8343,7 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 	// Sibling names per parent chain, built once (schema order): vSuggest
 	// used to rebuild every chain per unknown field, which bit hardest on
 	// the wholesale-unmatched documents the feature exists for.
-	siblings := map[string][]string{}
+	siblings := map[string]*suggestNames{}
 	// Paths with a `*` segment can't live in the exact-chain hash; they
 	// match element-wise (a star matches any one name, prefixes included).
 	var starPats [][]segment
@@ -8359,7 +8359,10 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 			if s.star {
 				break // no sibling entry for '*'; deeper chains are pattern-only
 			}
-			siblings[chain] = append(siblings[chain], s.name)
+			if siblings[chain] == nil {
+				siblings[chain] = &suggestNames{seen: map[string]bool{}}
+			}
+			siblings[chain].push(s.name)
 			chain = chainPush(chain, s.name)
 			legal[chain] = true
 		}
@@ -8576,18 +8579,127 @@ func chainPartsLegal(cons []constraint, set string, frags map[string][]constrain
 // vSuggest finds the closest legal sibling name (same parent chain, schema
 // order, edit distance <= 2) as "; did you mean 'x'?" - or nothing. Prose
 // only, never contract.
-func vSuggest(siblings map[string][]string, parentChain, name string) string {
-	bestDist := -1
-	bestName := ""
-	for _, s := range siblings[parentChain] {
-		dist := editDistance(name, s, 2)
-		if dist <= 2 && (bestDist < 0 || dist < bestDist) {
-			bestDist = dist
-			bestName = s
-		}
-	}
-	if bestDist < 0 {
+func vSuggest(siblings map[string]*suggestNames, parentChain, name string) string {
+	names := siblings[parentChain]
+	if names == nil {
 		return ""
 	}
-	return fmt.Sprintf("; did you mean '%s'?", diagName(bestName))
+	best, ok := names.closest(name)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("; did you mean '%s'?", diagName(best))
+}
+
+// suggestNames is the legal names under one parent chain, each once, in
+// schema order. Every unknown field used to be compared with every sibling,
+// and the list held one copy per schema field, so a document whose names all
+// miss cost the schema times the document (20260918b item 10). Past the first
+// few queries on a chain, each name of up to suggestIndexed characters is
+// filed under every spelling it has with up to two characters deleted. Two
+// names within edit distance 2 share such a spelling, so a query checks only
+// the names its own spellings find. A longer name keeps the scan, filtered by
+// length.
+type suggestNames struct {
+	names   []string
+	seen    map[string]bool
+	queries int
+	index   map[uint64][]int
+	long    []int
+	// The query that last looked at each name, so a name found under several
+	// spellings is measured once.
+	stamp []int
+}
+
+const suggestIndexed = 16
+
+// suggestScans is how many queries the scan answers before a chain gets its
+// index. A few typos in a large section should not pay for indexing it.
+const suggestScans = 16
+
+func (sn *suggestNames) push(name string) {
+	if !sn.seen[name] {
+		sn.seen[name] = true
+		sn.names = append(sn.names, name)
+	}
+}
+
+func (sn *suggestNames) closest(name string) (string, bool) {
+	sn.queries++
+	bestDist, bestIdx := -1, -1
+	consider := func(i int) {
+		dist := editDistance(name, sn.names[i], 2)
+		if dist <= 2 && (bestDist < 0 || dist < bestDist || (dist == bestDist && i < bestIdx)) {
+			bestDist, bestIdx = dist, i
+		}
+	}
+	if sn.queries <= suggestScans {
+		for i := range sn.names {
+			consider(i)
+		}
+	} else {
+		if sn.index == nil {
+			sn.index = map[uint64][]int{}
+			for i, n := range sn.names {
+				cs := []rune(n)
+				if len(cs) > suggestIndexed {
+					sn.long = append(sn.long, i)
+					continue
+				}
+				deletionSpellings(cs, func(h uint64) {
+					list := sn.index[h]
+					if len(list) == 0 || list[len(list)-1] != i {
+						sn.index[h] = append(list, i)
+					}
+				})
+			}
+			sn.stamp = make([]int, len(sn.names))
+		}
+		q := []rune(name)
+		if len(q) <= suggestIndexed+2 {
+			deletionSpellings(q, func(h uint64) {
+				for _, i := range sn.index[h] {
+					if sn.stamp[i] != sn.queries {
+						sn.stamp[i] = sn.queries
+						consider(i)
+					}
+				}
+			})
+		}
+		for _, i := range sn.long {
+			if absDiff(utf8.RuneCountInString(sn.names[i]), len(q)) <= 2 {
+				consider(i)
+			}
+		}
+	}
+	if bestIdx < 0 {
+		return "", false
+	}
+	return sn.names[bestIdx], true
+}
+
+// deletionSpellings calls f with the hash of each spelling of cs with none,
+// one or two of its characters deleted. The same spelling can come up more
+// than once.
+func deletionSpellings(cs []rune, f func(uint64)) {
+	hash := func(skipA, skipB int) uint64 {
+		h := newFnv()
+		var buf [utf8.UTFMax]byte
+		for k, c := range cs {
+			if k != skipA && k != skipB {
+				n := utf8.EncodeRune(buf[:], c)
+				for _, b := range buf[:n] {
+					h.byte(b)
+				}
+			}
+		}
+		return h.h
+	}
+	f(hash(-1, -1))
+	for a := range cs {
+		f(hash(a, -1))
+		for b := a + 1; b < len(cs); b++ {
+			f(hash(a, b))
+		}
+	}
 }

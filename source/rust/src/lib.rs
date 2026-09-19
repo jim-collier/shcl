@@ -8103,7 +8103,7 @@ impl Document {
 		// Sibling names per parent chain, built once (schema order): v_suggest
 		// used to rebuild every chain per unknown field, which bit hardest on
 		// the wholesale-unmatched documents the feature exists for.
-		let mut siblings: HashMap<String, Vec<String>> = HashMap::new();
+		let mut siblings: HashMap<String, SuggestNames> = HashMap::new();
 		// Paths with a `*` segment can't live in the exact-chain hash; they
 		// match element-wise (a star matches any one name, prefixes included).
 		let mut star_pats: Vec<&[Segment]> = Vec::new();
@@ -8116,10 +8116,7 @@ impl Document {
 				if s.star {
 					break; // no sibling entry for '*'; deeper chains are pattern-only
 				}
-				siblings
-					.entry(chain.clone())
-					.or_default()
-					.push(s.name.clone());
+				siblings.entry(chain.clone()).or_default().push(&s.name);
 				chain_push(&mut chain, &s.name);
 				legal.insert(chain.clone());
 			}
@@ -8162,7 +8159,7 @@ impl Document {
 				|| star_legal(&star_pats, &star_idx, &chain)
 				|| (has_mounts && chain_legal(cons, &def.frags, &set_idx, &chain));
 			if !known {
-				let hint = v_suggest(&siblings, &pchain, &node.name);
+				let hint = v_suggest(&mut siblings, &pchain, &node.name);
 				vdiag(
 					out,
 					node.line,
@@ -8325,18 +8322,125 @@ fn chain_parts_legal<'a>(
 
 /// Closest legal sibling name (same parent chain, schema order, edit distance
 /// <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never contract.
-fn v_suggest(siblings: &HashMap<String, Vec<String>>, parent_chain: &str, name: &str) -> String {
-	let mut best: Option<(usize, &str)> = None;
-	if let Some(names) = siblings.get(parent_chain) {
-		for s in names {
-			let dist = edit_distance(name, s, 2);
-			if dist <= 2 && best.is_none_or(|(bd, _)| dist < bd) {
-				best = Some((dist, s.as_str()));
-			}
+fn v_suggest(
+	siblings: &mut HashMap<String, SuggestNames>,
+	parent_chain: &str,
+	name: &str,
+) -> String {
+	match siblings
+		.get_mut(parent_chain)
+		.and_then(|names| names.closest(name))
+	{
+		Some(n) => format!("; did you mean '{}'?", diag_name(n)),
+		None => String::new(),
+	}
+}
+
+/// The legal names under one parent chain, each once, in schema order. Every
+/// unknown field used to be compared with every sibling, and the list held one
+/// copy per schema field, so a document whose names all miss cost the schema
+/// times the document (20260918b item 10). Past the first few queries on a
+/// chain, each name of up to SUGGEST_INDEXED characters is filed under every
+/// spelling it has with up to two characters deleted. Two names within edit
+/// distance 2 share such a spelling, so a query checks only the names its own
+/// spellings find. A longer name keeps the scan, filtered by length.
+#[derive(Default)]
+struct SuggestNames {
+	names: Vec<String>,
+	seen: HashSet<String>,
+	queries: usize,
+	index: Option<HashMap<u64, Vec<usize>>>,
+	long: Vec<usize>,
+	// The query that last looked at each name, so a name found under several
+	// spellings is measured once.
+	stamp: Vec<usize>,
+}
+
+const SUGGEST_INDEXED: usize = 16;
+/// Queries answered by the scan before a chain gets its index. A few typos in
+/// a large section should not pay for indexing it.
+const SUGGEST_SCANS: usize = 16;
+
+impl SuggestNames {
+	fn push(&mut self, name: &str) {
+		if self.seen.insert(name.to_string()) {
+			self.names.push(name.to_string());
 		}
 	}
-	match best {
-		Some((_, n)) => format!("; did you mean '{}'?", diag_name(n)),
-		None => String::new(),
+
+	fn closest(&mut self, name: &str) -> Option<&str> {
+		self.queries += 1;
+		let mut best: Option<(usize, usize)> = None;
+		let mut consider = |i: usize, names: &[String]| {
+			let dist = edit_distance(name, &names[i], 2);
+			if dist <= 2 && best.is_none_or(|b| (dist, i) < b) {
+				best = Some((dist, i));
+			}
+		};
+		if self.queries <= SUGGEST_SCANS {
+			for i in 0..self.names.len() {
+				consider(i, &self.names);
+			}
+		} else {
+			if self.index.is_none() {
+				let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+				for (i, n) in self.names.iter().enumerate() {
+					let cs: Vec<char> = n.chars().collect();
+					if cs.len() > SUGGEST_INDEXED {
+						self.long.push(i);
+						continue;
+					}
+					deletion_spellings(&cs, |h| {
+						let list = index.entry(h).or_default();
+						if list.last() != Some(&i) {
+							list.push(i);
+						}
+					});
+				}
+				self.index = Some(index);
+				self.stamp = vec![0; self.names.len()];
+			}
+			let q: Vec<char> = name.chars().collect();
+			let (index, stamp) = (self.index.as_ref()?, &mut self.stamp);
+			if q.len() <= SUGGEST_INDEXED + 2 {
+				deletion_spellings(&q, |h| {
+					for &i in index.get(&h).map_or(&[][..], |v| &v[..]) {
+						if stamp[i] != self.queries {
+							stamp[i] = self.queries;
+							consider(i, &self.names);
+						}
+					}
+				});
+			}
+			for &i in &self.long {
+				if self.names[i].chars().count().abs_diff(q.len()) <= 2 {
+					consider(i, &self.names);
+				}
+			}
+		}
+		best.map(|(_, i)| self.names[i].as_str())
+	}
+}
+
+/// Call `f` with the hash of each spelling of `cs` with none, one or two of
+/// its characters deleted. The same spelling can come up more than once.
+fn deletion_spellings(cs: &[char], mut f: impl FnMut(u64)) {
+	let hash = |skip_a: usize, skip_b: usize| {
+		let mut h = Fnv::new();
+		let mut buf = [0u8; 4];
+		for (k, c) in cs.iter().enumerate() {
+			if k != skip_a && k != skip_b {
+				h.bytes(c.encode_utf8(&mut buf).as_bytes());
+			}
+		}
+		h.0
+	};
+	let none = usize::MAX;
+	f(hash(none, none));
+	for a in 0..cs.len() {
+		f(hash(a, none));
+		for b in a + 1..cs.len() {
+			f(hash(a, b));
+		}
 	}
 }

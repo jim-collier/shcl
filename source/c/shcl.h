@@ -5815,21 +5815,146 @@ static size_t v_edit_distance(ShclArena *a, ShclStr sa, ShclStr sb, size_t cap) 
 
 // Closest legal sibling name (same parent chain, schema order, edit distance
 // <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
-static void v_suggest(ShclArena *a, ShclArena *tmp, const ShclVecS *names, ShclStr name, ShclSB *msg) {
+/* The legal names under one parent chain, each once, in schema order. Every
+   unknown field used to be compared with every sibling, and the list held one
+   copy per schema field, so a document whose names all miss cost the schema
+   times the document (20260918b item 10). Past the first few queries on a
+   chain, each name of up to SHCL_SUGGEST_INDEXED characters is filed under
+   every spelling it has with up to two characters deleted. Two names within
+   edit distance 2 share such a spelling, so a query checks only the names its
+   own spellings find. A longer name keeps the scan, filtered by length. */
+typedef struct {
+	ShclVecS names;
+	ShclCMap seen;
+	size_t queries;
+	int indexed;
+	// One map entry per spelling, naming its list in posts. A list per entry
+	// would put each name at the tail of one bucket chain, which is quadratic
+	// in a common spelling's list.
+	ShclCMap index;
+	ShclVecSize *posts; size_t nposts, cposts;
+	ShclVecSize longs;
+	// The query that last looked at each name, so a name found under several
+	// spellings is measured once.
+	size_t *stamp;
+} ShclSuggestNames;
+#define SHCL_SUGGEST_INDEXED 16
+// Queries the scan answers before a chain gets its index. A few typos in a
+// large section should not pay for indexing it.
+#define SHCL_SUGGEST_SCANS 16
+
+static void suggest_push(ShclArena *a, ShclSuggestNames *sn, ShclStr name) {
+	uint64_t h = fnv_str(1469598103934665603ull, name);
+	for (ShclCMapEnt *e = cmap_first(&sn->seen, h); e; e = cmap_next(e, h))
+		if (s_eq(sn->names.data[e->val], name)) return;
+	cmap_put(a, &sn->seen, h, sn->names.len);
+	ShclVecS_push(a, &sn->names, name);
+}
+
+static size_t suggest_cps(ShclStr s) {
+	size_t n = 0;
+	for (size_t i = 0; i < s.n; i++) if (((unsigned char)s.p[i] & 0xC0u) != 0x80u) n++;
+	return n;
+}
+
+/* Call F with the hash of each spelling of S with none, one or two of its
+   characters deleted. The same spelling can come up more than once. */
+typedef void (*ShclSpellFn)(void *ctx, uint64_t h);
+static void deletion_spellings(ShclArena *tmp, ShclStr s, ShclSpellFn f, void *ctx) {
+	size_t n = suggest_cps(s), k = 0;
+	size_t *off = (size_t *)arena_alloc(tmp, (n + 1) * sizeof *off);
+	for (size_t i = 0; i < s.n; i++) if (((unsigned char)s.p[i] & 0xC0u) != 0x80u) off[k++] = i;
+	off[n] = s.n;
+	for (size_t x = 0; x <= n; x++) {
+		for (size_t y = x; y <= n; y++) {
+			// x == n is no deletion; y == n with x < n is one; else two.
+			if (x == n && y != n) continue;
+			if (x < n && y == x) continue;
+			uint64_t h = 1469598103934665603ull;
+			for (size_t c = 0; c < n; c++) {
+				if (c == x || c == y) continue;
+				for (size_t i = off[c]; i < off[c + 1]; i++) h = fnv_byte(h, (unsigned char)s.p[i]);
+			}
+			f(ctx, h);
+		}
+	}
+}
+
+typedef struct { ShclArena *a; ShclSuggestNames *sn; size_t i; } ShclSpellFile;
+static void suggest_file(void *ctx, uint64_t h) {
+	ShclSpellFile *c = (ShclSpellFile *)ctx;
+	ShclSuggestNames *sn = c->sn;
+	ShclCMapEnt *e = cmap_first(&sn->index, h);
+	size_t k;
+	if (e) k = e->val;
+	else {
+		if (sn->nposts == sn->cposts) {
+			size_t nc = sn->cposts ? sn->cposts * 2 : 8;
+			sn->posts = (ShclVecSize *)arena_grow(c->a, sn->posts, sn->cposts, nc, sizeof(ShclVecSize));
+			sn->cposts = nc;
+		}
+		memset(&sn->posts[sn->nposts], 0, sizeof sn->posts[sn->nposts]);
+		k = sn->nposts++;
+		cmap_put(c->a, &sn->index, h, k);
+	}
+	// A name's own spellings come in a run, so a repeat is the last entry.
+	ShclVecSize *list = &sn->posts[k];
+	if (!list->len || list->data[list->len - 1] != c->i) ShclVecSize_push(c->a, list, c->i);
+}
+
+typedef struct { ShclArena *tmp; ShclSuggestNames *sn; ShclStr name; int have; size_t best_dist, best_i; } ShclSpellFind;
+static void suggest_consider(ShclSpellFind *c, size_t i) {
+	size_t dist = v_edit_distance(c->tmp, c->name, c->sn->names.data[i], 2);
+	if (dist <= 2 && (!c->have || dist < c->best_dist || (dist == c->best_dist && i < c->best_i))) {
+		c->have = 1; c->best_dist = dist; c->best_i = i;
+	}
+}
+static void suggest_find(void *ctx, uint64_t h) {
+	ShclSpellFind *c = (ShclSpellFind *)ctx;
+	ShclCMapEnt *e = cmap_first(&c->sn->index, h);
+	if (!e) return;
+	const ShclVecSize *list = &c->sn->posts[e->val];
+	for (size_t k = 0; k < list->len; k++) {
+		size_t i = list->data[k];
+		if (c->sn->stamp[i] == c->sn->queries) continue;
+		c->sn->stamp[i] = c->sn->queries;
+		suggest_consider(c, i);
+	}
+}
+
+static void v_suggest(ShclArena *a, ShclArena *tmp, ShclSuggestNames *sn, ShclStr name, ShclSB *msg) {
 	/* tmp holds the DP rows and codepoint decodes - dead after this call.
 	   Resetting per unknown field keeps a wholesale unmatched document (the
 	   case this feature exists for) at one sweep's peak. The sibling lists
-	   are prebuilt once per validate by v_unknown. */
+	   are prebuilt once per validate by v_unknown, and a chain's index lives
+	   in the validation arena beside them. */
 	arena_reset(tmp);
-	if (!names) return;
-	int have = 0; size_t best_dist = 0; ShclStr best_name = s_empty();
-	for (size_t i = 0; i < names->len; i++) {
-		size_t dist = v_edit_distance(tmp, name, names->data[i], 2);
-		if (dist <= 2 && (!have || dist < best_dist)) { have = 1; best_dist = dist; best_name = names->data[i]; }
+	if (!sn) return;
+	sn->queries++;
+	ShclSpellFind find; find.tmp = tmp; find.sn = sn; find.name = name; find.have = 0; find.best_dist = 0; find.best_i = 0;
+	if (sn->queries <= SHCL_SUGGEST_SCANS) {
+		for (size_t i = 0; i < sn->names.len; i++) suggest_consider(&find, i);
+	} else {
+		if (!sn->indexed) {
+			sn->indexed = 1;
+			sn->stamp = (size_t *)arena_alloc(a, (sn->names.len ? sn->names.len : 1) * sizeof *sn->stamp);
+			for (size_t i = 0; i < sn->names.len; i++) {
+				sn->stamp[i] = 0;
+				if (suggest_cps(sn->names.data[i]) > SHCL_SUGGEST_INDEXED) { ShclVecSize_push(a, &sn->longs, i); continue; }
+				ShclSpellFile file; file.a = a; file.sn = sn; file.i = i;
+				deletion_spellings(tmp, sn->names.data[i], suggest_file, &file);
+			}
+		}
+		size_t qn = suggest_cps(name);
+		if (qn <= SHCL_SUGGEST_INDEXED + 2) deletion_spellings(tmp, name, suggest_find, &find);
+		for (size_t k = 0; k < sn->longs.len; k++) {
+			size_t ln = suggest_cps(sn->names.data[sn->longs.data[k]]);
+			if ((ln > qn ? ln - qn : qn - ln) <= 2) suggest_consider(&find, sn->longs.data[k]);
+		}
 	}
-	if (have) {
+	if (find.have) {
 		sb_puts(a, msg, "; did you mean '");
-		sb_putS(a, msg, diag_name(a, best_name));
+		sb_putS(a, msg, diag_name(a, sn->names.data[find.best_i]));
 		sb_puts(a, msg, "'?");
 	}
 }
@@ -6262,7 +6387,7 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 	ShclVecS legal_chains = {0};
 	ShclCMap sib_of; memset(&sib_of, 0, sizeof sib_of);
 	ShclVecS sib_chain = {0}; /* parent chain per sibs bucket */
-	ShclVecS *sibs = NULL; size_t nsib = 0, csib = 0;
+	ShclSuggestNames *sibs = NULL; size_t nsib = 0, csib = 0;
 	// Paths with a `*` segment can't live in the exact-chain hash; they
 	// match element-wise (a star matches any one name, prefixes included).
 	ShclVecSeg *star_pats = NULL; size_t nstar = 0, cstar = 0;
@@ -6283,13 +6408,13 @@ static void v_unknown(ShclArena *a, ShclArena *tmp, shcl_doc *d, const ShclVSche
 			for (ShclCMapEnt *e = cmap_first(&sib_of, hp); e; e = cmap_next(e, hp))
 				if (s_eq(sib_chain.data[e->val], pc)) { g = e->val; break; }
 			if (g == (size_t)-1) {
-				if (nsib == csib) { size_t nc = csib ? csib * 2 : 8; sibs = (ShclVecS *)arena_grow(a, sibs, csib, nc, sizeof(ShclVecS)); csib = nc; }
+				if (nsib == csib) { size_t nc = csib ? csib * 2 : 8; sibs = (ShclSuggestNames *)arena_grow(a, sibs, csib, nc, sizeof(ShclSuggestNames)); csib = nc; }
 				memset(&sibs[nsib], 0, sizeof sibs[nsib]);
 				g = nsib++;
 				cmap_put(a, &sib_of, hp, g);
 				ShclVecS_push(a, &sib_chain, pc);
 			}
-			ShclVecS_push(a, &sibs[g], nm);
+			suggest_push(a, &sibs[g], nm);
 			chain_push(a, &chain, nm);
 			ShclStr full = s_dup(a, sb_S(&chain));
 			uint64_t hf = cmap_hash(full, s_empty());

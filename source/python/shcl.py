@@ -4377,7 +4377,7 @@ class Document:
 			for s in c.segs:
 				if s.star:
 					break   # no sibling entry for '*'; deeper chains are pattern-only
-				siblings.setdefault(chain, []).append(s.name)
+				siblings.setdefault(chain, _SuggestNames()).push(s.name)
 				chain = _chain_push(chain, s.name)
 				legal.add(chain)
 		# Both element-wise matchers below used to scan their whole list per
@@ -6650,11 +6650,95 @@ def _v_suggest(siblings, parent_chain, name):
 	"""Closest legal sibling name (same parent chain, schema order, edit
 	distance <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never
 	contract. The sibling lists are prebuilt once per validate."""
-	best = None
-	for s in siblings.get(parent_chain, ()):
-		dist = _edit_distance(name, s, 2)
-		if dist <= 2 and (best is None or dist < best[0]):
-			best = (dist, s)
+	names = siblings.get(parent_chain)
+	best = names.closest(name) if names is not None else None
 	if best is None:
 		return ""
-	return f"; did you mean '{_diag_name(best[1])}'?"
+	return f"; did you mean '{_diag_name(best)}'?"
+
+
+# How many queries the scan answers before a chain gets its index. A few typos
+# in a large section should not pay for indexing it.
+_SUGGEST_INDEXED = 16
+_SUGGEST_SCANS = 16
+
+
+class _SuggestNames:
+	"""The legal names under one parent chain, each once, in schema order.
+	Every unknown field used to be compared with every sibling, and the list
+	held one copy per schema field, so a document whose names all miss cost
+	the schema times the document (20260918b item 10). Past the first few
+	queries on a chain, each name of up to _SUGGEST_INDEXED characters is filed
+	under every spelling it has with up to two characters deleted. Two names
+	within edit distance 2 share such a spelling, so a query checks only the
+	names its own spellings find. A longer name keeps the scan, filtered by
+	length. The spellings are the dict keys themselves here, where the other
+	bindings key on a hash of them: a hash written in Python costs more than
+	the dict's own."""
+
+	__slots__ = ("names", "seen", "queries", "index", "long", "stamp")
+
+	def __init__(self):
+		self.names = []
+		self.seen = set()
+		self.queries = 0
+		self.index = None
+		self.long = []
+		# The query that last looked at each name, so a name found under
+		# several spellings is measured once.
+		self.stamp = []
+
+	def push(self, name):
+		if name not in self.seen:
+			self.seen.add(name)
+			self.names.append(name)
+
+	def closest(self, name):
+		self.queries += 1
+		best = None
+		names = self.names
+
+		def consider(i):
+			nonlocal best
+			dist = _edit_distance(name, names[i], 2)
+			if dist <= 2 and (best is None or (dist, i) < best):
+				best = (dist, i)
+
+		if self.queries <= _SUGGEST_SCANS:
+			for i in range(len(names)):
+				consider(i)
+		else:
+			if self.index is None:
+				index: dict = {}
+				for i, n in enumerate(names):
+					if len(n) > _SUGGEST_INDEXED:
+						self.long.append(i)
+						continue
+					for sp in _deletion_spellings(n):
+						lst = index.setdefault(sp, [])
+						if not lst or lst[-1] != i:
+							lst.append(i)
+				self.index = index
+				self.stamp = [0] * len(names)
+			stamp = self.stamp
+			if len(name) <= _SUGGEST_INDEXED + 2:
+				for sp in _deletion_spellings(name):
+					for i in self.index.get(sp, ()):
+						if stamp[i] != self.queries:
+							stamp[i] = self.queries
+							consider(i)
+			for i in self.long:
+				if abs(len(names[i]) - len(name)) <= 2:
+					consider(i)
+		return None if best is None else names[best[1]]
+
+
+def _deletion_spellings(s):
+	"""Each spelling of s with none, one or two of its characters deleted. The
+	same spelling can come up more than once."""
+	yield s
+	for a in range(len(s)):
+		one = s[:a] + s[a + 1:]
+		yield one
+		for b in range(a, len(one)):
+			yield one[:b] + one[b + 1:]

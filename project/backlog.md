@@ -118,13 +118,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sweep: every member read off a possibly empty value in this file. Item 36 is the other one.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 10: the did-you-mean on unknown fields is quadratic, in the case the feature is for.
-		- Measured: a schema and a document of N top-level names with none matching. C takes 2.0 s at 4,000, 7.8 s at 8,000 and 32 s at 16,000, and the others are slower. The matched document of the same size takes 0.03 s.
-		- Cause: every unknown field is compared with every sibling name, and the sibling list holds one copy per schema field, so N fields under one section still cost N times N.
-		- Origin: `30120bc` (2026-07-23). Third facet of this function, after 20260725 item 26 and 20260901 item 8. Confirmed.
-		- Probable fix: keep each sibling name once and bucket by length, since only names within two characters can match. The `suggest` workload in `perf-gate.bash` has 30 names and cannot see it.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 11: `install.ps1 -Uninstall` needs the GitHub API to answer before it removes anything.
 		- Reproduced: with the proxy pointed nowhere, `-Uninstall` exits 1 at the release lookup. `install.bash` uninstalls before its first fetch, which is what the backlog says both do.
 		- Origin: `21ec21d` (2026-08-18), where `-Uninstall` first appeared, already below the lookup. Confirmed.
@@ -700,6 +693,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Left alone: a bare index selector on a binding line (`a[N].k: 1`) is still quadratic. The spec discourages that spelling, and an index there has to count same-name siblings in order.
 		- Opened: 20260918-193000
 		- Closed: 20260919-130923
+
+	- ✅ Item 10: the did-you-mean on unknown fields is quadratic, in the case the feature is for.
+		- Measured: a schema and a document of N top-level names with none matching. C takes 2.0 s at 4,000, 7.8 s at 8,000 and 32 s at 16,000, and the others are slower. The matched document of the same size takes 0.03 s.
+		- Cause: every unknown field is compared with every sibling name, and the sibling list holds one copy per schema field, so N fields under one section still cost N times N.
+		- Origin: `30120bc` (2026-07-23). Third facet of this function, after 20260725 item 26 and 20260901 item 8. Confirmed.
+		- Probable fix: keep each sibling name once and bucket by length, since only names within two characters can match. The `suggest` workload in `perf-gate.bash` has 30 names and cannot see it.
+		- Fixed: each chain's sibling names are kept once, and past the first 16 queries on a chain every name up to 16 characters is filed under each spelling with up to two characters deleted. Two names within edit distance 2 share such a spelling, so a query measures only the names its own spellings find, and the answer is the same name the scan chose. Longer names keep the scan, filtered by length. `SuggestNames` in Rust, `suggestNames` in Go, `_SuggestNames` in Python and `ShclSuggestNames` in C, each with its deletion-spelling walk. Python keys on the spellings themselves, since a hash written in Python costs more than the dict's own.
+		- Measured: 4000 unknown names against 4000 schema names took 30.6 s in the Rust debug build and 1.2 s now. 16000 of each, which the old code could not finish in reasonable time, take 0.18 to 2.2 s across the four. 4000 fields under one section went from 4.9 s to under 0.2 s.
+		- Pinned by: an `unknowns` workload in `perf-gate.bash`, 4000 unknown names of eight pseudo-random letters against 4000 top-level names and 4000 under one section. All four were over budget on the old code (2.4 s to 54 s against budgets under 2.1 s) and are inside it now. The hints came out byte-identical to the old code on the 4000-name case.
+		- Opened: 20260918-193000
+		- Closed: 20260919-132749
 
 	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
 		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.

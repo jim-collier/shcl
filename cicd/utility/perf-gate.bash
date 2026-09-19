@@ -111,6 +111,18 @@ awk 'BEGIN{ for (i = 12000; i < 16000; i++) printf "m%d.leaf: 1\n", i; print "zz
 ## key count keeps the old code's run under two minutes in the slowest binding.
 selDoc="${tmpDir}/sel.shcl"
 awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "srv[\"host %d\"].port: %d\n", i, i }' > "${selDoc}"
+## Every document name unknown and none close to a schema name, the case the
+## did-you-mean exists for. Each unknown field was compared with every sibling,
+## and the list held one copy per schema field, so the section's 4000 fields
+## put 4000 copies of `sec` beside the 4000 top-level names (20260918b item 10).
+## The names are pseudo-random letters, all eight long, since a length filter
+## alone must not be enough to pass; a Park-Miller step keeps them the same on
+## every awk.
+unkSchema="${tmpDir}/unk-schema.shcl"; unkDoc="${tmpDir}/unk.shcl"
+awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 2147483647; s = s sprintf("%c", 97 + x % 26) } return s }
+	BEGIN { x = 1; for (i = 0; i < 4000; i++) printf "field: %s\nfield: sec.%s\n", nm(), nm() }' > "${unkSchema}"
+awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 2147483647; s = s sprintf("%c", 97 + x % 26) } return s }
+	BEGIN { x = 7; for (i = 0; i < 4000; i++) printf "%s: 1\n", nm() }' > "${unkDoc}"
 
 ##	Milliseconds for one run of $2 (an ops file, a document when $3 is
 ##	"check", or a document validated against ${sugSchema} when $3 is
@@ -139,6 +151,8 @@ fTimeMs(){
 			"${cli}" check --schema "${mountSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == selectors ]]; then
 			"${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == unknowns ]]; then
+			"${cli}" check --schema "${unkSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			"${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -146,7 +160,7 @@ fTimeMs(){
 		##	`check` on a document with diagnostics exits 6; everything else here
 		##	succeeds. Anything else means the run did no work.
 		local wantRc=0
-		case "${mode}" in check|suggest|recurse|frags|stars|mounts) wantRc=6 ;; esac
+		case "${mode}" in check|suggest|recurse|frags|stars|mounts|unknowns) wantRc=6 ;; esac
 		if ((rc != wantRc)); then
 			echo "perf-gate: ${cli##*/}: ${mode} run exited ${rc}, expected ${wantRc} - it did not do the work" >&2
 			printf '%s' -1; return
@@ -191,7 +205,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors; do
+	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
@@ -206,6 +220,8 @@ for b in "${bindings[@]}"; do
 			ms="$(fTimeMs "${cli}" "${mountDoc}" mounts 2)"
 		elif [[ "${w}" == selectors ]]; then
 			ms="$(fTimeMs "${cli}" "${selDoc}" selectors 1)"
+		elif [[ "${w}" == unknowns ]]; then
+			ms="$(fTimeMs "${cli}" "${unkDoc}" unknowns 4000)"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
@@ -243,3 +259,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            element-wise matchers, each scanning its whole list per node.
 ##		2026-09-19  selectors workload: quoted `[value]` selectors, each a new
 ##		            instance, which scanned every sibling on the create path.
+##		2026-09-19  unknowns workload: every name unknown, which compared each with
+##		            every sibling, one copy per schema field.
