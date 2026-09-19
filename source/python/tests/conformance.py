@@ -450,6 +450,16 @@ def main():
 		except shcl.SaveFailed:
 			pass
 
+	# The reference's tokenizer offset is unsigned, so a negative one has
+	# nothing else it can mean. Go panicked and Python read it as an offset
+	# from the end (20260918b item 31). Same fixture in the Go test.
+	neg, zero = shcl.Tokens(), shcl.Tokens()
+	shcl.tokenize_value("x, 'y' # c", -3, shcl.Rules.CURRENT, neg)
+	shcl.tokenize_value("x, 'y' # c", 0, shcl.Rules.CURRENT, zero)
+	if [(p.start, p.end, p.quote) for p in neg.elements] != [(p.start, p.end, p.quote) for p in zero.elements] \
+			or neg.value != zero.value or neg.comment != zero.comment:
+		fails.append("a negative tokenizer offset did not read as zero")
+
 	# A document merged onto itself is left as it is (20260918b item 19). The
 	# walk read over while it wrote self, so Go doubled a retained line, Python
 	# grew without end and C ran out of memory. Every corpus input, and the

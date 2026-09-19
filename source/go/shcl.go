@@ -957,10 +957,15 @@ func scanPiece(s string, pos int, term byte, rules Rules, comments bool) (Piece,
 	return Piece{Start: start, End: contentEnd, Quote: quote}, clamp(pos)
 }
 
-// TokenizeValue reads the value half: everything from `from` on, split into
-// pieces, with the comment found on the way.
+// TokenizeValue reads the value half: everything from the byte offset from on,
+// split into pieces, with the comment found on the way. A negative offset
+// reads as 0: the reference's offset is unsigned, so there is nothing else one
+// can mean, and Go panicked on it (20260918b item 31).
 func TokenizeValue(text string, from int, rules Rules, out *Tokens) {
 	out.clear()
+	if from < 0 {
+		from = 0
+	}
 	scanValue(text, from, rules, out)
 }
 

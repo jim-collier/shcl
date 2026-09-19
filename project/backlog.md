@@ -136,17 +136,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 30: Python's `migrate` raises `ValueError` on a Format line with more than 4,300 digits.
-		- Reproduced: the other three say there is nothing to migrate at exit 0, and the Python CLI prints a traceback at exit 1. The last round's check of this line stopped at 23 digits.
-		- Cause: a bare `int()` in `_format_version`. Every other `int()` in the file is length-gated for this.
-		- Origin: `7040ab7` (2026-09-16), and the line was re-touched in the 20260918 round. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 31: Go's `TokenizeValue` panics on a negative `from`, and Python reads one as an index from the end.
-		- Reproduced: `TokenizeValue("abc", -1, ...)` panics in `skipWsp`. Python returns spans starting at -1 and raises `IndexError` below `-len`. The reference's unsigned type cannot express the value. No caller in the tree passes one.
-		- Origin: `fbbe7ce` (2026-09-07). Same function as 20260909 item 19. Confirmed.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 32: the PowerShell wrapper's typed helpers drop pipeline input.
 		- Reproduced: on pwsh 7.6.6, dot-sourced. `'a: 5' | shcl_fmt -` prints nothing at exit 0, and `'a: 5' | shcl_int - a` prints `0` at exit 3. The `shcl` function itself and the bash helpers work.
 		- Cause: the fifteen one-line helpers pass `@args` and not `$input`.
@@ -838,6 +827,25 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: a selector's `E017` is now reported ahead of both refusals, so a capped line with an open selector quote reports it too.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 30: Python's `migrate` raises `ValueError` on a Format line with more than 4,300 digits.
+		- Reproduced: the other three say there is nothing to migrate at exit 0, and the Python CLI prints a traceback at exit 1. The last round's check of this line stopped at 23 digits.
+		- Cause: a bare `int()` in `_format_version`. Every other `int()` in the file is length-gated for this.
+		- Origin: `7040ab7` (2026-09-16), and the line was re-touched in the 20260918 round. Confirmed.
+		- Fixed: `_format_version` length-gates the digits before `int()`, as `_parse_uint` already did, and reads a number past ten digits as this major. That is what the other three do: the reference's `u32` parse fails and falls back to the current major, and Go's `Atoi` error does the same. The file then says there is nothing to migrate, at exit 0, in all four.
+		- Pinned by: `cli-regress.bash` row `migrate-huge-format`, a Format line of five thousand digits. Python exited 1 on the old code.
+		- Swept: `int()` in `shcl.py`. The remaining two are the gated `_parse_uint` and a `bool` used as 0 or 1.
+		- Opened: 20260918-193000
+		- Closed: 20260919-135951
+
+	- ✅ Item 31: Go's `TokenizeValue` panics on a negative `from`, and Python reads one as an index from the end.
+		- Reproduced: `TokenizeValue("abc", -1, ...)` panics in `skipWsp`. Python returns spans starting at -1 and raises `IndexError` below `-len`. The reference's unsigned type cannot express the value. No caller in the tree passes one.
+		- Origin: `fbbe7ce` (2026-09-07). Same function as 20260909 item 19. Confirmed.
+		- Fixed: a negative offset reads as 0 in `TokenizeValue` (Go) and `tokenize_value` (Python), and both doc comments say so. The reference's offset is unsigned, so there is nothing else one can mean; Go panicked in `skipWsp` and Python read it as an offset from the end.
+		- Pinned by: `TestTokenizeValueTakesANegativeOffsetAsZero` in the Go test and the same fixture in the Python runner, comparing the pieces, the value span and the comment against a scan from zero. Go panicked and Python failed the compare on the old code.
+		- Left alone: C and Rust take an unsigned offset, so neither can be handed one.
+		- Opened: 20260918-193000
+		- Closed: 20260919-135951
 
 - Code review 20260918:
 

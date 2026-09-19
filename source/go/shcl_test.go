@@ -1229,6 +1229,18 @@ func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
 	}
 }
 
+func TestTokenizeValueTakesANegativeOffsetAsZero(t *testing.T) {
+	// The reference's offset is unsigned, so a negative one has nothing else
+	// it can mean. Go panicked inside skipWsp and Python read it as an offset
+	// from the end (20260918b item 31). Same fixture in the Python runner.
+	var a, b Tokens
+	TokenizeValue("x, 'y' # c", -3, RulesCurrent, &a)
+	TokenizeValue("x, 'y' # c", 0, RulesCurrent, &b)
+	if !reflect.DeepEqual(a.Elements, b.Elements) || a.Value != b.Value || a.Comment != b.Comment {
+		t.Errorf("negative offset: %+v, from zero: %+v", a, b)
+	}
+}
+
 func TestMergeOntoItselfLeavesItAlone(t *testing.T) {
 	// A document merged onto itself is left as it is (20260918b item 19). The
 	// walk read over while it wrote d, so Go doubled a retained line, Python

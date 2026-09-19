@@ -161,6 +161,10 @@ printf 'p: %s\nnote:\n\t```\n##    Format   2\n\t```\n' "'C:\temp'" > "${tmpDir}
 printf 'p: %s\nnote:\n\t```\n##    Format   3\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt3.shcl"
 ## A stamped file behind a BOM, whose value 2.x would have read another way.
 printf '\357\273\277##    Format   3\np: %s\n' 'C:\temp' > "${tmpDir}/bomstamped.shcl"
+## A Format line of five thousand digits: no format will carry that number, and
+## CPython refuses an int() past 4300 digits, so Python raised where the other
+## three read it as this major and said there was nothing to migrate.
+{ printf 'p: 1\n##    Format   '; printf '9%.0s' $(seq 5000); printf '\n'; } > "${tmpDir}/bigfmt.shcl"
 ## An older Format line with migrate's own stamp after it, so the first line
 ## found is the older one.
 printf 'a: 1\n##    Format   0\n##    Format   3\n' > "${tmpDir}/twostamps.shcl"
@@ -216,7 +220,7 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
 ##	%V3B% the same behind a BOM, %V03% an older Format line and then the
-##	current one, %RF2%/%RF3% a raw body holding a Format line,
+##	current one, %FB% a Format line of five thousand digits, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone, %SH% an optional field whose default
@@ -428,6 +432,8 @@ rows=(
 	## Found by the fuzz in the 20260918 fix round: the first Format line decided,
 	## so a file naming an older format was stamped again on every run.
 	'migrate-two-stamps|migrate %V03%|-|0|-|nothing to migrate'
+	## 20260918b item 30: Python raised on a Format line past 4300 digits.
+	'migrate-huge-format|migrate %FB%|-|0|-|nothing to migrate'
 	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
 	## Leaving the line is the decision; exiting 0 was the defect, since a
 	## scripted migration could not tell "migrated" from "gave up".
@@ -652,6 +658,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
 	argv="${argv//%V3B%/${tmpDir}/bomstamped.shcl}"
 	argv="${argv//%V03%/${tmpDir}/twostamps.shcl}"
+	argv="${argv//%FB%/${tmpDir}/bigfmt.shcl}"
 	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
 	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	freshCopy=0

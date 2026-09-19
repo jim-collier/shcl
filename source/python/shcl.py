@@ -1029,8 +1029,12 @@ def _scan_piece(s, pos, term, rules, comments):
 
 def tokenize_value(text: str, from_: int, rules: Rules, out: Tokens) -> None:
 	"""The value half: everything from the byte offset from_ on, split into
-	pieces, with the comment found on the way."""
+	pieces, with the comment found on the way. A negative offset reads as 0:
+	the reference's offset is unsigned, so there is nothing else one can mean,
+	and Python read it as an offset from the end (20260918b item 31)."""
 	out._clear()
+	if from_ < 0:
+		from_ = 0
 	# A Python string can hold a lone surrogate (os.listdir, sys.argv and
 	# os.environ hand them out), and a strict encode raised from a parse that
 	# promises never to. Carried through, it is one more non-ASCII character,
@@ -1425,7 +1429,14 @@ def _format_version(text):
 		if head.startswith(FORMAT_LINE_HEAD):
 			n = head[len(FORMAT_LINE_HEAD):]
 			if n and all("0" <= c <= "9" for c in n):
-				v = int(n)
+				# A number too long for int() - CPython refuses past 4300
+				# digits - is one no format will ever carry. The reference's
+				# parse fails on it too and reads the line as this major, so
+				# the file needs nothing (20260918b item 30).
+				digits = n.lstrip("0") or "0"
+				if len(digits) > 10:
+					return FORMAT_MAJOR
+				v = int(digits)
 				if v >= FORMAT_MAJOR:
 					return v
 				found = v if found is None else max(found, v)
