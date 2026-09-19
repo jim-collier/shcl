@@ -702,15 +702,10 @@ def read_input(file):
 		raise ValueError(f"{file}: stream did not contain valid UTF-8") from e
 
 
-def load_doc(text, strictness):
-	# Returns (doc, None) or (None, code). On strict load failure, prints the
-	# reference's diagnostic lines to stderr and reports code 6.
-	return load_doc_from("", text, strictness)
-
-
 def load_doc_from(file, text, strictness):
-	# The same, labelled with the file the text came from, so a strict failure
-	# in one layer of a fold says which layer.
+	# Returns (doc, None) or (None, code). On strict load failure, prints the
+	# diagnostic lines to stderr, labelled with the file the text came from so
+	# a strict failure in one layer of a fold says which layer, and reports 6.
 	try:
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
@@ -751,10 +746,19 @@ def load_layered(o, file):
 	# with nothing said about them. A merge does not carry diagnostics over, so
 	# reading them off the merged document drops the ones for FILE itself, which
 	# is the one the caller named.
+	doc, _, code = load_layered_from(o, file, None)
+	return doc, code
+
+
+def load_layered_from(o, file, given):
+	# The same fold with FILE's text given rather than read, which is how `set`
+	# creates a file or takes an empty document, and FILE's text handed back.
+	# `set` kept its own copy of the fold, and twice a fix to this one missed
+	# it. Returns (doc, text, None) or (None, "", code).
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
-	texts.append(read_input(file))
+	texts.append(read_input(file) if given is None else given)
 	# Lowest layer first, each labelled with its own file when there is more than
 	# one: the line numbers share a space on the screen otherwise, and two layers
 	# with a bad line 2 printed the same thing twice.
@@ -763,20 +767,20 @@ def load_layered(o, file):
 		return names[i] if len(names) > 1 else ""
 	doc, code = load_doc_from(label(0), texts[0], o.strictness)
 	if doc is None:
-		return None, code
+		return None, "", code
 	say_diagnostics_from(label(0), doc.diagnostics())
 	for i, t in enumerate(texts[1:]):
 		over, c = load_doc_from(label(i + 1), t, o.strictness)
 		if over is None:
-			return None, c
+			return None, "", c
 		say_diagnostics_from(label(i + 1), over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
 			why = describe_refusal(doc, st.path, "the value text is not one value")
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
-			return None, 1
-	return doc, None
+			return None, "", 1
+	return doc, texts[-1], None
 
 
 def allowed_opts(cmd):
@@ -1568,7 +1572,6 @@ def do_set(o):
 	# file is the document on stdin the way it is everywhere else; only when
 	# stdin is the ops script does '-' mean an empty base. Reading neither threw
 	# a piped document away at exit 0.
-	# Any --layer files sit under it and --set overrides sit on top, before ops.
 	# --write names the file this command produces, so a FILE that is not there
 	# yet is a create and the edits land in a new document. Only under --write,
 	# and only when nothing is at the path at all: without --write there is
@@ -1578,35 +1581,21 @@ def do_set(o):
 	# format it is. Comments in an otherwise empty document are the document's
 	# trailing trivia, so the edits land above it and the write still goes
 	# through the library's save gate.
+	# The --layer files sit under it and --set overrides sit on top, before
+	# ops, through the same fold every other subcommand uses.
 	creating = o.write and file != "-" and not os.path.exists(file)
+	given = None
+	if creating:
+		given = "" if o.no_banner else shcl.GEN_BANNER
+	elif file == "-" and not o.sets:
+		given = ""
 	try:
-		layer_texts = [read_input(lf) for lf in o.layers]
-		if creating:
-			base = "" if o.no_banner else shcl.GEN_BANNER
-		else:
-			base = "" if file == "-" and not o.sets else read_input(file)
+		doc, _, code = load_layered_from(o, file, given)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
-	layer_texts.append(base)
-	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
-	diags = list(doc.diagnostics())
-	for t in layer_texts[1:]:
-		over, c = load_doc(t, o.strictness)
-		if over is None:
-			return c
-		diags.extend(over.diagnostics())
-		doc.merge(over)
-	# The load's diagnostics belong to the load, so they go out before any edit
-	# runs: a refused --set or a failing op used to return with nothing said.
-	say_diagnostics(diags)
-	for st in o.sets:
-		if not st.apply(doc):
-			why = describe_refusal(doc, st.path, "the value text is not one value")
-			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
-			return 1
 	# --set carries the edits, so stdin is left alone: reading it here would
 	# block on the console for anyone who passed edits as options.
 	# The ops script is contract input like the reference's read_to_string:

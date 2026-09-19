@@ -166,14 +166,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable fix: match the second abort line, and treat a log with neither the done line nor an abort as unfinished, leaving the marker alone.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 14: `set --layer` prints its layers' diagnostics with no file name.
-		- Reproduced: two layers with a bad line 2 print `line 2:` twice. `fmt --layer` names the file on each. Under `--strictness=strict` all four leave it off. Otherwise C names the file and the other three do not, so the four also differ on stderr.
-		- Cause: `set` keeps its own copy of the layered load, and 20260901b item 24 labelled the shared one only. The changelog's Unreleased says layers are named.
-		- Origin: `3f3e506` (2026-09-03). The second time `set`'s copy missed a fix to the fold. Confirmed.
-		- Probable fix: load through the shared loader, not a second labelled copy, with `set` twins of the two `cli-regress` rows.
-		- Sweep: `do_set` in `main.rs`, `main.py` and `main.c`, `doSet` in `main.go`.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 15: bash completion stops offering FILE after a value holding `=` or `:`.
 		- Reproduced: live in `bash --norc`. With the file sourced by hand, as the install message says to, `shcl set --set a=1 <TAB>` offers nothing. With bash-completion loaded that works, and `--set url=http://x <TAB>` does not. zsh is right in every case.
 		- Cause: the word rejoin handles one `=` after an option name. The gate's harness splits a word once where readline splits at every `=` and `:`, so its row passes.
@@ -727,6 +719,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: memory had recorded this trap since 2026-09-15 and the gate never changed, which is the reason for the gotcha rule under Conventions.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 14: `set --layer` prints its layers' diagnostics with no file name.
+		- Reproduced: two layers with a bad line 2 print `line 2:` twice. `fmt --layer` names the file on each. Under `--strictness=strict` all four leave it off. Otherwise C names the file and the other three do not, so the four also differ on stderr.
+		- Cause: `set` keeps its own copy of the layered load, and 20260901b item 24 labelled the shared one only. The changelog's Unreleased says layers are named.
+		- Origin: `3f3e506` (2026-09-03). The second time `set`'s copy missed a fix to the fold. Confirmed.
+		- Probable fix: load through the shared loader, not a second labelled copy, with `set` twins of the two `cli-regress` rows.
+		- Sweep: `do_set` in `main.rs`, `main.py` and `main.c`, `doSet` in `main.go`.
+		- Fixed: `set` loads through the shared fold. `load_layered_from` (`loadLayeredFrom` in Go) takes FILE's text when `set` creates the file or reads an empty document, and reads it otherwise, so the labels, the strict failure and the `--set` pass are one copy in each CLI. The old private copies, and the single-load helpers only they used, are gone.
+		- Pinned by: `cli-regress.bash` rows `layer-diags-named-set` and `layer-strict-names-the-layer-set`, the `set` twins of the two `fmt` rows. On the old code the first failed in Rust, Go and Python and the second in all four.
+		- Swept: `do_set` in `main.rs`, `main.py` and `main.c`, `doSet` in `main.go`. No other subcommand builds its own fold.
+		- Opened: 20260918-193000
+		- Closed: 20260919-123632
 
 	- ✅ Item 17: Go resolves a dangling relative link by cleaning the path, so the file is created in the wrong directory at exit 0.
 		- Reproduced: a link holding `..` whose own directory is reached through a symlink. Rust, C and Python create the file where the kernel would. Go creates it elsewhere, the link stays dangling, and the next load is `NotFound`.

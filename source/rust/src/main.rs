@@ -1137,6 +1137,13 @@ fn say_diagnostics_from(file: &str, diags: &[Diagnostic]) {
 /// reading them off it drops the diagnostics for FILE itself, which is the one
 /// the caller named.
 fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+	load_layered_from(o, file, None).map(|(doc, _)| doc)
+}
+
+/// The same fold with FILE's text given rather than read, which is how `set`
+/// creates a file or takes an empty document, and FILE's text handed back.
+/// `set` kept its own copy of the fold, and twice a fix to this one missed it.
+fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Document, String), u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
@@ -1145,10 +1152,13 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			EXIT_IO
 		})?);
 	}
-	let base_text = read_input(file).map_err(|e| {
-		errln!("{}", e);
-		EXIT_IO
-	})?;
+	let base_text = match base {
+		Some(t) => t,
+		None => read_input(file).map_err(|e| {
+			errln!("{}", e);
+			EXIT_IO
+		})?,
+	};
 	texts.push(base_text);
 	// Lowest layer first, each labelled with its own file when there is more
 	// than one: the line numbers share a space on the screen otherwise, and two
@@ -1178,7 +1188,8 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			return Err(1);
 		}
 	}
-	Ok(doc)
+	let base_text = texts.pop().unwrap_or_default();
+	Ok((doc, base_text))
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -1264,11 +1275,7 @@ fn read_input(file: &str) -> Result<String, String> {
 	}
 }
 
-fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
-	load_from("", text, strictness)
-}
-
-/// The same, labelled with the file the text came from, so a strict failure in
+/// A load, labelled with the file the text came from, so a strict failure in
 /// one layer of a fold says which layer.
 fn load_from(file: &str, text: &str, strictness: Strictness) -> Result<Document, u8> {
 	match Document::parse_with(text, strictness) {
@@ -1969,17 +1976,6 @@ fn do_set(o: &Opts) -> u8 {
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	let mut layer_texts: Vec<String> = Vec::new();
-	for lf in &o.layers {
-		match read_input(lf) {
-			Ok(t) => layer_texts.push(t),
-			Err(e) => {
-				errln!("{}", e);
-				return EXIT_IO;
-			}
-		}
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -1989,53 +1985,24 @@ fn do_set(o: &Opts) -> u8 {
 	// format it is. Comments in an otherwise empty document are the
 	// document's trailing trivia, so the edits land above it and the write
 	// still goes through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	let creating = o.write && file != "-" && !std::path::Path::new(file).exists();
-	let base_text = if creating {
-		if o.no_banner {
+	let base = if creating {
+		Some(if o.no_banner {
 			String::new()
 		} else {
 			GEN_BANNER.to_string()
-		}
+		})
 	} else if file == "-" && o.sets.is_empty() {
-		String::new()
+		Some(String::new())
 	} else {
-		match read_input(file) {
-			Ok(t) => t,
-			Err(e) => {
-				errln!("{}", e);
-				return EXIT_IO;
-			}
-		}
+		None
 	};
-	layer_texts.push(base_text);
-	let mut doc = match load(&layer_texts[0], o.strictness) {
-		Ok(d) => d,
+	let (mut doc, _base_text) = match load_layered_from(o, file, base) {
+		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
-	let mut diags = doc.diagnostics().to_vec();
-	for t in &layer_texts[1..] {
-		match load(t, o.strictness) {
-			Ok(over) => {
-				diags.extend_from_slice(over.diagnostics());
-				doc.merge(&over);
-			}
-			Err(code) => return code,
-		}
-	}
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	say_diagnostics(&diags);
-	for s in &o.sets {
-		if !s.apply(&mut doc) {
-			errln!(
-				"{}: cannot write {}: {}",
-				s.opt(),
-				s.path,
-				describe_refusal(&doc, &s.path, "the value text is not one value")
-			);
-			return 1;
-		}
-	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
 	let mut ops = String::new();

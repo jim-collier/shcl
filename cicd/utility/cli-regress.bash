@@ -475,6 +475,8 @@ rows=(
 	## 20260901b item 24: two layers with a bad line 2 printed the same thing
 	## twice, with nothing to say which file each came from.
 	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
+	## 20260918b item 14: `set` kept its own copy of the fold and missed it.
+	'layer-diags-named-set|set --set=q=1 --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
 	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
 	## 20260909 item 34: E014 says where on the line the path went wrong, as
 	## a byte column, which the tokenizer computed and the message dropped.
@@ -485,6 +487,7 @@ rows=(
 	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
 	## and says which layer it was.
 	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
+	'layer-strict-names-the-layer-set|set --set=q=1 --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
 	## 20260902 item 44: the failing phase is named, not guessed.
 	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
 	## 20260902 item 41: the schema's own diagnostics were never printed, so the

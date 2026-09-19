@@ -1241,12 +1241,8 @@ func readInput(file string) (string, error) {
 	return string(b), nil
 }
 
-func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
-	return loadDocFrom("", text, strictness)
-}
-
-// loadDocFrom is the same, labelled with the file the text came from, so a
-// strict failure in one layer of a fold says which layer.
+// loadDocFrom is a load labelled with the file the text came from, so a strict
+// failure in one layer of a fold says which layer.
 func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
@@ -1307,19 +1303,34 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 // reading them off the merged document drops the ones for FILE itself, which
 // is the one the caller named.
 func loadLayered(o *opts, file string) (*shcl.Document, int) {
+	doc, _, code := loadLayeredFrom(o, file, nil)
+	return doc, code
+}
+
+// loadLayeredFrom is the same fold with FILE's text given rather than read,
+// which is how `set` creates a file or takes an empty document, and FILE's
+// text handed back. `set` kept its own copy of the fold, and twice a fix to
+// this one missed it.
+func loadLayeredFrom(o *opts, file string, given *string) (*shcl.Document, string, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, exitIO
+			return nil, "", exitIO
 		}
 		texts = append(texts, t)
 	}
-	base, err := readInput(file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return nil, exitIO
+	var base string
+	if given != nil {
+		base = *given
+	} else {
+		t, err := readInput(file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return nil, "", exitIO
+		}
+		base = t
 	}
 	texts = append(texts, base)
 	// Lowest layer first, each labelled with its own file when there is more
@@ -1334,13 +1345,13 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	}
 	doc, code := loadDocFrom(label(0), texts[0], o.strictness)
 	if code != 0 {
-		return nil, code
+		return nil, "", code
 	}
 	sayDiagnosticsFrom(label(0), doc.Diagnostics())
 	for i, t := range texts[1:] {
 		over, c := loadDocFrom(label(i+1), t, o.strictness)
 		if c != 0 {
-			return nil, c
+			return nil, "", c
 		}
 		sayDiagnosticsFrom(label(i+1), over.Diagnostics())
 		doc.Merge(over)
@@ -1348,10 +1359,10 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
-			return nil, 1
+			return nil, "", 1
 		}
 	}
-	return doc, 0
+	return doc, base, 0
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -2234,16 +2245,6 @@ func doSet(o *opts) int {
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	layerTexts := make([]string, 0, len(o.layers)+1)
-	for _, lf := range o.layers {
-		t, err := readInput(lf)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitIO
-		}
-		layerTexts = append(layerTexts, t)
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -2253,46 +2254,28 @@ func doSet(o *opts) int {
 	// format it is. Comments in an otherwise empty document are the document's
 	// trailing trivia, so the edits land above it and the write still goes
 	// through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	creating := false
 	if o.write && file != "-" {
 		if _, serr := os.Stat(file); serr != nil {
 			creating = true
 		}
 	}
-	base := ""
-	if creating && !o.noBanner {
-		base = shcl.GenBanner
-	}
-	if !creating && (file != "-" || len(o.sets) > 0) {
-		t, err := readInput(file)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitIO
+	var given *string
+	if creating {
+		banner := ""
+		if !o.noBanner {
+			banner = shcl.GenBanner
 		}
-		base = t
+		given = &banner
+	} else if file == "-" && len(o.sets) == 0 {
+		empty := ""
+		given = &empty
 	}
-	layerTexts = append(layerTexts, base)
-	doc, code := loadDoc(layerTexts[0], o.strictness)
+	doc, _, code := loadLayeredFrom(o, file, given)
 	if doc == nil {
 		return code
-	}
-	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
-	for _, t := range layerTexts[1:] {
-		over, c := loadDoc(t, o.strictness)
-		if over == nil {
-			return c
-		}
-		diags = append(diags, over.Diagnostics()...)
-		doc.Merge(over)
-	}
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	sayDiagnostics(diags)
-	for _, s := range o.sets {
-		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
-			return 1
-		}
 	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.

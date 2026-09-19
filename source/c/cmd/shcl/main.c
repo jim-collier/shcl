@@ -550,7 +550,7 @@ static int strict_gate_from(const char *file, const shcl_doc *d) {
 // too: a merge does not carry diagnostics over, so their docs are the only
 // place the layers' own diagnostics live. Free everything with layered_free.
 typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts;
-	const char **names; int nnames; } LayeredDoc;
+	const char **names; int nnames; size_t base_len; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
@@ -624,17 +624,29 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 	return ok;
 }
 
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out);
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
+	return load_layered_from(o, file, NULL, 0, out);
+}
+
+// The same fold with FILE's text given rather than read (a malloc'd buffer the
+// fold then owns), which is how `set` creates a file or takes an empty
+// document. FILE's text is the last of out->texts, base_len bytes. `set` kept
+// its own copy of the fold, and twice a fix to this one missed it.
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out) {
 	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
 	out->names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *out->names);
-	out->nnames = 0;
+	out->nnames = 0; out->base_len = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
 		out->names[out->nnames++] = fname;
-		size_t len; char *t = read_input(fname, &len);
-		if (!t) { layered_free(out); return EXIT_IO; }
+		size_t len; char *t;
+		if (i == o->nlayers && given) { t = given; len = given_len; given = NULL; }
+		else t = read_input(fname, &len);
+		if (!t) { free(given); layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
+		if (i == o->nlayers) out->base_len = len;
 		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
 		int g = strict_gate_from(o->nlayers ? fname : "", dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
@@ -1204,22 +1216,6 @@ static int do_set(Opts *o) {
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	// The base layer's node strings are not dup'd off its text, so keep all
-	// buffers.
-	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
-	L.names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *L.names);
-	L.nnames = 0;
-	for (int i = 0; i < o->nlayers; i++) {
-		L.names[L.nnames++] = o->layers[i];
-		size_t llen; char *lt = read_input(o->layers[i], &llen);
-		if (!lt) { layered_free(&L); return EXIT_IO; }
-		layered_push_text(&L, lt);
-		shcl_doc *dd = xdoc(shcl_parse_with(lt, llen, o->strictness));
-		int g = strict_gate(dd);
-		if (g) { shcl_free(dd); layered_free(&L); return g; }
-		layered_push_doc(&L, dd);
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -1231,30 +1227,19 @@ static int do_set(Opts *o) {
 	// format it is. Comments in an otherwise empty document are the document's
 	// trailing trivia, so the edits land above it and the write still goes
 	// through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
-	char *text; size_t len;
+	char *given = NULL; size_t given_len = 0;
 	if (creating && !o->no_banner) {
-		len = strlen(SHCL_GEN_BANNER);
-		text = (char *)xrealloc(NULL, len + 1);
-		memcpy(text, SHCL_GEN_BANNER, len + 1);
+		given_len = strlen(SHCL_GEN_BANNER);
+		given = (char *)xrealloc(NULL, given_len + 1);
+		memcpy(given, SHCL_GEN_BANNER, given_len + 1);
 	}
-	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
-	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
-	layered_push_text(&L, text);
-	L.names[L.nnames++] = file;
-	{
-		shcl_doc *dd = xdoc(shcl_parse_with(text, len, o->strictness));
-		int gate = strict_gate(dd);
-		if (gate) { shcl_free(dd); layered_free(&L); return gate; }
-		layered_push_doc(&L, dd);
-	}
+	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { given = (char *)xrealloc(NULL, 1); given[0] = '\0'; }
+	LayeredDoc L; int lgate = load_layered_from(o, file, given, given_len, &L);
+	if (lgate) return lgate;
 	shcl_doc *d = L.doc;
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	say_layered_diagnostics(&L);
-	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(d, &o->sets[i])) { layered_free(&L); return 1; }
-	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
 	size_t opslen = 0; char *ops = NULL;
