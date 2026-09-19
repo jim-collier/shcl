@@ -53,6 +53,10 @@ TOOL_PINS=(
 	## version rather than using whatever the runner image ships.
 	"shellcheck|0.11.0|shellcheck --version"
 	## Builds the python artifacts so check-wheel.bash can read what is in them.
+	## The backend that build stands up is not a tool installed on this box, so
+	## it is not pinned here: it is fetched per build, and
+	## cicd/packaging/python-build-constraints.txt pins its version.
+	## check-wheel.bash reads that version back off the built wheel.
 	"build|1.5.0|pyproject-build --version"
 	## Supply-chain trio. Findings move as advisory databases update, so pin them
 	## the same way and let the drift warning say when a result changed because

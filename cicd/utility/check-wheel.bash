@@ -35,6 +35,20 @@ command -v pyproject-build >/dev/null 2>&1 \
 outDir="$(mktemp -d)"
 trap 'rm -rf "${outDir}" "${pyDir}/build" "${pyDir}/shcl.egg-info"' EXIT
 
+## The isolated environment fetches the build backend, and until it was pinned
+## it fetched whatever setuptools PyPI served that day - into a build the gate
+## then reads as the truth about the package. The constraints file names the
+## version, so the backend is the same one every time; the file says why the
+## hashes are not there. The version is read back out of the built wheel below,
+## so a pin that did not take effect fails rather than passes.
+buildConstraints="${root}/cicd/packaging/python-build-constraints.txt"
+[[ -r "${buildConstraints}" ]] \
+	|| { echo "check-wheel: no build constraints at ${buildConstraints}" >&2; exit 1; }
+export PIP_CONSTRAINT="${buildConstraints}"
+wantBackend="$(sed -n 's/^setuptools==\([0-9][^ \\]*\).*/\1/p' "${buildConstraints}")"
+[[ -n "${wantBackend}" ]] \
+	|| { echo "check-wheel: ${buildConstraints} names no setuptools version" >&2; exit 1; }
+
 ## Output is kept rather than discarded: this build stands up an isolated
 ## environment and can fail for reasons that have nothing to do with the
 ## package - a network blip fetching the backend, most of them transient - and
@@ -61,6 +75,22 @@ done
 fIndent(){ printf '  %s\n' "${1//$'\n'/$'\n'  }"; }
 
 rc=0
+
+## What actually built the wheel. setuptools writes itself into the metadata as
+## `Generator: setuptools (X)`, so this reads the pin off the artifact rather
+## than off the command line that asked for it.
+gotBackend="$(python3 - "${outDir}" <<'PY'
+import glob, re, sys, zipfile
+z = zipfile.ZipFile(glob.glob(sys.argv[1] + "/*.whl")[0])
+name = next(n for n in z.namelist() if n.endswith(".dist-info/WHEEL"))
+m = re.search(r"^Generator:\s*setuptools\s*\(([^)]+)\)", z.read(name).decode(), re.M)
+print(m.group(1) if m else "")
+PY
+)"
+if [[ "${gotBackend}" != "${wantBackend}" ]]; then
+	echo "check-wheel: the constraints file pins setuptools ${wantBackend}, and the wheel was built by ${gotBackend:-an unknown backend}" >&2
+	rc=1
+fi
 
 ## The wheel's payload is everything outside the .dist-info metadata directory.
 ## Exactly one file belongs there.
@@ -104,3 +134,4 @@ exit "${rc}"
 ##	History:
 ##		- 2026-08-20 JC: Created. Builds the wheel and sdist and reads what is in them, rather than trusting the one pyproject line that keeps the CLI out.
 ##		- 2026-08-27 JC: Build is retried twice before it counts as a failure; an unreachable PyPI was refusing pushes.
+##		- 2026-09-19 JC: The build backend is pinned through PIP_CONSTRAINT, and the built wheel has to say that version built it.
