@@ -96,133 +96,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a bare `#` in a write path cutting the path there, a fence run on an `E014` line (declined in the 20260918 round), and `allowed` on a datetime telling `13:00` from `13:00:00`.
 
-	- 🔘 Item 2: a main push made from a linked worktree makes two gates write into the real repository.
-		- Reproduced: through the real hook in a scratch clone. git hands the hook `GIT_DIR`, the hook passes it on, and `check-install-dev.bash` and one block of `shell-regress.bash` then run `git init`, `commit` and `config` against the real repo. Left behind: empty commits on the branch, `core.bare = true`, and `core.sshCommand` replaced, which drops the keepalive.
-		- Origin: `618dd27` (2026-09-01) and `d63feb2` (2026-09-03). `check-push-gate.bash` and two other `shell-regress.bash` blocks already clear the variable, so this is the rule at some sites and not their siblings. Confirmed.
-		- Probable fix: clear git's local environment once at the top of `pre-push` and of `cicd.bash`, and in both scripts for a direct run. Pin it in `check-push-gate.bash` with a push from a linked worktree.
-		- Sweep: every `git init`, `clone` and `-C` under `cicd/utility/`.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 4: the comparison tool measures five of its seven Rust entries with two documents in memory, so the README's memory row is wrong in SHCL's favor.
-		- Cause: JSON, YAML, TOML, `toml_edit` and `xmltree` run their validity check as a `match` scrutinee, and that parsed document lives until the match ends, which is after the measurement. SHCL and `roxmltree` drop theirs first.
-		- Reproduced: drop order shown on a small program, and the doubled figures of a scratch probe scale to the recorded run within 1%. JSON's model memory is 2.00 times a single parse, `toml_edit` 1.76, YAML 1.49, TOML 1.30.
-		- Note: what it changes. In the README's peak-memory row JSON, TOML and YAML come down, the winner moves from XML to JSON, and "a quarter of the memory" of `toml_edit` becomes about 0.44. `design.md`'s "below JSON on two of four" most likely becomes none of four.
-		- Origin: `e1fb936` (2026-08-20), the tool's first commit. No round had read the tool. Confirmed.
-		- Probable fix: drop the checked document before measuring, in all five. Rerun, then refresh the README row and sentence and the `design.md` paragraph. Enhancement item 61 and item 47 go with the rerun.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 5: `install.ps1` ends in a raw error after a first install that worked.
-		- Cause: the check for another `shcl` on PATH reads `.Source` off the result of `Get-Command`. On a first install there is none, and under the script's own strict mode that throws. The files and the PATH entry are already in place, the receipt line is skipped, and a `-File` run exits 1.
-		- Reproduced: the statement, under the script's preferences, on pwsh 7.6.6. End to end is in the Windows batch. A `shcl` already on the test box's PATH hides it.
-		- Origin: `8010b3c` (2026-09-03), the fix for 20260901b item 37, whose pin is a source check only. Confirmed.
-		- Sweep: every member read off a possibly empty value in this file. Item 36 is the other one.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 11: `install.ps1 -Uninstall` needs the GitHub API to answer before it removes anything.
-		- Reproduced: with the proxy pointed nowhere, `-Uninstall` exits 1 at the release lookup. `install.bash` uninstalls before its first fetch, which is what the backlog says both do.
-		- Origin: `21ec21d` (2026-08-18), where `-Uninstall` first appeared, already below the lookup. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 13: `lint-report.bash --check` says CLEAN for a run that failed, was cut off, or is still running, and then never looks at that log again.
-		- Reproduced: three fixtures. A log ending in `[ FAILED: ... ]`, which is what 14 stops in `cicd.bash` print. A log that just stops. And a log read while its run is in flight, which is marked seen and reports SEEN once the warnings and the abort arrive.
-		- Origin: `5b3f8e8` (2026-09-14), the fix for 20260909 item 23, which named one of the pipeline's two abort lines. Third item on this script. Confirmed.
-		- Probable fix: match the second abort line, and treat a log with neither the done line nor an abort as unfinished, leaving the marker alone.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 36: `install.ps1`'s "network down" and rate-limit messages cannot be reached when the request gets no response.
-		- Reproduced: on pwsh 7.6.6 against a name that does not resolve and a refused port. The catch reads `.Response` off an exception that has none, and strict mode prints a raw property error.
-		- Origin: `d63feb2` (2026-09-03), the fix for 20260901b item 41, whose pin covers the bash side only. Confirmed on 7, Plausible on 5.1.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 37: on the wget path `install.bash` sends `GITHUB_TOKEN` to the asset host its downloads redirect to.
-		- Reproduced: with two local listeners. wget 1.25 sends the header again after a redirect to another host, and curl drops it. `install.ps1` sends the token on the API call only.
-		- Origin: `d63feb2` (2026-09-03). The 20260918 round saw it and left it as outside its diff. Confirmed.
-		- Probable fix: a separate fetch for the API that carries the header, and none on the downloads.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 38: the NSIS setup runs `powershell` by bare name while elevated.
+	- 🛠️ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
 		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
 		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
 		- Probable fix: the full path under `$SYSDIR`.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 39: the .deb puts the zsh completion where Debian's zsh does not look.
-		- Reproduced: on Debian 13, `$fpath` has `vendor-completions` and no `/usr/share/zsh/site-functions`, where the package puts `_shcl`. The README says completion works with nothing to configure. The rpm's path is right for Fedora.
-		- Origin: `012a2b4` (2026-08-19). Confirmed from the package listing. `dpkg -i` end to end needs root.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 40: the rpm requires a package named `libgcc`, which openSUSE does not have.
-		- The README lists openSUSE. Its package is `libgcc_s1`. The published 2.0.0 rpm declares no requires, so 3.0.0 would be the first release to carry this.
-		- Origin: `3013af3` (2026-09-02). Confirmed for the requires line, Plausible for the refusal.
-		- Probable fix: require `libgcc_s.so.1()(64bit)`, which is what rpm's own generator would emit.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 41: `install.bash` replaces a man-page symlink that points somewhere else, and the uninstall then deletes it.
-		- Reproduced: in a scratch HOME, with a link from a hand-built install. It is repointed with nothing said and removed on `--uninstall`.
-		- Origin: 20260901b item 36 gave the bin link an "elsewhere" answer and did not take the man link along. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 42: `n8git_backup-and-publish` takes a commit message containing ` -h ` or ` -v ` for a help or version request and exits 0 having done nothing.
-		- Reproduced: on a copy outside any repo. `--message "pass -v through to rar"` prints the banner at exit 0. The pipeline passes its message by environment, so only a hand-typed `--message` is exposed.
-		- Origin: `88d6a42` (2026-07-12). Confirmed.
-		- Note: the script is copied into every project. Patch the block in the canonical copy and in each project copy.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 43: `shell-regress.bash` drops half its bash-completion rows when bash-completion is absent, with nothing said, under the strict gate too.
-		- Reproduced: on the lifted block. 18 rows with the package, 9 without, exit 0 and no skip noted. The 20260918 item 11 rule keys on a skip message, so it cannot see a skip that prints none.
-		- Origin: `29cd38e` (2026-09-05). Third of the class of 20260909 item 53. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 44: `green-tree.bash` is the one tracked shell script the lint stage does not shellcheck.
-		- It passes today. `6ad45f8` (2026-09-14) added the file without a list entry. Having `shell-regress.bash` compare its own list of shell files with the shellcheck targets would stop the list falling behind. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 45: `check-pins.bash`'s reverse check goes blind when its first pattern matches nothing.
-		- Reproduced: on the lifted construct. Three grep pipelines share one brace group under errexit and pipefail, so the first empty one ends the group and the loop reads an empty list. It does not bite with today's `ci.yml`.
-		- Origin: `b58adf7` (2026-09-02). Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 46: the README says the `--ci` gate runs on macOS, and it cannot pass there.
-		- Under the strict mode `--ci` sets, `cli-regress.bash` fails without `/dev/full` and `check-locale.bash` without glibc's locale files. `perf-gate.bash`, `crosscheck.bash` and `largedoc.bash` use GNU-only `date` and `stat`, and `largedoc.bash` reads `/proc`.
-		- Origin: `f283186` (2026-07-27), before strict mode. Plausible, read only.
-		- Probable fix: say Linux, and call macOS untested for the pipeline.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 47: three sentences about the comparison contradict its own results file.
-		- `design.md` says SHCL sorts last in both tiers, and in the Rust tier xml-dom does. It says the five gzip within a fifth of each other, and one of four does. The README says "under an eightieth of a second" for 0.012624 s. Every other number in the section traces to the file.
-		- Origin: `15b0ce9`, `84ceff5` and `99a788f` (2026-08). Confirmed by arithmetic on the file. Fix with item 4's rerun.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 48: the changelog's Unreleased section has Fixed entries for behavior no release had, one pair about the same help lines, and a stale line count.
-		- Checked against `v2.0.0`: `explain`, `migrate`, the E014 column, `help CMD` and the rest do not exist there, so about a dozen Fixed entries describe defects introduced and fixed inside this cycle. "All 130 lines" of help is 144 today.
-		- Note: every entry run is true of the current build. This section becomes the 3.0.0 notes.
-		- Origin: mostly the 20260918 fix round. The recorded practice is to fold such a fix into the feature's Added or Changed bullet. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 49: `project/conformance/README.md` states two withdrawn rules, leaves out two row kinds, and has no note for 58 cases.
-		- The notes on cases `044` and `031` describe the 2026-09-06 `#` rule and the 2.x open-quote rule, against their own goldens. The `reads.tsv` bullet omits the `children` and `paths` rows the corpus uses and does not say the file is required. `contributing.md` says every case carries a note.
-		- Origin: `58d8e81` (2026-09-09) and `5cd2a69` (2026-07-25). Third pass over the `literal` sentence. Confirmed.
-		- Probable fix: reword from the goldens, and a `check-docs.bash` grep for the withdrawn wording.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 50: the man page's revision date is ten days and seven edits stale.
-		- `.TH SHCL 1 2026-09-08`, with three subcommands added since. A repeat of 20260830 item 39, which regressed on the next edit since nothing pins it.
-		- Probable fix: set it at the cut, with a step in the release recipe or a `check-docs.bash` compare against the file's last commit date.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 51: `grammar.abnf`'s `info-string` cannot derive labels the parser reads and the writer emits.
-		- Reproduced: labels `a:b`, `a,b`, `"q"` and `[x]` read back in all four, and `set` writes such a fence line. The rule is built from `bare-plain`, which excludes all four characters. `bareword` carries a note that the parser is wider, and this rule has none.
-		- Origin: `c93db82` (2026-07-11), reworked for 20260909 item 32, which settled only the `#`. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 52: six source files lack the SPDX and copyright lines the style guide requires.
-		- `source/go/mem_test.go`, `source/rust/tests/cli_pipe.rs`, `source/rust/tests/mem_caps.rs`, `cicd/packaging/shclpath.ps1`, `cicd/utility/winpath-regress.ps1` and `cicd/utility/winpath-sandbox.ps1`. Every other source file has them. Same kind as 20260829 item 50. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 53: repo hygiene leftovers.
-		- A comment in `n8git_backup-and-publish`, from the 2026-09-18 "Bug fix" commit, names a private tool and how it runs. It belongs upstream in the canonical copy too.
-		- `code_of_conduct.md` and `contributing.md` each say they were generated from a template.
-		- Note: the tracked tree and every commit message on every ref are otherwise clean, and all 1,011 commits carry the repo identity.
+		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
+		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
+		- Windows step left (sandbox on B29W, under the lock): copy a marker program named `powershell.exe` beside `shcl-<ver>-windows-x86_64-setup.exe` in an empty folder, run the setup `/S` from a `schtasks /RL HIGHEST` task, and look for the marker's file. Run it with the old setup first to confirm, then the new one, where the file must not appear and the machine PATH must gain the install dir. Then uninstall the same way and check the PATH entry is gone.
 		- Opened: 20260918-193000
 
 - Code review 20260918:
@@ -557,6 +437,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
 
+	- ✅ Item 2: a main push made from a linked worktree makes two gates write into the real repository.
+		- Reproduced: through the real hook in a scratch clone. git hands the hook `GIT_DIR`, the hook passes it on, and `check-install-dev.bash` and one block of `shell-regress.bash` then run `git init`, `commit` and `config` against the real repo. Left behind: empty commits on the branch, `core.bare = true`, and `core.sshCommand` replaced, which drops the keepalive.
+		- Origin: `618dd27` (2026-09-01) and `d63feb2` (2026-09-03). `check-push-gate.bash` and two other `shell-regress.bash` blocks already clear the variable, so this is the rule at some sites and not their siblings. Confirmed.
+		- Probable fix: clear git's local environment once at the top of `pre-push` and of `cicd.bash`, and in both scripts for a direct run. Pin it in `check-push-gate.bash` with a push from a linked worktree.
+		- Sweep: every `git init`, `clone` and `-C` under `cicd/utility/`.
+		- Reproduced: again, through the real hook in a scratch clone with a stub gate that runs `check-install-dev.bash`. The gate saw `GIT_DIR=.../.git/worktrees/linked`, and the clone was left with an `init` commit on the branch, `core.bare = true` and `core.sshCommand` replaced.
+		- Cause: git hands a pre-push hook `GIT_DIR` when the push comes from a linked worktree. The hook passed its environment to `cicd.bash`, and every scratch repo a gate built with `git -C`, `git init` or `git clone` then acted on the real one.
+		- Fixed: `pre-push` and `cicd.bash` unset every name `git rev-parse --local-env-vars` lists, first thing. `check-install-dev.bash` and `shell-regress.bash` do the same at the top for a direct run, and the `fStartOnDev` block in `shell-regress.bash` clears them like its sibling blocks.
+		- Pinned by: `check-push-gate.bash`, two new checks. A real `git push` to main from a linked worktree of its throwaway repo, with the stub gate recording `GIT_DIR`, and the stubbed engine run with `GIT_DIR` exported. Both failed on the old hook and the old `cicd.bash`, and both pass now. The scratch-clone reproduction was rerun on the fixed commit: the push went through, and the clone kept its branch, `core.bare = false` and its sshCommand.
+		- Swept: every `git init`, `git clone`, `git worktree add` and `git -C` under `cicd/`, in `cicd/hooks/pre-push` and in `install-dev.bash`. The sandbox builders are `check-install-dev.bash`, `shell-regress.bash` (the `fStartOnDev`, publish and `git-auto-msg` blocks) and `check-push-gate.bash`. All are now covered at the top, and the last two blocks and `check-push-gate.bash` already cleared it themselves. The rest (`check-docs`, `check-migrate`, `green-tree`, `package`, `sign-release`, `cicd.bash`'s sync stage) only read the real repo through `git -C "${root}"`, and the clear at the top of `cicd.bash` covers them too.
+		- Opened: 20260918-193000
+		- Closed: 20260919-100900
+
 	- ✅ Item 3: a save replaces a FIFO with a regular file at exit 0, in all four, and as root it would presumably do the same to a device node.
 		- Reproduced: `mkfifo p`, feed it one line, `shcl fmt --write p`. Exit 0 and `p` is a regular file, in rust, go, c and python. The `/dev/null` half was not run.
 		- Cause: `write_file_atomic` takes any successful `stat` as an existing file to rename over. No binding tests the file type, and the spec's list of what a save carries does not cover it.
@@ -570,6 +463,38 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Left alone: Windows device names such as `NUL`. That waits on the Windows batch.
 		- Opened: 20260918-193000
 		- Closed: 20260919-122956
+
+	- ✅ Item 4: the comparison tool measures five of its seven Rust entries with two documents in memory, so the README's memory row is wrong in SHCL's favor.
+		- Cause: JSON, YAML, TOML, `toml_edit` and `xmltree` run their validity check as a `match` scrutinee, and that parsed document lives until the match ends, which is after the measurement. SHCL and `roxmltree` drop theirs first.
+		- Reproduced: drop order shown on a small program, and the doubled figures of a scratch probe scale to the recorded run within 1%. JSON's model memory is 2.00 times a single parse, `toml_edit` 1.76, YAML 1.49, TOML 1.30.
+		- Note: what it changes. In the README's peak-memory row JSON, TOML and YAML come down, the winner moves from XML to JSON, and "a quarter of the memory" of `toml_edit` becomes about 0.44. `design.md`'s "below JSON on two of four" most likely becomes none of four.
+		- Origin: `e1fb936` (2026-08-20), the tool's first commit. No round had read the tool. Confirmed.
+		- Probable fix: drop the checked document before measuring, in all five. Rerun, then refresh the README row and sentence and the `design.md` paragraph. Enhancement item 61 and item 47 go with the rerun.
+		- Fixed: the five entries check validity in an `if let` whose temporary is gone before `measure` runs, so each is measured holding one document. The reason is in `measure`'s doc comment.
+		- Pinned by: `memory_figure_holds_one_document` in `bench.rs`, run with `cargo test --release` in the tool's directory. A counting allocator reads the heap live at the memory read against one parsed document, for all seven entries. It failed on the old code for exactly json, yaml, toml, toml-edit and xml-dom, each at 2.00 times, and passes now. It is outside the gate, like the tool, since it needs crates.io.
+		- Measured: the tool's own records figures at 16 MiB, before and after, peak MiB: json 513 -> 275, yaml 941 -> 639, toml 721 -> 568, toml-edit 1685 -> 1019, xml-dom 2616 -> 1383. shcl 493 -> 495 and xml 354 -> 354 did not move.
+		- Fixed: rerun at 64 MiB from the committed lock, recorded as run `20260919-120236`. The README's three tables, the `toml_edit` sentence, the Python-tier sentence and `design.md`'s findings are refreshed from it.
+		- Measured: stress peak memory, GB: JSON 2.1 -> 1.1, TOML 3.0 -> 2.4, YAML 3.9 -> 2.7, SHCL 1.8 -> 2.1, XML 1.5. JSON is the lightest now. SHCL against `toml_edit`: a quarter of the memory -> half, twice the read time -> a third more.
+		- Note: SHCL's own numbers moved too, since the run before was a 1.2.0 build. Read time is down (records 4.78 s -> 3.02 s, schema 12.6 ms -> 6.9 ms, config 0.066 ms -> 0.043 ms) and memory is up (records model 1641 -> 1896 MiB). The config read now beats YAML, so the tables' column order, which follows the config read times, puts SHCL fourth.
+		- Note: the Python-tier sentence changed with the numbers: 3.7 times behind `tomllib` against 1.5 times behind `toml` is not "the same few-fold gap" any more.
+		- Note: the Done note at `backlog.md:3314` repeats the old "a quarter of `toml_edit`" sentence. It is history and was left as written.
+		- Measured: load average 1.2 to 9.2 during the run, with the tool pinned to eight cores. Times are best of three.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 5: `install.ps1` ends in a raw error after a first install that worked.
+		- Cause: the check for another `shcl` on PATH reads `.Source` off the result of `Get-Command`. On a first install there is none, and under the script's own strict mode that throws. The files and the PATH entry are already in place, the receipt line is skipped, and a `-File` run exits 1.
+		- Reproduced: the statement, under the script's preferences, on pwsh 7.6.6. End to end is in the Windows batch. A `shcl` already on the test box's PATH hides it.
+		- Origin: `8010b3c` (2026-09-03), the fix for 20260901b item 37, whose pin is a source check only. Confirmed.
+		- Sweep: every member read off a possibly empty value in this file. Item 36 is the other one.
+		- Fixed: the check for another shcl on PATH is `Get-ShclShadow` now. It asks for an Application named shcl and tests the result before reading `.Source`, so a first install with nothing on the session PATH ends in the receipt at exit 0. A dot-sourced `shcl` wrapper function is no longer taken for a program.
+		- Pinned by: a `shell-regress.bash` row that runs the function under the script's strict mode over the three answers the bash twin has (none, ours, someone else's first). With the old statement put back in the function body it fails on "none" with the `Source` property error. The old source grep is commented out with the reason, since it passed while the check threw.
+		- Swept: every member read in `install.ps1` off a value that can be empty. Two were unguarded, this one and item 36's `.Response`. Guarded already: `$rel.tag_name` (after `-not $rel`), `$want.ToLower()` and `$wantSrc.ToLower()` (after an emptiness test), `$srcroot.FullName` (only with the drop-ins), `$smoke.Out` (a hashtable key), `.Hash` off `Get-FileHash` (throws rather than returning nothing), `$principal.IsInRole`, `$tag.TrimStart`.
+		- Left alone: `Select-ReleaseTag` reads `.tag_name`, `.draft` and `.prerelease` off each release object. An empty JSON array comes back as an empty `Object[]` on pwsh 7 and does not reach them. `$envKey` in `Update-ShclPath` is null only when HKCU\Environment or the machine Environment key is missing, which a working Windows does not have.
+		- Windows step left: in the batch, with shcl off the session PATH, `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Target user -Yes; $LASTEXITCODE` on 5.1 and pwsh 7. Expect the receipt and 0. Then `-Uninstall -Target user -Yes` and put the user PATH's trailing `;` back.
+		- Note: the 5.1 end-to-end run is the Windows batch's.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
 
 	- ✅ Item 6: C's `init` picks a different parent value than the other three when two live fields share a name chain.
 		- Reproduced: `field: "a[*]"` with `default: x`, `field: a` with `default: y`, and a required `a.port`. Rust, Go and Python write `a: x` then `a[y].port:`. C writes `a[x].port:`. A second schema gives exit 0 in three and exit 6 in C.
@@ -629,6 +554,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-132749
 
+	- ✅ Item 11: `install.ps1 -Uninstall` needs the GitHub API to answer before it removes anything.
+		- Reproduced: with the proxy pointed nowhere, `-Uninstall` exits 1 at the release lookup. `install.bash` uninstalls before its first fetch, which is what the backlog says both do.
+		- Origin: `21ec21d` (2026-08-18), where `-Uninstall` first appeared, already below the lookup. Confirmed.
+		- Fixed: the destination and uninstall blocks come before the architecture check, the TLS setup and the release lookup. A comment at the site says why.
+		- Pinned by: a `shell-regress.bash` row that runs the real script with only its three-line Windows refusal cut out (the row checks the cut is exactly that block), every request sent to a proxy that is not there, a scratch LOCALAPPDATA holding `shcl.exe` and `code\lib.rs`, and `-Uninstall -Target user -Yes`. On the old script it stops at the API with nothing removed; now it prints "removing shcl:" and both files are gone. The PATH edit after that fails for want of a registry, which the row does not look at.
+		- Windows step left: in the batch, with `$env:HTTPS_PROXY='http://127.0.0.1:9'` on pwsh 7 (or the network off on 5.1), `-Uninstall -Target user -Yes` on an installed copy removes it.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
 	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
 		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
 		- Note: the crosscheck still covers Go's stdout. What goes unchecked is the library half: `raw`, `quoted`, `line`, and the cases the crosscheck skips. A local green run records its tree, and the hook then lets that tree through to main.
@@ -640,6 +574,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: memory had recorded this trap since 2026-09-15 and the gate never changed, which is the reason for the gotcha rule under Conventions.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 13: `lint-report.bash --check` says CLEAN for a run that failed, was cut off, or is still running, and then never looks at that log again.
+		- Reproduced: three fixtures. A log ending in `[ FAILED: ... ]`, which is what 14 stops in `cicd.bash` print. A log that just stops. And a log read while its run is in flight, which is marked seen and reports SEEN once the warnings and the abort arrive.
+		- Origin: `5b3f8e8` (2026-09-14), the fix for 20260909 item 23, which named one of the pipeline's two abort lines. Third item on this script. Confirmed.
+		- Probable fix: match the second abort line, and treat a log with neither the done line nor an abort as unfinished, leaving the marker alone.
+		- Cause: the error scan knew `CICD ABORTED` and not the pipeline's other stop line, `[ FAILED: ... ]` from `fDie`. Any log with no error spelling was CLEAN, and `--check` wrote the marker before deciding, so a run still in flight or cut off was marked seen and never read again.
+		- Fixed: `[ FAILED: ` counts as a failure. A run is finished only when its last non-blank line is the done line or it printed an abort line. The last line, since a publish echoes the pre-push gate's nested run, done line included. An unfinished log reports INCOMPLETE and does not move the marker.
+		- Pinned by: `shell-regress.bash`, the lint-report rows. A `[ FAILED: ... ]` log must say FAILED. A log that stops mid-run must say INCOMPLETE twice (not SEEN), stay INCOMPLETE after a nested run's done line, then say FAILED once its abort arrives, and SEEN after that. Five checks failed on the old script and all pass now. The fixtures that used to be CLEAN now end in the done line, as a real log does. The newest real log (`run_20260903-105337.log`) reads FLAG as before.
+		- Opened: 20260918-193000
+		- Closed: 20260919-101200
 
 	- ✅ Item 14: `set --layer` prints its layers' diagnostics with no file name.
 		- Reproduced: two layers with a bad line 2 print `line 2:` twice. `fmt --layer` names the file on each. Under `--strictness=strict` all four leave it off. Otherwise C names the file and the other three do not, so the four also differ on stderr.
@@ -866,6 +810,163 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: two `shell-regress.bash` checks beside the `--` pair: the unquoted comma spelling is a usage error, and the quoted one writes `ports: 80, 443`. A PowerShell release that changes either shows up there, as it does for `--`.
 		- Opened: 20260918-193000
 		- Closed: 20260919-142211
+
+	- ✅ Item 36: `install.ps1`'s "network down" and rate-limit messages cannot be reached when the request gets no response.
+		- Reproduced: on pwsh 7.6.6 against a name that does not resolve and a refused port. The catch reads `.Response` off an exception that has none, and strict mode prints a raw property error.
+		- Origin: `d63feb2` (2026-09-03), the fix for 20260901b item 41, whose pin covers the bash side only. Confirmed on 7, Plausible on 5.1.
+		- Fixed: `Get-HttpStatus` reads the status through `PSObject.Properties['Response']` and gives 0 when there is no response at all, so a DNS failure, a refused port or a proxy error prints the network-down message rather than a property error.
+		- Pinned by: two `shell-regress.bash` rows. One runs the function over a real refused request (0) and a local listener answering 403 (403); with the old read put back in the function body the refused request throws the `Response` property error. The other is item 11's end-to-end harness without `-Uninstall`: it has to print "cannot fetch the dev release (none published yet, or network down)", and on the old script it prints the property error.
+		- Windows step left: 5.1, where the exception is a `WebException` with a null `Response`. In the batch, `powershell -File install.ps1 -Target user -Yes` with DNS or the network blocked prints the network-down text.
+		- Note: confirmed and fixed on pwsh 7. The 5.1 half is the Windows batch's.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 37: on the wget path `install.bash` sends `GITHUB_TOKEN` to the asset host its downloads redirect to.
+		- Reproduced: with two local listeners. wget 1.25 sends the header again after a redirect to another host, and curl drops it. `install.ps1` sends the token on the API call only.
+		- Origin: `d63feb2` (2026-09-03). The 20260918 round saw it and left it as outside its diff. Confirmed.
+		- Probable fix: a separate fetch for the API that carries the header, and none on the downloads.
+		- Fixed: `install.bash` has a `fetchApi` beside `fetch`, in both the curl and wget arms. Only `fetchApi` and `fApiStatus` carry GITHUB_TOKEN, and the release lookup goes through `fetchApi`. Every download goes through `fetch`, which carries none.
+		- Swept: wget's `fApiStatus` sent no token while curl's did, so with a bad token on a wget-only box the status read came back 200 and the message said the network was down. It carries the token now, like the fetch it follows up.
+		- Pinned by: a `shell-regress.bash` row with two local https listeners on a throwaway certificate, the first redirecting downloads to the second under another host name. It lifts install.bash's own fetch lines for each tool and checks that a download reaches neither host with the token, and that both API calls carry it. On the old script, wget's download hands the token to the second host, both downloads send it to the first, and the wget status call sends none. Each of the three was also put back alone and failed alone.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 39: the .deb puts the zsh completion where Debian's zsh does not look.
+		- Reproduced: on Debian 13, `$fpath` has `vendor-completions` and no `/usr/share/zsh/site-functions`, where the package puts `_shcl`. The README says completion works with nothing to configure. The rpm's path is right for Fedora.
+		- Origin: `012a2b4` (2026-08-19). Confirmed from the package listing. `dpkg -i` end to end needs root.
+		- Fixed: `nfpm.yaml` lays `_shcl` down per packager, `/usr/share/zsh/vendor-completions` for the deb and `/usr/share/zsh/site-functions` for the rpm. `fCheckDeps` in `package.bash` refuses a deb without the first and an rpm without the second.
+		- Reproduced and verified in a `debian:trixie` container with the 2.0.0 x86_64 binary packaged by the tree's `package.bash`: after `dpkg -i`, `compinit` gave `none` for shcl on the old package and `_shcl` on the new one.
+		- Pinned by: the `shell-regress.bash` stub-package row, which runs the shipped `fCheckDeps`. With the old `nfpm.yaml` it fails on "zsh completion is not where Debian's zsh looks".
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 40: the rpm requires a package named `libgcc`, which openSUSE does not have.
+		- The README lists openSUSE. Its package is `libgcc_s1`. The published 2.0.0 rpm declares no requires, so 3.0.0 would be the first release to carry this.
+		- Origin: `3013af3` (2026-09-02). Confirmed for the requires line, Plausible for the refusal.
+		- Probable fix: require `libgcc_s.so.1()(64bit)`, which is what rpm's own generator would emit.
+		- Fixed: the rpm requires `libgcc_s.so.1()(64bit)`, the soname rpm's own generator emits, where it required a package named `libgcc`. The deb keeps `libgcc-s1`. Both names sit once at the top of `package.bash`. `fCheckDeps` also asks rpm's `elfdeps` for the binary's requirements and refuses an rpm libgcc requirement that is not among them, and under the gate a missing `elfdeps` is a failure.
+		- Reproduced and verified: `rpm -i --test` on `opensuse/tumbleweed` failed with "libgcc is needed by shcl-2.0.0-1.x86_64" on the old package and passes on the new one. It passes on `fedora:latest` (44) too.
+		- Pinned by: the stub-package row now carries a real binary linked to libgcc_s and the names from `package.bash`. With `rpmGccDep='libgcc'` put back it fails on "requires libgcc, which rpm does not generate for the binary".
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 41: `install.bash` replaces a man-page symlink that points somewhere else, and the uninstall then deletes it.
+		- Reproduced: in a scratch HOME, with a link from a hand-built install. It is repointed with nothing said and removed on `--uninstall`.
+		- Origin: 20260901b item 36 gave the bin link an "elsewhere" answer and did not take the man link along. Confirmed.
+		- Fixed: the man link goes through `fLinkOwner`, the bin link's test. A real file or a link somewhere else is left alone, and the install says so after its receipt line. The uninstall side was already right.
+		- Pinned by: a `shell-regress.bash` row in a scratch HOME with `man1/shcl.1` linking to a stow copy. The lifted lay-down step has to leave the link and say so, and the real `install.bash --uninstall --target=user --yes`, which needs no network, has to remove our binary and keep the link. On the old script the link is repointed, no note is given, and the uninstall deletes it.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 42: `n8git_backup-and-publish` takes a commit message containing ` -h ` or ` -v ` for a help or version request and exits 0 having done nothing.
+		- Reproduced: on a copy outside any repo. `--message "pass -v through to rar"` prints the banner at exit 0. The pipeline passes its message by environment, so only a hand-typed `--message` is exposed.
+		- Origin: `88d6a42` (2026-07-12). Confirmed.
+		- Note: the script is copied into every project. Patch the block in the canonical copy and in each project copy.
+		- Fixed: the help probe tests each argument whole, and skips the value after `-m`, `--msg` or `--message`. A real `-h` or `-v` still answers. convert-base-v1b's copy also matched `-q` in the joined string; its probe takes `-q` per argument now too.
+		- Pinned by: a `shell-regress.bash` row that runs shcl's copy from a scratch directory that is not a repo, with a stub rar on PATH, so the only thing a run can reach is the refusal before any write. `--quiet --message "pass -v through to rar"` and `-m "document the -h flag"` have to reach that refusal, and `--message x -v` still prints the banner at 0. On the old copy the first two print the banner at 0.
+		- Swept: the canonical copy under `~/.synced/Dropbox/0-0/common/exec/util/linux/bash/` (backed up first) and 20 project copies under `prs/dev`, archive included, each patched by block and left uncommitted. Each was run through the same three cases after the patch, and all agree. The canonical and silkterm copies had a per-argument loop from 20260917 without the value skip; the other 18 had the joined match.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102859
+
+	- ✅ Item 43: `shell-regress.bash` drops half its bash-completion rows when bash-completion is absent, with nothing said, under the strict gate too.
+		- Reproduced: on the lifted block. 18 rows with the package, 9 without, exit 0 and no skip noted. The 20260918 item 11 rule keys on a skip message, so it cannot see a skip that prints none.
+		- Origin: `29cd38e` (2026-09-05). Third of the class of 20260909 item 53. Confirmed.
+		- Fixed: `shell-regress.bash` gained `fHaveFile`, the file twin of `fHave`. It fails under the gate, and locally it says it skipped and notes it in `SHCL_GATE_SKIPS`. The bash-completion mode goes through it. `ci.yml` installs `bash-completion` with nsis and zsh.
+		- Fixed: for the class. A new scan finds a list grown only when a tool or system file is there (`command -v ... &&` or `[[ -r /path ]] &&` followed by `+=(`, or the `; then` form) with no strict read in the next 20 lines. It keys on the defect, not on a skip message, so a silent skip cannot pass it. It has its own bait. The one other hit, `check-c-compilers.bash`'s compiler list, reads the strict flag 15 lines on and passes.
+		- Pinned by: `shell-regress.bash`. The scan went red with the old `[[ -r ... ]] && compModes+=(lib)` line put back, and it passes with the fix. `fHaveFile`'s self-test checks the strict failure, the local skip, its message and its skip-list line.
+		- Opened: 20260918-193000
+		- Closed: 20260919-101500
+
+	- ✅ Item 44: `green-tree.bash` is the one tracked shell script the lint stage does not shellcheck.
+		- It passes today. `6ad45f8` (2026-09-14) added the file without a list entry. Having `shell-regress.bash` compare its own list of shell files with the shellcheck targets would stop the list falling behind. Confirmed.
+		- Fixed: `green-tree.bash` is in `SHELLCHECK_TARGETS`. `shell-regress.bash` compares the list with the tracked shell files its own scans walk (`fShellFiles`), both ways: a shell script missing from the list fails, and so does an entry that is not a tracked shell script.
+		- Pinned by: `shell-regress.bash`. With `green-tree.bash` taken back out of the list it failed and named the file. With the entry in, it passes. `green-tree.bash` passes shellcheck.
+		- Opened: 20260918-193000
+		- Closed: 20260919-101800
+
+	- ✅ Item 45: `check-pins.bash`'s reverse check goes blind when its first pattern matches nothing.
+		- Reproduced: on the lifted construct. Three grep pipelines share one brace group under errexit and pipefail, so the first empty one ends the group and the loop reads an empty list. It does not bite with today's `ci.yml`.
+		- Origin: `b58adf7` (2026-09-02). Confirmed.
+		- Fixed: the reverse check reads pip, npm, `go install` and `Install-Module` names into separate, guarded variables. It no longer uses one brace group under errexit, where the first family with no match ended the group. A family whose install line is there but yields no name fails as blind.
+		- Pinned by: `shell-regress.bash`, two rows on doctored copies of `ci.yml`. With the pip and npm lines gone and an unpinned `go install` added, the unpinned tool must be named. A pip line with no pinned name (`pip install -r ...`) must be reported as read blind. Both failed on the old script and both pass now. `check-pins.bash` is OK on the real `ci.yml`.
+		- Swept: every multi-line brace group and substitution under `cicd/` and in the two installers. check-pins held the only group of several grep pipelines feeding a process substitution.
+		- Left alone: `check-completions.bash`'s `fRustTop`. Its first pipeline is guarded and the unguarded one is last, so nothing after it can be skipped. A miss there shows as a completion mismatch, not a pass.
+		- Opened: 20260918-193000
+		- Closed: 20260919-102100
+
+	- ✅ Item 46: the README says the `--ci` gate runs on macOS, and it cannot pass there.
+		- Under the strict mode `--ci` sets, `cli-regress.bash` fails without `/dev/full` and `check-locale.bash` without glibc's locale files. `perf-gate.bash`, `crosscheck.bash` and `largedoc.bash` use GNU-only `date` and `stat`, and `largedoc.bash` reads `/proc`.
+		- Origin: `f283186` (2026-07-27), before strict mode. Plausible, read only.
+		- Probable fix: say Linux, and call macOS untested for the pipeline.
+		- Fixed: the README's development section says Linux, macOS untested for the pipeline, and WSL on Windows.
+		- Left alone: the other macOS lines, which are about building the CLI from source and stay true.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 47: three sentences about the comparison contradict its own results file.
+		- `design.md` says SHCL sorts last in both tiers, and in the Rust tier xml-dom does. It says the five gzip within a fifth of each other, and one of four does. The README says "under an eightieth of a second" for 0.012624 s. Every other number in the section traces to the file.
+		- Origin: `15b0ce9`, `84ceff5` and `99a788f` (2026-08). Confirmed by arithmetic on the file. Fix with item 4's rerun.
+		- Fixed: `design.md` says SHCL sorts fifth of seven in Rust and last in Python, and that gzipped SHCL is within 3% of the smallest file on every shape. The README says "under a hundredth of a second" for 0.0069 s. Each traces to run `20260919-120236`.
+		- Pinned by: nothing new. The numbers are refreshed by hand from the results file, which is what the release recipe says. A check tying README numbers to `results.shcl` would be enhancement 61's rerun step.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 48: the changelog's Unreleased section has Fixed entries for behavior no release had, one pair about the same help lines, and a stale line count.
+		- Checked against `v2.0.0`: `explain`, `migrate`, the E014 column, `help CMD` and the rest do not exist there, so about a dozen Fixed entries describe defects introduced and fixed inside this cycle. "All 130 lines" of help is 144 today.
+		- Note: every entry run is true of the current build. This section becomes the 3.0.0 notes.
+		- Origin: mostly the 20260918 fix round. The recorded practice is to fold such a fix into the feature's Added or Changed bullet. Confirmed.
+		- Fixed: thirteen Fixed entries described defects this cycle introduced and fixed, so each folded into the Added or Changed bullet for the feature it belongs to, which is the recorded practice. `explain`, `help CMD`, `migrate`'s Format line, the `set --write` create race and its `--no-banner` refusal, `init`'s self-check on optional and by-value lines, the C tokens handle, `ParseLimited`'s element cap, the C allocation failure on Windows, and `shcl_paths` through `shcl_reads_release`. The two entries about the same help and man page option lists are one.
+		- Fixed: `E014`'s byte column has a Changed bullet of its own, where it had only a Fixed entry about the column counting a carriage return.
+		- Fixed: "all 130 lines" is gone; the help is 144 lines today and the number would go stale again.
+		- Note: every entry left describes behavior a 2.x reader had, checked against `v2.0.0` one at a time. The section is the 3.0.0 notes.
+		- Opened: 20260918-193000
+		- Closed: 20260919-142729
+
+	- ✅ Item 49: `project/conformance/README.md` states two withdrawn rules, leaves out two row kinds, and has no note for 58 cases.
+		- The notes on cases `044` and `031` describe the 2026-09-06 `#` rule and the 2.x open-quote rule, against their own goldens. The `reads.tsv` bullet omits the `children` and `paths` rows the corpus uses and does not say the file is required. `contributing.md` says every case carries a note.
+		- Origin: `58d8e81` (2026-09-09) and `5cd2a69` (2026-07-25). Third pass over the `literal` sentence. Confirmed.
+		- Probable fix: reword from the goldens, and a `check-docs.bash` grep for the withdrawn wording.
+		- Fixed: case `031` and `044` notes reworded from their goldens, the `reads.tsv` bullet marks the file required and describes the `children` and `paths` rows, and the 58 cases with no note have one.
+		- Pinned by: two `check-docs.bash` checks. One refuses the withdrawn wording in the documents that state the current rules. The other needs a note for every case directory. Both failed on the old README (2 and 58 findings) and pass now.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 50: the man page's revision date is ten days and seven edits stale.
+		- `.TH SHCL 1 2026-09-08`, with three subcommands added since. A repeat of 20260830 item 39, which regressed on the next edit since nothing pins it.
+		- Probable fix: set it at the cut, with a step in the release recipe or a `check-docs.bash` compare against the file's last commit date.
+		- Fixed: `.TH` is 2026-09-19.
+		- Pinned by: a `check-docs.bash` check that the `.TH` date is no older than the last commit touching the page. It skips a shallow clone, where the only commit's date says nothing about the page. It failed on the old date (2026-09-08 against 2026-09-18) and passes now.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 51: `grammar.abnf`'s `info-string` cannot derive labels the parser reads and the writer emits.
+		- Reproduced: labels `a:b`, `a,b`, `"q"` and `[x]` read back in all four, and `set` writes such a fence line. The rule is built from `bare-plain`, which excludes all four characters. `bareword` carries a note that the parser is wider, and this rule has none.
+		- Origin: `c93db82` (2026-07-11), reworked for 20260909 item 32, which settled only the `#`. Confirmed.
+		- Fixed: `info-string` is built from its own `info-char`, anything but a blank, LF and `#`, so it derives `a:b`, `a,b`, `"q"`, `[x]` and `sql:pg, "v" [x]`, which the parser reads back and `SetRaw` writes.
+		- Pinned by: `cicd/utility/check-abnf.py`, run from `check-docs.bash`. It reads the grammar as ABNF, requires every named rule to be defined and none to shadow a core rule, and matches sample lines against the rule meant to cover them. It failed on the old grammar for the five labels and passes now. Run on the grammar from before 20260909 item 32, it also fails on `%xEOF` and the `wsp` and `DQUOTE` redefinitions.
+		- Note: the repo had no ABNF check before. Item 32 was verified by hand.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 52: six source files lack the SPDX and copyright lines the style guide requires.
+		- `source/go/mem_test.go`, `source/rust/tests/cli_pipe.rs`, `source/rust/tests/mem_caps.rs`, `cicd/packaging/shclpath.ps1`, `cicd/utility/winpath-regress.ps1` and `cicd/utility/winpath-sandbox.ps1`. Every other source file has them. Same kind as 20260829 item 50. Confirmed.
+		- Fixed: the six files carry the SPDX and copyright lines, with the marker bytes copied from a neighbor of the same language. The two `winpath` scripts gained a byte-order mark with the copyright sign, like the other `.ps1` files except `install.ps1`. `shclpath.ps1` already had the copyright and gained the SPDX line, keeping its CRLF.
+		- Pinned by: a `check-docs.bash` check over every tracked `.rs .go .py .c .h .hpp .cpp .bash .ps1` file for both lines in the first 80. It failed on exactly the six before and passes now.
+		- Left alone: extensionless scripts such as `n8git_backup-and-publish`, which the check does not read.
+		- Opened: 20260918-193000
+		- Closed: 20260919-120750
+
+	- ✅ Item 53: repo hygiene leftovers.
+		- A comment in `n8git_backup-and-publish`, from the 2026-09-18 "Bug fix" commit, names a private tool and how it runs. It belongs upstream in the canonical copy too.
+		- `code_of_conduct.md` and `contributing.md` each say they were generated from a template.
+		- Note: the tracked tree and every commit message on every ref are otherwise clean, and all 1,011 commits carry the repo identity.
+		- Fixed: the audit-scratch exclude's comment and its history line no longer name the tool or say how it runs. The `-x*/panoplia/working/audit-*` pattern stays, since it is what keeps those trees out of the archive. Same block patched in the canonical copy and all 20 project copies; slodworld2's comment had its own wording and was replaced too.
+		- The other half (the two template-credit lines in `code_of_conduct.md` and `contributing.md`) was not in this branch's scope.
+		- Fixed: the generator credit lines are gone. The Contributor Covenant attribution stays.
+		- Pinned by: nothing checked in, on purpose. A repo check for template or generator wording is a tell-scanner. The pattern belongs in the private scrub script.
+		- Note: the item stays open for its `n8git_backup-and-publish` half.
+		- Opened: 20260918-193000
+		- Closed: 20260919-142407
 
 - Code review 20260918:
 

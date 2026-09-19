@@ -8,13 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl explain [CODE]`: what a diagnostic code means - its severity and the rule behind it - or, with no code, every code one line each. The code is the portable half of a diagnostic (the same problem carries the same code in every binding) and up to now the only place the rule was written down was the spec on the web. `check` says where to look one up when it reports anything.
 
-- `shcl help CMD`, and `--help` after a subcommand: that subcommand's usage, its write-ops block where it has one, and the options it takes, instead of all 130 lines. The narrowed text is cut from the full help, so the two cannot drift apart.
+- `shcl help CMD`, and `--help` after a subcommand: that subcommand's usage, its write-ops block where it has one, and the options it takes, instead of the whole help. The narrowed text is cut from the full help, so the two cannot drift apart. `shcl help --help`, `help -h` and `help get --help` print the help, and `help ''` is an unknown command.
 
 - A did-you-mean on a mistyped command, option or diagnostic code. `shcl frmt` and `--stricness` used to print a bare usage error, though the suggester was already in the library for schema field names.
 
-- `shcl migrate FILE [--write | --check] [--from-2x]`, and `migrate(text, from_v2)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`. Which rule set wrote a file is not in its text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it: a file carrying it has nothing to migrate, and a file without it keeps the spellings the two rule sets read differently and exits 7 unless `--from-2x` says it really is 2.x. A rewritten file is stamped with that line, so running `migrate` twice cannot damage what the first run produced. Bracket text after the colon is the one line 2.x bound that has no spelling here; it is left as written and reported at exit 7, which `--lossy` overrides on a rewrite. `--check` prints nothing, names each line a rewrite would change, and exits 6 when there is one, so a tree can be scanned for the files that need it. `--write` says how many lines it rewrote.
+- `shcl migrate FILE [--write | --check] [--from-2x]`, and `migrate(text, from_v2)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`. Which rule set wrote a file is not in its text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it: a file carrying it has nothing to migrate, and a file without it keeps the spellings the two rule sets read differently and exits 7 unless `--from-2x` says it really is 2.x. A rewritten file is stamped with that line, so running `migrate` twice cannot damage what the first run produced. Bracket text after the colon is the one line 2.x bound that has no spelling here; it is left as written and reported at exit 7, which `--lossy` overrides on a rewrite. `--check` prints nothing, names each line a rewrite would change, and exits 6 when there is one, so a tree can be scanned for the files that need it. `--write` says how many lines it rewrote. A `Format` line inside a raw body is that block's content, not the file's version, and the highest one in a file decides.
 
-- `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer.
+- `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer. C's `shcl_tokens` grows its two arrays in the read arena of the document it was last handed, so zero the struct before handing it another one.
 
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
 
@@ -24,11 +24,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The C++ veneer can write. It had no setters, so a document it loaded could be merged and saved but not changed. It now has the rest of the C API: the setters and their `_default` forms, `set_literal`, `set_comment`, `set_empty` and `remove`, the tokenizer, both hint suppressors, `write_file_atomic`, `format_f64`, `strictness_from_arg` and `status_code`. `c()` hands back the C handle for anything the veneer leaves out, and `get_or<T>` covers datetimes and arrays, with `get_raw_or` and `get_raw_info_or` beside it, since the veneer copies every result and the reason C stops at the value types does not apply.
 
-- `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
+- `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. `shcl_paths` and the string reads go through it, where they used to grow the document itself. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
 
-- An allocation failure no longer ends the process in the C binding. A parse and a validate give back everything they held and return NULL, `shcl_load_file` follows its parse, and the C++ veneer's `Document` tests false. A document retains several times its input size, so a config file that read fine could still exhaust the arena - which turned a config problem into the application quitting. Everywhere else, on a document already built, the new `SHCL_OOM()` hook is the answer: the default is still the CLI's print-and-exit-70, and a consumer whose process is not the library's to end defines its own before the implementation.
+- An allocation failure no longer ends the process in the C binding. A parse and a validate give back everything they held and return NULL, `shcl_load_file` follows its parse, and the C++ veneer's `Document` tests false. A document retains several times its input size, so a config file that read fine could still exhaust the arena - which turned a config problem into the application quitting. Everywhere else, on a document already built, the new `SHCL_OOM()` hook is the answer: the default is still the CLI's print-and-exit-70, and a consumer whose process is not the library's to end defines its own before the implementation. A hook that longjmps gets the memory back: the calls that hold a document of their own while they work give it up before the hook is called.
 
-- `V097`: `init` checks its own output against the schema that produced it before returning it. A field typed `int` with `min: 1`, `max: 10` and `default: 99` used to generate the comment `# int, 1-10, required` and then `server.port: 99` on the next line, so the starter config failed the schema it came from. The schema is faulted now, naming the field.
+- `V097`: `init` checks its own output against the schema that produced it before returning it. A field typed `int` with `min: 1`, `max: 10` and `default: 99` used to generate the comment `# int, 1-10, required` and then `server.port: 99` on the next line, so the starter config failed the schema it came from. The schema is faulted now, naming the field. An optional field's line is read back the same way, since uncommenting it should not break the file, and a path whose last segment selects by value carries its default on the bare path (`env[prod]` with `default: prod` gives `env: prod`), where the value after the selector was ignored.
 
 - `E019`: a value spelled with brackets, the way JSON, TOML and YAML spell an array. It used to be reported as a missing colon on a line that plainly has one, and the brackets were dropped so silently that an in-place `fmt --write` rewrote `ports: [80, 443]` to `ports: "80, 443"` and the file checked clean from then on. The line is kept as written now, binds nothing and loses nothing, so `check` reports it at exit 6 and an in-place rewrite writes the line back unchanged. Every bracket spelling is the same case, `tags: [prod]` included; the `base:[Boston]` selector sugar that shared the spelling is gone.
 
@@ -60,7 +60,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `init` writes its own prose as `##` and a commented-out setting as `# `. A starter config is mostly comment, and one `#` for both left the reader sorting prose from settings by eye. Nothing keys on the difference: to the language both are ordinary comments, and a config author may write one with any number of `#` and any spacing.
 
-- `set --write` creating a file gives it the same info block `init` writes at the bottom, so a new config says what format it is. The edits go above it, `--no-banner` leaves it out, and a file that already exists is never given one. The block is a public constant in every binding (`GEN_BANNER`, `GenBanner` in Go, `SHCL_GEN_BANNER` in C) for a program writing its own config file. Its `Syntax` link points at the spec as tagged at 3.0.0, so an older file keeps pointing at the rules it was written for.
+- `set --write` creating a file gives it the same info block `init` writes at the bottom, so a new config says what format it is. The edits go above it, `--no-banner` leaves it out, and a file that already exists is never given one. The block is a public constant in every binding (`GEN_BANNER`, `GenBanner` in Go, `SHCL_GEN_BANNER` in C) for a program writing its own config file. A file that turns up at the path while the command waits for ops on stdin is left alone at exit 8, and `--no-banner` without `--write` is a usage error rather than accepted and ignored. Its `Syntax` link points at the spec as tagged at 3.0.0, so an older file keeps pointing at the rules it was written for.
 
 - The lexical rules are smaller, and one tokenizer per binding is the only place they live. Seven scanners used to carry their own copy of when a quote opens, what a backslash shields and where a selector ends, and every scanner defect since July was two of them disagreeing. What a 2.x file reads differently, and `migrate` rewrites:
 	- Escapes are processed inside double quotes only. Single quotes are literal, and a backslash in bare text is a character, so `path: C:\dir\new` reads as written. `\,` and `\#` no longer shield a comma or a `#` in bare text; quote the value instead.
@@ -91,6 +91,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - C: a save on Windows follows a symlink or junction to the file it points at, and works on a path past the old 260-character limit. The link used to be replaced by a regular file, and a deep path was refused; the other three bindings already did both.
 
 - Naming a directory as the file says `PATH: Is a directory` in every CLI, on every platform. The message used to be whatever the language handed back from a failed read, which was four different sentences on Linux and a fifth on Windows.
+
+- `E014` says where on the line the path went wrong, as a byte column counted from the start of the line, indent and any leading blanks included. The tokenizer had the column all along and the message dropped it.
 
 - Diagnostics under `--layer` say which file they came from, a strict failure in a layer included. Two layers with a bad line 2 printed the same thing twice with nothing to tell them apart. A single-file load is unchanged.
 
@@ -172,43 +174,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- The help names every subcommand each of `--strictness`, `--layer` and `--set` belongs to. It had said "all but" a list that `explain` was missing from, and the man page's `--strictness` line said the same. `migrate`'s usage error matches its help line, which now says `-w` works there.
-
-- `shcl help --help`, `help -h` and `help get --help` print the help again. `help ''` is an unknown command in every build, as it was in the Rust one.
+- The help and the man page name every subcommand each of `--strictness`, `--layer`, `--set` and `--write` belongs to. They had said "all but" a list, so every subcommand added since joined it unseen.
 
 - An option a subcommand does not take is named as that, before the note that a value option took the FILE. `-w` before the subcommand is told to go after it, and a flag given a value is told it takes none, where both were called unknown.
-
-- `explain E003` gives the index spelling a file can use, `explain V097` names a required path nothing can generate, and three usage errors point at `--help`.
 
 - A skipped line whose value opens a raw block takes the block with it. The body used to be read as lines, and its closing fence opened a block that hid the rest of the file.
 
 - A schema path or type holding a line break no longer splits a diagnostic across two lines. It is written `\n`, as `init` already wrote it.
 
-- The column an `E014` names counts a carriage return and the blanks after it at the start of a line.
-
-- `migrate` ignores a `Format` line inside a raw body, which is the block's content and not the file's version. C `migrate` also finds the line in a file that starts with a BOM. A file naming an older format before `migrate`'s own stamp is no longer stamped again on every run.
-
-- `set --write` no longer replaces a file that turned up at the path while it waited for ops on stdin. It had decided the file was new before the wait, so the other file was replaced by the info block and the edits, at exit 0. It exits 8 now and leaves that file alone, and a save that finds nothing at the path never replaces a file that appears there before it finishes.
-
-- `set --no-banner` without `--write` is a usage error, like `--lossy` there. It was accepted and did nothing.
-
-- The help and the man page name the right subcommands for `--strictness`, `--layer`, `--set` and `--write`, and `migrate`'s synopsis lists `--lossy`.
-
-- Python: a file whose name holds no character start in its first 64 bytes can be saved. The temporary name fell back to the whole path, directory and all.
-
 - C: a default form on a path that already holds a value gives back the memory it checked the value in. A 4 MB default held 12 MB until the document was freed.
-
-- C: a `shcl_tokens` reused with another document grows its arrays in that document's memory. It kept writing into the first document's, and after that one was freed, into memory nobody owned.
 
 - C: a setter refused for its value no longer keeps the memory it checked the value in. A loop of refused writes grew the document until it was freed.
 
 - `shcl.h` compiles in a C file that defines `_GNU_SOURCE`.
 
-- `init` refuses an optional field whose `default` breaks its own constraints, as it already did for a required one. That includes a default that names another instance than its path selects.
-
 - A commented `init` line under a commented parent with a `default` selects the parent by that value, as a live line under a live parent does. `# srv: web` and `# srv.port: 80` became two `srv` instances once both were uncommented; the second line is now `# srv[web].port: 80`.
-
-- `init` no longer writes a starter config that fails its own `check`. A schema path whose last segment selects by value, with a `default`, came out as `a[b]: hello`, and a value after that selector is ignored, so the file loaded with `E002` and `check` exited 6 on it. Such a line is now the bare path carrying the default (`env[prod]` with `default: prod` gives `env: prod`), and a default that names a different instance than the path selects is a `V097` fault. The self-check reads the generated text's load as well as its validation, so a line that does not load is refused too.
 
 - An unterminated quote in a selector body is reported. `srv["prod].host: example.com` loaded with no diagnostic at all and bound an instance of `srv` valued `"prod`, so a one-character typo silently pointed a whole block at a path nothing else uses, and the next `fmt --write` wrote the typo out as canonical text. The tokenizer had recorded the open quote all along; only the value half was reading it. The body is still kept as text, quotes and all, which is what the spec says a piece that opens a quote and never closes it does.
 
@@ -216,7 +196,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Reading the info-string of an empty binding reports `Empty`, not `BadType`. The raw-content read beside it always said `Empty` on the same line, and two neighbouring reads should not disagree about what an empty binding is. A binding carrying a value that is not a block is still `BadType`.
 
-- A file whose name runs past about 240 characters can be rewritten. The temporary file written beside it carried the whole name plus the process id, which put it over the filesystem's own limit, and the exact length that failed moved with the width of the pid - so the same file saved on one machine and failed at exit 8 on another. The temporary name now borrows at most the first 64 characters.
+- A file whose name runs past about 240 characters can be rewritten. The temporary file written beside it carried the whole name plus the process id, which put it over the filesystem's own limit, and the exact length that failed moved with the width of the pid - so the same file saved on one machine and failed at exit 8 on another. The temporary name now borrows at most the first 64 bytes, cut where a character starts.
 
 - The C binding builds a schema in time linear in its fragment count. Every fragment was compared against every fragment already recorded, and each mount paid the same scan again, so 32,000 fragments took 3.3 seconds against 0.2 in Go; the fragments are held in a name index now, as the other three bindings already held them.
 
@@ -264,7 +244,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, like the plain spelling.
 
-- An allocation failure inside a C parse or validate crashed the process on Windows instead of returning NULL, on any binary built with mingw at `-O1`, `-O2` or `-Os`. The recovery unwinds through SEH there, and it was reading off the top of the stack on the way. The whole point of the recovery is that a config problem does not take the application down with it, so on Windows it had been doing the opposite of what it promised. An embedder whose `SHCL_OOM()` hook longjmps out is exposed to the same thing, since the unwind crosses these frames too, so the header now carries `SHCL_SETJMP(buf)` for arming that recovery point.
 
 - A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
 
@@ -296,7 +275,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A file of lines with no colon at a constant indent parsed in quadratic time - a 1 MB plain text file took half a minute, and neither `ParseLimited` cap could stop it because no nodes or elements were built. Each refused line is kept as trivia, and every following line rewalked the whole retained list. The list is walked only as far as an incoming line could change it now, so the parse is linear again.
 
-- `ParseLimited`'s element cap bounded nothing for an inline array: the line was built in full and refused afterwards, so 9 MB of input peaked at the same 256 MB with the cap as without, and in C the refused array stayed held for the document's lifetime. The count is taken before anything splits the value now, so a refused line costs its text and no more.
 
 - `SetFloat` wrote `inf`, `-inf` and `NaN`, and `SetDateTime` wrote whatever the struct held (month 99, February 30, a fraction with no seconds, an empty struct as an empty value), each reporting success and each leaving a field the reader refused. Both refuse the value now and return false, the way `SetRaw` refuses an info-string it cannot spell. The CLI's float ops refuse `inf`, `nan` and a literal past the double range for the same reason; a datetime op already did.
 
@@ -304,7 +282,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `SetLiteral` (and `--set-literal`) took bracket-array text and wrote a two-element array holding `[80` and `443]`, with nothing said, where the same text in a file is `E019` and the line binds nothing. It refuses the text now, the way it already refused a quote that never closes.
 
-- `shcl_paths` in the C binding grew the document by about 11 KB on every call, and `shcl_reads_release` could not give it back, so a process polling a document's key list climbed for the document's lifetime. It was the one read that took no path and so missed the scratch reset the path lookup does; it resets on entry now.
 
 - The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.
 
