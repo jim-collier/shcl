@@ -104,12 +104,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- Code review 20260909:
-
-	- The round's twenty-two enhancements. The defects are under Bugs; see the round bullet there for what was covered and what the diagnosis is. Most of these are user-facing gaps around the 3.0 migration, which is the part of the release that is mechanically right and unaccompanied.
-
-	- Item 45, and the second half of item 47, are under Future and/or deferred.
-
 - 🔘 Cut 3.0.0.
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
 	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
