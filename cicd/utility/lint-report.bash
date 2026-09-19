@@ -68,6 +68,19 @@ else
 	ts="${nb%%$'\t'*}"; log="${nb#*$'\t'}"
 fi
 
+##	How old the log is, in whichever unit reads plainest. Every line below names
+##	the log and says nothing about when it ran, so SEEN and CLEAN look the same
+##	whether the run behind them finished an hour ago or a fortnight ago - and a
+##	stale one has been read as evidence that the tree is clean today.
+fAge() {
+	local secs=$(( $(date +%s) - $(stat -c %Y "$1" 2>/dev/null || echo 0) ))
+	if ((secs < 0)); then secs=0; fi
+	if   ((secs < 5400));   then printf '%dm' $(( secs / 60 ))
+	elif ((secs < 172800)); then printf '%dh' $(( secs / 3600 ))
+	else                         printf '%dd' $(( secs / 86400 )); fi
+}
+age="$(fAge "$log")"
+
 ##	SEEN only when the marker names the newest log exactly. A marker ahead of every
 ##	log, from a --file run on an old log or a name that sorts high, used to silence
 ##	the gate for good. --file is not the newest log, so it never moves the marker.
@@ -75,7 +88,7 @@ marker="${dir}/.lint-seen"
 if ((check)) && ((! force)) && [[ -z "$file" ]]; then
 	seen=""; [[ -f "$marker" ]] && seen="$(tr -d '[:space:]' < "$marker" 2>/dev/null)"
 	if [[ -n "$ts" && "$ts" == "$seen" ]]; then
-		echo "SEEN $(basename "$log")  (nothing newer than $seen)"; exit 0
+		echo "SEEN $(basename "$log")  (nothing newer than $seen, ${age} old)"; exit 0
 	fi
 fi
 
@@ -117,19 +130,19 @@ if [[ -n "$errs" ]]; then e=$(printf '%s\n' "$errs" | grep -c .); else e=0; fi
 
 tag="FLAG"; ((check)) && tag="NEW"
 if ((e)); then
-	echo "FAILED $(basename "$log")  (${e} error line(s), ${n} warning line(s))"
+	echo "FAILED $(basename "$log")  (${e} error line(s), ${n} warning line(s), ${age} old)"
 	echo
 	printf '%s\n' "$errs"
 	if ((n)); then echo; printf '%s\n' "$warns"; fi
 elif ((! finished)); then
-	echo "INCOMPLETE $(basename "$log")  (no done or abort line: still running, or cut off; ${n} warning line(s) so far)"
+	echo "INCOMPLETE $(basename "$log")  (no done or abort line: still running, or cut off; ${n} warning line(s) so far, ${age} old)"
 	if ((n)); then echo; printf '%s\n' "$warns"; fi
 elif ((n)); then
-	echo "${tag} $(basename "$log")  (${n} warning line(s))"
+	echo "${tag} $(basename "$log")  (${n} warning line(s), ${age} old)"
 	echo
 	printf '%s\n' "$warns"
 else
-	echo "CLEAN $(basename "$log")  (0 warnings)"
+	echo "CLEAN $(basename "$log")  (0 warnings, ${age} old)"
 fi
 
 
@@ -138,5 +151,7 @@ fi
 ##		- 20260902: The echoed `-D warnings` of a nested clippy run is not a finding.
 ##		- 20260914: A failed run reports FAILED with its error lines. The marker
 ##		  moves only on the newest log, and SEEN needs an exact match.
+##		- 20260919: Every line says how old the log is, so a report standing on a
+##		  fortnight-old run reads as one.
 ##		- 20260919: `[ FAILED: ... ]` counts as a failure. A log with no done or
 ##		  abort line is INCOMPLETE and never marked seen.

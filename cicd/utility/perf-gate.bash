@@ -124,6 +124,15 @@ awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 
 awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 2147483647; s = s sprintf("%c", 97 + x % 26) } return s }
 	BEGIN { x = 7; for (i = 0; i < 4000; i++) printf "%s: 1\n", nm() }' > "${unkDoc}"
 
+##	A run that never comes back is a failure, not a wait. Without this a binding
+##	that stopped terminating hung the gate until whatever was running it gave up,
+##	and on hosted CI that is the job's own timeout with no workload named. The cap
+##	is deliberately far above any budget: a merely slow run still finishes, prints
+##	its number and fails on the number, which is the more useful report. Only a
+##	hang reaches this. The self-test below lowers it to a second.
+declare -i runSecs=300
+fRun(){ timeout -k 5 "${runSecs}" "$@"; }
+
 ##	Milliseconds for one run of $2 (an ops file, a document when $3 is
 ##	"check", or a document validated against ${sugSchema} when $3 is
 ##	"suggest") through CLI $1, best of two so a scheduling hiccup does not
@@ -138,25 +147,30 @@ fTimeMs(){
 		start="$(date +%s%N)"
 		rc=0
 		if [[ "${mode}" == check ]]; then
-			"${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == suggest ]]; then
-			"${cli}" check --schema "${sugSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${sugSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == recurse ]]; then
-			"${cli}" check --schema "${recSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${recSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == frags ]]; then
-			"${cli}" check --schema "${fragSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${fragSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == stars ]]; then
-			"${cli}" check --schema "${starSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${starSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == mounts ]]; then
-			"${cli}" check --schema "${mountSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${mountSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == selectors ]]; then
-			"${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == unknowns ]]; then
-			"${cli}" check --schema "${unkSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" check --schema "${unkSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
-			"${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+			fRun "${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
 		end="$(date +%s%N)"
+		##	124 is timeout's own TERM, 137 the KILL five seconds behind it.
+		if ((rc == 124 || rc == 137)); then
+			echo "perf-gate: ${cli##*/}: ${mode} run was still going after ${runSecs} s" >&2
+			printf '%s' -1; return
+		fi
 		##	`check` on a document with diagnostics exits 6; everything else here
 		##	succeeds. Anything else means the run did no work.
 		local wantRc=0
@@ -176,11 +190,12 @@ fTimeMs(){
 	printf '%s' "${best}"
 }
 
-##	The two checks inside fTimeMs are the gate's own guards: a run that exits
-##	wrong, and a run that prints too little, are failures rather than fast
-##	times. Both went in after a CLI that printed a usage error and exited 1 sat
-##	inside every budget and the gate reported OK. Two bait CLIs keep them
-##	honest, so the next tidy-up cannot delete a check without this saying so.
+##	The three checks inside fTimeMs are the gate's own guards: a run that exits
+##	wrong, one that prints too little, and one that never comes back are all
+##	failures rather than fast times. The first two went in after a CLI that
+##	printed a usage error and exited 1 sat inside every budget and the gate
+##	reported OK. Three bait CLIs keep them honest, so the next tidy-up cannot
+##	delete a check without this saying so.
 ##	stderr is dropped: the message they print is the point, not the noise.
 {
 	## It prints its line too, so this bait fails on the exit code alone.
@@ -191,6 +206,16 @@ fTimeMs(){
 	[[ "${got}" == "-1" ]] || { echo "perf-gate: self-test: a CLI exiting 1 was timed as ${got} ms, not refused" >&2; exit 1; }
 	got="$(fTimeMs "${tmpDir}/bait-quiet" "${tmpDir}/base.ops" set 1 2>/dev/null)"
 	[[ "${got}" == "-1" ]] || { echo "perf-gate: self-test: a CLI printing nothing was timed as ${got} ms, not refused" >&2; exit 1; }
+	## The cap comes down for the hang, since nobody is waiting out the real one.
+	## It prints its line and exits 0 eventually, so the other two guards have
+	## nothing to say about it and only the cap can refuse it.
+	printf '#!/bin/sh\nsleep 30\necho x\n' > "${tmpDir}/bait-hang"
+	chmod +x "${tmpDir}/bait-hang"
+	declare -i capWas="${runSecs}"
+	runSecs=1
+	got="$(fTimeMs "${tmpDir}/bait-hang" "${tmpDir}/base.ops" set 1 2>/dev/null)"
+	runSecs="${capWas}"
+	[[ "${got}" == "-1" ]] || { echo "perf-gate: self-test: a CLI that never returned was timed as ${got} ms, not refused" >&2; exit 1; }
 }
 
 declare -i nBad=0
@@ -261,3 +286,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            instance, which scanned every sibling on the create path.
 ##		2026-09-19  unknowns workload: every name unknown, which compared each with
 ##		            every sibling, one copy per schema field.
+##		2026-09-19  Every run is capped at five minutes, so a binding that stops
+##		            terminating fails this gate instead of hanging it.
