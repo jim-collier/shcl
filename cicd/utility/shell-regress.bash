@@ -71,6 +71,9 @@ out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/sour
 ##	the value. Driven the way readline hands the words over, both with
 ##	bash-completion's word joining and with the completion's own fallback.
 mkdir -p "${tmpDir}/comp" && touch "${tmpDir}/comp/alpha.shcl" "${tmpDir}/comp/beta.txt"
+## The break characters readline splits a completion word at, which is bash's
+## own default for COMP_WORDBREAKS less the whitespace.
+compBreaks=$'"\'><=;|&(:'
 fComplete(){
 	## $1 = lib|bare, $2 = the command line as typed (a trailing space means a
 	## fresh word). Prints COMPREPLY space-joined.
@@ -83,15 +86,29 @@ fComplete(){
 	[[ "$1" == lib ]] && setup='source /usr/share/bash-completion/bash_completion; _filedir(){ mapfile -t COMPREPLY < <(compgen -f -- "${cur}"); }'
 	bash -c '
 		'"${setup}"'; source '"'${repoDir}/source/completions/shcl.bash'"'
-		line="$1"; COMP_WORDS=()
+		line="$1"; brk="$2"; COMP_WORDS=()
+		## Readline cuts every word at each character of COMP_WORDBREAKS and
+		## hands the break over as a word of its own. Splitting at the first
+		## `=` only, as this did, made `--set url=http://x` look like two words
+		## where the shell gives six, and the row passed on code that lost the
+		## FILE slot (20260918b item 15).
 		for t in ${line}; do
-			if [[ "${t}" == --*=* ]]; then COMP_WORDS+=("${t%%=*}" "="); v="${t#*=}"; [[ -n "${v}" ]] && COMP_WORDS+=("${v}")
-			else COMP_WORDS+=("${t}"); fi
+			piece=""
+			for (( k = 0; k < ${#t}; k++ )); do
+				c="${t:k:1}"
+				if [[ "${brk}" == *"${c}"* ]]; then
+					[[ -n "${piece}" ]] && COMP_WORDS+=("${piece}")
+					piece=""; COMP_WORDS+=("${c}")
+				else
+					piece+="${c}"
+				fi
+			done
+			[[ -n "${piece}" ]] && COMP_WORDS+=("${piece}")
 		done
 		[[ "${line}" == *" " ]] && COMP_WORDS+=("")
 		COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMP_LINE="${line}"; COMP_POINT=${#line}
 		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s\n" "${COMPREPLY[@]}" | sort | paste -sd" " | sed "s/^ $//"
-	' _ "$2" 2>/dev/null || true
+	' _ "$2" "${compBreaks}" 2>/dev/null || true
 }
 compModes=(bare)
 [[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
@@ -114,6 +131,19 @@ for mode in "${compModes[@]}"; do
 	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set-default=x=1: ${out@Q}"
 	out="$(fComplete "${mode}" "shcl check --strictness st")"
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
+	## 20260918b item 15: a value holding another `=` or a `:` is still one
+	## word to the shell, and the FILE slot has to survive it.
+	out="$(fComplete "${mode}" "shcl set --set a=1 ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set a=1: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl set --set url=http://x ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after a value holding a colon: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl get --default=a:b alpha.shcl ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered files for the PATH after --default=a:b: ${out@Q}"
+	## A FILE of `-` fills the slot, and everything after `--` is a positional.
+	out="$(fComplete "${mode}" "shcl fmt - ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered a second FILE after a FILE of -: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt -- al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) lost the FILE slot after --: ${out@Q}"
 done
 
 ##	20260904 item 39: nothing had ever compared what the two wrappers hand back
@@ -231,6 +261,12 @@ ZEOF
 		[[ "${out}" == "<files>" ]] || fBad "zsh completion gave the FILE slot to a --set value: ${out@Q}"
 		out="$(fZComplete "shcl check a.shcl ")"
 		[[ -z "${out}" ]] || fBad "zsh completion offered files where a PATH goes: ${out@Q}"
+		##	20260918b item 15: `-` is a FILE, and everything after `--` is a
+		##	positional whatever it looks like.
+		out="$(fZComplete "shcl check - ")"
+		[[ -z "${out}" ]] || fBad "zsh completion offered a second FILE after a FILE of -: ${out@Q}"
+		out="$(fZComplete "shcl check -- ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion lost the FILE slot after --: ${out@Q}"
 		##	`-w` is the only short option the CLI takes on a subcommand, and the
 		##	comment in both completions says so. Offered where --write is and
 		##	nowhere else; -h is informational and rides along everywhere.

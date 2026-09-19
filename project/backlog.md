@@ -129,13 +129,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable fix: match the second abort line, and treat a log with neither the done line nor an abort as unfinished, leaving the marker alone.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 15: bash completion stops offering FILE after a value holding `=` or `:`.
-		- Reproduced: live in `bash --norc`. With the file sourced by hand, as the install message says to, `shcl set --set a=1 <TAB>` offers nothing. With bash-completion loaded that works, and `--set url=http://x <TAB>` does not. zsh is right in every case.
-		- Cause: the word rejoin handles one `=` after an option name. The gate's harness splits a word once where readline splits at every `=` and `:`, so its row passes.
-		- Note: a FILE of `-`, and anything after `--`, is not counted as a positional either, in both shells.
-		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 32: the PowerShell wrapper's typed helpers drop pipeline input.
 		- Reproduced: on pwsh 7.6.6, dot-sourced. `'a: 5' | shcl_fmt -` prints nothing at exit 0, and `'a: 5' | shcl_int - a` prints `0` at exit 3. The `shcl` function itself and the bash helpers work.
 		- Cause: the fifteen one-line helpers pass `@args` and not `$input`.
@@ -670,6 +663,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Swept: `do_set` in `main.rs`, `main.py` and `main.c`, `doSet` in `main.go`. No other subcommand builds its own fold.
 		- Opened: 20260918-193000
 		- Closed: 20260919-123632
+
+	- ✅ Item 15: bash completion stops offering FILE after a value holding `=` or `:`.
+		- Reproduced: live in `bash --norc`. With the file sourced by hand, as the install message says to, `shcl set --set a=1 <TAB>` offers nothing. With bash-completion loaded that works, and `--set url=http://x <TAB>` does not. zsh is right in every case.
+		- Cause: the word rejoin handles one `=` after an option name. The gate's harness splits a word once where readline splits at every `=` and `:`, so its row passes.
+		- Note: a FILE of `-`, and anything after `--`, is not counted as a positional either, in both shells.
+		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
+		- Fixed: `_shcl_words` rebuilds the words from `COMP_LINE`, so every break readline made - `=` and `:` are both in `COMP_WORDBREAKS` - is put back where the line has no blank. The completion uses it with and without bash-completion, whose `-s` handles the first `=` only. A FILE of `-` now counts as the positional it is, and everything after `--` counts too, in both completions.
+		- Pinned by: five `shell-regress.bash` rows (a value holding another `=`, one holding a `:`, a PATH after such a value, a FILE of `-`, a word after `--`) and two zsh rows. The harness itself was the other half: it split a word once at `=` where readline splits at every break character, so an existing row passed on the old code and fails on it now.
+		- Note: checked live in `bash --norc` over a pty as well. The old file offers nothing after `--set a=1` and the new one offers the files, which is what the harness says.
+		- Opened: 20260918-193000
+		- Closed: 20260919-141807
 
 	- ✅ Item 16: `set --write` loads FILE, waits on stdin, then saves, so an edit made during the wait is reverted at exit 0.
 		- Reproduced: in all four, with a 1.2 s delay on the op script and an edit at 0.5 s. The other edit's line is gone and nothing is said.
