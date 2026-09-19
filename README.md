@@ -927,7 +927,7 @@ One read-side companion belongs with this: canonical output lowercases field nam
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
 ```
 
-Linux and macOS; on Windows, use WSL, since the pipeline is bash. Then, from the clone:
+Linux. macOS is untested for the pipeline, and some of its checks need Linux. On Windows, use WSL, since the pipeline is bash. Then, from the clone:
 
 ```sh
 cicd/cicd.bash --ci
