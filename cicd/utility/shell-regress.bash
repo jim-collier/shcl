@@ -54,6 +54,16 @@ fHave(){
 	echo "$1" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 	return 1
 }
+##	fHave for a file the rows read rather than a tool they run: $1 is the path,
+##	$2 the package that ships it. A bare `[[ -r ]] && rows+=()` dropped half the
+##	completion rows with nothing said, under the gate too (20260918b item 43).
+fHaveFile(){
+	[[ -r "$1" ]] && return 0
+	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$2 is missing ($1) and the gate requires it"
+	echo "shell-regress: skipping the $2 rows (no $1)" >&2
+	echo "$2" >> "${SHCL_GATE_SKIPS:-/dev/null}"
+	return 1
+}
 
 ##	20260830 item 21: -x is true for a directory, so a directory passed as
 ##	SHCL_BIN got as far as being run.
@@ -98,7 +108,7 @@ fComplete(){
 	' _ "$2" 2>/dev/null || true
 }
 compModes=(bare)
-[[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
+if fHaveFile /usr/share/bash-completion/bash_completion bash-completion; then compModes+=(lib); fi
 for mode in "${compModes[@]}"; do
 	out="$(fComplete "${mode}" "shcl check --strictness=st")"
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on --strictness=st: ${out@Q}"
@@ -1086,6 +1096,26 @@ for g in "${repoDir}"/cicd/utility/*.bash; do
 			|| fBad "${g##*/}:${n} skips over a missing tool without noting it in SHCL_GATE_SKIPS"
 	done < <(grep -nE '^[[:space:]]*echo ".*skipping .*\(no ' "${g}" || true)
 done
+##	20260918b item 43: the rules above key on a skip message, so a skip that
+##	prints none passes them. This one keys on the defect instead: a list of rows
+##	or modes grown only when a tool or a system file is here. Each one has to
+##	read the strict flag within the next lines, or go through fHave or fHaveFile.
+fBareGrowth(){  ## fBareGrowth FILE: prints "LINE" per bare conditional growth
+	local n
+	while IFS=: read -r n _; do
+		# shellcheck disable=SC2016  ## the literal expansion is the pattern
+		sed -n "${n},$((n + 20))p" "$1" | grep -qF '${SHCL_GATE_STRICT' || echo "${n}"
+	done < <(grep -nE '(command -v [^;|]*|\[\[ -[rxefds] "?/[^]]*\]\])[[:space:]]*(&&|; then)[[:space:]]*[A-Za-z_]+\+=\(' "$1" || true)
+}
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	for n in $(fBareGrowth "${g}"); do
+		fBad "${g##*/}:${n} grows a list only when a tool or file is here, and never reads SHCL_GATE_STRICT"
+	done
+done
+## Assembled, so the bait does not trip the scan when it sweeps this file.
+amp='&&'; thn='; then'
+printf '%s\n' "[[ -r /usr/share/x/y ]] ${amp} modes+=(lib)" "command -v zz >/dev/null 2>&1 ${amp} tools+=(zz)" "if [[ -x /opt/t ]]${thn} rows+=(t); fi" > "${tmpDir}/growth-bait"
+[[ "$(fBareGrowth "${tmpDir}/growth-bait" | paste -sd' ')" == "1 2 3" ]] || fBad "the bare list-growth scan missed its bait: $(fBareGrowth "${tmpDir}/growth-bait" | paste -sd' ')"
 grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
 
 ##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
@@ -1413,6 +1443,16 @@ fScanUnguardedGrep(){
 	grep -qx definitely-not-a-tool "${tmpDir}/skips" || fBad "fHave skipped a missing tool without noting it in SHCL_GATE_SKIPS"
 	[[ -z "${runSkips}" ]] || ! grep -qx definitely-not-a-tool "${runSkips}" \
 		|| fBad "the fHave self-test noted its made-up tool in the run's own skip list"
+	## 20260918b item 43: the same three answers for a missing file, and the
+	## local skip says so, since a skip nobody sees is what the item was.
+	strictBad=0
+	( SHCL_GATE_STRICT=1; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHaveFile "${tmpDir}/no-such-file" made-up-package ) 2>/dev/null || strictBad=$?
+	((strictBad == 7)) || fBad "fHaveFile did not fail on a missing file under the gate"
+	laxBad=0
+	laxOut="$( ( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS="${tmpDir}/skips"; fBad(){ exit 7 ;}; fHaveFile "${tmpDir}/no-such-file" made-up-package ) 2>&1)" || laxBad=$?
+	((laxBad == 1)) || fBad "fHaveFile did not skip a missing file outside the gate (exit ${laxBad})"
+	[[ "${laxOut}" == *"skipping the made-up-package rows"* ]] || fBad "fHaveFile skipped a missing file with nothing said: ${laxOut@Q}"
+	grep -qx made-up-package "${tmpDir}/skips" || fBad "fHaveFile skipped a missing file without noting it in SHCL_GATE_SKIPS"
 }
 
 ##	The escape is assembled rather than written, so the bait for the second scan
@@ -1585,3 +1625,5 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the
 ##		            20260829 and 20260830 rounds.
 ##		2026-09-19  Clears git's local environment at the top.
+##		2026-09-19  fHaveFile, and a scan for a list grown only when a tool or file
+##		            is here. The lint-report rows cover an unfinished run.
