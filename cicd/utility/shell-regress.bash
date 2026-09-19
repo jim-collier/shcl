@@ -216,6 +216,42 @@ done
 			[[ "${got}" == "${want}" ]] || fBad "wrapper ${mode} differs from the binary on ${id}: ${got@Q} against ${want@Q}"
 		done
 	done
+
+	##	20260918b item 32: the matrix above pipes into the script, where the
+	##	binary inherits the process's stdin and a wrapper that drops $input
+	##	looks fine. A typed helper is only reached from a PowerShell pipeline,
+	##	and every one of them passed @args without $input, so `'a: 5' |
+	##	shcl_fmt -` printed nothing at exit 0. The rows below build that
+	##	pipeline inside PowerShell and hold each helper against the binary.
+	if [[ " ${wrapModes[*]} " == *" pwshsrc "* ]]; then
+		#  shellcheck disable=2016  ## PowerShell's own $variables.
+		{
+			echo ". '${repoDir}/source/powershell/shcl.ps1'"
+			echo '$data = $args[0]; $fn = $args[1]'
+			echo '$rest = @(); if ($args.Count -gt 2) { $rest = $args[2..($args.Count - 1)] }'
+			echo 'if ($data -ne "") { $data | & $fn @rest } else { & $fn @rest }'
+			echo 'exit $LASTEXITCODE'
+		} > "${tmpDir}/whelp.ps1"
+		##	id | piped text | the helper call | the same thing on the binary
+		helperRows=(
+			'fmt|a: 5|shcl_fmt -|fmt -'
+			'int|a: 5|shcl_int - a|get --int - a'
+			'array|a: 1, 2|shcl_array --int - a|get --array --int - a'
+			'check|bad line|shcl_check -|check -'
+			'count|a: 1|shcl_count - a|count - a'
+		)
+		for row in "${helperRows[@]}"; do
+			IFS='|' read -r hid piped hcall bcall <<<"${row}"
+			read -r -a hargs <<<"${hcall}"
+			read -r -a bargs <<<"${bcall}"
+			hrc=0
+			hout="$(pwsh -NoProfile -File "${tmpDir}/whelp.ps1" "${piped}" "${hargs[@]}" 2>&1)" || hrc=$?
+			brc=0
+			bout="$(printf '%s\n' "${piped}" | "${cli}" "${bargs[@]}" 2>&1)" || brc=$?
+			[[ "${hout}" == "${bout}" && "${hrc}" == "${brc}" ]] \
+				|| fBad "piped helper ${hid} differs from the binary: ${hout@Q} rc=${hrc} against ${bout@Q} rc=${brc}"
+		done
+	fi
 	unset SHCL_BIN
 }
 
@@ -293,6 +329,16 @@ if fHave pwsh; then
 	[[ "${out}" == *"unknown option"* ]] || fBad "pwsh now hands a bare -- to the sourced function; the wrapper note is stale: ${out@Q}"
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get '--' '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
 	[[ "${out}" == "5" ]] || fBad "pwsh dot-sourced shcl did not take a quoted --: ${out@Q}"
+
+	##	20260918b item 35: the second difference, documented the same way.
+	##	PowerShell splits an unquoted `a,b` into an array for a function and
+	##	not for a native command, so the comma spelling of an inline array is a
+	##	usage error dot-sourced and works quoted.
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl set --set-literal=ports=80,443 '${tmpDir}/w.shcl'" 2>&1 || true)"
+	[[ "${out}" == *"usage"* || "${out}" == *"unknown"* || "${out}" == *"bad --set"* ]] \
+		|| fBad "pwsh no longer splits an unquoted comma for a sourced function; the wrapper note is stale: ${out@Q}"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl set '--set-literal=ports=80,443' '${tmpDir}/w.shcl'" 2>&1 || true)"
+	[[ "${out}" == *"ports: 80, 443"* ]] || fBad "pwsh dot-sourced shcl did not take a quoted comma value: ${out@Q}"
 
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"

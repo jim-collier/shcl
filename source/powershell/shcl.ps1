@@ -20,11 +20,16 @@
 ##		if ((shcl_bool app.shcl features.debug) -eq 'true') { Enable-Debug }
 ##		$hosts = shcl_array --string app.shcl cluster.hosts
 ##
-##	One difference from the binary in dot-sourced use: PowerShell reads a bare
-##	`--` as its own end-of-parameters token and drops it before a function
-##	sees its arguments, so `shcl get -- app.shcl -x` reaches the binary without
-##	the `--`. Quote it (`shcl get '--' app.shcl -x`) and it goes through.
-##	The script forms and the binary itself take a bare `--` as documented.
+##	Two differences from the binary in dot-sourced use, both from PowerShell's
+##	own argument parsing, and both answered by quoting:
+##		- A bare `--` is its own end-of-parameters token and is dropped before
+##		  a function sees its arguments, so `shcl get -- app.shcl -x` reaches
+##		  the binary without the `--`. Quote it: `shcl get '--' app.shcl -x`.
+##		- An unquoted comma makes an array for a function, where a native
+##		  command takes the word whole, so `shcl set --set-literal=ports=80,443
+##		  app.shcl` arrives as three arguments and is a usage error. Quote the
+##		  argument: `shcl set '--set-literal=ports=80,443' app.shcl`.
+##	The script forms and the binary itself take both as documented.
 ##
 ##	Functions defined when dot-sourced (each mirrors the CLI, sets $LASTEXITCODE):
 ##		shcl                 the whole CLI: get|set|fmt|check|init|count|instances|
@@ -157,21 +162,27 @@ function shcl {
 # Typed sugar (dot-sourced use; the reason to source rather than call the binary)
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
-function shcl_get       { shcl get @args }
-function shcl_int       { shcl get --int @args }
-function shcl_float     { shcl get --float @args }
-function shcl_bool      { shcl get --bool @args }
-function shcl_datetime  { shcl get --datetime @args }
-function shcl_raw       { shcl get --raw @args }
-function shcl_array     { shcl get --array @args }   ## prefix a --type, else string
-function shcl_fmt       { shcl fmt @args }
-function shcl_check     { shcl check @args }
-function shcl_count     { shcl count @args }
-function shcl_instances { shcl instances @args }
-function shcl_children { shcl children @args }
-function shcl_paths { shcl paths @args }
-function shcl_migrate { shcl migrate @args }
-function shcl_tokens { shcl tokens @args }
+##	Each one forwards pipeline input the way `shcl` does. A function's own
+##	$input does not reach the function it calls, so `'a: 5' | shcl_fmt -` read
+##	nothing and printed nothing at exit 0 (20260918b item 32). Piping $input
+##	unconditionally is not the same thing: with nothing piped it would hand the
+##	binary an empty stdin where the console's is what a `-` FILE should read.
+
+function shcl_get       { if ($MyInvocation.ExpectingInput) { $input | shcl get @args } else { shcl get @args } }
+function shcl_int       { if ($MyInvocation.ExpectingInput) { $input | shcl get --int @args } else { shcl get --int @args } }
+function shcl_float     { if ($MyInvocation.ExpectingInput) { $input | shcl get --float @args } else { shcl get --float @args } }
+function shcl_bool      { if ($MyInvocation.ExpectingInput) { $input | shcl get --bool @args } else { shcl get --bool @args } }
+function shcl_datetime  { if ($MyInvocation.ExpectingInput) { $input | shcl get --datetime @args } else { shcl get --datetime @args } }
+function shcl_raw       { if ($MyInvocation.ExpectingInput) { $input | shcl get --raw @args } else { shcl get --raw @args } }
+function shcl_array     { if ($MyInvocation.ExpectingInput) { $input | shcl get --array @args } else { shcl get --array @args } }   ## prefix a --type, else string
+function shcl_fmt       { if ($MyInvocation.ExpectingInput) { $input | shcl fmt @args } else { shcl fmt @args } }
+function shcl_check     { if ($MyInvocation.ExpectingInput) { $input | shcl check @args } else { shcl check @args } }
+function shcl_count     { if ($MyInvocation.ExpectingInput) { $input | shcl count @args } else { shcl count @args } }
+function shcl_instances { if ($MyInvocation.ExpectingInput) { $input | shcl instances @args } else { shcl instances @args } }
+function shcl_children { if ($MyInvocation.ExpectingInput) { $input | shcl children @args } else { shcl children @args } }
+function shcl_paths { if ($MyInvocation.ExpectingInput) { $input | shcl paths @args } else { shcl paths @args } }
+function shcl_migrate { if ($MyInvocation.ExpectingInput) { $input | shcl migrate @args } else { shcl migrate @args } }
+function shcl_tokens { if ($MyInvocation.ExpectingInput) { $input | shcl tokens @args } else { shcl tokens @args } }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Run path

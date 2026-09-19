@@ -129,17 +129,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable fix: match the second abort line, and treat a log with neither the done line nor an abort as unfinished, leaving the marker alone.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 32: the PowerShell wrapper's typed helpers drop pipeline input.
-		- Reproduced: on pwsh 7.6.6, dot-sourced. `'a: 5' | shcl_fmt -` prints nothing at exit 0, and `'a: 5' | shcl_int - a` prints `0` at exit 3. The `shcl` function itself and the bash helpers work.
-		- Cause: the fifteen one-line helpers pass `@args` and not `$input`.
-		- Origin: `37fe62d` (2026-07-18). The wrapper matrix pipes through `shcl` only, never a helper. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 35: `shcl.ps1` documents one difference from the binary, and an unquoted comma is a second.
-		- Reproduced: dot-sourced, `shcl set --set-literal=ports=80,443 FILE` is a usage error, since PowerShell splits `a,b` for a function and not for a native command. Quoting works. A note and a wrapper-matrix row are the fix, as 20260904 item 16 decided for `--`.
-		- Origin: `86b9d9e` (2026-09-05). Confirmed.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 36: `install.ps1`'s "network down" and rate-limit messages cannot be reached when the request gets no response.
 		- Reproduced: on pwsh 7.6.6 against a name that does not resolve and a refused port. The catch reads `.Response` off an exception that has none, and strict mode prints a raw property error.
 		- Origin: `d63feb2` (2026-09-03), the fix for 20260901b item 41, whose pin covers the bash side only. Confirmed on 7, Plausible on 5.1.
@@ -839,6 +828,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-135951
 
+	- ✅ Item 32: the PowerShell wrapper's typed helpers drop pipeline input.
+		- Reproduced: on pwsh 7.6.6, dot-sourced. `'a: 5' | shcl_fmt -` prints nothing at exit 0, and `'a: 5' | shcl_int - a` prints `0` at exit 3. The `shcl` function itself and the bash helpers work.
+		- Cause: the fifteen one-line helpers pass `@args` and not `$input`.
+		- Origin: `37fe62d` (2026-07-18). The wrapper matrix pipes through `shcl` only, never a helper. Confirmed.
+		- Fixed: each of the fifteen typed helpers forwards pipeline input the way `shcl` does, testing `$MyInvocation.ExpectingInput` and piping `$input`. Piping it unconditionally would hand the binary an empty stdin where the console's is what a `-` FILE should read, so the test is part of the fix.
+		- Pinned by: five `shell-regress.bash` rows that build the pipeline inside PowerShell (`shcl_fmt`, `shcl_int`, `shcl_array`, `shcl_check`, `shcl_count`) and hold each against the binary with the same text on stdin. All five differ on the old wrapper: the fmt row printed nothing at exit 0.
+		- Note: the wrapper matrix pipes into the script, where the binary inherits the process's stdin, so it could not see this. The new rows are the first to reach a helper from a pipeline.
+		- Opened: 20260918-193000
+		- Closed: 20260919-142211
+
 	- ✅ Item 33: the Go CLI takes an empty `--schema` value for no schema.
 		- Reproduced: `shcl check --schema= FILE` prints `ok` at exit 0 in Go, where the other three fail at exit 8. `init --schema=` differs too.
 		- Cause: a plain string tested against `""`. The class 20260918 item 9 fixed for the help topic, with this field not swept.
@@ -859,6 +858,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: `check-completions.bash` holds the completion table against the CLI's own option table, so the new check reaches the whole list rather than a copy of it.
 		- Opened: 20260918-193000
 		- Closed: 20260919-141206
+
+	- ✅ Item 35: `shcl.ps1` documents one difference from the binary, and an unquoted comma is a second.
+		- Reproduced: dot-sourced, `shcl set --set-literal=ports=80,443 FILE` is a usage error, since PowerShell splits `a,b` for a function and not for a native command. Quoting works. A note and a wrapper-matrix row are the fix, as 20260904 item 16 decided for `--`.
+		- Origin: `86b9d9e` (2026-09-05). Confirmed.
+		- Fixed: the wrapper's header note names both differences PowerShell's own argument parsing makes in dot-sourced use, the bare `--` and the unquoted comma, each with the quoted spelling that works. That is what 20260904 item 16 decided for the first one.
+		- Pinned by: two `shell-regress.bash` checks beside the `--` pair: the unquoted comma spelling is a usage error, and the quoted one writes `ports: 80, 443`. A PowerShell release that changes either shows up there, as it does for `--`.
+		- Opened: 20260918-193000
+		- Closed: 20260919-142211
 
 - Code review 20260918:
 
