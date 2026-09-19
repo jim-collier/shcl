@@ -136,12 +136,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 28: a field written under a kept `*` element re-parents to the field, and every later line at the element's column is `E012` and lost.
-		- Reproduced: in all four. `* x`, a deeper `c: 1`, then `d: 2` and `* y` at the element's column. Lines 4 and 5 are `E012`, whose message says the indentation matches no open level, when that level was opened two lines up. With a field in place of the element everything binds.
-		- Origin: the element arm's 2026-07 form, reworked in `9b54fba` (2026-09-05). The half of 20260904 item 15 that was never covered: a dropped element holds its level and a kept one does not. Confirmed.
-		- Decided: needed before code, with a line in `design.md` and a corpus case beside `095`. Either the kept element holds its column with the field as the level's node, or it holds it dead and what sits under it is `E018`.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 30: Python's `migrate` raises `ValueError` on a Format line with more than 4,300 digits.
 		- Reproduced: the other three say there is nothing to migrate at exit 0, and the Python CLI prints a traceback at exit 1. The last round's check of this line stopped at 23 digits.
 		- Cause: a bare `int()` in `_format_version`. Every other `int()` in the file is length-gated for this.
@@ -820,6 +814,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: corpus `127-init-reads-back` (`tags` counted as 1, `tags[a, b, c].x` reads 3), and the `cli-regress.bash` row `init-no-selector-spelling`, which exited 0 in all four on the old code.
 		- Opened: 20260918-193000
 		- Closed: 20260919-130017
+
+	- ✅ Item 28: a field written under a kept `*` element re-parents to the field, and every later line at the element's column is `E012` and lost.
+		- Reproduced: in all four. `* x`, a deeper `c: 1`, then `d: 2` and `* y` at the element's column. Lines 4 and 5 are `E012`, whose message says the indentation matches no open level, when that level was opened two lines up. With a field in place of the element everything binds.
+		- Origin: the element arm's 2026-07 form, reworked in `9b54fba` (2026-09-05). The half of 20260904 item 15 that was never covered: a dropped element holds its level and a kept one does not. Confirmed.
+		- Decided: needed before code, with a line in `design.md` and a corpus case beside `095`. Either the kept element holds its column with the field as the level's node, or it holds it dead and what sits under it is `E018`.
+		- Decided: a kept element holds its column, with the field as that level's node. It is what a field written in the element's place already does, it loses the least, and E001 keeps its meaning. The other option, holding the column dead so what sits under it is E018, would have moved E001.
+		- Fixed: `add_star_element` (Rust, C), `addStarElement` (Go) and `_add_star_element` (Python) push the level when the element joins the list. A refused element already held its column through the refusal funnel. `design.md` -> Load outcomes and the spec's element bullet say so.
+		- Pinned by: corpus `128-kept-element-level`, beside `095` for the dropped half. All four runners fail it on the old code: `a.d` is NotFound and the lost count is 3 rather than 2.
+		- Note: in the item's own example line 5 is now `E008`, "list element mixed with field children", since the field written under the element is the field's child. Lines 4 and 5 were `E012` and both lost.
+		- Opened: 20260918-193000
+		- Closed: 20260919-135357
 
 	- ✅ Item 29: under an element cap, a bracket-text line reports `E021` and counts lost, where uncapped it is `E019` and retained.
 		- Reproduced: through the capped parse in all four, byte-identical. A save then refuses a document that saves with the line kept when no cap is set. The CLIs cannot reach it.

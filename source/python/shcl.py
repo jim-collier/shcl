@@ -2341,6 +2341,13 @@ class _Parser:
 			node.value.els.append(el)
 		else:
 			self._refuse(line, "E011", "field already has a value; list element ignored", OUT_DROPPED, indent)
+			return
+		# A kept element holds its column as a dropped one does, with the field
+		# as that level's node: a line written deeper binds where it always did,
+		# and a line back at the element's column is its sibling, where no level
+		# had been opened there and every later sibling was E012 (20260918b
+		# item 28).
+		self.stack.append((indent, parent))
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare

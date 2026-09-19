@@ -2813,7 +2813,13 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
 		p.refuse(line, "E011", "field already has a value; list element ignored", outDropped, indent)
+		return
 	}
+	// A kept element holds its column as a dropped one does, with the field as
+	// that level's node: a line written deeper binds where it always did, and a
+	// line back at the element's column is its sibling, where no level had been
+	// opened there and every later sibling was E012 (20260918b item 28).
+	p.stack = append(p.stack, stackEnt{indent: indent, node: parent})
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a

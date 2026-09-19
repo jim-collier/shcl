@@ -2820,7 +2820,14 @@ impl Parser {
 				Outcome::Dropped,
 				indent,
 			);
+			return;
 		}
+		// A kept element holds its column as a dropped one does, with the field
+		// as that level's node: a line written deeper binds where it always did,
+		// and a line back at the element's column is its sibling, where no level
+		// had been opened there and every later sibling was E012 (20260918b
+		// item 28).
+		self.stack.push((indent.to_string(), parent));
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare

@@ -260,7 +260,7 @@ is exactly `sizes: small, medium, "extra, large"`. The rules that keep it unambi
 
 - The field opening the list has an **empty inline value**; a field may not carry both an inline value and a `*` list.
 
-- **Scalars only** (first cut): a `*` element is a value, not a sub-node, so it has no `field: value` children. Arrays *of objects* are expressed with instances and discriminators, not `*` lists.
+- **Scalars only** (first cut): a `*` element is a value, not a sub-node, so it has no `field: value` children. Arrays *of objects* are expressed with instances and discriminators, not `*` lists. An element that joins a list still holds its column, with its field as that level: a line written deeper binds under the field, which is `E001`, and a line back at the element's column is the element's sibling.
 
 Element typing is accessor-driven, so `GetStringArray`/`GetIntArray` read either spelling identically.
 

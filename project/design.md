@@ -455,6 +455,8 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 
 - A line that qualifies for more than one refusal takes the first that applies, in this order: where it sits (`E012`, `E018`), then what it is (`E014`, `E019`, and on an element line `E007` to `E011`), and only then the element cap (`E021`). A cap refuses only a line that would otherwise bind. Bracket text under a cap is `E019` and kept, and an element under a field that already has a value is `E011`. The bracket test reads the value's first piece, which a capped scan keeps, not the value span, which it empties. The fuzz property `a_cap_refuses_only_a_line_that_would_bind` holds the order.
 
+- A kept `*` element holds its column, with its field as the level's node, the way a dropped one holds its own. Without that no level was open at the element's column, so the list's next sibling - a field or another element - was `E012`, "matches no open level", two lines under the level that opened it. One mistake cost every later line of the list. The 20260904 item 15 decision covered dropped elements only, and the kept half was never settled until 20260918b item 28.
+
 - The one thing the table changed when it was written: a raw fence with no parent field (`E006`) never held its level, so a line written deeper than it bound to the root. It holds it now, like every other dropped line.
 
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.

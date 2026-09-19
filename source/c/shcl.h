@@ -3161,7 +3161,13 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 		node->value.els[node->value.nels++] = el;
 	} else {
 		p_refuse(P, line, "E011", s_lit("field already has a value; list element ignored"), out_kind(OUT_DROPPED), indent);
+		return;
 	}
+	/* A kept element holds its column as a dropped one does, with the field as
+	   that level's node: a line written deeper binds where it always did, and a
+	   line back at the element's column is its sibling, where no level had been
+	   opened there and every later sibling was E012 (20260918b item 28). */
+	ShclStackEnt se; se.indent = indent; se.node = parent; ShclVecStack_push(P->tmp, &P->stack, se);
 }
 
 /* The single H001 wording site: the hint builder and the schema suppressor
