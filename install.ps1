@@ -197,6 +197,78 @@ file. Nothing unverified is installed.
 		Exit-Install 'this installer is for Windows - on Linux use install.bash, elsewhere build from source (see README.md)'
 	}
 
+	## Destinations. A system install writes under Program Files and the machine
+	## PATH, so it needs an elevated shell.
+	if ($Target -eq 'system') {
+		$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+		if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+			Exit-Install 'a system install needs an elevated shell (or pass -Target user)'
+		}
+		## A 32-bit host reads Program Files (x86) out of ProgramFiles, which is
+		## the wrong home for a 64-bit binary. ProgramW6432 is the 64-bit one and
+		## is only set where the two differ.
+		$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+		$dest = Join-Path $programFiles 'Shcl'
+		$pathScope = 'Machine'
+		$pathDir = $dest
+	} else {
+		## Per-user apps belong under LOCALAPPDATA\Programs - it is where Windows
+		## itself puts them, and it is already excluded from roaming profiles.
+		$dest = Join-Path $env:LOCALAPPDATA 'Programs\Shcl'
+		$pathScope = 'User'
+		$pathDir = $dest
+	}
+
+	## Uninstall: the reverse of what the install lays down, and nothing else - the
+	## binary, the two payload dirs, the install dir if it empties, and the PATH
+	## entry. Never a recursive delete of a path the user may have pointed elsewhere.
+	## It sits above the release lookup on purpose: removing needs no release to
+	## exist, and offline or rate-limited it used to refuse and remove nothing.
+	if ($Uninstall) {
+		## The setup .exe writes this same directory and registers itself with
+		## Add/Remove Programs. Deleting its files here would leave that entry
+		## pointing at nothing, so its own uninstaller has to run instead.
+		$setupUninstaller = Join-Path $dest 'uninstall.exe'
+		if (Test-Path -LiteralPath $setupUninstaller) {
+			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
+		}
+		Write-Output ''
+		Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
+		if (-not $Yes) {
+			$reply = Read-Host 'Proceed? [y/N]'
+			if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
+				Write-Output 'aborted'
+				if ($invokedAsFile) { exit 1 }
+				return
+			}
+		}
+		## The files the install writes, by name, and the staging name an
+		## interrupted install leaves. Deleting the whole code\ and scripts\ trees
+		## took whatever else someone had put there.
+		Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe'), (Join-Path $dest '.shcl.exe.new') -ErrorAction SilentlyContinue
+		Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest 'code\lib.rs'), (Join-Path $dest 'code\shcl.go'), (Join-Path $dest 'code\shcl.py'), (Join-Path $dest 'code\shcl.h'), (Join-Path $dest 'code\shcl.hpp'), (Join-Path $dest 'scripts\shcl.ps1'), (Join-Path $dest 'scripts\shcl.bash')
+		## Only an empty dir goes: the setup .exe installs here too, and a Remove-Item
+		## on a populated dir would offer to take everything in it.
+		$leftDest = $false
+		foreach ($dir in (Join-Path $dest 'code'), (Join-Path $dest 'scripts'), $dest) {
+			if (-not (Test-Path -LiteralPath $dir)) { continue }
+			if (@(Get-ChildItem -Force -LiteralPath $dir).Count -eq 0) {
+				Remove-Item -Force -LiteralPath $dir -ErrorAction SilentlyContinue
+			} else {
+				$leftDest = $true
+			}
+		}
+		$null = Update-ShclPath -Scope $pathScope -Dir $pathDir -Remove
+		if ($leftDest) {
+			Write-Output 'removed what this installer laid down'
+			Write-Output "left $dest in place: it holds files this installer did not put there"
+		} else {
+			Write-Output 'removed'
+		}
+		Write-Output ''
+		return
+	}
+
 	## A 32-bit shell on a 64-bit OS reports x86; ARCHITEW6432 carries the real arch.
 	$archRaw = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 	$arch = switch ($archRaw) {
@@ -245,76 +317,6 @@ file. Nothing unverified is installed.
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name
 	$version = $tag.TrimStart('v')
-
-	## Destinations. A system install writes under Program Files and the machine
-	## PATH, so it needs an elevated shell.
-	if ($Target -eq 'system') {
-		$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-		if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-			Exit-Install 'a system install needs an elevated shell (or pass -Target user)'
-		}
-		## A 32-bit host reads Program Files (x86) out of ProgramFiles, which is
-		## the wrong home for a 64-bit binary. ProgramW6432 is the 64-bit one and
-		## is only set where the two differ.
-		$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
-		$dest = Join-Path $programFiles 'Shcl'
-		$pathScope = 'Machine'
-		$pathDir = $dest
-	} else {
-		## Per-user apps belong under LOCALAPPDATA\Programs - it is where Windows
-		## itself puts them, and it is already excluded from roaming profiles.
-		$dest = Join-Path $env:LOCALAPPDATA 'Programs\Shcl'
-		$pathScope = 'User'
-		$pathDir = $dest
-	}
-
-	## Uninstall: the reverse of what the install lays down, and nothing else - the
-	## binary, the two payload dirs, the install dir if it empties, and the PATH
-	## entry. Never a recursive delete of a path the user may have pointed elsewhere.
-	if ($Uninstall) {
-		## The setup .exe writes this same directory and registers itself with
-		## Add/Remove Programs. Deleting its files here would leave that entry
-		## pointing at nothing, so its own uninstaller has to run instead.
-		$setupUninstaller = Join-Path $dest 'uninstall.exe'
-		if (Test-Path -LiteralPath $setupUninstaller) {
-			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
-		}
-		Write-Output ''
-		Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
-		if (-not $Yes) {
-			$reply = Read-Host 'Proceed? [y/N]'
-			if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
-				Write-Output 'aborted'
-				if ($invokedAsFile) { exit 1 }
-				return
-			}
-		}
-		## The files the install writes, by name, and the staging name an
-		## interrupted install leaves. Deleting the whole code\ and scripts\ trees
-		## took whatever else someone had put there.
-		Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe'), (Join-Path $dest '.shcl.exe.new') -ErrorAction SilentlyContinue
-		Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest 'code\lib.rs'), (Join-Path $dest 'code\shcl.go'), (Join-Path $dest 'code\shcl.py'), (Join-Path $dest 'code\shcl.h'), (Join-Path $dest 'code\shcl.hpp'), (Join-Path $dest 'scripts\shcl.ps1'), (Join-Path $dest 'scripts\shcl.bash')
-		## Only an empty dir goes: the setup .exe installs here too, and a Remove-Item
-		## on a populated dir would offer to take everything in it.
-		$leftDest = $false
-		foreach ($dir in (Join-Path $dest 'code'), (Join-Path $dest 'scripts'), $dest) {
-			if (-not (Test-Path -LiteralPath $dir)) { continue }
-			if (@(Get-ChildItem -Force -LiteralPath $dir).Count -eq 0) {
-				Remove-Item -Force -LiteralPath $dir -ErrorAction SilentlyContinue
-			} else {
-				$leftDest = $true
-			}
-		}
-		$null = Update-ShclPath -Scope $pathScope -Dir $pathDir -Remove
-		if ($leftDest) {
-			Write-Output 'removed what this installer laid down'
-			Write-Output "left $dest in place: it holds files this installer did not put there"
-		} else {
-			Write-Output 'removed'
-		}
-		Write-Output ''
-		return
-	}
 
 	## The drop-in payload is a tar.gz. Windows 10 1803 and Server 2019 ship tar;
 	## anything older finds out here, before a download, not after.

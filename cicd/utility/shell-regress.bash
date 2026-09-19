@@ -325,6 +325,25 @@ if fHave pwsh; then
 	[[ "${out}" == *"three=3"* ]]    || fBad "install.ps1 smoke test lost a nonzero exit: ${out@Q}"
 	[[ "${out}" == *"good=0"* ]]     || fBad "install.ps1 smoke test failed a working binary: ${out@Q}"
 
+	##	20260918b item 11, end to end: the real script with only its Windows
+	##	refusal cut out, every request sent to a proxy that is not there. An
+	##	uninstall needs no release and must not wait on the API. Its PATH edit
+	##	then fails for want of a registry; the row is about what comes before it.
+	#  shellcheck disable=2016  ## PowerShell's own $IsWindows, matched literally.
+	sed '/-and -not \$IsWindows) {$/,/^\t}$/d' "${repoDir}/install.ps1" > "${tmpDir}/nogate.ps1"
+	if (($(wc -l < "${repoDir}/install.ps1") - $(wc -l < "${tmpDir}/nogate.ps1") != 3)) || grep -q 'IsWindows' "${tmpDir}/nogate.ps1"; then
+		fBad "install.ps1's Windows refusal is not the three-line block these rows cut out"
+	fi
+	fNoNet(){ env -u DISPLAY -u GITHUB_TOKEN -u NO_PROXY -u no_proxy PROCESSOR_ARCHITECTURE=AMD64 LOCALAPPDATA="${tmpDir}/lad" \
+		HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+		pwsh -NoProfile -NonInteractive -File "${tmpDir}/nogate.ps1" "$@" 2>&1 ;}
+	mkdir -p "${tmpDir}/lad/Programs/Shcl/code"
+	printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/shcl.exe"; printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/code/lib.rs"
+	out="$(fNoNet -Uninstall -Target user -Yes || true)"
+	[[ "${out}" == *"removing shcl:"* ]] || fBad "install.ps1 -Uninstall needed the network before removing anything: ${out@Q}"
+	[[ -e "${tmpDir}/lad/Programs/Shcl/shcl.exe" || -e "${tmpDir}/lad/Programs/Shcl/code/lib.rs" ]] \
+		&& fBad "install.ps1 -Uninstall left its files with the network down"
+
 	##	20260909 item 38: the setup's PATH script exited 0 when it could not
 	##	write, so the setup's fallback message never showed. There is no
 	##	registry here at all, which is a failure it must report.
