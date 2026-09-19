@@ -151,6 +151,39 @@ while IFS= read -r hit; do
 done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
 	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
 
+##	Two lexical rules were withdrawn and their wording outlived them, one site
+##	per round: a `#` ending a value only behind a blank (2026-09-06, replaced
+##	on 2026-09-10 by a `#` outside quotes always opening a comment), and an open
+##	quote running to the line end (2.x). The documents that state the current
+##	rules may not carry the old phrasing. The changelog is history and is left
+##	out.
+# shellcheck disable=SC2016  ## the backticks are markdown, not command substitution
+while IFS= read -r hit; do
+	fBad "states a withdrawn lexical rule: ${hit}"
+done < <(grep -nHiE 'behind a blank|a `#` anywhere else|swallowing the trailing comment|comma hides inside the open quote' \
+	"${repoDir}/README.md" "${repoDir}/style-guide.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
+	"${repoDir}/project/conformance/README.md" "${repoDir}/source/man/shcl.1" 2>/dev/null | sed "s|^${repoDir}/||" || true)
+
+##	contributing.md says the corpus README carries a note per case, and 58
+##	cases went without one. Every case directory has to be named in a note,
+##	alone (`044`) or as the edge of a range (`014`-`016`).
+corpusDir="${repoDir}/project/conformance"
+if [[ -f "${corpusDir}/README.md" ]]; then
+	# shellcheck disable=SC2016  ## the backticks are markdown, not command substitution
+	noted="$(grep -oE '`[0-9]{3}`(-`[0-9]{3}`)?' "${corpusDir}/README.md" | tr -d '`' || true)"
+	for d in "${corpusDir}"/[0-9][0-9][0-9]-*/; do
+		[[ -d "${d}" ]] || continue
+		n="$(basename -- "${d}")"; n="${n%%-*}"
+		found=0
+		while IFS= read -r r; do
+			[[ -n "${r}" ]] || continue
+			lo="${r%%-*}"; hi="${r##*-}"
+			if ((10#${n} >= 10#${lo} && 10#${n} <= 10#${hi})); then found=1; break; fi
+		done <<<"${noted}"
+		((found)) || fBad "project/conformance/README.md has no note for case ${n}"
+	done
+fi
+
 ##	The style guide says every source file starts with the SPDX line and the
 ##	copyright, and files added later kept arriving without them. "Starts with"
 ##	means the header block, which in a script comes after the purpose text, so
@@ -461,3 +494,5 @@ echo "check-docs: OK"
 ##		2026-09-19  grammar.abnf reads as ABNF and derives the fence labels
 ##		            the parser reads.
 ##		2026-09-19  Every tracked source file carries the SPDX and copyright lines.
+##		2026-09-19  The corpus README states no withdrawn lexical rule and has a
+##		            note for every case.
