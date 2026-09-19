@@ -615,6 +615,63 @@ grep -q 'rate limit' "${repoDir}/install.ps1"  || fBad "install.ps1 does not nam
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.bash" || fBad "install.bash ignores GITHUB_TOKEN"
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.ps1"  || fBad "install.ps1 ignores GITHUB_TOKEN"
 
+##	20260918b item 37: the token rode on every download, and each release
+##	download redirects to another host. curl drops the header there and wget
+##	1.x sends it on. Two local https listeners, the first redirecting to the
+##	second under another name, and install.bash's own fetch lines for each
+##	tool: a download carries no token anywhere, the API calls carry it.
+if fHave openssl && fHave wget && fHave curl; then
+	tdir="${tmpDir}/token"; mkdir -p "${tdir}"
+	openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' \
+		-keyout "${tdir}/key.pem" -out "${tdir}/cert.pem" 2>/dev/null
+	python3 - "${tdir}" <<'SRVEOF' &
+import http.server, ssl, sys, threading
+d = sys.argv[1]
+def serve(name, redirect_to):
+	class H(http.server.BaseHTTPRequestHandler):
+		def do_GET(self):
+			open(f'{d}/{name}.log', 'a').write(f'{self.path} auth={self.headers.get("Authorization")}\n')
+			if redirect_to and self.path.startswith('/download'):
+				self.send_response(302); self.send_header('Location', redirect_to() + self.path)
+				self.send_header('Content-Length', '0'); self.end_headers()
+				return
+			self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
+		def log_message(self, *a):
+			pass
+	srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+	ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(f'{d}/cert.pem', f'{d}/key.pem')
+	srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+	return srv
+asset = serve('asset', None)
+origin = serve('origin', lambda: f'https://localhost:{asset.server_address[1]}')
+threading.Thread(target=asset.serve_forever, daemon=True).start()
+open(f'{d}/port', 'w').write(str(origin.server_address[1]))
+origin.serve_forever()
+SRVEOF
+	tokenPid=$!
+	for _ in {1..50}; do [[ -s "${tdir}/port" ]] && break; sleep 0.1; done
+	printf 'ca_certificate = %s\n' "${tdir}/cert.pem" > "${tdir}/wgetrc"
+	for tool in curl wget; do
+		defs="$(sed -n "/^\tfetch() { ${tool} /p;/^\tfetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
+		(
+			eval "${defs}"
+			export GITHUB_TOKEN=regress-token CURL_CA_BUNDLE="${tdir}/cert.pem" WGETRC="${tdir}/wgetrc"
+			url="https://127.0.0.1:$(cat "${tdir}/port")"
+			fetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fetch failed" >> "${tdir}/${tool}.err"
+			fetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fetchApi failed" >> "${tdir}/${tool}.err"
+			[[ "$(fApiStatus "${url}/api/${tool}")" == "200" ]] || echo "fApiStatus failed" >> "${tdir}/${tool}.err"
+		) 2>/dev/null
+		[[ -s "${tdir}/${tool}.err" ]] && fBad "install.bash ${tool} arm did not complete its requests: $(tr '\n' ' ' < "${tdir}/${tool}.err")"
+		grep -q "^/download/${tool} auth=None$" "${tdir}/asset.log" 2>/dev/null \
+			|| fBad "install.bash's ${tool} download sent GITHUB_TOKEN to the host it was redirected to"
+		grep -q "^/download/${tool} auth=None$" "${tdir}/origin.log" 2>/dev/null \
+			|| fBad "install.bash's ${tool} download sent GITHUB_TOKEN"
+		[[ "$(grep -c "^/api/${tool} auth=Bearer regress-token$" "${tdir}/origin.log" 2>/dev/null || true)" == "2" ]] \
+			|| fBad "install.bash's ${tool} API calls did not both carry GITHUB_TOKEN"
+	done
+	kill "${tokenPid}" 2>/dev/null || true
+fi
+
 ##	20260901b item 46: the PowerShell wrapper's header ran one line out to 126
 ##	columns where its bash twin wraps. Comment lines only - the code in both
 ##	carries a couple of long ones on purpose.
