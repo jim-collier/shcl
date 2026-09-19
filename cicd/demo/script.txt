@@ -18,6 +18,6 @@ shcl check app.shcl
 	@ exits 6 - the demo file carries a deliberate bad line
 	@ pause 1.6 seconds
 
-# Canonical fmt; values verbatim
+# Canonical fmt; nothing lost
 shcl fmt app.shcl
 	@ pause 3.4 seconds
