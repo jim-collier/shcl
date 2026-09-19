@@ -464,7 +464,8 @@ fTopMissing(){
 ## the complete old or new file. A function so the same steps run on a staged
 ## payload without the downloads in front of them.
 fLayDown(){
-	local desttop linkdir mandir
+	local desttop linkdir mandir manowner
+	manNote=""
 	desttop="$(fTopMissing "${dest}")"
 	linkdir="$(fTopMissing "$(dirname "${link}")")"
 	${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
@@ -481,10 +482,16 @@ fLayDown(){
 		${asroot} mkdir -p "${dest}/man" "${dest}/completions" "$(dirname "${manlink}")"
 		${asroot} cp "${tmp}"/man/* "${dest}/man/"
 		${asroot} cp "${tmp}"/completions/* "${dest}/completions/"
-		## Never over a real file: a man1/shcl.1 that is not ours came from a package.
-		if [[ -L "${manlink}" || ! -e "${manlink}" ]]; then
-			${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}"
-		fi
+		## The bin link's rule: a real man1/shcl.1 came from a package, and a
+		## link to another copy (stow, a hand-built install) is as much someone
+		## else's. That link used to be repointed here, after which the
+		## uninstall took it for ours and deleted it. Left alone, and said so.
+		manowner="$(fLinkOwner "${manlink}" "${dest}")"
+		case "${manowner}" in
+			free|ours) ${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}" ;;
+			file)      manNote="${manlink} is not a symlink" ;;
+			*)         manNote="${manlink} links to ${manowner#elsewhere }" ;;
+		esac
 	fi
 	${asroot} ln -sfn "${dest}/shcl" "${link}"
 	if [[ "${target}" == "system" ]]; then
@@ -506,6 +513,9 @@ fLayDown
 
 echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
+if [[ -n "${manNote}" ]]; then
+	printf 'note: %s - left alone, and this install'\''s man page not linked there\n' "${manNote}"
+fi
 (( have_dropins )) || printf 'note: this release ships no signed drop-in payload, so %s/code and %s/scripts were skipped - take them from the repo if you want them\n' "${dest}" "${dest}"
 ## Completions are laid down but not wired in. There is no one directory that
 ## works: the bash autoload dir varies by bash-completion version, zsh wants a

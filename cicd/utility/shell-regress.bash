@@ -419,7 +419,7 @@ fi
 ##	the installer had to create stayed root-only. The installer's own lay-down
 ##	step runs here on a staged payload, under that umask, into a sandbox whose
 ##	bin and man1 directories do not exist yet.
-eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
+eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLinkOwner()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
 (
 	umask 077
 	mkdir -p "${tmpDir}/stage/code" "${tmpDir}/stage/scripts" "${tmpDir}/stage/man" "${tmpDir}/stage/completions" "${tmpDir}/sys/usr/local/share"
@@ -442,6 +442,30 @@ while IFS= read -r row; do
 	esac
 done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
 [[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
+
+##	20260918b item 41: the man link kept the older test, a symlink or nothing,
+##	so a man1/shcl.1 linking to a stow or hand-built copy was repointed at ours
+##	and the uninstall then deleted it as ours. A user install into a scratch
+##	HOME, laid down by the lifted step, then removed by the real script, which
+##	needs no network to uninstall.
+nBadBefore="${nBad}"
+(
+	uhome="${tmpDir}/manhome"; mkdir -p "${uhome}/.local/share/man/man1" "${uhome}/stow"
+	printf 'theirs\n' > "${uhome}/stow/shcl.1"
+	ln -s "${uhome}/stow/shcl.1" "${uhome}/.local/share/man/man1/shcl.1"
+	# shellcheck disable=SC2034
+	asroot="" tmp="${tmpDir}/stage" dest="${uhome}/.local/share/shcl" link="${uhome}/.local/bin/shcl"
+	# shellcheck disable=SC2034
+	manlink="${uhome}/.local/share/man/man1/shcl.1" target=user have_dropins=1 have_docs=1
+	manNote=""
+	fLayDown
+	[[ "$(readlink -- "${manlink}")" == "${uhome}/stow/shcl.1" ]] || fBad "install.bash repointed a man link that was not its own"
+	[[ "${manNote:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${manNote@Q}"
+	HOME="${uhome}" bash "${repoDir}/install.bash" --uninstall --target=user --yes >/dev/null 2>&1 || fBad "install.bash --uninstall failed"
+	[[ -L "${manlink}" && -e "${uhome}/stow/shcl.1" ]] || fBad "install.bash --uninstall removed a man link that was not its own"
+	[[ -e "${dest}/shcl" ]] && fBad "install.bash --uninstall left its own binary"
+	exit $((nBad - nBadBefore))
+) || nBad=$((nBad + 1))
 
 ##	20260901b item 34: the uninstall's payload globs used to expand in the
 ##	unprivileged shell that called sudo, so a system tree only root could list
