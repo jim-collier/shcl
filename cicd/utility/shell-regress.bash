@@ -26,6 +26,10 @@
 
 set -Eeuo pipefail
 
+## With GIT_DIR set, every scratch repo built below acts on the real one. The
+## blocks that build one clear it again, so a block lifted out stays safe.
+for gitVar in $(git rev-parse --local-env-vars 2>/dev/null || true); do unset "${gitVar}"; done
+
 repoDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cli="${repoDir}/source/rust/target/debug/shcl"
 while (($#)); do case "$1" in
@@ -496,6 +500,7 @@ fi
 eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
 nBadBefore="${nBad}"
 (
+	unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_CONFIG_COUNT
 	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
 	git -C "${gdir}/origin" init -q --initial-branch=main
 	git -C "${gdir}/origin" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
@@ -1560,3 +1565,4 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the
 ##		            20260829 and 20260830 rounds.
+##		2026-09-19  Clears git's local environment at the top.
