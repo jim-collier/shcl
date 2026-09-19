@@ -7316,11 +7316,15 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
 	// A filled wildcard emits a valued line of its own, so it belongs here too.
+	// First wins, as the line it selects does: of two lines on one path the
+	// first spelling is the one written, and its value is the instance.
 	parentValues := map[string]string{}
 	for i := range cons {
 		c := &cons[i]
 		if (!hasWild(c) || fill[i]) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
-			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			if _, ok := parentValues[namesKey(namesOf(c.segs))]; !ok {
+				parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			}
 		}
 	}
 	// A commented line under a commented valued parent has the same problem
@@ -7363,8 +7367,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	var b strings.Builder
 	var wild [][2]string
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
-	// already wrote; the first spelling wins.
-	emitted := map[string]bool{}
+	// already wrote; the first spelling wins. A line from a dropped `[value]`
+	// selector is its own instance, so two of them with different values are
+	// both written: `env[prod]` and `env[dev]` are two `env` lines. Each path
+	// maps to nil once a plain line wrote it, or to the values written so far.
+	emitted := map[string]map[string]bool{}
+	// A child whose valued parent has no selector spelling cannot be written.
+	var unspellable []Diagnostic
 	// One block per generated line - its desc, annotation and binding - with
 	// the path's names, so the blocks can be laid out in tree order below.
 	type genBlock struct {
@@ -7413,18 +7422,37 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// validation below decides whether the default names the one selected.
 		last := c.segs[len(c.segs)-1].sel
 		selectsByValue := c.defaultText != nil && last != nil && last.kind == selByValue
-		path := c.path
+		// The schema's own spelling is kept when a file line reads it back as
+		// the same path. A selector body holding a `#` is fine in a lookup and
+		// opens a comment on a file line, so that one goes through the renderer.
+		path, spelled := c.path, true
 		if selectsByValue {
 			segs := append([]segment(nil), c.segs...)
 			segs[len(segs)-1].sel = nil
-			path = genPathText(segs, values)
-		} else if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
-			path = genPathText(c.segs, values)
+			path, spelled = genPathText(segs, values)
+		} else if fill[i] || underValuedParent || !pathReadsBack(c.path, c.segs) {
+			path, spelled = genPathText(c.segs, values)
 		}
-		if emitted[path] {
+		if !spelled {
+			unspellable = append(unspellable, Diagnostic{Line: 0, Severity: SeverityError, Code: "V097",
+				Message: "required path cannot be generated: " + schemaText(c.path) + " (its parent's value has no selector spelling)"})
 			continue
 		}
-		emitted[path] = true
+		dval := ""
+		if c.defaultText != nil {
+			dval = *c.defaultText
+		}
+		if vals, ok := emitted[path]; !ok {
+			if selectsByValue {
+				emitted[path] = map[string]bool{dval: true}
+			} else {
+				emitted[path] = nil
+			}
+		} else if vals == nil || !selectsByValue || vals[dval] {
+			continue
+		} else {
+			vals[dval] = true
+		}
 		var block strings.Builder
 		if c.desc != nil {
 			for _, line := range strings.Split(*c.desc, "\n") {
@@ -7454,7 +7482,12 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				commented = append(commented, genCommented{i, line})
 			}
 		} else {
-			fmt.Fprintf(&block, "%s%s:\n", prefix, path)
+			line := path + ":\n"
+			block.WriteString(prefix)
+			block.WriteString(line)
+			if !mustExist(c) {
+				commented = append(commented, genCommented{i, line})
+			}
 		}
 		blocks = append(blocks, genBlock{namesOf(c.segs), block.String()})
 	}
@@ -7511,6 +7544,9 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		for _, w := range wild {
 			fmt.Fprintf(&b, "##   %s   %s\n", w[0], w[1])
 		}
+	}
+	if len(unspellable) > 0 {
+		return "", unspellable
 	}
 	if !noBanner {
 		if b.Len() > 0 {
@@ -7653,35 +7689,86 @@ func namesKey(names []string) string {
 	return b.String()
 }
 
-// genSelectorText is a default's spelling inside a `[value]` selector. A
-// quoted element is already a quoted selector body. A bare spelling goes in
-// as is unless a bare body would read it as something else - a bracket ends
-// the selector, a leading quote opens one, edge whitespace is trimmed, a
-// whitespace-`#` opens a comment, digits or `*` name an index or the
-// wildcard - and those go quoted (the selector matches on the display form,
-// so the quoted spelling finds the bare value).
-func genSelectorText(v string) string {
-	if strings.Contains(v, "\n") {
-		return genDefaultText(v)
-	}
+// genSelectorText is the selector body that picks out the instance a line
+// `name: v` makes, or false when no body can. It is built from the elements
+// the reader takes out of that line's value, and each candidate is scanned
+// back the way a file line is scanned, so none of the scanner's rules is
+// copied here to go stale. That copy was the cause twice: an all-digit body
+// past 64 bits, and a quoted array element spelled as the body. One element
+// tries the spelling it was written in first; an array has only the bare
+// body, since a quoted selector matches one element only, and a bare one the
+// elements joined.
+func genSelectorText(v string) (string, bool) {
+	spelled := genDefaultText(v)
 	var tok Tokens
-	TokenizeValue(v, 0, RulesCurrent, &tok)
-	if len(tok.Elements) == 1 && (tok.Elements[0].Quote == QuoteSingle || tok.Elements[0].Quote == QuoteDouble) &&
-		tok.Value == [2]int{0, len(v)} {
-		return v
+	TokenizeValue(spelled, 0, RulesCurrent, &tok)
+	els := make([]string, len(tok.Elements))
+	for k := range tok.Elements {
+		els[k] = pieceText(&tok.Elements[k], spelled)
 	}
-	body := strings.TrimSpace(v)
-	_, isIndex := parseIndex(body)
-	if !isIndex {
-		_, isIndex = hashIndex(body)
+	display := strings.Join(els, ", ")
+	type try struct {
+		body, text string
+		quoted     bool
 	}
-	readsAsSelector := body == "*" || isIndex
-	needs := v != trimWsp(v) || strings.HasPrefix(v, "\"") || strings.HasPrefix(v, "'") ||
-		strings.ContainsAny(v, "[]\t") || tok.Comment >= 0 || readsAsSelector
-	if needs {
-		return quoteText(v)
+	var tries []try
+	if len(els) == 1 {
+		if q := tok.Elements[0].Quote; q == QuoteSingle || q == QuoteDouble {
+			tries = append(tries, try{spelled[tok.Value[0]:tok.Value[1]], els[0], true})
+		}
+		tries = append(tries, try{display, display, false}, try{quoteText(els[0]), els[0], true})
+	} else {
+		tries = append(tries, try{display, display, false})
 	}
-	return v
+	for _, t := range tries {
+		if selectorReadsBack(t.body, t.text, t.quoted) {
+			return t.body, true
+		}
+	}
+	return "", false
+}
+
+// selectorReadsBack reports whether body between brackets on a file line
+// reads back as a value selector for text, quoted or bare as asked.
+func selectorReadsBack(body, text string, quoted bool) bool {
+	line := "x[" + body + "]:"
+	var tok Tokens
+	Tokenize(line, ':', false, RulesCurrent, &tok)
+	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
+		return false
+	}
+	ps, err := pathOf(&tok, line)
+	if err != nil || len(ps.segments) != 1 {
+		return false
+	}
+	sel := ps.segments[0].sel
+	return sel != nil && sel.kind == selByValue && sel.value == text && sel.quoted == quoted
+}
+
+// pathReadsBack reports whether a schema path written on a file line reads
+// back as the same segments. A lookup path takes spellings a file line does
+// not.
+func pathReadsBack(path string, segs []segment) bool {
+	line := path + ":"
+	var tok Tokens
+	Tokenize(line, ':', false, RulesCurrent, &tok)
+	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
+		return false
+	}
+	ps, err := pathOf(&tok, line)
+	if err != nil || len(ps.segments) != len(segs) {
+		return false
+	}
+	for k, a := range ps.segments {
+		b := segs[k]
+		if a.name != b.name || a.star != b.star || (a.sel == nil) != (b.sel == nil) {
+			return false
+		}
+		if a.sel != nil && *a.sel != *b.sel {
+			return false
+		}
+	}
+	return true
 }
 
 // genPathText renders parsed segments back as a dotted path, dropping
@@ -7689,8 +7776,9 @@ func genSelectorText(v string) string {
 // materializes) and quoting a name that needs it, so the result is a path the
 // scanner reads back the same. A segment whose prefix names a live line
 // carrying a value selects that instance by the value, in place of a wildcard
-// or a bare name.
-func genPathText(segs []segment, parentValues map[string]string) string {
+// or a bare name. False when a selector has no spelling a file line reads
+// back.
+func genPathText(segs []segment, parentValues map[string]string) (string, bool) {
 	var out strings.Builder
 	names := make([]string, 0, len(segs))
 	for i, s := range segs {
@@ -7704,20 +7792,32 @@ func genPathText(segs []segment, parentValues map[string]string) string {
 		}
 		names = append(names, s.name)
 		if v, ok := parentValues[namesKey(names)]; ok && i+1 < len(segs) && (s.sel == nil || s.sel.kind != selByValue) {
+			body, ok := genSelectorText(v)
+			if !ok {
+				return "", false
+			}
 			out.WriteByte('[')
-			out.WriteString(genSelectorText(v))
+			out.WriteString(body)
 			out.WriteByte(']')
 			continue
 		}
 		if s.sel != nil {
 			switch s.sel.kind {
 			case selByValue:
-				out.WriteByte('[')
-				if s.sel.quoted {
-					out.WriteString(quoteText(s.sel.value))
-				} else {
-					out.WriteString(s.sel.value)
+				// The body as the schema meant it: a quoted one stays quoted,
+				// and a bare one goes bare when a file line reads it back.
+				text, quotedBody := s.sel.value, quoteText(s.sel.value)
+				var body string
+				switch {
+				case !s.sel.quoted && selectorReadsBack(text, text, false):
+					body = text
+				case selectorReadsBack(quotedBody, text, true):
+					body = quotedBody
+				default:
+					return "", false
 				}
+				out.WriteByte('[')
+				out.WriteString(body)
 				out.WriteByte(']')
 			case selByIndex:
 				fmt.Fprintf(&out, "[#%d]", s.sel.index)
@@ -7725,7 +7825,7 @@ func genPathText(segs []segment, parentValues map[string]string) string {
 			}
 		}
 	}
-	return out.String()
+	return out.String(), true
 }
 
 // expandMounts inlines every fragment mount into a flat constraint list,
@@ -7767,7 +7867,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if onStack || len(stack) >= MaxDepth {
-					cuts = append(cuts, [2]string{schemaText(path), fr})
+					cuts = append(cuts, [2]string{schemaText(path), schemaText(fr)})
 				} else if fcs, ok := def.frags[fr]; ok {
 					stack = append(stack, fr)
 					walk(fcs, path, segs, true)

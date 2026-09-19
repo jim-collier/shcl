@@ -7104,12 +7104,18 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
 	// A filled wildcard emits a valued line of its own, so it belongs here too.
-	let parent_values: HashMap<Vec<&str>, &str> = cons
-		.iter()
-		.enumerate()
-		.filter(|(i, c)| (!has_wild(c) || fill[*i]) && !unwritable(c) && must_exist(c))
-		.filter_map(|(_, c)| c.default_text.as_deref().map(|d| (names_of(&c.segs), d)))
-		.collect();
+	// First wins, as the line it selects does: of two lines on one path the
+	// first spelling is the one written, and its value is the instance.
+	let mut parent_values: HashMap<Vec<&str>, &str> = HashMap::new();
+	for (i, c) in cons.iter().enumerate() {
+		if (!has_wild(c) || fill[i])
+			&& !unwritable(c)
+			&& must_exist(c)
+			&& let Some(d) = c.default_text.as_deref()
+		{
+			parent_values.entry(names_of(&c.segs)).or_insert(d);
+		}
+	}
 	// A commented line under a commented valued parent has the same problem
 	// once both are uncommented, so it selects the parent's default too. A
 	// live line keeps the dotted form under a commented parent: selecting by
@@ -7153,8 +7159,13 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 	}
 	let mut wild: Vec<(String, String)> = Vec::new();
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
-	// already wrote; the first spelling wins.
-	let mut emitted: HashSet<String> = HashSet::new();
+	// already wrote; the first spelling wins. A line from a dropped `[value]`
+	// selector is its own instance, so two of them with different values are
+	// both written: `env[prod]` and `env[dev]` are two `env` lines. Each path
+	// maps to None once a plain line wrote it, or to the values written so far.
+	let mut emitted: HashMap<String, Option<HashSet<String>>> = HashMap::new();
+	// A child whose valued parent has no selector spelling cannot be written.
+	let mut unspellable: Vec<Diagnostic> = Vec::new();
 	// One block per generated line - its desc, annotation and binding - with
 	// the path's names, so the blocks can be laid out in tree order below.
 	let mut blocks: Vec<(Vec<String>, String)> = Vec::new();
@@ -7191,18 +7202,43 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 				c.segs.last().and_then(|s| s.selector.as_ref()),
 				Some(Selector::ByValue { .. })
 			);
+		// The schema's own spelling is kept when a file line reads it back as
+		// the same path. A selector body holding a `#` is fine in a lookup and
+		// opens a comment on a file line, so that one goes through the renderer.
 		let path = if selects_by_value {
 			let mut segs = c.segs.clone();
 			if let Some(last) = segs.last_mut() {
 				last.selector = None;
 			}
 			gen_path_text(&segs, values)
-		} else if fill[i] || under_valued_parent || c.path.contains('\n') {
+		} else if fill[i] || under_valued_parent || !path_reads_back(&c.path, &c.segs) {
 			gen_path_text(&c.segs, values)
 		} else {
-			c.path.clone()
+			Some(c.path.clone())
 		};
-		if !emitted.insert(path.clone()) {
+		let Some(path) = path else {
+			unspellable.push(Diagnostic {
+				line: 0,
+				severity: Severity::Error,
+				code: "V097",
+				message: format!(
+					"required path cannot be generated: {} (its parent's value has no selector spelling)",
+					schema_text(&c.path)
+				),
+			});
+			continue;
+		};
+		let dup = match (emitted.get_mut(&path), selects_by_value) {
+			(None, _) => {
+				let first = selects_by_value
+					.then(|| HashSet::from([c.default_text.clone().unwrap_or_default()]));
+				emitted.insert(path.clone(), first);
+				false
+			}
+			(Some(Some(vals)), true) => !vals.insert(c.default_text.clone().unwrap_or_default()),
+			(Some(_), _) => true,
+		};
+		if dup {
 			continue;
 		}
 		let mut block = String::new();
@@ -7228,7 +7264,14 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 					commented.push((i, line));
 				}
 			}
-			None => block.push_str(&format!("{}{}:\n", prefix, path)),
+			None => {
+				let line = format!("{}:\n", path);
+				block.push_str(prefix);
+				block.push_str(&line);
+				if !must_exist(c) {
+					commented.push((i, line));
+				}
+			}
 		}
 		let names: Vec<String> = names_of(&c.segs).iter().map(|s| s.to_string()).collect();
 		blocks.push((names, block));
@@ -7273,6 +7316,9 @@ pub fn generate(schema: &Document, no_banner: bool) -> Result<String, Vec<Diagno
 		for (p, t) in &wild {
 			out.push_str(&format!("##   {}   {}\n", p, t));
 		}
+	}
+	if !unspellable.is_empty() {
+		return Err(unspellable);
 	}
 	if !no_banner {
 		if !out.is_empty() {
@@ -7430,8 +7476,9 @@ pub const MIGRATED_LINE: &str = "##    Migrated from SHCL 2.x.";
 /// (a generated line targets the one instance it materializes) and quoting a
 /// name that needs it, so the result is a path the scanner reads back the same.
 /// A segment whose prefix names a live line carrying a value selects that
-/// instance by the value, in place of a wildcard or a bare name.
-fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> String {
+/// instance by the value, in place of a wildcard or a bare name. None when a
+/// selector has no spelling a file line reads back.
+fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> Option<String> {
 	let mut out = String::new();
 	for (i, s) in segs.iter().enumerate() {
 		if i > 0 {
@@ -7447,18 +7494,24 @@ fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> 
 			&& let Some(v) = parent_values.get(&names_of(&segs[..=i]))
 		{
 			out.push('[');
-			out.push_str(&gen_selector_text(v));
+			out.push_str(&gen_selector_text(v)?);
 			out.push(']');
 			continue;
 		}
 		match &s.selector {
 			Some(Selector::ByValue { text, quoted }) => {
-				out.push('[');
-				if *quoted {
-					out.push_str(&quote_text(text));
+				// The body as the schema meant it: a quoted one stays quoted,
+				// and a bare one goes bare when a file line reads it back.
+				let quoted_body = quote_text(text);
+				let body = if !*quoted && selector_reads_back(text, text, false) {
+					text.clone()
+				} else if selector_reads_back(&quoted_body, text, true) {
+					quoted_body
 				} else {
-					out.push_str(text);
-				}
+					return None;
+				};
+				out.push('[');
+				out.push_str(&body);
 				out.push(']');
 			}
 			Some(Selector::ByIndex(k)) => {
@@ -7467,40 +7520,74 @@ fn gen_path_text(segs: &[Segment], parent_values: &HashMap<Vec<&str>, &str>) -> 
 			Some(Selector::Wildcard) | None => {}
 		}
 	}
-	out
+	Some(out)
 }
 
-/// A default's spelling inside a `[value]` selector. A quoted element is
-/// already a quoted selector body. A bare spelling goes in as is unless a
-/// bare body would read it as something else - a bracket ends the selector,
-/// a leading quote opens one, edge whitespace is trimmed, a whitespace-`#`
-/// opens a comment, digits or `*` name an index or the wildcard - and those
-/// go quoted (the selector matches on the display form, so the quoted
-/// spelling finds the bare value).
-fn gen_selector_text(v: &str) -> String {
-	if v.contains('\n') {
-		return gen_default_text(v);
-	}
+/// The selector body that picks out the instance a line `name: v` makes, or
+/// None when no body can. It is built from the elements the reader takes out
+/// of that line's value, and each candidate is scanned back the way a file
+/// line is scanned, so none of the scanner's rules is copied here to go stale.
+/// That copy was the cause twice: an all-digit body past 64 bits, and a
+/// quoted array element spelled as the body. One element tries the spelling
+/// it was written in first; an array has only the bare body, since a quoted
+/// selector matches one element only, and a bare one the elements joined.
+fn gen_selector_text(v: &str) -> Option<String> {
+	let spelled = gen_default_text(v);
 	let mut tok = Tokens::default();
-	tokenize_value(v, 0, Rules::Current, &mut tok);
-	if tok.elements.len() == 1
-		&& matches!(tok.elements[0].quote, Quote::Single | Quote::Double)
-		&& tok.value == (0, v.len())
-	{
-		return v.to_string();
+	tokenize_value(&spelled, 0, Rules::Current, &mut tok);
+	let els: Vec<String> = tok
+		.elements
+		.iter()
+		.map(|p| piece_text(p, &spelled))
+		.collect();
+	let display = els.join(", ");
+	let mut tries: Vec<(String, &str, bool)> = Vec::new();
+	if let [only] = tok.elements.as_slice() {
+		if matches!(only.quote, Quote::Single | Quote::Double) {
+			tries.push((spelled[tok.value.0..tok.value.1].to_string(), &els[0], true));
+		}
+		tries.push((display.clone(), &display, false));
+		tries.push((quote_text(&els[0]), &els[0], true));
+	} else {
+		tries.push((display.clone(), &display, false));
 	}
-	let body = v.trim();
-	let reads_as_selector = body == "*"
-		|| body.parse::<u64>().is_ok()
-		|| body
-			.strip_prefix('#')
-			.is_some_and(|d| d.parse::<u64>().is_ok());
-	let needs = v != trim_wsp(v)
-		|| v.starts_with(['"', '\''])
-		|| v.contains(['[', ']', '\t'])
-		|| tok.comment.is_some()
-		|| reads_as_selector;
-	if needs { quote_text(v) } else { v.to_string() }
+	tries
+		.into_iter()
+		.find(|(body, text, quoted)| selector_reads_back(body, text, *quoted))
+		.map(|(body, _, _)| body)
+}
+
+/// Whether `body` between brackets on a file line reads back as a value
+/// selector for `text`, quoted or bare as asked.
+fn selector_reads_back(body: &str, text: &str, quoted: bool) -> bool {
+	let line = format!("x[{}]:", body);
+	let mut tok = Tokens::default();
+	tokenize(&line, b':', false, Rules::Current, &mut tok);
+	if selector_open_quote(&tok) || tok.comment.is_some() {
+		return false;
+	}
+	path_of(&tok, &line).is_ok_and(|p| {
+		matches!(p.segments.as_slice(), [seg] if seg.selector
+			== Some(Selector::ByValue { text: text.to_string(), quoted }))
+	})
+}
+
+/// Whether a schema path written on a file line reads back as the same
+/// segments. A lookup path takes spellings a file line does not.
+fn path_reads_back(path: &str, segs: &[Segment]) -> bool {
+	let line = format!("{}:", path);
+	let mut tok = Tokens::default();
+	tokenize(&line, b':', false, Rules::Current, &mut tok);
+	if selector_open_quote(&tok) || tok.comment.is_some() {
+		return false;
+	}
+	path_of(&tok, &line).is_ok_and(|p| {
+		p.segments.len() == segs.len()
+			&& p.segments
+				.iter()
+				.zip(segs)
+				.all(|(a, b)| a.name == b.name && a.star == b.star && a.selector == b.selector)
+	})
 }
 
 fn names_of(segs: &[Segment]) -> Vec<&str> {
@@ -7538,7 +7625,7 @@ fn expand_mounts(def: &SchemaDef) -> (Vec<Constraint>, Vec<(String, String)>) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if stack.iter().any(|x| x == fr) || stack.len() >= MAX_DEPTH {
-					cuts.push((schema_text(&path), fr.clone()));
+					cuts.push((schema_text(&path), schema_text(fr)));
 				} else if let Some(fcs) = def.frags.get(fr) {
 					stack.push(fr.clone());
 					go(fcs, def, Some((&path, &segs)), stack, out, cuts);

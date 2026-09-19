@@ -7172,10 +7172,6 @@ static int g_unwritable(const ShclVCons *c) { return g_why_unwritable(c)[0] != '
 // A repeat lower bound of 2 or more is the one documented shortfall - the line
 // is emitted once and the count reported - so it is not the fault below.
 static int g_cannot_satisfy(const ShclVCons *c) { return c->required || (c->has_repeat && c->rep_lo == 1); }
-static int g_path_has_nl(const ShclVCons *c) {
-	for (size_t k = 0; k < c->path.n; k++) if (c->path.p[k] == '\n') return 1;
-	return 0;
-}
 // A default carrying a literal newline cannot sit on a value line; the quoted
 // escaped spelling reads back to the same string.
 static ShclStr g_default_text(ShclArena *a, ShclStr v) {
@@ -7228,37 +7224,86 @@ static const ShclStr *parent_value_for(const ShclParentValues *pv, const ShclVec
 	return NULL;
 }
 
-/* A default's spelling inside a `[value]` selector. A quoted element is
-   already a quoted selector body. A bare spelling goes in as is unless a bare
-   body would read it as something else - a bracket ends the selector, a
-   leading quote opens one, edge whitespace is trimmed, a whitespace-`#` opens
-   a comment, digits or `*` name an index or the wildcard - and those go
-   quoted (the selector matches on the display form, so the quoted spelling
-   finds the bare value). */
-static ShclStr gen_selector_text(ShclArena *a, ShclStr v) {
-	if (memchr(v.p, '\n', v.n)) return g_default_text(a, v);
+/* Whether BODY between brackets on a file line reads back as a value selector
+   for TEXT, quoted or bare as asked. */
+static int selector_reads_back(ShclArena *a, ShclStr body, ShclStr text, int quoted) {
+	ShclSB l = {0, 0, 0};
+	sb_puts(a, &l, "x["); sb_putS(a, &l, body); sb_puts(a, &l, "]:");
+	ShclStr line = sb_S(&l);
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
-	tokenize_value(a, v, 0, SHCL_RULES_CURRENT, &tok);
-	if (tok.nelem == 1 && piece_quoted(tok.elements[0].quote) && tok.value_start == 0 && tok.value_end == v.n) return v;
-	ShclStr body = s_trim(v);
-	uint64_t ix;
-	int reads_as_selector = (body.n == 1 && body.p[0] == '*')
-		|| parse_u64(body, &ix)
-		|| (body.n >= 1 && body.p[0] == '#' && parse_u64(s_slice(body, 1, body.n), &ix));
-	int needs = !s_eq(v, s_trim_wsp(v))
-		|| (v.n && (v.p[0] == '"' || v.p[0] == '\''))
-		|| memchr(v.p, '[', v.n) || memchr(v.p, ']', v.n) || memchr(v.p, '\t', v.n)
-		|| tok.has_comment
-		|| reads_as_selector;
-	return needs ? quote_text(a, v) : v;
+	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
+	if (selector_open_quote(&tok) || tok.has_comment) return 0;
+	ShclPathScan ps = path_of(a, &tok, line);
+	if (!ps.ok || ps.segs.len != 1) return 0;
+	const ShclSelector *sel = &ps.segs.data[0].sel;
+	return sel->tag == SEL_VALUE && s_eq(sel->value, text) && !sel->quoted == !quoted;
+}
+
+/* Whether a schema path written on a file line reads back as the same
+   segments. A lookup path takes spellings a file line does not. */
+static int path_reads_back(ShclArena *a, ShclStr path, const ShclVecSeg *segs) {
+	ShclSB l = {0, 0, 0};
+	sb_putS(a, &l, path); sb_putc(a, &l, ':');
+	ShclStr line = sb_S(&l);
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
+	if (selector_open_quote(&tok) || tok.has_comment) return 0;
+	ShclPathScan ps = path_of(a, &tok, line);
+	if (!ps.ok || ps.segs.len != segs->len) return 0;
+	for (size_t k = 0; k < segs->len; k++) {
+		const ShclSegment *x = &ps.segs.data[k], *y = &segs->data[k];
+		if (!s_eq(x->name, y->name) || !x->star != !y->star || x->sel.tag != y->sel.tag) return 0;
+		if (x->sel.tag == SEL_VALUE && (!s_eq(x->sel.value, y->sel.value) || !x->sel.quoted != !y->sel.quoted)) return 0;
+		if (x->sel.tag == SEL_INDEX && x->sel.index != y->sel.index) return 0;
+	}
+	return 1;
+}
+
+/* The selector body that picks out the instance a line `name: v` makes, in
+   *OUT, or 0 when no body can. It is built from the elements the reader takes
+   out of that line's value, and each candidate is scanned back the way a file
+   line is scanned, so none of the scanner's rules is copied here to go stale.
+   That copy was the cause twice: an all-digit body past 64 bits, and a quoted
+   array element spelled as the body. One element tries the spelling it was
+   written in first; an array has only the bare body, since a quoted selector
+   matches one element only, and a bare one the elements joined. */
+static int gen_selector_text(ShclArena *a, ShclStr v, ShclStr *out) {
+	ShclStr spelled = g_default_text(a, v);
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize_value(a, spelled, 0, SHCL_RULES_CURRENT, &tok);
+	ShclSB d = {0, 0, 0};
+	ShclStr first = s_empty();
+	for (size_t k = 0; k < tok.nelem; k++) {
+		ShclStr e = piece_text(a, &tok.elements[k], spelled);
+		if (k == 0) first = e;
+		else sb_puts(a, &d, ", ");
+		sb_putS(a, &d, e);
+	}
+	ShclStr display = tok.nelem ? sb_S(&d) : s_empty();
+	ShclStr body[3], text[3];
+	int quoted[3], n = 0;
+	if (tok.nelem == 1) {
+		if (piece_quoted(tok.elements[0].quote)) {
+			body[n] = s_slice(spelled, tok.value_start, tok.value_end); text[n] = first; quoted[n++] = 1;
+		}
+		body[n] = display; text[n] = display; quoted[n++] = 0;
+		body[n] = quote_text(a, first); text[n] = first; quoted[n++] = 1;
+	} else {
+		body[n] = display; text[n] = display; quoted[n++] = 0;
+	}
+	for (int k = 0; k < n; k++) {
+		if (selector_reads_back(a, body[k], text[k], quoted[k])) { *out = body[k]; return 1; }
+	}
+	return 0;
 }
 
 // Render parsed segments back as a dotted path, dropping wildcard selectors
 // (a generated line targets the one instance it materializes) and quoting a
 // name that needs it, so the result is a path the scanner reads back the same.
 // A segment whose prefix names a live line carrying a value selects that
-// instance by the value, in place of a wildcard or a bare name.
-static ShclStr gen_path_text(ShclArena *a, const ShclVecSeg *segs, const ShclParentValues *pv) {
+// instance by the value, in place of a wildcard or a bare name. The path goes
+// in *OUT; 0 when a selector has no spelling a file line reads back.
+static int gen_path_text(ShclArena *a, const ShclVecSeg *segs, const ShclParentValues *pv, ShclStr *out_path) {
 	ShclSB out = {0, 0, 0};
 	char nb[32];
 	for (size_t i = 0; i < segs->len; i++) {
@@ -7267,18 +7312,28 @@ static ShclStr gen_path_text(ShclArena *a, const ShclVecSeg *segs, const ShclPar
 		if (s->star) sb_putc(a, &out, '*');
 		else sb_putS(a, &out, emit_name(a, s->name));
 		const ShclStr *v = (i + 1 < segs->len && s->sel.tag != SEL_VALUE) ? parent_value_for(pv, segs, i + 1) : NULL;
-		if (v) { sb_putc(a, &out, '['); sb_putS(a, &out, gen_selector_text(a, *v)); sb_putc(a, &out, ']'); continue; }
+		if (v) {
+			ShclStr body;
+			if (!gen_selector_text(a, *v, &body)) return 0;
+			sb_putc(a, &out, '['); sb_putS(a, &out, body); sb_putc(a, &out, ']');
+			continue;
+		}
 		switch (s->sel.tag) {
-		case SEL_VALUE:
-			sb_putc(a, &out, '[');
-			if (s->sel.quoted) sb_putS(a, &out, quote_text(a, s->sel.value));
-			else sb_putS(a, &out, s->sel.value);
-			sb_putc(a, &out, ']'); break;
+		case SEL_VALUE: {
+			// The body as the schema meant it: a quoted one stays quoted, and
+			// a bare one goes bare when a file line reads it back.
+			ShclStr qb = quote_text(a, s->sel.value), body;
+			if (!s->sel.quoted && selector_reads_back(a, s->sel.value, s->sel.value, 0)) body = s->sel.value;
+			else if (selector_reads_back(a, qb, s->sel.value, 1)) body = qb;
+			else return 0;
+			sb_putc(a, &out, '['); sb_putS(a, &out, body); sb_putc(a, &out, ']'); break;
+		}
 		case SEL_INDEX: { int nn = snprintf(nb, sizeof nb, "[#%" PRIu64 "]", s->sel.index); sb_put(a, &out, nb, (size_t)nn); break; }
 		case SEL_WILDCARD: case SEL_NONE: break;
 		}
 	}
-	return sb_S(&out);
+	*out_path = sb_S(&out);
+	return 1;
 }
 
 // Inline every fragment mount into a flat constraint list, depth-first in
@@ -7308,7 +7363,7 @@ static void g_expand_go(ShclArena *a, const ShclVecVCons *list, const ShclVSchem
 			// re-enters, stops here and is noted instead of expanded.
 			if (cycling || stack->len >= SHCL_MAX_DEPTH) {
 				ShclVecS_push(a, cut_path, schema_text(a, path));
-				ShclVecS_push(a, cut_frag, c->inherits);
+				ShclVecS_push(a, cut_frag, schema_text(a, c->inherits));
 			} else {
 				const ShclVecVCons *fcs = v_frag_get(def, c->inherits);
 				if (fcs) {
@@ -7462,10 +7517,18 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
 	/* Dropping a trailing `[*]` can render the same line a concrete sibling
-	   already wrote; the first spelling wins. Hash first, bytes only on a
-	   hash hit, so the scan stays cheap at the field cap. */
+	   already wrote; the first spelling wins. A line from a dropped `[value]`
+	   selector is its own instance, so two of them with different values are
+	   both written: `env[prod]` and `env[dev]` are two `env` lines. A plain
+	   line blocks its path; a by-value line blocks only its own value. Hash
+	   first, bytes only on a hash hit, so the scan stays cheap at the field
+	   cap. */
 	ShclVecS emitted = {0, 0, 0};
 	uint64_t *emitted_hash = (uint64_t *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_hash);
+	int *emitted_plain = (int *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_plain);
+	ShclStr *emitted_val = (ShclStr *)arena_alloc(a, (cons.len ? cons.len : 1) * sizeof *emitted_val);
+	// A child whose valued parent has no selector spelling cannot be written.
+	int unspellable = 0;
 	/* One block per generated line - its desc, annotation and binding - and the
 	   constraint it came from, so the blocks can be laid out in tree order
 	   below. */
@@ -7499,19 +7562,38 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// goes on the bare path: the line materializes the instance, and
 		// validation below decides whether the default names the one selected.
 		int selects_by_value = c->has_default && c->segs.len && c->segs.data[c->segs.len - 1].sel.tag == SEL_VALUE;
-		ShclStr path;
+		// The schema's own spelling is kept when a file line reads it back as
+		// the same path. A selector body holding a `#` is fine in a lookup and
+		// opens a comment on a file line, so that one goes through the renderer.
+		ShclStr path = c->path;
+		int spelled = 1;
 		if (selects_by_value) {
 			ShclVecSeg segs = {0, 0, 0};
 			for (size_t k = 0; k < c->segs.len; k++) ShclVecSeg_push(a, &segs, c->segs.data[k]);
 			ShclSelector *last = &segs.data[segs.len - 1].sel;
 			last->tag = SEL_NONE; last->value = s_empty(); last->index = 0; last->quoted = 0;
-			path = gen_path_text(a, &segs, values);
-		} else path = (fill[i] || under_valued_parent || g_path_has_nl(c)) ? gen_path_text(a, &c->segs, values) : c->path;
+			spelled = gen_path_text(a, &segs, values, &path);
+		} else if (fill[i] || under_valued_parent || !path_reads_back(a, c->path, &c->segs))
+			spelled = gen_path_text(a, &c->segs, values, &path);
+		if (!spelled) {
+			ShclSB m = {0, 0, 0};
+			sb_puts(a, &m, "required path cannot be generated: ");
+			sb_putS(a, &m, schema_text(a, c->path));
+			sb_puts(a, &m, " (its parent's value has no selector spelling)");
+			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+			unspellable = 1;
+			continue;
+		}
 		uint64_t ph = fnv_str(1469598103934665603ull, path);
+		ShclStr dval = c->has_default ? c->default_text : s_empty();
 		int dup = 0;
-		for (size_t k = 0; k < emitted.len && !dup; k++) dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path);
+		for (size_t k = 0; k < emitted.len && !dup; k++)
+			dup = emitted_hash[k] == ph && s_eq(emitted.data[k], path)
+				&& (emitted_plain[k] || !selects_by_value || s_eq(emitted_val[k], dval));
 		if (dup) continue;
 		emitted_hash[emitted.len] = ph;
+		emitted_plain[emitted.len] = !selects_by_value;
+		emitted_val[emitted.len] = dval;
 		ShclVecS_push(a, &emitted, path);
 		ShclSB blk = {0};
 		if (c->has_desc) {
@@ -7533,12 +7615,16 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_putc(a, &ln, '\n');
 		if (!g_must_exist(c)) sb_puts(a, &blk, "# ");
 		sb_putS(a, &blk, sb_S(&ln));
-		if (!g_must_exist(c) && c->has_default) {
+		if (!g_must_exist(c)) {
 			ShclVecS_push(a, &commented_line, sb_S(&ln));
 			ShclVecSize_push(a, &commented_cons, i);
 		}
 		ShclVecS_push(a, &block_text, sb_S(&blk));
 		ShclVecSize_push(a, &block_cons, i);
+	}
+	if (unspellable) {
+		if (ok) *ok = 0;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
 	}
 	/* Tree order, first appearance first. A schema may list a.host.srv before
 	   a, and emitted as listed with another field between them, `a: x` re-opens

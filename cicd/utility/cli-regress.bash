@@ -180,6 +180,11 @@ printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int
 ## is what that one now has to say to pass.
 printf 'field: env[prod]\n\tdefault: staging\n' > "${tmpDir}/optselbad.shcl"
 printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: b\n' > "${tmpDir}/optdefok2.shcl"
+## An optional line with no default was never read back, so a selector whose
+## value breaks the field's type went out commented at exit 0. And a valued
+## parent whose array default holds a `]` has no selector a child can use.
+printf 'field: "flag[on]"\n\ttype: int\n' > "${tmpDir}/optnodef.shcl"
+printf 'field: tags\n\trequired: yes\n\tdefault: "a]", c\nfield: tags.x\n\trequired: yes\n' > "${tmpDir}/nosel.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -216,7 +221,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone, %SH% an optional field whose default
 ##	names another instance than its path selects, %SI% the %SE% schema with a
-##	default that names its instance,
+##	default that names its instance, %SJ% an optional selector with no
+##	default whose value breaks its type, %SK% a valued parent whose array
+##	default has no selector spelling,
 ##	%C% a path with nothing at it, cleared before every binding's run, %E% an
 ##	empty argument, %LS% a long s (U+017F), which Unicode upper-cases to S,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
@@ -321,6 +328,11 @@ rows=(
 	## same schema with the default naming `b`.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
 	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
+	## 20260918b item 26: every commented line is read back, not only one
+	## carrying a default. Item 27: no selector spelling is a refusal, not a
+	## child under another instance.
+	'init-optional-no-default-read-back|init --schema=%SJ%|-|6||V097 generated value fails the schema that produced it: wrong type at .flag\[on\].'
+	'init-no-selector-spelling|init --schema=%SK%|-|6||V097 required path cannot be generated: tags.x \(its parent.s value has no selector spelling\)'
 	## 20260918 item 9: an empty topic is an unknown command, as in the
 	## reference; the ports read it as no topic and printed the help at exit 0.
 	'help-empty-topic|help %E%|-|1||^unknown command:  \(see --help\)$'
@@ -617,6 +629,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SE%/${tmpDir}/optdefok.shcl}"
 	argv="${argv//%SH%/${tmpDir}/optselbad.shcl}"
 	argv="${argv//%SI%/${tmpDir}/optdefok2.shcl}"
+	argv="${argv//%SJ%/${tmpDir}/optnodef.shcl}"
+	argv="${argv//%SK%/${tmpDir}/nosel.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"

@@ -6103,11 +6103,12 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# lands where the schema looks. Any line under such a parent selects it by
 	# its value: `srv[web].port:`.
 	# A filled wildcard emits a valued line of its own, so it belongs here too.
-	parent_values = {
-		tuple(names_of(c.segs)): c.default_text
-		for i, c in enumerate(cons)
-		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
-	}
+	# First wins, as the line it selects does: of two lines on one path the
+	# first spelling is the one written, and its value is the instance.
+	parent_values: dict = {}
+	for i, c in enumerate(cons):
+		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None:
+			parent_values.setdefault(tuple(names_of(c.segs)), c.default_text)
 	# A commented line under a commented valued parent has the same problem
 	# once both are uncommented, so it selects the parent's default too. A
 	# live line keeps the dotted form under a commented parent: selecting by
@@ -6143,8 +6144,13 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	out = []
 	wild = []
 	# Dropping a trailing `[*]` can render the same line a concrete sibling
-	# already wrote; the first spelling wins.
-	emitted = set()
+	# already wrote; the first spelling wins. A line from a dropped `[value]`
+	# selector is its own instance, so two of them with different values are
+	# both written: `env[prod]` and `env[dev]` are two `env` lines. Each path
+	# maps to None once a plain line wrote it, or to the values written so far.
+	emitted: dict = {}
+	# A child whose valued parent has no selector spelling cannot be written.
+	unspellable: list[Diagnostic] = []
 	# One block per generated line - its desc, annotation and binding - with
 	# the path's names, so the blocks can be laid out in tree order below.
 	blocks = []
@@ -6172,16 +6178,32 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# A value after a last-segment selector is ignored, so a default there
 		# goes on the bare path: the line materializes the instance, and
 		# validation below decides whether the default names the one selected.
+		# The schema's own spelling is kept when a file line reads it back as
+		# the same path. A selector body holding a `#` is fine in a lookup and
+		# opens a comment on a file line, so that one goes through the renderer.
 		last = c.segs[-1]
-		if c.default_text is not None and last.selector is not None and last.selector[0] == "val":
+		selects_by_value = c.default_text is not None and last.selector is not None and last.selector[0] == "val"
+		if selects_by_value:
 			path = _gen_path_text(c.segs[:-1] + [_Segment(last.name, last.name_src, None, last.star)], values)
-		elif fill[i] or under_valued_parent or "\n" in c.path:
+		elif fill[i] or under_valued_parent or not _path_reads_back(c.path, c.segs):
 			path = _gen_path_text(c.segs, values)
 		else:
 			path = c.path
-		if path in emitted:
+		if path is None:
+			_vdiag(
+				unspellable,
+				0,
+				"V097",
+				"required path cannot be generated: " + _schema_text(c.path) + " (its parent's value has no selector spelling)",
+			)
 			continue
-		emitted.add(path)
+		dval = c.default_text if c.default_text is not None else ""
+		if path not in emitted:
+			emitted[path] = {dval} if selects_by_value else None
+		elif emitted[path] is None or not selects_by_value or dval in emitted[path]:
+			continue
+		else:
+			emitted[path].add(dval)
 		block = []
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
@@ -6196,7 +6218,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			if not must_exist(c):
 				commented.append((i, line))
 		else:
-			block.append(f"{prefix}{path}:\n")
+			line = f"{path}:\n"
+			block.append(prefix + line)
+			if not must_exist(c):
+				commented.append((i, line))
 		blocks.append((tuple(names_of(c.segs)), "".join(block)))
 	# Tree order, first appearance first. A schema may list `a.host.srv`
 	# before `a`, and emitted as listed with another field between them,
@@ -6224,6 +6249,8 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		out.append("## Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
 			out.append(f"##   {path}   {tyname}\n")
+	if unspellable:
+		return "", unspellable
 	text = "".join(out)
 	if not no_banner:
 		if text:
@@ -6340,33 +6367,60 @@ def _v007_sanctioned(message):
 
 
 def _gen_selector_text(v):
-	"""A default's spelling inside a `[value]` selector. A quoted element is
-	already a quoted selector body. A bare spelling goes in as is unless a
-	bare body would read it as something else - a bracket ends the selector,
-	a leading quote opens one, edge whitespace is trimmed, a whitespace-`#`
-	opens a comment, digits or `*` name an index or the wildcard - and those
-	go quoted (the selector matches on the display form, so the quoted
-	spelling finds the bare value)."""
-	if "\n" in v:
-		return _gen_default_text(v)
+	"""The selector body that picks out the instance a line `name: v` makes, or
+	None when no body can. It is built from the elements the reader takes out
+	of that line's value, and each candidate is scanned back the way a file
+	line is scanned, so none of the scanner's rules is copied here to go stale.
+	That copy was the cause twice: an all-digit body past 64 bits, and a
+	quoted array element spelled as the body. One element tries the spelling
+	it was written in first; an array has only the bare body, since a quoted
+	selector matches one element only, and a bare one the elements joined."""
+	spelled = _gen_default_text(v)
 	tok = Tokens()
-	tokenize_value(v, 0, Rules.CURRENT, tok)
-	if (
-		len(tok.elements) == 1
-		and (tok.elements[0].quote is Quote.SINGLE or tok.elements[0].quote is Quote.DOUBLE)
-		and tok.value == (0, len(tok.src))
-	):
-		return v
-	body = v.strip()
-	reads_as_selector = body == "*" or _parse_uint(body) is not None or (body[:1] == "#" and _parse_uint(body[1:]) is not None)
-	needs = (
-		v != _trim_wsp(v)
-		or v[:1] in ('"', "'")
-		or any(ch in v for ch in "[]\t")
-		or tok.comment is not None
-		or reads_as_selector
+	tokenize_value(spelled, 0, Rules.CURRENT, tok)
+	els = [_piece_text(p, tok.src) for p in tok.elements]
+	display = ", ".join(els)
+	if len(els) == 1:
+		tries = []
+		if tok.elements[0].quote is Quote.SINGLE or tok.elements[0].quote is Quote.DOUBLE:
+			tries.append((tok.src[tok.value[0]:tok.value[1]].decode("utf-8"), els[0], True))
+		tries += [(display, display, False), (_quote_text(els[0]), els[0], True)]
+	else:
+		tries = [(display, display, False)]
+	for body, text, quoted in tries:
+		if _selector_reads_back(body, text, quoted):
+			return body
+	return None
+
+
+def _selector_reads_back(body, text, quoted):
+	"""Whether body between brackets on a file line reads back as a value
+	selector for text, quoted or bare as asked."""
+	tok = Tokens()
+	tokenize(f"x[{body}]:", ":", False, Rules.CURRENT, tok)
+	if _selector_open_quote(tok) or tok.comment is not None:
+		return False
+	try:
+		segs, _ = _path_of(tok, tok.src)
+	except _PathError:
+		return False
+	return len(segs) == 1 and segs[0].selector == ("val", text, quoted)
+
+
+def _path_reads_back(path, segs):
+	"""Whether a schema path written on a file line reads back as the same
+	segments. A lookup path takes spellings a file line does not."""
+	tok = Tokens()
+	tokenize(path + ":", ":", False, Rules.CURRENT, tok)
+	if _selector_open_quote(tok) or tok.comment is not None:
+		return False
+	try:
+		got, _ = _path_of(tok, tok.src)
+	except _PathError:
+		return False
+	return len(got) == len(segs) and all(
+		a.name == b.name and a.star == b.star and a.selector == b.selector for a, b in zip(got, segs)
 	)
-	return _quote_text(v) if needs else v
 
 
 def _gen_path_text(segs, parent_values):
@@ -6374,7 +6428,8 @@ def _gen_path_text(segs, parent_values):
 	(a generated line targets the one instance it materializes) and quoting a
 	name that needs it, so the result is a path the scanner reads back the same.
 	A segment whose prefix names a live line carrying a value selects that
-	instance by the value, in place of a wildcard or a bare name."""
+	instance by the value, in place of a wildcard or a bare name. None when a
+	selector has no spelling a file line reads back."""
 	out = []
 	names = []
 	for i, s in enumerate(segs):
@@ -6387,11 +6442,23 @@ def _gen_path_text(segs, parent_values):
 		names.append(s.name)
 		v = parent_values.get(tuple(names))
 		if v is not None and i + 1 < len(segs) and (s.selector is None or s.selector[0] != "val"):
-			out.append(f"[{_gen_selector_text(v)}]")
+			body = _gen_selector_text(v)
+			if body is None:
+				return None
+			out.append(f"[{body}]")
 			continue
 		if s.selector is not None:
 			if s.selector[0] == "val":
-				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")
+				# The body as the schema meant it: a quoted one stays quoted,
+				# and a bare one goes bare when a file line reads it back.
+				text = s.selector[1]
+				quoted_body = _quote_text(text)
+				if not s.selector[2] and _selector_reads_back(text, text, False):
+					out.append(f"[{text}]")
+				elif _selector_reads_back(quoted_body, text, True):
+					out.append(f"[{quoted_body}]")
+				else:
+					return None
 			elif s.selector[0] == "idx":
 				out.append(f"[#{s.selector[1]}]")
 			# a wildcard selector is dropped
@@ -6427,7 +6494,7 @@ def _expand_mounts(sdef):
 			# A chain long enough to outrun the stack, or a mount that
 			# re-enters, stops here and is noted instead of expanded.
 			if c.inherits in chain or len(chain) >= MAX_DEPTH:
-				cuts.append((_schema_text(path), c.inherits))
+				cuts.append((_schema_text(path), _schema_text(c.inherits)))
 			else:
 				fcs = sdef.frags.get(c.inherits)
 				if fcs is not None:

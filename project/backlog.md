@@ -118,28 +118,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sweep: every member read off a possibly empty value in this file. Item 36 is the other one.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 6: C's `init` picks a different parent value than the other three when two live fields share a name chain.
-		- Reproduced: `field: "a[*]"` with `default: x`, `field: a` with `default: y`, and a required `a.port`. Rust, Go and Python write `a: x` then `a[y].port:`. C writes `a[x].port:`. A second schema gives exit 0 in three and exit 6 in C.
-		- Cause: the parent-value table is keyed by name chain. The three maps keep the last field and C's array returns the first. The line actually written is the first, so C is right and the reference is wrong.
-		- Origin: `67f1c80` (2026-09-01), reachable since 20260902 items 5 and 7. Sibling of 20260902 item 5. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 7: `init` drops the second of two `name[value]` fields that both carry a default, and refuses the schema.
-		- Reproduced: the spec's own `env[prod]` example given a second environment. All four exit 6 with `V097 ... required path missing: env[dev]`, while the hand-written two-line document passes `check --schema`. Made optional, the second field and its description vanish with nothing said.
-		- Cause: both paths render as `env`, and the duplicate check keys on the path text alone.
-		- Keep: corpus `102` and 20260909 item 5's note, which are about two spellings of one field. This is two instances. Scope the fix to two by-value fields selecting different values.
-		- Origin: `faf5adf` (2026-09-14) meeting `930a96e` (2026-09-02). Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 8: `init` refuses a valid schema whose valued parent has an all-digit default past the 64-bit range, and Python quotes one selector the other three leave bare.
-		- Reproduced: `default: "20000000000000000000"` on a required valued parent with a required child. Exit 6, two `V097` lines, and the message names an index nobody wrote. Separately, a default starting with U+001C or U+001F gives `srv["..."]` in Python and a bare body in the others.
-		- Cause: the generator guesses whether the scanner will read a body as an index with a plain 64-bit parse. The scanner gained a second arm on 2026-09-05 and the guess did not. Python's copy trims with the last bare `.strip()` in the library, which the style guide bans.
-		- Note: the arm testing for a `#` index in the same function can no longer decide anything, and its comment still states the withdrawn whitespace rule.
-		- Origin: `930a96e` (2026-09-02), the fix for 20260902 item 6. The scanner moved and the generator's copy of its rule did not. Confirmed.
-		- Probable fix: stop guessing. Hand the body to the path scanner and quote unless it comes back as an unquoted by-value selector with the same text. Item 27 is the same function.
-		- Sweep: `gen_selector_text` in `lib.rs` and `shcl.h`, `genSelectorText` in `shcl.go`, `_gen_selector_text` in `shcl.py`.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 9: a quoted `[value]` selector on a file line is quadratic in siblings, so one spelling of the README's lead example falls off a cliff.
 		- Measured: 20,000 lines of `srv["host N"].port: N` take 2.5 s in Go, 3.6 s in C, 11 s in a release Rust build and 65 s in Python. The bare spelling and the block form take under 0.2 s.
 		- Cause: on a miss, `find_by_value` scans every same-name sibling before the keyed create lookup answers the same question.
@@ -200,23 +178,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Item 24: `shcl_generate` drops only `V096` and `V097` before a call, so a schema that does not build gains one more copy of each build fault per call.
 		- Reproduced: three calls on a schema with a bad `repeat` give 1, 2, then 3 diagnostics. The header and the veneer say the list describes this call. C only, since the others return the list.
 		- Origin: `67f1c80` (2026-09-01), with the drop from 20260902 item 21 written for two of the three kinds. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 25: a fragment name holding a line break escapes `init`'s trailing comment block and becomes a live line.
-		- Reproduced: in all four at exit 0. The block's second column prints the fragment name raw, and `b: 1` comes out as a binding the schema never asked for.
-		- Origin: `df85048` (2026-09-18) escaped the path on this very line and left the name. Third site of 20260725 item 10's class. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 26: an optional field with no `default` is never read back, so `init` writes commented lines that fail once uncommented.
-		- Reproduced: `field: "flag[on]"` with `type: int` prints `# flag[on]:`, which is `V003` uncommented and `V097` if the field is made required. A selector body holding a `#`, legal in a path, goes out verbatim and is `E014` uncommented. 71 of 1,863 generated starters had such a line.
-		- Cause: only a line carrying a default is pushed to the read-back list, and the path is copied as written.
-		- Origin: `533ca3e` (2026-09-15). Same class as 20260918 item 4. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 27: a valued parent whose default is an array with a quoted element gets a child selector that names another instance.
-		- Reproduced: `default: "a, b", c` on `tags` with a required `tags.x`. The output validates, and `count tags` answers 2. With `repeat: 1` a satisfiable schema is refused.
-		- Cause: the selector is built from the default's written spelling, where selectors match on the display form.
-		- Origin: `67f1c80` (2026-09-01). Same function as item 8. Confirmed.
 		- Opened: 20260918-193000
 
 	- 🔘 Item 28: a field written under a kept `*` element re-parents to the field, and every later line at the element's column is `E012` and lost.
@@ -701,6 +662,40 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-122956
 
+	- ✅ Item 6: C's `init` picks a different parent value than the other three when two live fields share a name chain.
+		- Reproduced: `field: "a[*]"` with `default: x`, `field: a` with `default: y`, and a required `a.port`. Rust, Go and Python write `a: x` then `a[y].port:`. C writes `a[x].port:`. A second schema gives exit 0 in three and exit 6 in C.
+		- Cause: the parent-value table is keyed by name chain. The three maps keep the last field and C's array returns the first. The line actually written is the first, so C is right and the reference is wrong.
+		- Origin: `67f1c80` (2026-09-01), reachable since 20260902 items 5 and 7. Sibling of 20260902 item 5. Confirmed.
+		- Decided: the class gets a table, `design.md` -> Generation outcomes, marked as the rule. The generator no longer predicts what the scanner reads. Each spelling it picks is scanned back as a file line first, and every line it writes is read back. This item is its "two lines on one path" row.
+		- Fixed: the parent-value table is first-wins in Rust, Go and Python, as C's already was and as the dedup's first spelling is. `generate` in `lib.rs`, `Generate` in `shcl.go`, `generate` in `shcl.py`.
+		- Pinned by: corpus `127-init-reads-back`, whose reads find `a[x].port` and one `a`. Its golden fails in all four runners on the old code, and this shape alone gave `a[y].port:` in the three.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
+
+	- ✅ Item 7: `init` drops the second of two `name[value]` fields that both carry a default, and refuses the schema.
+		- Reproduced: the spec's own `env[prod]` example given a second environment. All four exit 6 with `V097 ... required path missing: env[dev]`, while the hand-written two-line document passes `check --schema`. Made optional, the second field and its description vanish with nothing said.
+		- Cause: both paths render as `env`, and the duplicate check keys on the path text alone.
+		- Keep: corpus `102` and 20260909 item 5's note, which are about two spellings of one field. This is two instances. Scope the fix to two by-value fields selecting different values.
+		- Origin: `faf5adf` (2026-09-14) meeting `930a96e` (2026-09-02). Confirmed.
+		- Fixed: the dedup lets two by-value lines on one path through when their values differ. A plain line still blocks its path, so corpus `102` and 20260909 item 5's two spellings of one field are unchanged. The spec says two such fields are two instances. The generated file draws an `H001` hint for two bare instances, as the hand-written two lines do, since the schema declares no `repeat`.
+		- Pinned by: corpus `127-init-reads-back` (`env` and the optional `stage`, each counted as 2). All four refused the case on the old code with this item's `V097`.
+		- Keep: corpus `102` and 20260909 item 5's note, as the item asked.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
+
+	- ✅ Item 8: `init` refuses a valid schema whose valued parent has an all-digit default past the 64-bit range, and Python quotes one selector the other three leave bare.
+		- Reproduced: `default: "20000000000000000000"` on a required valued parent with a required child. Exit 6, two `V097` lines, and the message names an index nobody wrote. Separately, a default starting with U+001C or U+001F gives `srv["..."]` in Python and a bare body in the others.
+		- Cause: the generator guesses whether the scanner will read a body as an index with a plain 64-bit parse. The scanner gained a second arm on 2026-09-05 and the guess did not. Python's copy trims with the last bare `.strip()` in the library, which the style guide bans.
+		- Note: the arm testing for a `#` index in the same function can no longer decide anything, and its comment still states the withdrawn whitespace rule.
+		- Origin: `930a96e` (2026-09-02), the fix for 20260902 item 6. The scanner moved and the generator's copy of its rule did not. Confirmed.
+		- Probable fix: stop guessing. Hand the body to the path scanner and quote unless it comes back as an unquoted by-value selector with the same text. Item 27 is the same function.
+		- Sweep: `gen_selector_text` in `lib.rs` and `shcl.h`, `genSelectorText` in `shcl.go`, `_gen_selector_text` in `shcl.py`.
+		- Fixed: `gen_selector_text` (Rust, C), `genSelectorText` (Go) and `_gen_selector_text` (Python) are rebuilt. The body comes from the elements the reader takes out of the parent's line, and each candidate (a single element as written, then bare, then quoted) is scanned back as a file line before it is used. The 64-bit guess, the dead `#` index arm, its comment and Python's bare `.strip()` are gone with the copy of the scanner's rule.
+		- Pinned by: corpus `127-init-reads-back`, whose `srv["20000000000000000000"].port` reads 2. This shape alone was `V097` in all four on the old code.
+		- Swept: `gen_selector_text` and `gen_path_text` in all four. A schema path's own `[value]` body goes through the same read-back (item 26).
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
+
 	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
 		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
 		- Note: the crosscheck still covers Go's stdout. What goes unchecked is the library half: `raw`, `quoted`, `line`, and the cases the crosscheck skips. A local green run records its tree, and the hook then lets that tree through to main.
@@ -768,6 +763,34 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: what the item reproduced is now a use the header forbids, the same as reading a freed document. Nothing on the library side is left to pin.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 25: a fragment name holding a line break escapes `init`'s trailing comment block and becomes a live line.
+		- Reproduced: in all four at exit 0. The block's second column prints the fragment name raw, and `b: 1` comes out as a binding the schema never asked for.
+		- Origin: `df85048` (2026-09-18) escaped the path on this very line and left the name. Third site of 20260725 item 10's class. Confirmed.
+		- Fixed: the fragment name goes through `schema_text` at the push, in `expand_mounts` (Rust), `expandMounts` (Go), `_expand_mounts` (Python) and `g_expand_go` (C).
+		- Pinned by: corpus `127-init-reads-back`, whose trailing block reads `f\nb: 1`. The old code wrote a live `b: 1` there.
+		- Swept: the other column of that block is the type name or the path, both already escaped.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
+
+	- ✅ Item 26: an optional field with no `default` is never read back, so `init` writes commented lines that fail once uncommented.
+		- Reproduced: `field: "flag[on]"` with `type: int` prints `# flag[on]:`, which is `V003` uncommented and `V097` if the field is made required. A selector body holding a `#`, legal in a path, goes out verbatim and is `E014` uncommented. 71 of 1,863 generated starters had such a line.
+		- Cause: only a line carrying a default is pushed to the read-back list, and the path is copied as written.
+		- Origin: `533ca3e` (2026-09-15). Same class as 20260918 item 4. Confirmed.
+		- Fixed: every commented line is read back, with or without a default. The schema's own path spelling is kept only when a file line reads it back as the same path (`path_reads_back`, `pathReadsBack` in Go, `_path_reads_back` in Python), and a `[value]` body that does not read back bare is quoted. `a[b#c]` is written `a["b#c"]`.
+		- Pinned by: corpus `127-init-reads-back` (`repo["org/name#123"].branch` reads `main`, and the optional `gh` line), and the `cli-regress.bash` row `init-optional-no-default-read-back`, which exited 0 in all four on the old code.
+		- Note: the generator fuzz's grid count moved from 1039 to 1041, with the reason in `fuzz_smoke.rs`. `a[b#c]` required, and at repeat 1, generate now where they were refused.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
+
+	- ✅ Item 27: a valued parent whose default is an array with a quoted element gets a child selector that names another instance.
+		- Reproduced: `default: "a, b", c` on `tags` with a required `tags.x`. The output validates, and `count tags` answers 2. With `repeat: 1` a satisfiable schema is refused.
+		- Cause: the selector is built from the default's written spelling, where selectors match on the display form.
+		- Origin: `67f1c80` (2026-09-01). Same function as item 8. Confirmed.
+		- Fixed: the selector is built from the elements' display form, through the same read-back as item 8. `default: "a, b", c` gives `tags[a, b, c].x:`, one instance. An array with no bare spelling, one holding a `]`, makes the child `V097` with its reason, in all four.
+		- Pinned by: corpus `127-init-reads-back` (`tags` counted as 1, `tags[a, b, c].x` reads 3), and the `cli-regress.bash` row `init-no-selector-spelling`, which exited 0 in all four on the old code.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130017
 
 	- ✅ Item 29: under an element cap, a bracket-text line reports `E021` and counts lost, where uncapped it is `E019` and retained.
 		- Reproduced: through the capped parse in all four, byte-identical. A save then refuses a document that saves with the line kept when no cap is set. The CLIs cannot reach it.

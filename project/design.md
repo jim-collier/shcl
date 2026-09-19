@@ -27,6 +27,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Load outcomes](#load-outcomes)
 	- [Lexical edges](#lexical-edges)
 	- [Write outcomes](#write-outcomes)
+	- [Generation outcomes](#generation-outcomes)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
@@ -497,6 +498,18 @@ The mirror of the load outcomes, on the write side. A setter builds its line tex
 - `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off and a `#` outside quotes ends the value. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
 
 - A path may carry a line break in either half. A name emits through the name escaper and a selector value through the value emitter, and both spell one `\n` and read it back. The selector was refused until the tokenizer cut, while elements were still stored in their source spelling and the value emitter had nothing to escape with.
+
+### Generation outcomes
+
+What `init` writes for each kind of line, and what proves the line reads back. The table is the rule. `init` output that failed its own check is the longest-running class in the backlog, seventeen items by 20260918b, and every one was the generator predicting what the scanner would read. It does not predict now: each spelling it picks is scanned back as a file line first, the way the load will scan it, and every line it writes is read back.
+
+| A generated line           | How it is spelled                                                                                                                                                                                            | How it is checked
+| :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------
+| A field's path             | The schema's own spelling when a file line reads it back as the same path, else rendered from the path's segments.                                                                                           | The whole output loads with no error and validates clean against the schema.
+| A child of a valued parent | Selects the parent by its value. The body is the first candidate a file line reads back as a value selector for that value: a single element as written, bare, then quoted. An array has only the bare body. | No candidate reads back: `V097`.
+| Two lines on one path      | The first is written, and its value is the instance the children select. Two by-value fields with different values are two instances, and both are written.                                                  | The same as a field's path.
+| An optional field's line   | Commented, with or without a default.                                                                                                                                                                        | Read back alone, and its value checked against its own field.
+| Text in the trailing block | Every schema string through `schema_text`, so a line break stays inside the comment.                                                                                                                         | Nothing reads the block back; the escaper is the rule.
 
 ### Testing
 
