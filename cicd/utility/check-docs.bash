@@ -151,6 +151,27 @@ while IFS= read -r hit; do
 done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
 	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
 
+##	The man page carries a revision date and no version, and the date went
+##	stale on the next edit twice. The rule: the .TH date is no earlier than the
+##	last commit that touched the page. A commit that edits the page and bumps
+##	the date the same day passes, and so does a bump not yet committed. A
+##	shallow clone has only its tip commit, whose date says nothing about the
+##	page, so there it is skipped.
+man="${repoDir}/source/man/shcl.1"
+if [[ -f "${man}" ]] && git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	if [[ "$(git -C "${repoDir}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+		echo "check-docs: skipping the man page date check (shallow clone)"
+	else
+		thDate="$(sed -nE 's/^\.TH [^ ]+ [^ ]+ ([0-9]{4}-[0-9]{2}-[0-9]{2}) .*/\1/p' "${man}" | head -n1)"
+		lastEdit="$(git -C "${repoDir}" log -1 --format=%cs -- source/man/shcl.1 2>/dev/null || true)"
+		if [[ -z "${thDate}" ]]; then
+			fBad "source/man/shcl.1 has no YYYY-MM-DD date on its .TH line"
+		elif [[ -n "${lastEdit}" && "${thDate}" < "${lastEdit}" ]]; then
+			fBad "source/man/shcl.1 .TH date ${thDate} is older than its last commit, ${lastEdit}"
+		fi
+	fi
+fi
+
 ##	Two top-level bullets with no blank line between them. Auto-generated TOC
 ##	blocks are the exception - the tool strips blank lines out of them, so a
 ##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
@@ -419,3 +440,4 @@ echo "check-docs: OK"
 ##		2026-09-19  install.ps1 stays ASCII with no byte-order mark, and parses
 ##		            from its raw bytes.
 ##		2026-09-19  Every go test a gate runs passes -count=1.
+##		2026-09-19  The man page date is no older than its last commit.
