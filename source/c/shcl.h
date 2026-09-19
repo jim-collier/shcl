@@ -434,11 +434,11 @@ typedef struct { size_t start, end; shcl_quote quote; } shcl_piece;
 // One path segment: its name, an optional `[selector]` body, and whether the
 // name was the bare `*` wildcard (lookups only).
 typedef struct { shcl_piece name; shcl_piece selector; int has_selector; int star; } shcl_seg_tok;
-// The spans of one line, or of one lookup path. Zero it before its first use;
-// each call clears and reuses it, and the two arrays grow in the read arena of
-// the document passed on that call (valid until shcl_free or
-// shcl_reads_release - zero it again after that). Handed another document, it
-// starts over in that one's arena. cap is the caller's element cap (0 = none):
+// The spans of one line, or of one lookup path. Each call clears and reuses
+// it, and the two arrays grow in the read arena of the document passed on
+// that call. Zero it before its first use, before handing it a different
+// document, and after shcl_free or shcl_reads_release on the one it last
+// used; the arrays die with that arena. cap is the caller's element cap (0 = none):
 // the scan stops as soon as the value holds more elements than this, and
 // capped says it did, with elements then incomplete. cap is kept across calls.
 typedef struct {
@@ -1396,8 +1396,10 @@ static void tokenize(ShclArena *a, ShclStr text, char sep, int path, ShclRules r
 
 /* The two arrays belong to the arena they were grown in. Kept across a
    second document, the next push would write into the first one's memory,
-   and once that one is freed, into memory nobody owns. What the old arrays
-   hold stays with the first document until it is freed. */
+   and once that one is freed, into memory nobody owns. A guard, not a
+   promise: a freed document whose address comes back looks the same, so the
+   header asks the caller to zero the struct. A per-document serial would
+   need a global counter, and C99 has no atomics to keep two threads off it. */
 static void tok_adopt(ShclArena *a, shcl_tokens *t) {
 	if (t->arena == a) return;
 	t->segments = NULL; t->seg_cap = 0; t->nseg = 0;

@@ -366,7 +366,8 @@ int main(void) {
 
 	// A tokens struct handed a second document grows in that one's read arena.
 	// Its arrays stayed in the first one's, so freeing the first and tokenizing
-	// again wrote into freed memory.
+	// again wrote into freed memory. The header asks for a zero between
+	// documents; this is the guard for a caller who forgets, while both live.
 	{
 		shcl_doc *da = shcl_parse("a: 1\n", 5), *db = shcl_parse("b: 2\n", 5);
 		shcl_tokens t;
