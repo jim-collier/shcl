@@ -2067,6 +2067,17 @@ func selectorOpenQuote(tok *Tokens) bool {
 	return false
 }
 
+// bracketText reports bracket text (E019): a `[` first after the colon. Read
+// off the first piece rather than the value span, since a capped scan
+// empties the span and keeps the pieces it built.
+func bracketText(tok *Tokens, text string) bool {
+	if tok.Sep < 0 || len(tok.Elements) == 0 {
+		return false
+	}
+	p := tok.Elements[0]
+	return p.Quote == QuoteNone && p.End > p.Start && text[p.Start] == '['
+}
+
 // pathOf is the path the tokens spell. An error is the tokenizer's fault:
 // input that is not a path at all, which the caller skips with a diagnostic.
 func pathOf(tok *Tokens, text string) (pathScan, error) {
@@ -2767,8 +2778,9 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 		p.err(line, "E017", "unterminated quote in value")
 	}
 	// Element cap: each element line past it is refused on its own, the way
-	// any other bad element line is.
-	if p.maxElements != 0 && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
+	// any other bad element line is. Only a line that would join the list:
+	// under a field that already has a value it is E011, cap or not.
+	if p.maxElements != 0 && p.arena[parent].starList && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
 		p.refuse(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 		return
 	}
@@ -3041,19 +3053,31 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			continue
 		}
 		next := i + 1
-		// Element cap: the whole line is refused, so a capped load never
-		// holds a truncated array that would read as the document's value.
-		// The scan stopped at the cap, so nothing past it was built either.
-		if tok.Capped {
-			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
-			i = p.skipFieldLine(lines, i, indent, &tok, rest)
-			continue
-		}
 		// A selector body takes the same open-quote rule as a value element,
 		// and the same code: the body is read bare, quotes and all, so the
 		// line still binds - somewhere the author did not mean.
 		if selectorOpenQuote(&tok) {
 			p.err(lineno, "E017", "unterminated quote in selector")
+		}
+		// A value spelled the way JSON, TOML and YAML spell an array. The
+		// brackets are not a selector after the colon, and reading the text
+		// without them would bake a changed value in, so the line is kept
+		// verbatim. Judged before the cap and from the first piece, which
+		// the cap keeps: a cap refuses only a line that would bind.
+		if bracketText(&tok, rest) {
+			p.refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", outRetained(trimEndWS(rest), hadBlank), indent)
+			i = next
+			continue
+		}
+		// Element cap: the whole line is refused, so a capped load never
+		// holds a truncated array that would read as the document's value.
+		// The scan stopped at the cap, so nothing past it was built either,
+		// and the value span is empty: this has to come before the value is
+		// read, or the line would bind as empty.
+		if tok.Capped {
+			p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
+			i = p.skipFieldLine(lines, i, indent, &tok, rest)
+			continue
 		}
 		// The verbatim value span, kept for reads' Raw (only the plain
 		// scalar/inline-array case has a one-line source spelling).
@@ -3067,14 +3091,6 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			v = value{kind: vEmpty}
 		case *scan.valueText == "":
 			v = value{kind: vEmpty}
-		case strings.HasPrefix(*scan.valueText, "["):
-			// A value spelled the way JSON, TOML and YAML spell an array. The
-			// brackets are not a selector after the colon, and reading the
-			// text without them would bake a changed value in, so the line
-			// is kept verbatim.
-			p.refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", outRetained(trimEndWS(rest), hadBlank), indent)
-			i = next
-			continue
 		default:
 			if ch, length, info, ok := fenceOpen(*scan.valueText); ok {
 				// Same-line fence spelling.

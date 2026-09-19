@@ -867,6 +867,20 @@ fn parse_limited_caps() {
 		1
 	);
 	assert_eq!(doc.get_int_array("arr"), Ok(vec![1, 2]));
+	// A cap refuses only a line that would bind: bracket text stays E019 and
+	// kept, and an element under a field with a value stays E011.
+	let doc = Document::parse_limited(
+		"arr: [1, 2, 3]\nk: x\n\t* 1\n",
+		Strictness::Standard,
+		0,
+		1,
+		0,
+	)
+	.unwrap();
+	let codes: Vec<_> = doc.diagnostics().iter().map(|d| (d.line, d.code)).collect();
+	assert_eq!(codes, vec![(1, "E019"), (3, "E011")]);
+	assert_eq!(doc.lost_count(), 1);
+	assert!(doc.to_canonical().contains("arr: [1, 2, 3]"));
 	// The count the cap judges is the count the array reads back as, spelling
 	// by spelling: quoted commas, a backslash (a character, so it shields
 	// nothing), empty and blank slots, a Unicode blank (content: only a space
