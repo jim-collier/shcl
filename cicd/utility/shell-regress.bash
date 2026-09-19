@@ -421,6 +421,84 @@ if fHave pwsh; then
 	[[ "${out}" == *"three=3"* ]]    || fBad "install.ps1 smoke test lost a nonzero exit: ${out@Q}"
 	[[ "${out}" == *"good=0"* ]]     || fBad "install.ps1 smoke test failed a working binary: ${out@Q}"
 
+	##	20260918b item 5: on a first install nothing named shcl is on the
+	##	session's PATH yet, and reading .Source off that nothing threw under
+	##	strict mode after a good install, at exit 1. The three answers the
+	##	bash twin gives: none, our own copy, someone else's copy first.
+	mkdir -p "${tmpDir}/pshadow/ours" "${tmpDir}/pshadow/theirs" "${tmpDir}/pshadow/none"
+	printf '#!/bin/sh\n' > "${tmpDir}/pshadow/ours/shcl"; printf '#!/bin/sh\n' > "${tmpDir}/pshadow/theirs/shcl"
+	chmod 755 "${tmpDir}/pshadow/ours/shcl" "${tmpDir}/pshadow/theirs/shcl"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Get-ShclShadow/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$ours = '${tmpDir}/pshadow/ours/shcl'"
+		echo "foreach (\$dirs in 'none', 'ours', 'theirs:ours') {"
+		echo "	\$env:PATH = ((\$dirs -split ':') | ForEach-Object { '${tmpDir}/pshadow/' + \$_ }) -join ':'"
+		echo '	try { $r = Get-ShclShadow $ours; Write-Output "$dirs=[$r]" } catch { Write-Output "$dirs=threw $_" }'
+		echo '}'
+	} > "${tmpDir}/shadow.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/shadow.ps1" 2>&1 || true)"
+	[[ "${out}" == *"none=[]"* ]] || fBad "install.ps1 fails when no shcl is on PATH yet: ${out@Q}"
+	[[ "${out}" == *"ours=[]"* ]] || fBad "install.ps1 called its own copy a shadow: ${out@Q}"
+	[[ "${out}" == *"theirs:ours=[${tmpDir}/pshadow/theirs/shcl]"* ]] || fBad "install.ps1 did not see the copy shadowing it: ${out@Q}"
+
+	##	20260918b item 36: a request with no response at all (DNS, a refused
+	##	port, a proxy) has no status, and reading one threw under strict mode,
+	##	so the network-down message was never printed. A 403 still has to read
+	##	as 403, or a rate limit goes back to looking like a dead network.
+	python3 - "${tmpDir}/httpport" <<'SRVEOF' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+	def do_GET(self):
+		self.send_response(403); self.send_header('Content-Length', '0'); self.end_headers()
+	def log_message(self, *a):
+		pass
+s = http.server.HTTPServer(('127.0.0.1', 0), H)
+open(sys.argv[1], 'w').write(str(s.server_address[1]))
+s.serve_forever()
+SRVEOF
+	httpPid=$!
+	for _ in {1..50}; do [[ -s "${tmpDir}/httpport" ]] && break; sleep 0.1; done
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Get-HttpStatus/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "foreach (\$url in 'http://127.0.0.1:9/', 'http://127.0.0.1:$(cat "${tmpDir}/httpport" 2>/dev/null || true)/') {"
+		echo '	try { $null = Invoke-RestMethod -Uri $url -UseBasicParsing; Write-Output "no error" } catch { try { Write-Output ("status=" + (Get-HttpStatus $_)) } catch { Write-Output "threw $_" } }'
+		echo '}'
+	} > "${tmpDir}/status.ps1"
+	out="$(env -u HTTP_PROXY -u http_proxy -u HTTPS_PROXY -u https_proxy -u ALL_PROXY -u all_proxy pwsh -NoProfile -File "${tmpDir}/status.ps1" 2>&1 || true)"
+	kill "${httpPid}" 2>/dev/null || true
+	[[ "${out}" == *"status=0"* ]]   || fBad "install.ps1 cannot read a request that got no response: ${out@Q}"
+	[[ "${out}" == *"status=403"* ]] || fBad "install.ps1 lost the status of a refused request: ${out@Q}"
+
+	##	20260918b items 11 and 36, end to end: the real script with only its
+	##	Windows refusal cut out, every request sent to a proxy that is not
+	##	there. An uninstall needs no release and must not wait on the API, and
+	##	an install with the network down has to say so. The uninstall's PATH
+	##	edit then fails for want of a registry; the rows are about what comes
+	##	before it.
+	#  shellcheck disable=2016  ## PowerShell's own $IsWindows, matched literally.
+	sed '/-and -not \$IsWindows) {$/,/^\t}$/d' "${repoDir}/install.ps1" > "${tmpDir}/nogate.ps1"
+	if (($(wc -l < "${repoDir}/install.ps1") - $(wc -l < "${tmpDir}/nogate.ps1") != 3)) || grep -q 'IsWindows' "${tmpDir}/nogate.ps1"; then
+		fBad "install.ps1's Windows refusal is not the three-line block these rows cut out"
+	fi
+	fNoNet(){ env -u DISPLAY -u GITHUB_TOKEN -u NO_PROXY -u no_proxy PROCESSOR_ARCHITECTURE=AMD64 LOCALAPPDATA="${tmpDir}/lad" \
+		HTTPS_PROXY=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 \
+		pwsh -NoProfile -NonInteractive -File "${tmpDir}/nogate.ps1" "$@" 2>&1 ;}
+	mkdir -p "${tmpDir}/lad/Programs/Shcl/code"
+	printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/shcl.exe"; printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/code/lib.rs"
+	out="$(fNoNet -Uninstall -Target user -Yes || true)"
+	[[ "${out}" == *"removing shcl:"* ]] || fBad "install.ps1 -Uninstall needed the network before removing anything: ${out@Q}"
+	[[ -e "${tmpDir}/lad/Programs/Shcl/shcl.exe" || -e "${tmpDir}/lad/Programs/Shcl/code/lib.rs" ]] \
+		&& fBad "install.ps1 -Uninstall left its files with the network down"
+	out="$(fNoNet -Target user -Yes || true)"
+	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
+		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
+
 	##	20260909 item 38: the setup's PATH script exited 0 when it could not
 	##	write, so the setup's fallback message never showed. There is no
 	##	registry here at all, which is a failure it must report.
@@ -437,7 +515,7 @@ fi
 ##	the installer had to create stayed root-only. The installer's own lay-down
 ##	step runs here on a staged payload, under that umask, into a sandbox whose
 ##	bin and man1 directories do not exist yet.
-eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
+eval "$(sed -n '/^fWidenModes()/,/^}/p;/^fTopMissing()/,/^}/p;/^fLinkOwner()/,/^}/p;/^fLayDown()/,/^}/p' "${repoDir}/install.bash")"
 (
 	umask 077
 	mkdir -p "${tmpDir}/stage/code" "${tmpDir}/stage/scripts" "${tmpDir}/stage/man" "${tmpDir}/stage/completions" "${tmpDir}/sys/usr/local/share"
@@ -460,6 +538,30 @@ while IFS= read -r row; do
 	esac
 done < <(find "${tmpDir}/sys/opt" "${tmpDir}/sys/usr/local/bin" "${tmpDir}/sys/usr/local/share/man" -printf '%m %y %p\n' | sort)
 [[ -L "${tmpDir}/sys/usr/local/share/man/man1/shcl.1" ]] || fBad "install.bash did not link the man page"
+
+##	20260918b item 41: the man link kept the older test, a symlink or nothing,
+##	so a man1/shcl.1 linking to a stow or hand-built copy was repointed at ours
+##	and the uninstall then deleted it as ours. A user install into a scratch
+##	HOME, laid down by the lifted step, then removed by the real script, which
+##	needs no network to uninstall.
+nBadBefore="${nBad}"
+(
+	uhome="${tmpDir}/manhome"; mkdir -p "${uhome}/.local/share/man/man1" "${uhome}/stow"
+	printf 'theirs\n' > "${uhome}/stow/shcl.1"
+	ln -s "${uhome}/stow/shcl.1" "${uhome}/.local/share/man/man1/shcl.1"
+	# shellcheck disable=SC2034
+	asroot="" tmp="${tmpDir}/stage" dest="${uhome}/.local/share/shcl" link="${uhome}/.local/bin/shcl"
+	# shellcheck disable=SC2034
+	manlink="${uhome}/.local/share/man/man1/shcl.1" target=user have_dropins=1 have_docs=1
+	manNote=""
+	fLayDown
+	[[ "$(readlink -- "${manlink}")" == "${uhome}/stow/shcl.1" ]] || fBad "install.bash repointed a man link that was not its own"
+	[[ "${manNote:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${manNote@Q}"
+	HOME="${uhome}" bash "${repoDir}/install.bash" --uninstall --target=user --yes >/dev/null 2>&1 || fBad "install.bash --uninstall failed"
+	[[ -L "${manlink}" && -e "${uhome}/stow/shcl.1" ]] || fBad "install.bash --uninstall removed a man link that was not its own"
+	[[ -e "${dest}/shcl" ]] && fBad "install.bash --uninstall left its own binary"
+	exit $((nBad - nBadBefore))
+) || nBad=$((nBad + 1))
 
 ##	20260901b item 34: the uninstall's payload globs used to expand in the
 ##	unprivileged shell that called sudo, so a system tree only root could list
@@ -559,8 +661,11 @@ nBadBefore="${nBad}"
 		&& fBad "install.bash reported a shadow where there is no shcl at all"
 	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
-grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
-	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
+##	The install.ps1 half was a source grep, and it passed while the check it
+##	looked for threw on every first install (20260918b item 5). The pwsh block
+##	runs Get-ShclShadow over the same three answers instead.
+# grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
+# 	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
 
 ##	20260901b item 39: a read-only HOME got through both downloads and then
 ##	failed on a raw mkdir error. The destinations are probed first, and the
@@ -630,6 +735,84 @@ grep -q 'rate limit' "${repoDir}/install.bash" || fBad "install.bash does not na
 grep -q 'rate limit' "${repoDir}/install.ps1"  || fBad "install.ps1 does not name a rate limit"
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.bash" || fBad "install.bash ignores GITHUB_TOKEN"
 grep -q 'GITHUB_TOKEN' "${repoDir}/install.ps1"  || fBad "install.ps1 ignores GITHUB_TOKEN"
+
+##	20260918b item 37: the token rode on every download, and each release
+##	download redirects to another host. curl drops the header there and wget
+##	1.x sends it on. Two local https listeners, the first redirecting to the
+##	second under another name, and install.bash's own fetch lines for each
+##	tool: a download carries no token anywhere, the API calls carry it.
+if fHave openssl && fHave wget && fHave curl; then
+	tdir="${tmpDir}/token"; mkdir -p "${tdir}"
+	openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext 'subjectAltName=IP:127.0.0.1,DNS:localhost' \
+		-keyout "${tdir}/key.pem" -out "${tdir}/cert.pem" 2>/dev/null
+	python3 - "${tdir}" <<'SRVEOF' &
+import http.server, ssl, sys, threading
+d = sys.argv[1]
+def serve(name, redirect_to):
+	class H(http.server.BaseHTTPRequestHandler):
+		def do_GET(self):
+			open(f'{d}/{name}.log', 'a').write(f'{self.path} auth={self.headers.get("Authorization")}\n')
+			if redirect_to and self.path.startswith('/download'):
+				self.send_response(302); self.send_header('Location', redirect_to() + self.path)
+				self.send_header('Content-Length', '0'); self.end_headers()
+				return
+			self.send_response(200); self.send_header('Content-Length', '2'); self.end_headers(); self.wfile.write(b'ok')
+		def log_message(self, *a):
+			pass
+	srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+	ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(f'{d}/cert.pem', f'{d}/key.pem')
+	srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+	return srv
+asset = serve('asset', None)
+origin = serve('origin', lambda: f'https://localhost:{asset.server_address[1]}')
+threading.Thread(target=asset.serve_forever, daemon=True).start()
+open(f'{d}/port', 'w').write(str(origin.server_address[1]))
+origin.serve_forever()
+SRVEOF
+	tokenPid=$!
+	for _ in {1..50}; do [[ -s "${tdir}/port" ]] && break; sleep 0.1; done
+	printf 'ca_certificate = %s\n' "${tdir}/cert.pem" > "${tdir}/wgetrc"
+	for tool in curl wget; do
+		defs="$(sed -n "/^\tfetch() { ${tool} /p;/^\tfetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
+		(
+			eval "${defs}"
+			export GITHUB_TOKEN=regress-token CURL_CA_BUNDLE="${tdir}/cert.pem" WGETRC="${tdir}/wgetrc"
+			url="https://127.0.0.1:$(cat "${tdir}/port")"
+			fetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fetch failed" >> "${tdir}/${tool}.err"
+			fetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fetchApi failed" >> "${tdir}/${tool}.err"
+			[[ "$(fApiStatus "${url}/api/${tool}")" == "200" ]] || echo "fApiStatus failed" >> "${tdir}/${tool}.err"
+		) 2>/dev/null
+		[[ -s "${tdir}/${tool}.err" ]] && fBad "install.bash ${tool} arm did not complete its requests: $(tr '\n' ' ' < "${tdir}/${tool}.err")"
+		grep -q "^/download/${tool} auth=None$" "${tdir}/asset.log" 2>/dev/null \
+			|| fBad "install.bash's ${tool} download sent GITHUB_TOKEN to the host it was redirected to"
+		grep -q "^/download/${tool} auth=None$" "${tdir}/origin.log" 2>/dev/null \
+			|| fBad "install.bash's ${tool} download sent GITHUB_TOKEN"
+		[[ "$(grep -c "^/api/${tool} auth=Bearer regress-token$" "${tdir}/origin.log" 2>/dev/null || true)" == "2" ]] \
+			|| fBad "install.bash's ${tool} API calls did not both carry GITHUB_TOKEN"
+	done
+	kill "${tokenPid}" 2>/dev/null || true
+fi
+
+##	20260918b item 42: the publish script matched -h and -v anywhere in its
+##	joined arguments, so `--message "pass -v through to rar"` printed the
+##	banner and exited 0 having published nothing. Run from a directory that is
+##	not a repo, so the run can only reach the refusal that comes before any
+##	write. A stub rar stands in, since the script checks for one first.
+nBadBefore="${nBad}"
+(
+	pdir="${tmpDir}/publish"; mkdir -p "${pdir}/bin" "${pdir}/work"
+	printf '#!/bin/sh\nexit 0\n' > "${pdir}/bin/rar"; chmod 755 "${pdir}/bin/rar"
+	fPublish(){ (cd "${pdir}/work" && PATH="${pdir}/bin:${PATH}" bash "${repoDir}/cicd/utility/n8git_backup-and-publish" "$@" 2>&1) ;}
+	rc=0; out="$(fPublish --quiet --message "pass -v through to rar")" || rc=$?
+	[[ "${rc}" != 0 && "${out}" == *"Not in git project base directory"* ]] \
+		|| fBad "n8git_backup-and-publish took a -v inside --message for a version request: rc=${rc} ${out@Q}"
+	rc=0; out="$(fPublish -m "document the -h flag")" || rc=$?
+	[[ "${rc}" != 0 && "${out}" == *"Not in git project base directory"* ]] \
+		|| fBad "n8git_backup-and-publish took a -h inside -m for a help request: rc=${rc} ${out@Q}"
+	rc=0; out="$(fPublish --message x -v)" || rc=$?
+	[[ "${rc}" == 0 && "${out}" == *"Copyright"* ]] || fBad "n8git_backup-and-publish no longer answers a real -v: rc=${rc} ${out@Q}"
+	exit $((nBad - nBadBefore))
+) || nBad=$((nBad + 1))
 
 ##	20260901b item 46: the PowerShell wrapper's header ran one line out to 126
 ##	columns where its bash twin wraps. Comment lines only - the code in both
@@ -1000,17 +1183,23 @@ if command -v nfpm >/dev/null 2>&1 && command -v dpkg-deb >/dev/null 2>&1 && com
 	printf 'x\n' > "${pDir}/payload/completions/_shcl"
 	printf 'x\n' | gzip -9nc > "${pDir}/payload/man/shcl.1.gz"
 	printf 'x\n' | gzip -9nc > "${pDir}/payload/doc/changelog.gz"
-	printf 'x\n' > "${pDir}/shcl"
+	##	20260918b item 40: the rpm required a package named libgcc, which
+	##	openSUSE does not have. The stub carries a real binary linked to
+	##	libgcc_s, the way the x86_64 build is, with the names package.bash
+	##	uses, so the read-back can hold them against what rpm generates.
+	cp "${cli}" "${pDir}/p"
+	eval "$(grep -E '^(deb|rpm)GccDep=' "${repoDir}/cicd/utility/package.bash")"
+	[[ -n "${rpmGccDep:-}" ]] || fBad "package.bash names no rpm libgcc dependency"
 	sed -e "s|\${SHCL_VERSION}|9.9.9|g" -e "s|\${SHCL_ARCH}|amd64|g" \
-	    -e "s|\${SHCL_BIN}|${pDir}/shcl|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
-	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}||g" -e "s|\${SHCL_RPM_LIBGCC}||g" \
+	    -e "s|\${SHCL_BIN}|${pDir}/p|g" -e "s|\${SHCL_PAYLOAD}|${pDir}/payload|g" \
+	    -e "s|\${SHCL_GLIBC}|2.34|g" -e "s|\${SHCL_DEB_LIBGCC}|\\n      - ${debGccDep:-}|g" -e "s|\${SHCL_RPM_LIBGCC}|\\n      - ${rpmGccDep:-}|g" \
 	    "${repoDir}/cicd/packaging/nfpm.yaml" > "${pDir}/nfpm.yaml"
 	if nfpm package -f "${pDir}/nfpm.yaml" -p deb -t "${pDir}/p.deb" >/dev/null 2>&1 \
 	   && nfpm package -f "${pDir}/nfpm.yaml" -p rpm -t "${pDir}/p.rpm" >/dev/null 2>&1; then
 		##	The shipped read-back, run on the stub packages.
 		eval "$(sed -n '/^fCheckDeps()/,/^}/p' "${repoDir}/cicd/utility/package.bash")"
 		# shellcheck disable=SC2329  ## called from the lifted fCheckDeps
-		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 "" ) \
+		( fDie(){ echo "shell-regress: $*" >&2; exit 1; }; fCheckDeps "${pDir}/p" 2.34 1 ) \
 			|| fBad "the packages do not read back the way package.bash requires"
 	else
 		fBad "nfpm could not build a package from cicd/packaging/nfpm.yaml"

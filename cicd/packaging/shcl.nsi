@@ -101,9 +101,13 @@ Section "Install"
 	WriteRegDWORD HKLM "${REG_UNINST}" "NoRepair" 1
 
 	; Append to the machine PATH once (segment-wise, REG_EXPAND_SZ preserved).
+	; PowerShell by full path in both sections: a bare name is looked up in the
+	; setup's own directory first, which for a download is Downloads, and this
+	; runs elevated. From the 32-bit stub that path reaches the 32-bit
+	; PowerShell, which is fine, since the Environment key is not redirected.
 	InitPluginsDir
 	!insertmacro WriteShclPathPs1
-	nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR"'
+	nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR"'
 	Pop $1
 	StrCmp $1 "0" +2
 	DetailPrint "PATH update failed; add $INSTDIR to the machine PATH manually"
@@ -114,7 +118,7 @@ Section "Uninstall"
 	; Best-effort segment-wise PATH removal, then the files.
 	InitPluginsDir
 	!insertmacro WriteShclPathPs1
-	nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR" -Remove'
+	nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\shclpath.ps1" -Dir "$INSTDIR" -Remove'
 	Pop $1
 	StrCmp $1 "0" +2
 	DetailPrint "PATH cleanup failed; remove $INSTDIR from the machine PATH manually"

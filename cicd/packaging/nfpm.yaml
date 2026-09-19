@@ -68,12 +68,20 @@ contents:
     file_info:
       mode: 0644
   # Completions go to the shell's own directory, not under /usr/share/shcl:
-  # bash-completion and zsh only autoload from theirs.
+  # bash-completion and zsh only autoload from theirs. zsh's differs by
+  # family: Debian's $fpath has vendor-completions and no site-functions,
+  # which is where Fedora and openSUSE look.
   - src: ${SHCL_PAYLOAD}/completions/shcl.bash
     dst: /usr/share/bash-completion/completions/shcl
     file_info:
       mode: 0644
   - src: ${SHCL_PAYLOAD}/completions/_shcl
+    dst: /usr/share/zsh/vendor-completions/_shcl
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: ${SHCL_PAYLOAD}/completions/_shcl
     dst: /usr/share/zsh/site-functions/_shcl
+    packager: rpm
     file_info:
       mode: 0644

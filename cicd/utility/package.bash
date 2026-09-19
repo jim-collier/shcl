@@ -86,13 +86,20 @@ fCheckNoProfiler
 
 built=0
 
+## What the packages require for libgcc_s when the binary links it. rpm's
+## generator names the soname rather than a package, since the package name
+## differs by distro: Fedora and RHEL call it libgcc, openSUSE libgcc_s1, and
+## a plain `libgcc` refused to install on openSUSE. Both provide the soname.
+debGccDep='libgcc-s1'
+rpmGccDep='libgcc_s.so.1()(64bit)'
+
 ##	The deb's Depends and the rpm's Requires against the binary they carry:
 ##	the glibc floor, libgcc when linked, and the Debian doc files.
 fCheckDeps(){
 	local stem="$1" glibc="$2" needGcc="$3" deps
 	deps="$(dpkg-deb -f "${stem}.deb" Depends)"
 	[[ "${deps}" == *"libc6 (>= ${glibc})"* ]] || fDie "$(basename "${stem}").deb: Depends ${deps@Q} lacks libc6 (>= ${glibc})"
-	if [[ -n "${needGcc}" && "${deps}" != *libgcc-s1* ]]; then fDie "$(basename "${stem}").deb: Depends ${deps@Q} lacks libgcc-s1"; fi
+	if [[ -n "${needGcc}" && "${deps}" != *"${debGccDep}"* ]]; then fDie "$(basename "${stem}").deb: Depends ${deps@Q} lacks ${debGccDep}"; fi
 	## Into a variable first: grep -q quitting early would kill the tar behind
 	## dpkg-deb with SIGPIPE and fail the pipeline for the wrong reason.
 	local listing; listing="$(dpkg-deb -c "${stem}.deb")"
@@ -104,15 +111,30 @@ fCheckDeps(){
 		fDie "rpm is missing and the gate requires it to read the package back"
 	fi
 	grep -q ' ./usr/share/shcl/$' <<<"${listing}" || fDie "$(basename "${stem}").deb: does not own /usr/share/shcl"
+	## Debian's zsh looks in vendor-completions and never in site-functions.
+	grep -q ' ./usr/share/zsh/vendor-completions/_shcl$' <<<"${listing}" || fDie "$(basename "${stem}").deb: zsh completion is not where Debian's zsh looks"
 	if command -v rpm >/dev/null 2>&1; then
 		deps="$(rpm -qp --requires "${stem}.rpm" 2>/dev/null)"
 		[[ "${deps}" == *"glibc >= ${glibc}"* ]] || fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks glibc >= ${glibc}"
-		if [[ -n "${needGcc}" && "${deps}" != *libgcc* ]]; then fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks libgcc"; fi
+		if [[ -n "${needGcc}" ]] && ! grep -qxF "${rpmGccDep}" <<<"${deps}"; then fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks ${rpmGccDep}"; fi
+		## And that name has to be one rpm's own generator gives the binary,
+		## which is what every rpm distro provides; a package name is one
+		## distro's. STEM is the binary the package carries.
+		if [[ -n "${needGcc}" ]]; then
+			local elfdeps=/usr/lib/rpm/elfdeps gen
+			if [[ -x "${elfdeps}" ]]; then
+				gen="$("${elfdeps}" --requires "${stem}" </dev/null)"
+				grep -qxF "${rpmGccDep}" <<<"${gen}" || fDie "$(basename "${stem}").rpm: requires ${rpmGccDep}, which rpm does not generate for the binary"
+			elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+				fDie "rpm's elfdeps is missing and the gate requires it to check the libgcc requirement"
+			fi
+		fi
 		## rpm owns only what is listed, so the payload's own parent has to be
 		## listed too or removing the package leaves the directory behind.
 		local files; files="$(rpm -qlp "${stem}.rpm" 2>/dev/null)"
 		grep -qx '/usr/share/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/shcl"
 		grep -qx '/usr/share/doc/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/doc/shcl"
+		grep -qx '/usr/share/zsh/site-functions/_shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: no zsh completion in site-functions"
 	fi
 }
 
@@ -147,7 +169,7 @@ if command -v nfpm >/dev/null 2>&1; then
 		## a grep -q that quits early kills the writer with SIGPIPE under
 		## pipefail, and the probe then reads as "no libgcc".
 		needed="$(readelf -d "${bin}" || true)"
-		if grep -q 'NEEDED.*libgcc_s' <<<"${needed}"; then debGcc=$'\n      - libgcc-s1'; rpmGcc=$'\n      - libgcc'; fi
+		if grep -q 'NEEDED.*libgcc_s' <<<"${needed}"; then debGcc=$'\n      - '"${debGccDep}"; rpmGcc=$'\n      - '"${rpmGccDep}"; fi
 		sed -e "s|\${SHCL_VERSION}|${ver}|g" -e "s|\${SHCL_ARCH}|${goarch}|g" \
 		    -e "s|\${SHCL_BIN}|${bin}|g" -e "s|\${SHCL_PAYLOAD}|${payload}|g" \
 		    -e "s|\${SHCL_GLIBC}|${glibc}|g" -e "s|\${SHCL_DEB_LIBGCC}|${debGcc//$'\n'/\\n}|g" -e "s|\${SHCL_RPM_LIBGCC}|${rpmGcc//$'\n'/\\n}|g" \
