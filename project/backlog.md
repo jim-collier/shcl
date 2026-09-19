@@ -64,6 +64,18 @@ Sub-bullets under an item lead with what they are, so an item can be read by ski
 
 - `Note:` anything else.
 
+- `Keep:` a recorded decision the item sits on, so the fix does not move it.
+
+- `Against:` a recorded decision the fix touches. A fix never reverses one on its own. A reversal is filed as an enhancement that names the decision, and only a `Decided:` line settles it.
+
+- `Sweep:` the sibling sites a class fix has to cover. An item with one does not close until a `Swept:` line names each site, or the grep that shows there are no others.
+
+A fix that depends on an order or a reason the code does not show says so in a comment at the site, and its test fails when the reason is broken, not only when the symptom comes back.
+
+A class that has come back twice gets a table in `design.md` marked as the rule, as Load outcomes and Lexical edges are. Each later item in the class names its row.
+
+A trap written into memory that describes a hole in a gate becomes a gate change or an open item the same day. A pin runs the path a user runs: the documented command line, the downloaded bytes. A grep of the source for the fix is not a pin.
+
 A fix said to be in all four bindings has to name the function for each. "In all four" on its own can't be checked by anyone reading later.
 
 Each item should include the date it was opened and closed. If the open date is unknown, it says "n/a". A deferred item keeps only its opened date.
@@ -83,13 +95,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Three classes came back and want a fix for the class. `init` output that fails its own check has eleven earlier items and six more here (6, 7, 8, 25, 26, 27), all from the generator predicting what the scanner will read and not asking it. A gate that reports OK with its defect present has about twenty earlier items and five more (12, 13, 43, 44, 45). The installers have about twenty-five earlier items and eight more (1, 5, 11, 36, 37, 38, 41, 42), and no gate has ever run `install.ps1`.
 
 	- Seen and not filed, since each would reverse a recorded decision: a bare `#` in a write path cutting the path there, a fence run on an `E014` line (declined in the 20260918 round), and `allowed` on a datetime telling `13:00` from `13:00:00`.
-
-	- 🔘 Item 1: both Windows install one-liners in the README fail to parse, so nothing installs.
-		- Reproduced: pwsh 7.6.6 against the live main URL. `irm` keeps the file's byte-order mark as the first character, PowerShell does not take it for whitespace, and `param` is then no longer the first statement. Three parse errors, before a line runs. Every version of the file since the first has it. Running with `-File` is not affected, which is how every Windows test so far ran.
-		- Origin: `74c3a5a` (2026-07-22). Never filed. A 20260829 note recorded the one-liners as working. Confirmed on pwsh 7, Plausible on 5.1.
-		- Decided: needed before code. Either the file loses the mark (its only non-ASCII is in comments), or both documented lines strip it. Write the choice down, since a later encoding sweep would otherwise put it back.
-		- Sweep: the script's header, its `-Help` text and rerun hint, and `README.md`.
-		- Opened: 20260918-193000
 
 	- 🔘 Item 2: a main push made from a linked worktree makes two gates write into the real repository.
 		- Reproduced: through the real hook in a scratch clone. git hands the hook `GIT_DIR`, the hook passes it on, and `check-install-dev.bash` and one block of `shell-regress.bash` then run `git init`, `commit` and `config` against the real repo. Left behind: empty commits on the branch, `core.bare = true`, and `core.sshCommand` replaced, which drops the keepalive.
@@ -163,13 +168,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `21ec21d` (2026-08-18), where `-Uninstall` first appeared, already below the lookup. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
-		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
-		- Note: the crosscheck still covers Go's stdout. What goes unchecked is the library half: `raw`, `quoted`, `line`, and the cases the crosscheck skips. A local green run records its tree, and the hook then lets that tree through to main.
-		- Origin: `8bca69b` (2026-07-12). Confirmed.
-		- Sweep: `cicd/config.bash`, `win-runners.bash` and `contributing.md`.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 13: `lint-report.bash --check` says CLEAN for a run that failed, was cut off, or is still running, and then never looks at that log again.
 		- Reproduced: three fixtures. A log ending in `[ FAILED: ... ]`, which is what 14 stops in `cicd.bash` print. A log that just stops. And a log read while its run is in flight, which is marked seen and reports SEEN once the warnings and the abort arrive.
 		- Origin: `5b3f8e8` (2026-09-14), the fix for 20260909 item 23, which named one of the pipeline's two abort lines. Third item on this script. Confirmed.
@@ -235,12 +233,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Keep: `shcl_compact` does the same, and the 20260904 round read that as documented. Either fix it with these or make its header sentence say so.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
-		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.
-		- Origin: `3ca7fa9` (2026-09-18), the 20260918 item 5 fix. Third appearance of this handle's lifetime. Confirmed.
-		- Decided: needed before code. The header says both "zero it again after `shcl_free`" and "handed another document, it starts over". Either compare a per-document serial, which also covers release and compact, or delete the second sentence. Keeping both invites a fourth round.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 24: `shcl_generate` drops only `V096` and `V097` before a call, so a schema that does not build gains one more copy of each build fault per call.
 		- Reproduced: three calls on a schema with a bad `repeat` give 1, 2, then 3 diagnostics. The header and the veneer say the list describes this call. C only, since the others return the list.
 		- Origin: `67f1c80` (2026-09-01), with the drop from 20260902 item 21 written for two of the three kinds. Confirmed.
@@ -267,12 +259,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced: in all four. `* x`, a deeper `c: 1`, then `d: 2` and `* y` at the element's column. Lines 4 and 5 are `E012`, whose message says the indentation matches no open level, when that level was opened two lines up. With a field in place of the element everything binds.
 		- Origin: the element arm's 2026-07 form, reworked in `9b54fba` (2026-09-05). The half of 20260904 item 15 that was never covered: a dropped element holds its level and a kept one does not. Confirmed.
 		- Decided: needed before code, with a line in `design.md` and a corpus case beside `095`. Either the kept element holds its column with the field as the level's node, or it holds it dead and what sits under it is `E018`.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 29: under an element cap, a bracket-text line reports `E021` and counts lost, where uncapped it is `E019` and retained.
-		- Reproduced: through the capped parse in all four, byte-identical. A save then refuses a document that saves with the line kept when no cap is set. The CLIs cannot reach it.
-		- Cause: the capped check runs before the `[` check. `design.md` says the outcome table is the rule.
-		- Origin: `e58fe9f` (2026-09-07). Confirmed.
 		- Opened: 20260918-193000
 
 	- 🔘 Item 30: Python's `migrate` raises `ValueError` on a Format line with more than 4,300 digits.
@@ -720,6 +706,58 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260918b:
+
+	- Items closed so far. The rest of the round is open under Bugs.
+
+	- ✅ Item 1: both Windows install one-liners in the README fail to parse, so nothing installs.
+		- Reproduced: pwsh 7.6.6 against the live main URL. `irm` keeps the file's byte-order mark as the first character, PowerShell does not take it for whitespace, and `param` is then no longer the first statement. Three parse errors, before a line runs. Every version of the file since the first has it. Running with `-File` is not affected, which is how every Windows test so far ran.
+		- Origin: `74c3a5a` (2026-07-22). Never filed. A 20260829 note recorded the one-liners as working. Confirmed on pwsh 7, Plausible on 5.1.
+		- Decided: needed before code. Either the file loses the mark (its only non-ASCII is in comments), or both documented lines strip it. Write the choice down, since a later encoding sweep would otherwise put it back.
+		- Sweep: the script's header, its `-Help` text and rerun hint, and `README.md`.
+		- Decided: `install.ps1` stays ASCII with no byte-order mark. Its copyright line takes the plain `(C)` form with no ID, as the windres strings do, and its two section rules are ASCII. The other `.ps1` files are read from disk and keep their mark, which 5.1 needs.
+		- Fixed: the mark, the ID and the two rule lines are gone from `install.ps1`. The README lines are unchanged.
+		- Pinned by: `check-docs.bash` refuses a mark or any non-ASCII byte in `install.ps1`, and parses the file from its raw bytes, the way `irm` hands them over. On the old file it failed all three, with the same three parse errors, and it passes on the new one.
+		- Note: the 5.1 half still wants the Windows batch line for item 1. Nothing is left on the file for it to find.
+		- Opened: 20260918-193000
+		- Closed: 20260919-084501
+
+	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
+		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
+		- Note: the crosscheck still covers Go's stdout. What goes unchecked is the library half: `raw`, `quoted`, `line`, and the cases the crosscheck skips. A local green run records its tree, and the hook then lets that tree through to main.
+		- Origin: `8bca69b` (2026-07-12). Confirmed.
+		- Sweep: `cicd/config.bash`, `win-runners.bash` and `contributing.md`.
+		- Fixed: `-count=1` on both Go modules in `cicd/config.bash` and `win-runners.bash`, and in `contributing.md`.
+		- Pinned by: `check-docs.bash` fails on any `go test` in those two scripts without `-count=1`, watched to fail with the flag taken off one line. A golden damaged by hand passed as `ok (cached)` without the flag and failed with it.
+		- Swept: `config.bash`, `win-runners.bash` and `contributing.md`. `check-migrate.bash` runs cargo only.
+		- Note: memory had recorded this trap since 2026-09-15 and the gate never changed, which is the reason for the gotcha rule under Conventions.
+		- Opened: 20260918-193000
+		- Closed: 20260919-084501
+
+	- ✅ Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
+		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.
+		- Origin: `3ca7fa9` (2026-09-18), the 20260918 item 5 fix. Third appearance of this handle's lifetime. Confirmed.
+		- Decided: needed before code. The header says both "zero it again after `shcl_free`" and "handed another document, it starts over". Either compare a per-document serial, which also covers release and compact, or delete the second sentence. Keeping both invites a fourth round.
+		- Decided: the header keeps one rule and drops "handed another document, it starts over". Zero the struct before first use, before handing it a different document, and after `shcl_free` or `shcl_reads_release` on the one it last used. A per-document serial was declined, since it needs a global counter and C99 has no atomics to keep two threads off one.
+		- Fixed: the `shcl_tokens` comment in `shcl.h`, and `tok_adopt`'s, which now calls itself a guard for a caller who forgets while both documents live, not a promise.
+		- Keep: 20260918 item 5's `tok_adopt` and its `mem_bounds.c` case both stay.
+		- Note: what the item reproduced is now a use the header forbids, the same as reading a freed document. Nothing on the library side is left to pin.
+		- Opened: 20260918-193000
+		- Closed: 20260919-084501
+
+	- ✅ Item 29: under an element cap, a bracket-text line reports `E021` and counts lost, where uncapped it is `E019` and retained.
+		- Reproduced: through the capped parse in all four, byte-identical. A save then refuses a document that saves with the line kept when no cap is set. The CLIs cannot reach it.
+		- Cause: the capped check runs before the `[` check. `design.md` says the outcome table is the rule.
+		- Origin: `e58fe9f` (2026-09-07). Confirmed.
+		- Decided: `design.md` -> Load outcomes gains the order. Where a line sits comes first, then what it is, then the cap. A cap refuses only a line that would otherwise bind.
+		- Fixed: bracket text is judged before the cap and from the value's first piece, which a capped scan keeps, not the value span, which it empties. `bracket_text` in Rust and C, `bracketText` in Go, `_bracket_text` in Python, each called from the parse loop.
+		- Fixed: a sibling the new property found. An element line under a field that already has a value was `E021` under a cap and `E011` without. The cap in `add_star_element` (Rust, C), `addStarElement` (Go) and `_add_star_element` (Python) now applies only to a line that would join the list.
+		- Pinned by: fuzz property `a_cap_refuses_only_a_line_that_would_bind`, red on the old reference inside 300 iterations and green at 200,000. A `parse_limited` fixture in all four runners, each red on its old binding.
+		- Swept: the child-indent fence arm's `E021` stays, per 20260909 item 11, and runs after `E012` and `E018`.
+		- Note: a selector's `E017` is now reported ahead of both refusals, so a capped line with an open selector quote reports it too.
+		- Opened: 20260918-193000
+		- Closed: 20260919-084501
 
 - Code review 20260918:
 
