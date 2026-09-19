@@ -6737,6 +6737,7 @@ static char *shcl_resolve_target(const char *file) {
 #endif
 
 #ifndef _WIN32
+static int shcl_names_a_directory(const char *path);
 // The path a save actually rewrites. A symlink is followed so the write goes
 // through it; realpath does that but needs the target to exist, so a dangling
 // link is walked by hand and the file is created where it points. A path that
@@ -6762,6 +6763,9 @@ static char *shcl_resolve_target(const char *file) {
 		}
 		if (got < 0) { free(link); break; }
 		link[got] = '\0';
+		// A link whose text ends in a separator, `.` or `..` can only reach a
+		// directory, and the kernel refuses to create a file through it.
+		if (shcl_names_a_directory(link)) { free(link); free(p); errno = EISDIR; return NULL; }
 		if (link[0] == '/') { free(p); p = link; continue; }
 		// Relative to the link's own directory; a bare name sits in ".".
 		const char *slash = strrchr(p, '/');
@@ -6894,6 +6898,19 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #ifndef _WIN32
 	struct stat st;
 	int have_st = (stat(target, &st) == 0);
+	// Only a regular file is replaced. A rename over a FIFO or a device node
+	// swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	// rule for what a save does with each thing it can find at the path. POSIX
+	// has no errno for "not a regular file"; EINVAL is the nearest.
+	if (have_st && !S_ISREG(st.st_mode)) {
+		errno = S_ISDIR(st.st_mode) ? EISDIR : EINVAL;
+		free(tmp); SHCL_FILE_CLEANUP(); return 0;
+	}
+#else
+	if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+		errno = EISDIR;
+		free(tmp); SHCL_FILE_CLEANUP(); return 0;
+	}
 #endif
 	int fd = -1;
 	for (int attempt = 0; attempt < 8; attempt++) {

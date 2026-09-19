@@ -758,6 +758,67 @@ for row in "${rows[@]}"; do
 	done
 done
 
+## What a save does with each thing it can find at the path, one case per row of
+## the Save outcomes table in design.md, which is the rule. A FIFO, a link whose
+## text names a directory and a clean of `lnk/..` were each a site fix away from
+## the last one (20260918b items 3, 17 and 18). Each binding gets a fresh
+## directory, since the save is what is under test, and a timeout, since the old
+## code blocked reading a FIFO. POSIX fixtures: links and FIFOs.
+saveDir="${tmpDir}/save"
+fSaveSetup() {
+	case "$1" in
+		regular)  printf 'a: 1\n' > f.shcl ;;
+		nothing)  : ;;
+		link)     printf 'a: 1\n' > real.shcl; ln -s real.shcl f.shcl ;;
+		dangling) mkdir sub; ln -s sub/x.shcl f.shcl ;;
+		dotdot)   mkdir -p real/sub top; ln -s ../real/sub top/lnkdir; ln -s ../x.shcl real/sub/f.shcl ;;
+		linkdir)  ln -s d/ f.shcl ;;
+		cycle)    ln -s g.shcl f.shcl; ln -s f.shcl g.shcl ;;
+		slash)    printf 'a: 1\n' > f.shcl ;;
+		dir)      mkdir f.shcl ;;
+		fifo*)    mkfifo f.shcl ;;
+		device)   ln -s /dev/null f.shcl ;;
+	esac
+}
+## id | argv | exit | what must hold afterwards, as a bash test run in the directory
+saveCases=(
+	'regular|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
+	'nothing|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
+	'link|set --write --set b=2 f.shcl|0|[[ -L f.shcl ]] && grep -qx "b: 2" real.shcl'
+	'dangling|set --write --set b=2 f.shcl|0|[[ -L f.shcl ]] && grep -qx "b: 2" sub/x.shcl'
+	'dotdot|set --write --set b=2 top/lnkdir/f.shcl|0|[[ -L real/sub/f.shcl && ! -e top/x.shcl ]] && grep -qx "b: 2" real/x.shcl'
+	'linkdir|set --write --set b=2 f.shcl|8|[[ -L f.shcl && ! -e d ]]'
+	'cycle|set --write --set b=2 f.shcl|8|[[ -L f.shcl && -L g.shcl ]]'
+	'slash|set --write --set b=2 f.shcl/|8|[[ -f f.shcl ]] && ! grep -q b f.shcl'
+	'dir|set --write --set b=2 f.shcl|8|[[ -d f.shcl ]]'
+	'fifo|set --write --set b=2 f.shcl|8|[[ -p f.shcl ]]'
+	'fifo-fmt|fmt --write f.shcl|8|[[ -p f.shcl ]]'
+	'device|set --write --set b=2 f.shcl|8|[[ -L f.shcl && -c /dev/null ]]'
+)
+if [[ "${onWindows}" == 1 ]]; then
+	echo "cli-regress: skipping the save-target cases (POSIX fixtures; not judged on windows)"
+else
+	for sc in "${saveCases[@]}"; do
+		IFS='|' read -r id argv wantRc holds <<<"${sc}"
+		read -r -a args <<<"${argv}"
+		for b in "${bindings[@]}"; do
+			## Absolute, since the run is from inside the fixture directory.
+			name="${b%%|*}"; cli="$(realpath -- "${b#*|}")"
+			rm -rf "${saveDir}"; mkdir -p "${saveDir}"
+			(cd "${saveDir}" && fSaveSetup "${id}")
+			rc=0
+			(cd "${saveDir}" && timeout 20 "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null) || rc=$?
+			nRun+=1
+			if ((rc != wantRc)); then
+				echo "cli-regress: save-${id} [${name}]: exit ${rc}, expected ${wantRc}: $(head -c 200 "${tmpDir}/err")" >&2; nBad+=1; continue
+			fi
+			if ! (cd "${saveDir}" && eval "${holds}"); then
+				echo "cli-regress: save-${id} [${name}]: afterwards, not true: ${holds}" >&2; nBad+=1
+			fi
+		done
+	done
+fi
+
 ## The help text is a column-aligned table sitting at exactly 80 wide, and it is
 ## hand-duplicated in four CLIs, so one added word wraps it in every terminal at
 ## once and nothing else here would notice. Only help is checked: about and

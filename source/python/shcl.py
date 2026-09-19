@@ -4676,8 +4676,7 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# or its last component is `.` or `..`. The OS refuses to open such a path as
 	# a regular file, but a path cleanup drops the trailing separator first, so a
 	# save through `f/.` used to rewrite `f` in some bindings.
-	last = file.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else file.rsplit("/", 1)[-1]
-	if file and (file[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", "..")):
+	if _names_a_directory(file):
 		return f"{file}: is a directory"
 	try:
 		target = _resolve_target(file)
@@ -4716,6 +4715,11 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		existing = os.stat(target)
 	except (OSError, ValueError):
 		existing = None
+	# Only a regular file is replaced. A rename over a FIFO or a device node
+	# swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	# rule for what a save does with each thing it can find at the path.
+	if existing is not None and not stat.S_ISREG(existing.st_mode):
+		return f"{file}: is a directory" if stat.S_ISDIR(existing.st_mode) else f"{file}: not a regular file"
 	# Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	# be removed after a failure, so the attribute comes off the target for the
 	# publish and goes back on the new file after it - the same outcome as
@@ -4796,6 +4800,11 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	return None
 
 
+def _names_a_directory(path):
+	last = path.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else path.rsplit("/", 1)[-1]
+	return bool(path) and (path[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", ".."))
+
+
 def _resolve_target(file):
 	"""The path a save actually rewrites. A symlink is followed so the write goes
 	through it; realpath does that but only a path that exists resolves whole,
@@ -4814,6 +4823,10 @@ def _resolve_target(file):
 			nxt = os.readlink(p)
 		except OSError:
 			break
+		# A link whose text ends in a separator, `.` or `..` can only reach a
+		# directory, and the kernel refuses to create a file through it.
+		if _names_a_directory(nxt):
+			raise OSError("is a directory")
 		if os.path.isabs(nxt):
 			p = nxt
 		else:

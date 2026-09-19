@@ -3633,6 +3633,15 @@ func WriteFileAtomic(file, data string) error {
 	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
 	// the umask, like every other file the user's tools produce.
 	existing, existErr := os.Stat(target)
+	// Only a regular file is replaced. A rename over a FIFO or a device node
+	// swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	// rule for what a save does with each thing it can find at the path.
+	if existErr == nil && !existing.Mode().IsRegular() {
+		if existing.IsDir() {
+			return fmt.Errorf("%s: is a directory", file)
+		}
+		return fmt.Errorf("%s: not a regular file", file)
+	}
 	born := os.FileMode(0o600)
 	if existErr != nil {
 		born = 0o666
@@ -3749,19 +3758,44 @@ func resolveTarget(file string) (string, error) {
 		if err != nil {
 			break
 		}
+		// A link whose text ends in a separator, `.` or `..` can only reach a
+		// directory, and the kernel refuses to create a file through it.
+		if namesADirectory(next) {
+			return "", errors.New("is a directory")
+		}
 		if filepath.IsAbs(next) {
 			p = next
 		} else {
-			p = filepath.Join(filepath.Dir(p), next)
+			p = rawDir(p) + string(filepath.Separator) + next
 		}
 	}
 	if _, err := os.Readlink(p); err == nil {
 		return "", errors.New("too many levels of symbolic links")
 	}
-	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+	if dir, err := filepath.EvalSymlinks(rawDir(p)); err == nil {
 		return filepath.Join(dir, filepath.Base(p)), nil
 	}
 	return p, nil
+}
+
+// rawDir is the directory half of p as written. filepath.Dir cleans it, and a
+// clean cancels `lnk/..` as text where the kernel follows lnk first, so a link
+// holding `..` reached through a linked directory was created somewhere else.
+func rawDir(p string) string {
+	vol := filepath.VolumeName(p)
+	i := len(p)
+	for i > len(vol) && !os.IsPathSeparator(p[i-1]) {
+		i--
+	}
+	switch {
+	case i == len(vol) && vol == "":
+		return "."
+	case i == len(vol):
+		return vol
+	case i == len(vol)+1:
+		return p[:i] // the root keeps its separator
+	}
+	return p[:i-1]
 }
 
 // setReadOnly toggles the windows read-only attribute, which is all Chmod

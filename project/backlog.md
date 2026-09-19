@@ -103,14 +103,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sweep: every `git init`, `clone` and `-C` under `cicd/utility/`.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 3: a save replaces a FIFO with a regular file at exit 0, in all four, and as root it would presumably do the same to a device node.
-		- Reproduced: `mkfifo p`, feed it one line, `shcl fmt --write p`. Exit 0 and `p` is a regular file, in rust, go, c and python. The `/dev/null` half was not run.
-		- Cause: `write_file_atomic` takes any successful `stat` as an existing file to rename over. No binding tests the file type, and the spec's list of what a save carries does not cover it.
-		- Origin: the temp-and-rename write of 20260725 item 7. Third of a kind, after the dangling link (20260829 item 7) and the link cycle (20260901b item 29). Confirmed for the FIFO, Plausible for the device.
-		- Probable fix: for the class. After the link walk the answer is "nothing there" or "a regular file", and anything else is refused at exit 8. The windows arms need the same test for `NUL`.
-		- Sweep: `write_file_atomic` in `lib.rs`, `WriteFileAtomic` in `shcl.go`, `write_file_atomic` in `shcl.py`, `shcl_write_file_atomic` in `shcl.h`.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 4: the comparison tool measures five of its seven Rust entries with two documents in memory, so the README's memory row is wrong in SHCL's favor.
 		- Cause: JSON, YAML, TOML, `toml_edit` and `xmltree` run their validity check as a `match` scrutinee, and that parsed document lives until the match ends, which is after the measurement. SHCL and `roxmltree` drop theirs first.
 		- Reproduced: drop order shown on a small program, and the doubled figures of a scratch probe scale to the recorded run within 1%. JSON's model memory is 2.00 times a single parse, `toml_edit` 1.76, YAML 1.49, TOML 1.30.
@@ -194,19 +186,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: as old as the op-script form. 20260909 item 6 closed this window for a file that does not exist yet, on the reasoning that it "is not a microsecond race", and left this half. Confirmed.
 		- Keep: item 6 decided against a second save call. This adds none.
 		- Probable fix: look again before the save, as item 6 did. Re-read FILE and exit 8 if the bytes differ from what was loaded.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 17: Go resolves a dangling relative link by cleaning the path, so the file is created in the wrong directory at exit 0.
-		- Reproduced: a link holding `..` whose own directory is reached through a symlink. Rust, C and Python create the file where the kernel would. Go creates it elsewhere, the link stays dangling, and the next load is `NotFound`.
-		- Cause: `filepath.Join` in `resolveTarget` runs `Clean`, which cancels `lnk/..` as text.
-		- Origin: `4d50595e` (2026-08-29), the fix for 20260829 item 7. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 18: a dangling link whose text names a directory (`l -> d/`) is created as a file by Rust and Go and refused by C and Python.
-		- Reproduced: `ln -s d/ l`, then `shcl set --write --set b=2 l`. Rust and Go exit 0 with a regular file `d`. C and Python exit 8, which is what the spec and the OS say.
-		- Cause: the names-a-directory test runs on the path as given, never on the link text.
-		- Origin: sibling of 20260902 item 40. Confirmed.
-		- Sweep: `resolve_target` in all four. Go's half goes with item 17.
 		- Opened: 20260918-193000
 
 	- 🔘 Item 19: merging a document onto itself never returns in Python, ends the process in C, and duplicates lines in Go.
@@ -723,6 +702,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
 
+	- ✅ Item 3: a save replaces a FIFO with a regular file at exit 0, in all four, and as root it would presumably do the same to a device node.
+		- Reproduced: `mkfifo p`, feed it one line, `shcl fmt --write p`. Exit 0 and `p` is a regular file, in rust, go, c and python. The `/dev/null` half was not run.
+		- Cause: `write_file_atomic` takes any successful `stat` as an existing file to rename over. No binding tests the file type, and the spec's list of what a save carries does not cover it.
+		- Origin: the temp-and-rename write of 20260725 item 7. Third of a kind, after the dangling link (20260829 item 7) and the link cycle (20260901b item 29). Confirmed for the FIFO, Plausible for the device.
+		- Probable fix: for the class. After the link walk the answer is "nothing there" or "a regular file", and anything else is refused at exit 8. The windows arms need the same test for `NUL`.
+		- Sweep: `write_file_atomic` in `lib.rs`, `WriteFileAtomic` in `shcl.go`, `write_file_atomic` in `shcl.py`, `shcl_write_file_atomic` in `shcl.h`.
+		- Decided: `design.md` -> Save outcomes, a table of what a save does with each thing it can find at the path, marked as the rule. Items 17 and 18 are two of its rows.
+		- Fixed: only a regular file is replaced. A directory is refused as one, anything else as "not a regular file", in `write_file_atomic` (Rust, Python), `WriteFileAtomic` (Go) and `shcl_write_file_atomic` (C, `EINVAL`, since POSIX has no errno for it). The four CLIs ask before they read a `--write` FILE (`write_target_ok`, `writeTargetOK` in Go), so a FIFO is not drained, and say "not a regular file" at exit 8.
+		- Pinned by: the `save-targets` cases in `cli-regress.bash`, one per row of the table, run through every CLI in a fresh directory. On the old code the FIFO cases hung in all four and were cut off by the timeout. A library fixture in all four runners (`save_replaces_only_a_regular_file`, `TestSaveReplacesOnlyARegularFile`, and the Python and C POSIX blocks) saves onto a FIFO directly, since the CLI's check hides the library's. All four failed on the old library.
+		- Swept: the four sites the item names. The device half is the `device` case, a link to `/dev/null`, which needs no root.
+		- Left alone: Windows device names such as `NUL`. That waits on the Windows batch.
+		- Opened: 20260918-193000
+		- Closed: 20260919-122956
+
 	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
 		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
 		- Note: the crosscheck still covers Go's stdout. What goes unchecked is the library half: `raw`, `quoted`, `line`, and the cases the crosscheck skips. A local green run records its tree, and the hook then lets that tree through to main.
@@ -734,6 +727,27 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: memory had recorded this trap since 2026-09-15 and the gate never changed, which is the reason for the gotcha rule under Conventions.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 17: Go resolves a dangling relative link by cleaning the path, so the file is created in the wrong directory at exit 0.
+		- Reproduced: a link holding `..` whose own directory is reached through a symlink. Rust, C and Python create the file where the kernel would. Go creates it elsewhere, the link stays dangling, and the next load is `NotFound`.
+		- Cause: `filepath.Join` in `resolveTarget` runs `Clean`, which cancels `lnk/..` as text.
+		- Origin: `4d50595e` (2026-08-29), the fix for 20260829 item 7. Confirmed.
+		- Fixed: the walk joins the link's text to the directory as written. `rawDir` in `shcl.go` replaces `filepath.Dir` and `filepath.Join` there, both of which clean. Save outcomes has the row.
+		- Pinned by: the `save-dotdot` case in `cli-regress.bash` and `TestSaveReplacesOnlyARegularFile`, with the same fixture in the other three runners. Go failed both on the old code.
+		- Swept: `resolve_target` in Rust joins without cleaning. Python's `os.path.join` and C's hand join do not clean either. All three pass the same case.
+		- Opened: 20260918-193000
+		- Closed: 20260919-122956
+
+	- ✅ Item 18: a dangling link whose text names a directory (`l -> d/`) is created as a file by Rust and Go and refused by C and Python.
+		- Reproduced: `ln -s d/ l`, then `shcl set --write --set b=2 l`. Rust and Go exit 0 with a regular file `d`. C and Python exit 8, which is what the spec and the OS say.
+		- Cause: the names-a-directory test runs on the path as given, never on the link text.
+		- Origin: sibling of 20260902 item 40. Confirmed.
+		- Sweep: `resolve_target` in all four. Go's half goes with item 17.
+		- Fixed: each link's text is tested as the path already was, in `resolve_target` (Rust, C), `resolveTarget` (Go) and `_resolve_target` (Python), which gained `_names_a_directory` from the save's inline test. Refused as "is a directory" at exit 8 in all four. C and Python had refused by accident, with "No such file or directory".
+		- Pinned by: the `save-linkdir` case in `cli-regress.bash` and the library fixture in all four runners. Rust and Go failed both on the old code.
+		- Swept: `resolve_target` in all four.
+		- Opened: 20260918-193000
+		- Closed: 20260919-122956
 
 	- ✅ Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
 		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.

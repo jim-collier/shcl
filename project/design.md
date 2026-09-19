@@ -23,6 +23,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
+	- [Save outcomes](#save-outcomes)
 	- [Load outcomes](#load-outcomes)
 	- [Lexical edges](#lexical-edges)
 	- [Write outcomes](#write-outcomes)
@@ -392,6 +393,22 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 - **The write target is resolved on Windows too.** Rust and Go get it from their standard libraries; the C binding used the path as given, so a save through a linked-in config replaced the link with a regular file - the one thing resolving the target exists to prevent. It now asks Windows for the final path, which follows a symlink or junction and comes back long-path-prefixed. The prefix stays only when the name plus the temp file's suffix would otherwise be too long, so an ordinary save writes the plain name it always did and a path past the old limit works at all.
 
 - **A symlink cycle at the write target is an error.** Resolving the target is what makes a linked-in config written through rather than replaced, and a cycle used to fall out of the resolver as "no target", which quietly replaced the link with a regular file. A loop is reported as what it is - too many levels of symbolic links - and nothing is written.
+
+### Save outcomes
+
+What a save does with each thing it can find at the path. The same answer comes from the library's save in every binding and from the CLI's `--write`, and the CLI reports every refusal at exit 8. The table is the rule. Six review items in three weeks were one row answered at one site and not its sibling, so a new case gets a row here before it gets code.
+
+| At the path, after links are followed                                   | A save                                                                                                                                                                                                             | Settled by
+| :---------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------
+| A regular file                                                          | Replaces it. The mode comes over. What does not is under Saving a file.                                                                                                                                            | 20260725 item 7
+| Nothing, in a directory that exists                                     | Creates it, at `0666` narrowed by the umask. Anything that turns up before the publish is left alone and the save fails.                                                                                           | 20260909 item 6
+| A link to a regular file                                                | Replaces the file the link reaches. The link stays.                                                                                                                                                                | 20260725 item 7
+| A dangling link                                                         | Creates the file where the link points. The link stays. The walk joins each link's text to the directory the link sits in as written, never cleaned, since the kernel follows `lnk` in `lnk/..` before it goes up. | 20260829 item 7, 20260918b item 17
+| A link whose text ends in a separator, `.` or `..`                      | Refused: is a directory. That text can only reach a directory, and the kernel refuses to create a file through it.                                                                                                 | 20260918b item 18
+| A link cycle                                                            | Refused: too many levels of symbolic links.                                                                                                                                                                        | 20260901b item 29
+| A path ending in a separator, `.` or `..`                               | Refused: is a directory.                                                                                                                                                                                           | 20260902 item 40
+| A directory                                                             | Refused: is a directory.                                                                                                                                                                                           | 20260918b item 3
+| A FIFO, a socket, a device, or anything else that is not a regular file | Refused: not a regular file. A rename would swap it for a regular file. The CLI asks before it reads FILE, since reading a FIFO takes what was written to it.                                                      | 20260918b item 3
 
 ### Load outcomes
 

@@ -10,6 +10,7 @@ import errno
 import math
 import os
 import signal
+import stat
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -662,6 +663,20 @@ def parse_opts(argv):
 EXIT_IO = 8
 
 
+def write_target_ok(file):
+	# A --write FILE is a regular file or nothing yet. Asked before the read,
+	# since reading a FIFO takes what was written to it and the save would then
+	# refuse it anyway. A directory is left to the read, which names it.
+	try:
+		st = os.stat(file)
+	except (OSError, ValueError):
+		return True
+	if not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode):
+		sys.stderr.write(f"{file}: not a regular file\n")
+		return False
+	return True
+
+
 def read_input(file):
 	if file == "-":
 		try:
@@ -1121,6 +1136,8 @@ def do_fmt(o):
 	if o.write and file == "-":
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	try:
 		doc, code = load_layered(o, file)
 	except (OSError, ValueError) as e:
@@ -1155,6 +1172,8 @@ def do_migrate(o):
 	if o.write and file == "-":
 		sys.stderr.write("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:
@@ -1543,6 +1562,8 @@ def do_set(o):
 	if o.write and file == "-":
 		sys.stderr.write("set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	# Base doc: with the edits given as options no ops script is read, so a '-'
 	# file is the document on stdin the way it is everywhere else; only when
 	# stdin is the ops script does '-' mean an empty base. Reading neither threw

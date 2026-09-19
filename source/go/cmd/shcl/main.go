@@ -1178,6 +1178,18 @@ func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 // nothing to do with the remedy for a usage error, which keeps 1.
 const exitIO = 8
 
+// writeTargetOK says whether a --write FILE is a regular file or nothing yet.
+// Asked before the read, since reading a FIFO takes what was written to it and
+// the save would then refuse it anyway. A directory is left to the read, which
+// names it.
+func writeTargetOK(file string) bool {
+	if st, err := os.Stat(file); err == nil && !st.Mode().IsRegular() && !st.IsDir() {
+		fmt.Fprintf(os.Stderr, "%s: not a regular file\n", file)
+		return false
+	}
+	return true
+}
+
 // No stream on the other end at all, as opposed to one that failed part way
 // through. POSIX says EBADF; windows has no single answer - a handle a shell
 // closed comes back as an invalid handle or an invalid function depending on
@@ -1544,6 +1556,9 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
+	if o.write && !writeTargetOK(file) {
+		return exitIO
+	}
 	doc, code := loadLayered(o, file)
 	if doc == nil {
 		return code
@@ -1585,6 +1600,9 @@ func doMigrate(o *opts) int {
 	if o.write && file == "-" {
 		fmt.Fprintln(os.Stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
+	}
+	if o.write && !writeTargetOK(file) {
+		return exitIO
 	}
 	text, err := readInput(file)
 	if err != nil {
@@ -2208,6 +2226,9 @@ func doSet(o *opts) int {
 	if o.write && file == "-" {
 		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
+	}
+	if o.write && !writeTargetOK(file) {
+		return exitIO
 	}
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when

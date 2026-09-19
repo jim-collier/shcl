@@ -442,6 +442,23 @@ static int is_a_directory(const char *file) {
 #endif
 }
 
+// A --write FILE is a regular file or nothing yet. Asked before the read,
+// since reading a FIFO takes what was written to it and the save would then
+// refuse it anyway. A directory is left to the read, which names it. Windows
+// has no FIFO at a path; the save itself answers for a device name there.
+static int write_target_ok(const char *file) {
+#ifndef _WIN32
+	struct stat st;
+	if (stat(file, &st) == 0 && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
+		fprintf(stderr, "%s: not a regular file\n", file);
+		return 0;
+	}
+#else
+	(void)file;
+#endif
+	return 1;
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	int is_stdin = strcmp(file, "-") == 0;
@@ -813,6 +830,7 @@ static int do_fmt(Opts *o) {
 		fprintf(stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	int rc;
@@ -859,6 +877,7 @@ static int do_migrate(const Opts *o) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return EXIT_IO;
 	shcl_migration m = shcl_migrate(text, len, o->from_2x);
@@ -1180,6 +1199,7 @@ static int do_set(Opts *o) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw

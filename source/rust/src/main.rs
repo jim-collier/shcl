@@ -1216,6 +1216,19 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 /// do with the remedy for a usage error, which keeps 1.
 const EXIT_IO: u8 = 8;
 
+/// A `--write` FILE is a regular file or nothing yet. Asked before the read,
+/// since reading a FIFO takes what was written to it and the save would then
+/// refuse it anyway. A directory is left to the read, which names it.
+fn write_target_ok(file: &str) -> bool {
+	match std::fs::metadata(file) {
+		Ok(m) if !m.is_file() && !m.is_dir() => {
+			errln!("{}: not a regular file", file);
+			false
+		}
+		_ => true,
+	}
+}
+
 /// No stream on the other end at all, as opposed to one that failed part way
 /// through. POSIX says EBADF; windows has no single answer - a handle a shell
 /// closed comes back as an invalid handle or an invalid function depending on
@@ -1477,6 +1490,9 @@ fn do_fmt(o: &Opts) -> u8 {
 		errln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
+	}
 	let doc = match load_layered(o, file) {
 		Ok(d) => d,
 		Err(code) => return code,
@@ -1516,6 +1532,9 @@ fn do_migrate(o: &Opts) -> u8 {
 	if o.write && file == "-" {
 		errln!("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
+	}
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
 	}
 	let text = match read_input(file) {
 		Ok(t) => t,
@@ -1942,6 +1961,9 @@ fn do_set(o: &Opts) -> u8 {
 	if o.write && file == "-" {
 		errln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
+	}
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
 	}
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when

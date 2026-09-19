@@ -3768,6 +3768,19 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
 	// the umask, like every other file the user's tools produce.
 	let existing = std::fs::metadata(&target).ok();
+	// Only a regular file is replaced. A rename over a FIFO or a device node
+	// swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	// rule for what a save does with each thing it can find at the path.
+	if let Some(m) = &existing
+		&& !m.is_file()
+	{
+		let what = if m.is_dir() {
+			"Is a directory"
+		} else {
+			"not a regular file"
+		};
+		return Err(format!("{}: {}", file, what));
+	}
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
@@ -3887,6 +3900,12 @@ fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 		let Ok(next) = std::fs::read_link(&p) else {
 			break;
 		};
+		// A link whose text ends in a separator, `.` or `..` can only reach a
+		// directory, and the kernel refuses to create a file through it. The
+		// path join below would drop the separator.
+		if names_a_directory(&next.to_string_lossy()) {
+			return Err("Is a directory".to_string());
+		}
 		p = if next.is_absolute() {
 			next
 		} else {

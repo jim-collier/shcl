@@ -1442,6 +1442,52 @@ fn save_reports_a_symlink_cycle_instead_of_replacing_it() {
 	let _ = std::fs::remove_dir(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn save_replaces_only_a_regular_file() {
+	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
+	// was swapped for a regular file at exit 0, a link whose text names a
+	// directory made a file of that name, and Go cleaned `lnk/..` as text where
+	// the kernel follows lnk first. Same fixture in every POSIX runner.
+	let dir = std::env::temp_dir().join(format!("shcl-targets-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("real/sub")).unwrap();
+	std::fs::create_dir_all(dir.join("top")).unwrap();
+	let doc = Document::parse("a: 1\n");
+	let fifo = dir.join("p.shcl");
+	assert!(
+		std::process::Command::new("mkfifo")
+			.arg(&fifo)
+			.status()
+			.unwrap()
+			.success()
+	);
+	assert!(doc.save_file(fifo.to_str().unwrap()).is_err());
+	assert!(
+		std::os::unix::fs::FileTypeExt::is_fifo(
+			&std::fs::symlink_metadata(&fifo).unwrap().file_type()
+		),
+		"a FIFO was replaced by a regular file"
+	);
+	let ldir = dir.join("l.shcl");
+	std::os::unix::fs::symlink("d/", &ldir).unwrap();
+	assert!(doc.save_file(ldir.to_str().unwrap()).is_err());
+	assert!(
+		!dir.join("d").exists(),
+		"a link naming a directory made a file"
+	);
+	std::os::unix::fs::symlink("../real/sub", dir.join("top/lnkdir")).unwrap();
+	std::os::unix::fs::symlink("../x.shcl", dir.join("real/sub/f.shcl")).unwrap();
+	doc.save_file(dir.join("top/lnkdir/f.shcl").to_str().unwrap())
+		.unwrap();
+	assert_eq!(
+		std::fs::read_to_string(dir.join("real/x.shcl")).unwrap(),
+		"a: 1\n"
+	);
+	assert!(!dir.join("top/x.shcl").exists());
+	let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(windows)]
 #[test]
 fn save_rewrites_a_read_only_file() {

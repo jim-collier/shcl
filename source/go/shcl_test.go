@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1225,6 +1226,58 @@ func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
 		if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("a symlink cycle was replaced by a regular file: %v %v", st, err)
 		}
+	}
+}
+
+func TestSaveReplacesOnlyARegularFile(t *testing.T) {
+	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
+	// was swapped for a regular file at exit 0, a link whose text names a
+	// directory made a file of that name, and Go cleaned `lnk/..` as text where
+	// the kernel follows lnk first. Same fixture in every POSIX runner.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX FIFO and symlink fixture")
+	}
+	dir := t.TempDir()
+	for _, d := range []string{"real/sub", "top"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := Parse("a: 1\n")
+	fifo := filepath.Join(dir, "p.shcl")
+	if err := exec.Command("mkfifo", fifo).Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(fifo); err == nil {
+		t.Error("a FIFO saved without an error")
+	}
+	if st, err := os.Lstat(fifo); err != nil || st.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("a FIFO was replaced by a regular file: %v %v", st, err)
+	}
+	ldir := filepath.Join(dir, "l.shcl")
+	if err := os.Symlink("d/", ldir); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(ldir); err == nil {
+		t.Error("a link naming a directory saved without an error")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "d")); err == nil {
+		t.Error("a link naming a directory made a file")
+	}
+	if err := os.Symlink("../real/sub", filepath.Join(dir, "top", "lnkdir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../x.shcl", filepath.Join(dir, "real", "sub", "f.shcl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(filepath.Join(dir, "top", "lnkdir", "f.shcl")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "real", "x.shcl")); err != nil || string(got) != "a: 1\n" {
+		t.Errorf("file behind lnk/..: got %q %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "top", "x.shcl")); err == nil {
+		t.Error("lnk/.. was cleaned as text")
 	}
 }
 

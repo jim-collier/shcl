@@ -1332,6 +1332,46 @@ int main(int argc, char **argv) {
 		shcl_free(cd);
 		remove(ca); remove(cb); rmdir(cdir);
 	}
+	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
+	// was swapped for a regular file at exit 0, a link whose text names a
+	// directory made a file of that name, and Go cleaned `lnk/..` as text where
+	// the kernel follows lnk first. Same fixture in every POSIX runner.
+	{
+		char tdir[256], tp[320], tq[320], tr[320];
+		snprintf(tdir, sizeof tdir, "%s/shcl-targets-%ld", tmp_root(), (long)getpid());
+		if (mkdir(tdir, 0700) != 0) fail("targets", "mkdir failed");
+		shcl_doc *td = shcl_parse("a: 1\n", 5);
+		struct stat ts;
+		snprintf(tp, sizeof tp, "%s/p.shcl", tdir);
+		if (mkfifo(tp, 0600) != 0) fail("targets", "mkfifo failed");
+		if (shcl_save_file(td, tp) == SHCL_SAVE_OK) fail("targets", "a FIFO saved without an error");
+		if (lstat(tp, &ts) != 0 || !S_ISFIFO(ts.st_mode)) fail("targets", "a FIFO was replaced by a regular file");
+		remove(tp);
+		snprintf(tp, sizeof tp, "%s/l.shcl", tdir);
+		snprintf(tq, sizeof tq, "%s/d", tdir);
+		if (symlink("d/", tp) != 0) fail("targets", "symlink failed");
+		if (shcl_save_file(td, tp) == SHCL_SAVE_OK) fail("targets", "a link naming a directory saved without an error");
+		if (lstat(tq, &ts) == 0) fail("targets", "a link naming a directory made a file");
+		remove(tp);
+		snprintf(tp, sizeof tp, "%s/real", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/real/sub", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/top", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/top/lnkdir", tdir);
+		snprintf(tq, sizeof tq, "%s/real/sub/f.shcl", tdir);
+		if (symlink("../real/sub", tp) != 0 || symlink("../x.shcl", tq) != 0) fail("targets", "symlink failed");
+		snprintf(tr, sizeof tr, "%s/top/lnkdir/f.shcl", tdir);
+		if (shcl_save_file(td, tr) != SHCL_SAVE_OK) fail("targets", "save through lnk/.. failed");
+		snprintf(tr, sizeof tr, "%s/real/x.shcl", tdir);
+		size_t xn; char *xt = read_file(tr, &xn);
+		if (!xt || xn != 5 || memcmp(xt, "a: 1\n", 5) != 0) fail("targets", "file not created behind lnk/..");
+		free(xt);
+		remove(tr); remove(tq); remove(tp);
+		snprintf(tp, sizeof tp, "%s/top", tdir); rmdir(tp);
+		snprintf(tp, sizeof tp, "%s/real/sub", tdir); rmdir(tp);
+		snprintf(tp, sizeof tp, "%s/real", tdir); rmdir(tp);
+		rmdir(tdir);
+		shcl_free(td);
+	}
 #endif
 	// A read-only target is rewritten, as it is on POSIX, and comes back
 	// read-only; no temp file is left behind. Same fixture in every runner.

@@ -1321,6 +1321,39 @@ def main():
 			for link in (cyc_a, cyc_b):
 				if not os.path.islink(link):
 					raise SystemExit("a symlink cycle was replaced by a regular file")
+			# Save outcomes in design.md, the rows the CLI's own check hides. A
+			# FIFO was swapped for a regular file at exit 0, a link whose text
+			# names a directory made a file of that name, and Go cleaned `lnk/..`
+			# as text where the kernel follows lnk first. Same fixture in every
+			# POSIX runner.
+			tdoc = shcl.Document.parse("a: 1\n")
+			fifo = os.path.join(td, "p.shcl")
+			os.mkfifo(fifo)
+			try:
+				tdoc.save_file(fifo)
+				raise SystemExit("a FIFO saved without an error")
+			except shcl.SaveFailed:
+				pass
+			if not stat.S_ISFIFO(os.lstat(fifo).st_mode):
+				raise SystemExit("a FIFO was replaced by a regular file")
+			ldir = os.path.join(td, "l.shcl")
+			os.symlink("d/", ldir)
+			try:
+				tdoc.save_file(ldir)
+				raise SystemExit("a link naming a directory saved without an error")
+			except shcl.SaveFailed:
+				pass
+			if os.path.lexists(os.path.join(td, "d")):
+				raise SystemExit("a link naming a directory made a file")
+			os.makedirs(os.path.join(td, "tgt", "real", "sub"))
+			os.makedirs(os.path.join(td, "tgt", "top"))
+			os.symlink("../real/sub", os.path.join(td, "tgt", "top", "lnkdir"))
+			os.symlink("../x.shcl", os.path.join(td, "tgt", "real", "sub", "f.shcl"))
+			tdoc.save_file(os.path.join(td, "tgt", "top", "lnkdir", "f.shcl"))
+			if _read(os.path.join(td, "tgt", "real", "x.shcl")) != "a: 1\n":
+				raise SystemExit("save did not create the file behind lnk/..")
+			if os.path.lexists(os.path.join(td, "tgt", "top", "x.shcl")):
+				raise SystemExit("lnk/.. was cleaned as text")
 		if os.name == "nt":
 			# A read-only target is rewritten, as it is on POSIX, and comes back
 			# read-only; no temp file is left behind. Same fixture in every runner.
