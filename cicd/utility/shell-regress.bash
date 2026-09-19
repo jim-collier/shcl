@@ -711,17 +711,18 @@ flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${t
 ##	command line the pre-push gate's nested run echoes as a warning, so every
 ##	run that pushed to dev read as one finding. A real clippy warning and a
 ##	cppcheck one still count; the two echoed command lines do not.
-printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n' > "${tmpDir}/run_20260101-000000.log"
+lintDone=$'\n[ shcl CI/CD: done. ]\n'
+printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n%s' "${lintDone}" > "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
 [[ "${lintOut}" == "CLEAN "* ]] || fBad "lint-report.bash counted an echoed command line as a warning: ${lintOut@Q}"
-printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n' >> "${tmpDir}/run_20260101-000000.log"
+printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n%s' "${lintDone}" >> "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
 [[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
 ##	20260909 item 23: a failed run printed CLEAN, since only rustc's `error[`
 ##	counted as a failure. Each spelling on its own must report FAILED.
 for failLine in 'src.c:3:5: error: conflicting types for x' 'SC2086 (info): Double quote to prevent globbing.' \
 	'test result: FAILED. 3 passed; 8 failed' '--- FAIL: TestX (0.00s)' "thread 'main' panicked at src/lib.rs:1:1:" \
-	'Traceback (most recent call last):' '[ CICD ABORTED (exit 1) at line 5: false ]'; do
+	'Traceback (most recent call last):' '[ CICD ABORTED (exit 1) at line 5: false ]' '[ FAILED: tests failed ]'; do
 	printf 'OK: lint\n%s\n' "${failLine}" > "${tmpDir}/run_20260102-000000.log"
 	lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260102-000000.log" 2>&1 || true)"
 	[[ "${lintOut}" == "FAILED "* ]] || fBad "lint-report.bash called a failed run clean (${failLine}): ${lintOut@Q}"
@@ -729,15 +730,33 @@ done
 ##	20260909 item 24: --check --file wrote the named log's stamp into the shared
 ##	marker, so a name that sorts high left the gate at SEEN for good.
 mkdir -p "${tmpDir}/lintseen"
-printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260101-000000.log"
-printf 'OK: lint\n' > "${tmpDir}/zzz.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/lintseen/run_20260101-000000.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/zzz.log"
 bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" >/dev/null 2>&1 || true
 bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" --file "${tmpDir}/zzz.log" >/dev/null 2>&1 || true
-printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260102-000000.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/lintseen/run_20260102-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
 [[ "${lintOut}" == "CLEAN run_20260102-000000.log"* ]] || fBad "lint-report.bash stayed SEEN past a marker a --file run moved: ${lintOut@Q}"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
 [[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash reported a log it had already seen: ${lintOut@Q}"
+##	20260918b item 13: a log read while its run was still going, or after the run
+##	was killed, said CLEAN and took the marker, so the warnings and the abort that
+##	came after were never shown. A nested run's done line, echoed by a publish
+##	before the outer run ends, does not finish the outer one either.
+printf '[ 2/9  Build (debug) ]\n   Compiling shcl v2.0.0\n' > "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE run_20260103-000000.log"* ]] || fBad "lint-report.bash did not call an unfinished run INCOMPLETE: ${lintOut@Q}"
+printf 'warning: unused variable: x\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE run_20260103-000000.log"*"1 warning line(s)"* ]] || fBad "lint-report.bash marked an unfinished run seen: ${lintOut@Q}"
+printf '[ shcl CI/CD: done. ]\n[ 9/9  Publish ]\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE "* ]] || fBad "lint-report.bash took a nested run's done line for the end of the run: ${lintOut@Q}"
+printf '\n[ FAILED: the installers differ from origin/main ]\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "FAILED run_20260103-000000.log"* ]] || fBad "lint-report.bash did not report the run once it failed: ${lintOut@Q}"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash did not mark a finished failed run seen: ${lintOut@Q}"
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
