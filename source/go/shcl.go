@@ -2686,12 +2686,15 @@ func (p *parser) findByValue(cur int, name, text string, quoted bool) (int, bool
 		ok = false
 	}
 	if !ok && quoted {
-		for _, c := range p.arena[cur].children {
-			if p.arena[c].name == name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
-				found, ok = c, true
-				break
-			}
-		}
+		// The display map keeps only the first same-display child, which may
+		// be an array where a quoted selector wants the scalar. A scalar child
+		// with this text is exactly the one-element value the merge map is
+		// keyed on, so ask that map: a scan of every sibling was the same
+		// answer, quadratic on the create path.
+		disc := value{kind: vCell, els: []element{newElement(want)}}
+		found, ok = slotFirstMatch(p.childMap[cur], mergeHash(name, &disc), func(c int) bool {
+			return mergeEq(p.arena[c].name, &p.arena[c].value, name, &disc)
+		})
 	}
 	return found, ok
 }

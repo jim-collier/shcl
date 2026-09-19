@@ -2228,10 +2228,14 @@ class _Parser:
 		if found is not None and quoted and not _single_scalar(self.arena[found].value):
 			found = None
 		if found is None and quoted:
-			for c in self.arena[cur].children:
-				nd = self.arena[c]
-				if nd.name == name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
-					return c
+			# The display map keeps only the first same-display child, which may
+			# be an array where a quoted selector wants the scalar. A scalar
+			# child with this text is exactly the one-element value the merge
+			# map is keyed on, so ask that map: a scan of every sibling was the
+			# same answer, quadratic on the create path.
+			cmap = self.child_map[cur]
+			if cmap is not None:
+				return cmap.get(_merge_key(name, _cell([_new_element(want)])))
 		return found
 
 	def _consume_raw(self, lines, i, open_line, open_indent, fence):

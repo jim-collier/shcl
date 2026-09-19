@@ -3013,12 +3013,17 @@ static size_t find_by_value(ShclParser *P, size_t cur, ShclStr name, ShclStr tex
 	if (found != (size_t)-1 && quoted && !single_scalar(&NODE(P->d, found).value)) {
 		found = (size_t)-1;
 	}
+	/* A scalar child with this text is exactly the one-element value the
+	   merge map is keyed on, so ask that map: a scan of every sibling was the
+	   same answer, quadratic on the create path. Nothing here is kept, so
+	   the probe value lives on the stack. */
 	if (found == (size_t)-1 && quoted) {
-		ShclVecSize ch = NODE(P->d, cur).children;
-		for (size_t k = 0; k < ch.len; k++) {
-			size_t c = ch.data[k];
-			if (s_eq(NODE(P->d, c).name, name) && single_scalar(&NODE(P->d, c).value) && s_eq(disp_key(P->line, &NODE(P->d, c).value), want)) { found = c; break; }
-		}
+		ShclElement el = new_element(want);
+		ShclValue disc; memset(&disc, 0, sizeof disc);
+		disc.kind = V_CELL; disc.els = &el; disc.nels = 1;
+		uint64_t h = merge_hash(name, &disc);
+		for (ShclCMapEnt *e = cmap_first(P->cmaps->data[cur], h); e; e = cmap_next(e, h))
+			if (merge_eq(NODE(P->d, e->val).name, &NODE(P->d, e->val).value, name, &disc)) { found = e->val; break; }
 	}
 	return found;
 }

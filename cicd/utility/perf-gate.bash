@@ -104,6 +104,13 @@ mountSchema="${tmpDir}/mount-schema.shcl"; mountDoc="${tmpDir}/mount.shcl"
 awk 'BEGIN{ print "fragment: f"; print "\tfield: leaf"
 	for (i = 0; i < 16000; i++) printf "field: m%d\n\tinherits: f\n", i }' > "${mountSchema}"
 awk 'BEGIN{ for (i = 12000; i < 16000; i++) printf "m%d.leaf: 1\n", i; print "zz: 1" }' > "${mountDoc}"
+## A quoted `[value]` selector per line, each naming a new instance. On a miss
+## the parser scanned every same-name sibling before the keyed create lookup
+## answered the same question, so the quoted spelling was quadratic in siblings
+## where the bare one and the block form were not (20260918b item 9). Half the
+## key count keeps the old code's run under two minutes in the slowest binding.
+selDoc="${tmpDir}/sel.shcl"
+awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "srv[\"host %d\"].port: %d\n", i, i }' > "${selDoc}"
 
 ##	Milliseconds for one run of $2 (an ops file, a document when $3 is
 ##	"check", or a document validated against ${sugSchema} when $3 is
@@ -130,6 +137,8 @@ fTimeMs(){
 			"${cli}" check --schema "${starSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == mounts ]]; then
 			"${cli}" check --schema "${mountSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == selectors ]]; then
+			"${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			"${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -182,7 +191,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags stars mounts; do
+	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
@@ -195,6 +204,8 @@ for b in "${bindings[@]}"; do
 			ms="$(fTimeMs "${cli}" "${starDoc}" stars 2)"
 		elif [[ "${w}" == mounts ]]; then
 			ms="$(fTimeMs "${cli}" "${mountDoc}" mounts 2)"
+		elif [[ "${w}" == selectors ]]; then
+			ms="$(fTimeMs "${cli}" "${selDoc}" selectors 1)"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
@@ -230,3 +241,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            delete one and leave the gate reporting OK on a CLI that failed.
 ##		2026-09-17  stars and mounts workloads: the unknown-field sweep's two
 ##		            element-wise matchers, each scanning its whole list per node.
+##		2026-09-19  selectors workload: quoted `[value]` selectors, each a new
+##		            instance, which scanned every sibling on the create path.

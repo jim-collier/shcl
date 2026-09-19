@@ -2619,14 +2619,23 @@ impl Parser {
 			.filter(|&c| self.arena[c].name == name && disp_key(&self.arena[c].value) == want)
 			.filter(|&c| !quoted || single_scalar(&self.arena[c].value))
 			.or_else(|| {
+				// The display map keeps only the first same-display child, which
+				// may be an array where a quoted selector wants the scalar. A
+				// scalar child with this text is exactly the one-element value
+				// the merge map is keyed on, so ask that map: a scan of every
+				// sibling was the same answer, quadratic on the create path.
 				if !quoted {
 					return None;
 				}
-				self.arena[cur].children.iter().copied().find(|&c| {
-					self.arena[c].name == name
-						&& single_scalar(&self.arena[c].value)
-						&& disp_key(&self.arena[c].value) == want
-				})
+				let disc = Value::Cell(vec![new_element(want.clone())]);
+				self.child_map[cur]
+					.as_deref()
+					.and_then(|m| m.get(&merge_hash(name, &disc)))
+					.and_then(|slot| {
+						slot.first_match(|c| {
+							merge_eq(&self.arena[c].name, &self.arena[c].value, name, &disc)
+						})
+					})
 			})
 	}
 

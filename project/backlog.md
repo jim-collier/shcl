@@ -118,14 +118,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sweep: every member read off a possibly empty value in this file. Item 36 is the other one.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 9: a quoted `[value]` selector on a file line is quadratic in siblings, so one spelling of the README's lead example falls off a cliff.
-		- Measured: 20,000 lines of `srv["host N"].port: N` take 2.5 s in Go, 3.6 s in C, 11 s in a release Rust build and 65 s in Python. The bare spelling and the block form take under 0.2 s.
-		- Cause: on a miss, `find_by_value` scans every same-name sibling before the keyed create lookup answers the same question.
-		- Origin: `8821735` (2026-08-29) in Rust, and the 20260817 item 1 fix in the ports. A return of the class 20260725 item 25 closed, for the quoted spelling. Nothing in `perf-gate.bash` times a selector. Confirmed.
-		- Keep: 20260817 item 1, "a miss must never change the answer". Its reason is gone, since elements store logical text now, and the trees match with the scan removed over the corpus and 60,000 documents. Replacing the scan with the keyed lookup keeps the rule word for word.
-		- Note: a bare index on a binding line, `a[N].k: 1`, is quadratic too. The spec discourages that spelling, so it ranks lower.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 10: the did-you-mean on unknown fields is quadratic, in the case the feature is for.
 		- Measured: a schema and a document of N top-level names with none matching. C takes 2.0 s at 4,000, 7.8 s at 8,000 and 32 s at 16,000, and the others are slower. The matched document of the same size takes 0.03 s.
 		- Cause: every unknown field is compared with every sibling name, and the sibling list holds one copy per schema field, so N fields under one section still cost N times N.
@@ -695,6 +687,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Swept: `gen_selector_text` and `gen_path_text` in all four. A schema path's own `[value]` body goes through the same read-back (item 26).
 		- Opened: 20260918-193000
 		- Closed: 20260919-130017
+
+	- ✅ Item 9: a quoted `[value]` selector on a file line is quadratic in siblings, so one spelling of the README's lead example falls off a cliff.
+		- Measured: 20,000 lines of `srv["host N"].port: N` take 2.5 s in Go, 3.6 s in C, 11 s in a release Rust build and 65 s in Python. The bare spelling and the block form take under 0.2 s.
+		- Cause: on a miss, `find_by_value` scans every same-name sibling before the keyed create lookup answers the same question.
+		- Origin: `8821735` (2026-08-29) in Rust, and the 20260817 item 1 fix in the ports. A return of the class 20260725 item 25 closed, for the quoted spelling. Nothing in `perf-gate.bash` times a selector. Confirmed.
+		- Keep: 20260817 item 1, "a miss must never change the answer". Its reason is gone, since elements store logical text now, and the trees match with the scan removed over the corpus and 60,000 documents. Replacing the scan with the keyed lookup keeps the rule word for word.
+		- Note: a bare index on a binding line, `a[N].k: 1`, is quadratic too. The spec discourages that spelling, so it ranks lower.
+		- Fixed: the fallback scan asks the merge map instead, in `find_by_value` (Rust, C), `findByValue` (Go) and `_find_by_value` (Python). A scalar child with the selector's text is exactly the one-element value that map is keyed on, so the answer is the same and a miss costs one lookup. 20000 quoted lines went from 82 s to 0.23 s in the Rust debug build, 59 s to 0.59 s in Python, 3.5 s to 0.02 s in C and 3.0 s to 0.05 s in Go.
+		- Pinned by: a `selectors` workload in `perf-gate.bash`, quoted selectors each naming a new instance at half the key count. All four were over budget on the old code and are inside it now.
+		- Keep: 20260817 item 1, "a miss must never change the answer". The lookup is the same question the scan asked, so corpus `051` and `070` and the crosscheck are unchanged.
+		- Left alone: a bare index selector on a binding line (`a[N].k: 1`) is still quadratic. The spec discourages that spelling, and an index there has to count same-name siblings in order.
+		- Opened: 20260918-193000
+		- Closed: 20260919-130923
 
 	- ✅ Item 12: the Go test stage answers `ok (cached)` after a corpus change, broken goldens included.
 		- Reproduced: in a scratch clone, a new case with a wrong golden and a damaged existing golden both pass until `-count=1` is given. The corpus sits outside the Go module, so the cache cannot see it. An older run log shows the cached line.
