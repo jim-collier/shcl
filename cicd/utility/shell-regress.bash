@@ -1576,6 +1576,21 @@ while IFS= read -r f; do
 	fi
 done < <(fShellFiles)
 
+##	20260918b item 44: green-tree.bash went in with no line in the shellcheck
+##	list, and nothing noticed. The list is compared with the shell files the
+##	scans above walk, both ways, so a new script cannot miss the lint stage and
+##	a renamed one cannot leave a dead entry.
+# shellcheck source=/dev/null
+scTargets="$( ( set +u; source "${repoDir}/cicd/config.bash"; printf '%s\n' "${SHELLCHECK_TARGETS[@]}" ) | LC_ALL=C sort -u)"
+shFiles="$(while IFS= read -r f; do printf '%s\n' "${f#"${repoDir}/"}"; done < <(fShellFiles) | LC_ALL=C sort -u)"
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: a shell script the lint stage does not shellcheck; add it to SHELLCHECK_TARGETS"; fi
+done < <(LC_ALL=C comm -23 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: in SHELLCHECK_TARGETS and not a tracked shell script"; fi
+done < <(LC_ALL=C comm -13 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))
+((${#shFiles} > 0 && ${#scTargets} > 0)) || fBad "the shellcheck list comparison read an empty side"
+
 ##	20260902 item 18: the two corpus replays split a reads.tsv row with
 ##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
 ##	whitespace whatever IFS is set to - so the top-level `children` row arrived
@@ -1627,3 +1642,4 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##		2026-09-19  Clears git's local environment at the top.
 ##		2026-09-19  fHaveFile, and a scan for a list grown only when a tool or file
 ##		            is here. The lint-report rows cover an unfinished run.
+##		2026-09-19  The shellcheck list is compared with the tracked shell files.

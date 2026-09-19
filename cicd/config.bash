@@ -170,6 +170,7 @@ SHELLCHECK_TARGETS=(
 	cicd/utility/sanitize-c.bash
 	cicd/utility/sign-release.bash
 	cicd/utility/git-auto-msg.bash
+	cicd/utility/green-tree.bash
 	cicd/utility/win-runners.bash
 	cicd/hooks/pre-push
 	cicd/utility/include/gfs-rotate.bash
@@ -398,3 +399,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-18 JC: Lint stage widened: ruff + mypy, cppcheck, markdownlint, PSScriptAnalyzer, with tool pins.
 ##		- 2026-07-22 JC: Packaging wired: PACKAGE_ENABLE + package.bash in the shellcheck list.
 ##		- 2026-08-26 JC: Per-os-arch dogfood dests for the cross builds; windows-x86_64 goes to the synced mswin cli dir.
+##		- 2026-09-19 JC: green-tree.bash in the shellcheck list; shell-regress now holds the list to the tracked shell files.
