@@ -151,6 +151,11 @@ while IFS= read -r hit; do
 done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
 	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
 
+##	The grammar is the oracle harnesses are written against. It has to read as
+##	ABNF and derive what the parser reads; the samples live in check-abnf.py.
+python3 "${repoDir}/cicd/utility/check-abnf.py" "${repoDir}/project/grammar.abnf" >/dev/null \
+	|| fBad "project/grammar.abnf failed check-abnf.py (run it for the detail)"
+
 ##	The man page carries a revision date and no version, and the date went
 ##	stale on the next edit twice. The rule: the .TH date is no earlier than the
 ##	last commit that touched the page. A commit that edits the page and bumps
@@ -441,3 +446,5 @@ echo "check-docs: OK"
 ##		            from its raw bytes.
 ##		2026-09-19  Every go test a gate runs passes -count=1.
 ##		2026-09-19  The man page date is no older than its last commit.
+##		2026-09-19  grammar.abnf reads as ABNF and derives the fence labels
+##		            the parser reads.
