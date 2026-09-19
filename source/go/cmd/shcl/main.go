@@ -138,6 +138,10 @@ Options (the subcommands each belongs to are in parentheses):
   --no-banner                            (init, and set --write when it creates
                                          FILE) leave out the info block naming
                                          the format and pointing at its spec
+  --write                                (fmt/set/migrate) rewrite FILE in
+                                         place, spelled -w too, through a
+                                         temp file and a rename; refused
+                                         with a FILE of '-'
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -188,10 +192,11 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
-refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --no-banner on 'set' without --write; --check with --write;
---layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
-across FILE, --layer and --schema.
+refused: --write with --layer; --write with --set outside 'set'; --write with a
+FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
+--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
+--default with --on-bad=error or --on-bad=flag; '-' named more than once across
+FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -525,11 +530,15 @@ type opts struct {
 	from2x      bool
 	check       bool
 	noBanner    bool
-	schema      string
-	layers      []string // lower-priority layers, in listed order
-	sets        []setOpt // final override layer, in the order given
-	args        []string // positional: FILE [PATH]
-	seen        []string // canonical names of options given, for per-command validation
+	// schemaSet, not an empty schema path: `--schema=` is a path the command
+	// line gave, and the other three read it and fail at exit 8 (20260918b
+	// item 33, the class of 20260918 item 9).
+	schema    string
+	schemaSet bool
+	layers    []string // lower-priority layers, in listed order
+	sets      []setOpt // final override layer, in the order given
+	args      []string // positional: FILE [PATH]
+	seen      []string // canonical names of options given, for per-command validation
 	// A value option in space form that took the LAST word on the line. That
 	// word is usually the FILE, and the usage line alone never says so.
 	swallowedOpt   string
@@ -640,6 +649,7 @@ func setValueOpt(o *opts, name, v string) error {
 		o.seen = append(o.seen, "--strictness")
 	case "--schema":
 		o.schema = v
+		o.schemaSet = true
 		o.seen = append(o.seen, "--schema")
 	case "--layer":
 		o.layers = append(o.layers, v)
@@ -2377,7 +2387,7 @@ func doCheck(o *opts) int {
 		// --schema: append validation diagnostics under the same contract. The
 		// schema itself always loads at Standard (a program artifact); one that
 		// does not load cleanly is a single V099 schema fault.
-		if o.schema != "" {
+		if o.schemaSet {
 			stext, serr := readInput(o.schema)
 			if serr != nil {
 				fmt.Fprintln(os.Stderr, serr)
@@ -2447,7 +2457,7 @@ func doInit(o *opts) int {
 		fmt.Fprintln(os.Stderr, "init takes no file argument (see --help)")
 		return 1
 	}
-	if o.schema == "" {
+	if !o.schemaSet {
 		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
 		return 1
 	}

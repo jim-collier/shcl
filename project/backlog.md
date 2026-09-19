@@ -142,18 +142,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `37fe62d` (2026-07-18). The wrapper matrix pipes through `shcl` only, never a helper. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 33: the Go CLI takes an empty `--schema` value for no schema.
-		- Reproduced: `shcl check --schema= FILE` prints `ok` at exit 0 in Go, where the other three fail at exit 8. `init --schema=` differs too.
-		- Cause: a plain string tested against `""`. The class 20260918 item 9 fixed for the help topic, with this field not swept.
-		- Origin: `ba43d2d` (2026-07-23). Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 34: the help leaves out two refused combinations and has no entry for `--write`, and the option check cannot see a missing entry.
-		- Reproduced: identical in all four. `--default` with `--on-bad=error|flag`, and `--write` with a FILE of `-`, are refused and not in the "Also refused" list, which the CLI guide says lists every one. `--write, -w` has no Options entry, so `shcl help migrate` never names the option that rewrites the file.
-		- Note: the 20260918 item 18 check walks the entries the help prints, so deleting any option's entry would pass it. The man page's refused list lacks `--no-banner` on `set` without `--write`.
-		- Origin: the list is `c78d41d` and the rule `9d7a4f4` (2026-09-17). Same family as 20260830 item 39, 20260909 item 33 and 20260918 item 18. Confirmed.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 35: `shcl.ps1` documents one difference from the binary, and an unquoted comma is a second.
 		- Reproduced: dot-sourced, `shcl set --set-literal=ports=80,443 FILE` is a usage error, since PowerShell splits `a,b` for a function and not for a native command. Quoting works. A note and a wrapper-matrix row are the fix, as 20260904 item 16 decided for `--`.
 		- Origin: `86b9d9e` (2026-09-05). Confirmed.
@@ -846,6 +834,27 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Left alone: C and Rust take an unsigned offset, so neither can be handed one.
 		- Opened: 20260918-193000
 		- Closed: 20260919-135951
+
+	- ✅ Item 33: the Go CLI takes an empty `--schema` value for no schema.
+		- Reproduced: `shcl check --schema= FILE` prints `ok` at exit 0 in Go, where the other three fail at exit 8. `init --schema=` differs too.
+		- Cause: a plain string tested against `""`. The class 20260918 item 9 fixed for the help topic, with this field not swept.
+		- Origin: `ba43d2d` (2026-07-23). Confirmed.
+		- Fixed: `opts` carries `schemaSet` beside the path, set when the option is given, and `check` and `init` read that instead of comparing the string with "". `--schema=` is now a path the command line gave, read and refused at exit 8 as in the other three.
+		- Pinned by: `cli-regress.bash` rows `schema-empty-value` and `init-schema-empty-value`. Go exited 0 and 1 on the old code.
+		- Swept: the other CLIs keep the distinction in the type (C a null pointer, Rust and Python an option). Go's only other value option, `--default`, asks its seen list.
+		- Opened: 20260918-193000
+		- Closed: 20260919-141206
+
+	- ✅ Item 34: the help leaves out two refused combinations and has no entry for `--write`, and the option check cannot see a missing entry.
+		- Reproduced: identical in all four. `--default` with `--on-bad=error|flag`, and `--write` with a FILE of `-`, are refused and not in the "Also refused" list, which the CLI guide says lists every one. `--write, -w` has no Options entry, so `shcl help migrate` never names the option that rewrites the file.
+		- Note: the 20260918 item 18 check walks the entries the help prints, so deleting any option's entry would pass it. The man page's refused list lacks `--no-banner` on `set` without `--write`.
+		- Origin: the list is `c78d41d` and the rule `9d7a4f4` (2026-09-17). Same family as 20260830 item 39, 20260909 item 33 and 20260918 item 18. Confirmed.
+		- Fixed: the help gained a `--write` entry, naming `-w` and the temp-file rename, and its "Also refused" list gained `--write` with a FILE of `-` and `--default` with `--on-bad=error` or `flag`. The man page's refused list gained those two and the three it was already missing (`--no-banner` on `set` without `--write`, `--check` with `--write`). All four helps stay byte-identical at 80 columns.
+		- Fixed: the entry head is `--write`, not `--write, -w`. The narrowed help reads a head up to its first space, so an alias in the head made `shcl help migrate` drop the entry.
+		- Pinned by: a new `option-entries` check in `cli-regress.bash`. Every option the completions offer must have an entry in each CLI's help, so an option with none is no longer invisible to the scope check that walks the entries. It names `--write` in all four on the old code. The two newly listed refusals have rows: the `--default` pair already did, and `write-stdin-fmt` and `write-stdin-set` are new.
+		- Note: `check-completions.bash` holds the completion table against the CLI's own option table, so the new check reaches the whole list rather than a copy of it.
+		- Opened: 20260918-193000
+		- Closed: 20260919-141206
 
 - Code review 20260918:
 

@@ -132,6 +132,10 @@ Options (the subcommands each belongs to are in parentheses):
   --no-banner                            (init, and set --write when it creates
                                          FILE) leave out the info block naming
                                          the format and pointing at its spec
+  --write                                (fmt/set/migrate) rewrite FILE in
+                                         place, spelled -w too, through a
+                                         temp file and a rename; refused
+                                         with a FILE of '-'
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -182,10 +186,11 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
-refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --no-banner on 'set' without --write; --check with --write;
---layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
-across FILE, --layer and --schema.
+refused: --write with --layer; --write with --set outside 'set'; --write with a
+FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
+--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
+--default with --on-bad=error or --on-bad=flag; '-' named more than once across
+FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would

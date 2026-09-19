@@ -280,6 +280,10 @@ rows=(
 	'opt-before-cmd|--schema=x check %F%|-|1||^option --schema goes after the subcommand'
 	'unknown-opt-before-cmd|--nope check %F%|-|1||^unknown option: --nope'
 	'opt-space-ate-file|check --schema %F%|-|1||took .* as its value, so no FILE is left'
+	## 20260918b item 33: `--schema=` is a path the command line gave, so every
+	## binding reads it and fails; Go read the empty string as "no schema".
+	'schema-empty-value|check --schema= %F%|-|8|-|-'
+	'init-schema-empty-value|init --schema=|-|8|-|-'
 	## init takes no FILE, so the space form has to keep working there.
 	'opt-space-init-ok|init --no-banner --schema %S2%|-|0|-|^$'
 	## 20260829 item 10: Python recursed a frame per level in three places.
@@ -457,6 +461,10 @@ rows=(
 	## 20260909 item 16.
 	'wide-name-write|fmt --write %LW%|-|0||-'
 	'sugar-migrate-write-stdin|migrate --write -|-|1|-|cannot rewrite stdin'
+	## 20260918b item 34: the same refusal on the other two, which the help's
+	## "Also refused" list now names.
+	'write-stdin-fmt|fmt --write -|-|1|-|cannot rewrite stdin'
+	'write-stdin-set|set --write -|-|1|-|cannot rewrite stdin'
 	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
@@ -901,7 +909,21 @@ done
 ## "(same)", or no parentheses at all, carries the entry above.
 for b in "${bindings[@]}"; do
 	name="${b%%|*}"; cli="${b#*|}"
-	mapfile -t cmds < <("${cli}" help 2>/dev/null </dev/null | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	helpText="$("${cli}" help 2>/dev/null </dev/null)"
+	mapfile -t cmds < <(printf '%s\n' "${helpText}" | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	## Every option the completions offer must have an entry in the help. The
+	## scope check below walks the entries the help prints, so an option with no
+	## entry at all was invisible to it - `--write` had none for three rounds
+	## (20260918b item 34). The completion table is the list check-completions
+	## holds against the CLI's own.
+	mapfile -t offered < <(grep -oE "echo '[^']*'" "${repoDir}/source/completions/shcl.bash" | grep -oE '\-\-[a-z0-9-]+' | sort -u)
+	((${#offered[@]} >= 10)) || { echo "cli-regress: option-entries [${name}]: only ${#offered[@]} option(s) found in the completions" >&2; nBad+=1; }
+	for o in "${offered[@]}"; do
+		nRun+=1
+		grep -qE "^  ${o}([=,[:space:]]|$)" <<<"${helpText}" || {
+			echo "cli-regress: option-entries [${name}]: ${o} is offered by the completions and has no entry in the help" >&2; nBad+=1
+		}
+	done
 	nOpts=0
 	claim=""
 	while IFS=$'\t' read -r spell par; do
@@ -937,7 +959,7 @@ for b in "${bindings[@]}"; do
 		if [[ "${claim}" != "${takes}" ]]; then
 			echo "cli-regress: option-scopes [${name}]: ${opt}: the help names (${claim}), the CLI takes it on (${takes})" >&2; nBad+=1
 		fi
-	done < <("${cli}" help 2>/dev/null </dev/null | awk '
+	done < <(printf '%s\n' "${helpText}" | awk '
 		/^Options \(/ { on = 1; next }
 		on && /^[^ ]/ { on = 0 }
 		!on { next }
