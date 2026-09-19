@@ -136,12 +136,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 20: Python's `Document.parse` raises `UnicodeEncodeError` on a string holding a lone surrogate, and so does every call that takes a path.
-		- Reproduced: `Document.parse("a: x\udc80\n")`. The README and the doc comment both say parse never raises. Python hands out such strings from `sys.argv`, `os.environ` and `os.listdir`.
-		- Origin: `fbbe7ce` (2026-09-07), the byte tokenizer. A regression: the commit before it parsed the text and read such a path as `NotFound`. Confirmed.
-		- Note: the spec leaves a library's answer to invalid UTF-8 open, so refusing is allowed. The defect is an accidental exception from a call documented never to raise.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 21: C's `shcl_generate` returns success with unchecked text when one allocation inside its self-check fails.
 		- Reproduced: a schema that must fault with `V097`, failing exactly one allocation. For allocations 2 to 15 it returns ok with text and the hook is never called.
 		- Cause: a NULL from the nested parse or validate reads as "no faults". The default-form probe two screens up checks it, and so does `shcl_load_and_validate`.
@@ -765,6 +759,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: every corpus input, and the three lines that showed it, merged onto itself and compared with its canonical text before, in the Go test `TestMergeOntoItselfLeavesItAlone` and the Python and C runners. On the old code Go failed the compare, and the Python and C runners never returned. The veneer smoke gained the same three lines, which did not fail on the old C.
 		- Opened: 20260918-193000
 		- Closed: 20260919-133211
+
+	- ✅ Item 20: Python's `Document.parse` raises `UnicodeEncodeError` on a string holding a lone surrogate, and so does every call that takes a path.
+		- Reproduced: `Document.parse("a: x\udc80\n")`. The README and the doc comment both say parse never raises. Python hands out such strings from `sys.argv`, `os.environ` and `os.listdir`.
+		- Origin: `fbbe7ce` (2026-09-07), the byte tokenizer. A regression: the commit before it parsed the text and read such a path as `NotFound`. Confirmed.
+		- Note: the spec leaves a library's answer to invalid UTF-8 open, so refusing is allowed. The defect is an accidental exception from a call documented never to raise.
+		- Decided: a lone surrogate is one more character, as it was before the byte tokenizer. The parse and every lookup path carry it through with the `surrogatepass` handler, and the save is where text with no UTF-8 spelling fails, as `_encodable` already said. Python now reads the same bytes Go does for such text: a bare name holding one is `E014` in both, and a quoted one binds.
+		- Fixed: every encode and decode in the tokenizer, the parser, the path scanner and `migrate` in `shcl.py`, 28 sites. `read_file` and `_encodable` stay strict on purpose, since one reads file bytes and the other asks whether a spelling exists. The reason is in a comment at `tokenize_value`.
+		- Pinned by: a block in the Python runner. It parses text holding two lone surrogates, reads both back, looks one up in a path (NotFound), and saves (`SaveFailed`). The old code raised at the parse.
+		- Opened: 20260918-193000
+		- Closed: 20260919-133424
 
 	- ✅ Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
 		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.

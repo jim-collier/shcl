@@ -431,6 +431,25 @@ def main():
 	fails = []
 	cases = load_cases()
 
+	# A lone surrogate, which os.listdir, sys.argv and os.environ hand out, is
+	# one more character to the parse and to a lookup path, as it was before
+	# the tokenizer read bytes (20260918b item 20). A strict encode made parse
+	# raise, where it promises never to. The save is where it fails. Python
+	# only: no other binding's string can hold one.
+	sdoc = shcl.Document.parse("a: x\udc80\n\"k\udc81\": 2\n")
+	if sdoc.to_canonical() != "a: x\udc80\n\"k\udc81\": 2\n" or sdoc.diagnostics():
+		fails.append("surrogate: the parse did not keep the text")
+	if sdoc.read_string("a").value != "x\udc80" or sdoc.read_string('"k\udc81"').status != shcl.Status.Good:
+		fails.append("surrogate: a read did not find what the parse kept")
+	if sdoc.read_string("z\udc80").status != shcl.Status.NotFound or sdoc.exists("q\udc80.r"):
+		fails.append("surrogate: a path holding one is not NotFound")
+	with tempfile.TemporaryDirectory() as sd:
+		try:
+			sdoc.save_file(os.path.join(sd, "s.shcl"))
+			fails.append("surrogate: a document with no UTF-8 spelling saved")
+		except shcl.SaveFailed:
+			pass
+
 	# A document merged onto itself is left as it is (20260918b item 19). The
 	# walk read over while it wrote self, so Go doubled a retained line, Python
 	# grew without end and C ran out of memory. Every corpus input, and the

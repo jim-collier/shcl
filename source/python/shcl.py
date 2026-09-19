@@ -1031,7 +1031,12 @@ def tokenize_value(text: str, from_: int, rules: Rules, out: Tokens) -> None:
 	"""The value half: everything from the byte offset from_ on, split into
 	pieces, with the comment found on the way."""
 	out._clear()
-	s = text.encode("utf-8")
+	# A Python string can hold a lone surrogate (os.listdir, sys.argv and
+	# os.environ hand them out), and a strict encode raised from a parse that
+	# promises never to. Carried through, it is one more non-ASCII character,
+	# as it was before the tokenizer read bytes; every decode here matches.
+	# The save is where text with no UTF-8 spelling fails.
+	s = text.encode("utf-8", "surrogatepass")
 	out.src = s
 	_scan_value(s, from_, rules, out)
 
@@ -1108,7 +1113,7 @@ def tokenize(text: str, sep: str, path: bool, rules: Rules, out: Tokens) -> None
 	reused, so a parse allocates once per document rather than once per line.
 	text is the line after its indent, or the path."""
 	out._clear()
-	s = text.encode("utf-8")
+	s = text.encode("utf-8", "surrogatepass")
 	out.src = s
 	sep_b = ord(sep)
 	n = len(s)
@@ -1186,7 +1191,7 @@ def tokenize(text: str, sep: str, path: bool, rules: Rules, out: Tokens) -> None
 def _piece_text(p, s):
 	"""The text of a piece as the reader sees it: escapes applied inside double
 	quotes, everything else as written. s is the tokenized text's bytes."""
-	raw = s[p.start:p.end].decode("utf-8")
+	raw = s[p.start:p.end].decode("utf-8", "surrogatepass")
 	if p.quote is Quote.DOUBLE and "\\" in raw:
 		return _apply_escapes(raw)
 	return raw
@@ -1196,8 +1201,8 @@ def _piece_is(p, s, want):
 	"""True when a piece reads as this exact text, without building it."""
 	raw = s[p.start:p.end]
 	if p.quote is Quote.DOUBLE and _B_BACKSLASH in raw:
-		return _apply_escapes(raw.decode("utf-8")) == want
-	return raw == want.encode("utf-8")
+		return _apply_escapes(raw.decode("utf-8", "surrogatepass")) == want
+	return raw == want.encode("utf-8", "surrogatepass")
 
 
 def _element_of(p, s):
@@ -1556,7 +1561,7 @@ def _value_edits(s, tok, edits, st):
 	it quoted) and re-spelled only where the current rules would read the
 	same text as something else."""
 	for p in tok.elements:
-		raw = s[p.start:p.end].decode("utf-8")
+		raw = s[p.start:p.end].decode("utf-8", "surrogatepass")
 		quoted = p.quote is Quote.SINGLE or p.quote is Quote.DOUBLE
 		if quoted:
 			a, b = p.start - 1, p.end + 1
@@ -1565,7 +1570,7 @@ def _value_edits(s, tok, edits, st):
 		if p.quote is Quote.NONE and "\\" not in raw and raw:
 			continue
 		logical = _apply_escapes(raw)
-		if _reads_same(s[a:b].decode("utf-8"), quoted, logical):
+		if _reads_same(s[a:b].decode("utf-8", "surrogatepass"), quoted, logical):
 			continue
 		# A resolved escape is the one edit that turns on which rule set wrote
 		# the file: these bytes say one thing under 2.x and another here. An
@@ -1574,7 +1579,7 @@ def _value_edits(s, tok, edits, st):
 			st.ambiguous += 1
 			continue
 		spelling = _migrate_spelling(logical, not (quoted or p.quote is Quote.OPEN))
-		edits.append((a, b, spelling.encode("utf-8")))
+		edits.append((a, b, spelling.encode("utf-8", "surrogatepass")))
 
 
 def _migrate_line(rest, tok, fence, st):
@@ -1587,7 +1592,7 @@ def _migrate_line(rest, tok, fence, st):
 	if fo is not None:
 		return rest, (fo[0], fo[1])
 	edits: list = []
-	s = rest.encode("utf-8")
+	s = rest.encode("utf-8", "surrogatepass")
 	if rest.startswith("*") and len(s) > 1 and _is_wsp_byte(s[1]):
 		tokenize_value(rest, 1, Rules.V2, tok)
 		# A bare comma was refused (E010), so there is nothing to carry.
@@ -1599,10 +1604,10 @@ def _migrate_line(rest, tok, fence, st):
 			return rest, fence
 		last = len(tok.segments) - 1
 		for i, seg in enumerate(tok.segments):
-			name = s[seg.name.start:seg.name.end].decode("utf-8")
+			name = s[seg.name.start:seg.name.end].decode("utf-8", "surrogatepass")
 			if seg.name.quote is Quote.SINGLE and _apply_escapes(name) != name:
 				if st.from_v2:
-					edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8")))
+					edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8", "surrogatepass")))
 				else:
 					st.ambiguous += 1
 			sel = seg.selector
@@ -1623,7 +1628,7 @@ def _migrate_line(rest, tok, fence, st):
 				k -= 1
 			if k > 0 and s[k - 1] == 0x3A:
 				colon = k - 1
-			body = s[sel.start:sel.end].decode("utf-8")
+			body = s[sel.start:sel.end].decode("utf-8", "surrogatepass")
 			logical = _apply_escapes(body)
 			if i == last and tok.sep is None:
 				if colon is not None:
@@ -1649,10 +1654,10 @@ def _migrate_line(rest, tok, fence, st):
 					if logical != body:
 						spelling = _migrate_spelling(logical, False)
 					elif quoted:
-						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8"))
+						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8", "surrogatepass"))
 					else:
 						spelling = _migrate_spelling(logical, True)
-					edits.append((colon, close + 1, (": " + spelling).encode("utf-8")))
+					edits.append((colon, close + 1, (": " + spelling).encode("utf-8", "surrogatepass")))
 					continue
 			elif colon is not None:
 				# The colon goes, and one space after it when the author
@@ -1667,16 +1672,16 @@ def _migrate_line(rest, tok, fence, st):
 						a, b = sel.start - 1, sel.end + 1
 					else:
 						a, b = sel.start, sel.end
-					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8")))
+					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8", "surrogatepass")))
 				else:
 					st.ambiguous += 1
 		if tok.sep is not None:
 			# A same-line fence: the info string ran to the end of the line.
-			fo = _fence_open(s[tok.value[0]:].decode("utf-8"))
+			fo = _fence_open(s[tok.value[0]:].decode("utf-8", "surrogatepass"))
 			if fo is not None:
-				return _splice(s, edits).decode("utf-8"), (fo[0], fo[1])
+				return _splice(s, edits).decode("utf-8", "surrogatepass"), (fo[0], fo[1])
 			_value_edits(s, tok, edits, st)
-	return _splice(s, edits).decode("utf-8"), fence
+	return _splice(s, edits).decode("utf-8", "surrogatepass"), fence
 
 
 # ---------------------------------------------------------------------------
@@ -1781,7 +1786,7 @@ def _path_of(tok, s):
 		raise _PathError(tok.fault[1])
 	segments = []
 	for seg in tok.segments:
-		raw = s[seg.name.start:seg.name.end].decode("utf-8")
+		raw = s[seg.name.start:seg.name.end].decode("utf-8", "surrogatepass")
 		# Names resolve escapes, the same rule values follow when they are
 		# compared: two spellings of one name are one name. name_src keeps
 		# the source spelling, which is what authored_name hands back.
@@ -1798,7 +1803,7 @@ def _path_of(tok, s):
 		segments.append(_Segment(name, raw, selector, seg.star))
 	if tok.sep is None:
 		return segments, None
-	return segments, s[tok.value[0]:tok.value[1]].decode("utf-8")
+	return segments, s[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")
 
 
 def _scan_lookup(inp):
@@ -2116,9 +2121,9 @@ class _Parser:
 		# A capped scan zeroed the value, and a fence is told by its leading run
 		# alone.
 		if tok.capped:
-			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8"))
+			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8", "surrogatepass"))
 		else:
-			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8")
+			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")
 		fence = _fence_open(v)
 		if fence is None:
 			return i + 1
@@ -2431,9 +2436,9 @@ class _Parser:
 				tokenize_value(rest, 0, Rules.CURRENT, tok)
 				# A capped scan zeroed the value, and a fence is told by its
 				# leading run alone.
-				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8"))
+				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"))
 			if fence is not None:
-				comment = tok.src[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+				comment = tok.src[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 				parent = self._resolve_parent(indent)
 				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent is None:
@@ -2475,7 +2480,7 @@ class _Parser:
 						i += 1
 						continue
 					tokenize_value(rest, 1, Rules.CURRENT, tok)
-					comment = tok.src[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+					comment = tok.src[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 					# Elements have no node of their own; trivia rides the field. At the
 					# root there is no field (E007), so the comment rides the document
 					# like any other pending one.
@@ -2504,7 +2509,7 @@ class _Parser:
 			# Field line.
 			tokenize(rest, ":", False, Rules.CURRENT, tok)
 			s = tok.src
-			comment = s[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+			comment = s[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 			parent = self._resolve_parent(indent)
 			if parent is None:
 				self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
@@ -5069,7 +5074,7 @@ def _value_reads_back(v):
 		return True
 	tok = Tokens()
 	tokenize_value(line, 0, Rules.CURRENT, tok)
-	if _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8")) != (v.fence_char, v.fence_len, v.info):
+	if _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")) != (v.fence_char, v.fence_len, v.info):
 		return False
 	# A body line ending in a carriage return loses it to the load's line-end
 	# trim, and one spelling the closing fence would end the block early.
@@ -6393,7 +6398,7 @@ def _gen_selector_text(v):
 	if len(els) == 1:
 		tries = []
 		if tok.elements[0].quote is Quote.SINGLE or tok.elements[0].quote is Quote.DOUBLE:
-			tries.append((tok.src[tok.value[0]:tok.value[1]].decode("utf-8"), els[0], True))
+			tries.append((tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"), els[0], True))
 		tries += [(display, display, False), (_quote_text(els[0]), els[0], True)]
 	else:
 		tries = [(display, display, False)]
