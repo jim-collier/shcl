@@ -222,6 +222,26 @@ if [[ -f "${man}" ]] && git -C "${repoDir}" rev-parse --is-inside-work-tree >/de
 	fi
 fi
 
+##	The README's performance numbers and design.md's table come out of
+##	cicd/utility/comparison/, which is not a gate and runs only when asked. They
+##	sat at 1.2.0 figures for two majors, and the only thing saying how old they
+##	were was a date in design.md's prose. The rule: that date is the day of the
+##	newest run in results.shcl. Refreshing one without the other then goes red
+##	instead of leaving a currency claim nobody can check.
+cmpResults="${repoDir}/cicd/utility/comparison/results.shcl"
+designDoc="${repoDir}/project/design.md"
+if [[ -f "${cmpResults}" && -f "${designDoc}" ]]; then
+	newestRun="$(sed -nE 's/^run: ([0-9]{8})-[0-9]{6}[[:space:]]*$/\1/p' "${cmpResults}" | sort | tail -n1)"
+	rerunDate="$(sed -nE 's/.*rerun on ([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' "${designDoc}" | head -n1)"
+	if [[ -z "${newestRun}" ]]; then
+		fBad "cicd/utility/comparison/results.shcl carries no run: stamp"
+	elif [[ -z "${rerunDate}" ]]; then
+		fBad "project/design.md no longer says when the format comparison was last rerun"
+	elif [[ "${rerunDate}" != "${newestRun:0:4}-${newestRun:4:2}-${newestRun:6:2}" ]]; then
+		fBad "project/design.md says the comparison was rerun on ${rerunDate}, but the newest run in results.shcl is ${newestRun}: rerun cicd/utility/comparison/ and refresh the numbers, or fix the date"
+	fi
+fi
+
 ##	Two top-level bullets with no blank line between them. Auto-generated TOC
 ##	blocks are the exception - the tool strips blank lines out of them, so a
 ##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
@@ -496,3 +516,5 @@ echo "check-docs: OK"
 ##		2026-09-19  Every tracked source file carries the SPDX and copyright lines.
 ##		2026-09-19  The corpus README states no withdrawn lexical rule and has a
 ##		            note for every case.
+##		2026-09-19  design.md's comparison rerun date matches the newest run in
+##		            results.shcl.

@@ -34,7 +34,7 @@ expect_exit = 6                 # the demo file carries a deliberate bad line
 pause = 1.6
 
 [[step]]
-note  = "Canonical fmt; values verbatim"
+note  = "Canonical fmt; nothing lost"
 show  = "{prog} fmt app.shcl"
 run   = "{bin} fmt cicd/demo/app.shcl"
 scrollrate = 320

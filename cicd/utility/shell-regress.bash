@@ -1322,6 +1322,29 @@ print("|".join(mod["fRunStep"](step, "shcl", "/bin/true")))
 PYEOF
 )"
 	[[ "${merged}" == "one|TWO|three" ]] || fBad "gen-demo-gif.py does not render a step's output in emission order: ${merged}"
+
+	##	20260918b item 62: the committed gif showed output the CLI no longer
+	##	printed - an E014 wording two rounds old, and a `check` missing its
+	##	explain line - because the gif stage is the one the release gate skips
+	##	(--no-gif), so nothing held the two together. The gif carries whatever
+	##	fRunStep captures, so capturing it here and comparing it with a golden
+	##	says the gif is stale the day the output changes.
+	demoGot="$(cd "${repoDir}" && python3 - "${gif}" "${repoDir}/cicd/demo-scenario.toml" "${cli}" <<'DEMOEOF'
+import runpy, sys, tomllib
+mod = runpy.run_path(sys.argv[1])
+with open(sys.argv[2], "rb") as fh:
+	sc = tomllib.load(fh)
+prog = sc.get("prog", "shcl")
+lines = []
+for step in sc.get("step", []):
+	lines.append("$ " + step["show"].replace("{prog}", prog))
+	lines += mod["fRunStep"](step, prog, sys.argv[3])
+print("\n".join(lines))
+DEMOEOF
+)"
+	if [[ "${demoGot}" != "$(cat "${repoDir}/cicd/demo/expected.txt")" ]]; then
+		fBad "the demo steps no longer print what assets/demo.gif shows; rerender the gif (cicd.bash gif stage, or gen-demo-gif.py) and refresh cicd/demo/expected.txt"
+	fi
 elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
 	fBad "the demo output order cannot be checked here, and the gate requires it"
 else
