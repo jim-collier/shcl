@@ -63,20 +63,35 @@ fBuild g++ c++17 source/c/tests/veneer_smoke.cpp "${work}/veneer_smoke"
 "${work}/veneer_smoke" || { echo "sanitize-c: veneer_smoke: exit $?" >&2; rc=1; }
 
 ## The CLI's own exit codes are the corpus contract, checked elsewhere; here only
-## a sanitizer stop counts, with its report.
+## a sanitizer stop counts, with its report. Anything above 128 counts as well:
+## the sanitizers exit 77 when they report, but an abort() or a fault they do not
+## intercept kills the process instead, and a run that died that way used to be
+## passed over as if the CLI had simply refused its arguments.
 fBuild cc c11 source/c/cmd/shcl/main.c "${work}/shcl"
+cliBin="${work}/shcl"
 declare -i nRuns=0 nBad=0
 fCli(){
 	nRuns+=1
-	"${work}/shcl" "$@" >/dev/null 2>"${work}/stderr" || {
+	"${cliBin}" "$@" >/dev/null 2>"${work}/stderr" || {
 		local code=$?
-		if ((code == 77)); then
+		if ((code == 77 || code > 128)); then
 			nBad+=1
-			echo "sanitize-c: shcl $*"
+			echo "sanitize-c: shcl $* (exit ${code})"
 			sed 's/^/    /' "${work}/stderr"
 		fi
 	}
 }
+## Self-test for that, since the gate's own failure mode is silence: a CLI that
+## aborted on every single input would have reported nothing but a clean count.
+## SIGKILL rather than abort(), which is the realistic death here (ASan leaves
+## 134), because it is the one signal that writes no core file. The group's
+## redirect is for the shell's own "Killed" notice, which it prints after the
+## wait and which would otherwise sit in the middle of a passing run.
+printf '%s\n' '#include <signal.h>' 'int main(void){ raise(SIGKILL); return 0; }' > "${work}/bait.c"
+cc -O0 -o "${work}/bait" "${work}/bait.c" || { echo "sanitize-c: bait build failed" >&2; exit 2; }
+{ cliBin="${work}/bait" fCli check /dev/null >/dev/null; } 2>/dev/null
+((nBad == 1)) || { echo "sanitize-c: self-test: a CLI killed by a signal went uncounted" >&2; exit 2; }
+nRuns=0; nBad=0
 ## One reads.tsv row as the CLI calls crosscheck.bash makes of it. Columns:
 ## query, type, expected, status, optional level; only the invocation matters
 ## here, so expected and status are not read.
@@ -198,3 +213,5 @@ exit "${rc}"
 ##		  load and the bad-ops scripts, and the C++ veneer smoke runs too.
 ##		- 2026-09-17 JC: tokens, migrate and the four write paths added. The file
 ##		  tier had never run under the sanitizers.
+##		- 2026-09-19 JC: A CLI run killed by a signal counts, not just a sanitizer
+##		  stop at 77, and a bait that aborts proves the counting still works.

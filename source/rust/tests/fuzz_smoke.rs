@@ -44,6 +44,48 @@ const INTERESTING: &[char] = &[
 	'\u{3000}', // ideographic space
 ];
 
+/// How many iterations to run, never below `floor`. Split from the environment
+/// so the refusals below can be tested without one.
+///
+/// A misspelled value used to fall back to 300 without a word, so `--ci`'s
+/// 200000 became a quick run whenever the pipeline's spelling drifted, and a 0
+/// ran nothing at all and reported a pass. Both are a mistake, not a setting.
+fn iter_count_from(value: Option<&str>, floor: usize) -> usize {
+	let n = match value {
+		None => 300,
+		Some(v) => v
+			.trim()
+			.parse::<usize>()
+			.unwrap_or_else(|_| panic!("SHCL_FUZZ_ITERS is not a count: {v:?}")),
+	};
+	assert!(
+		n > 0,
+		"SHCL_FUZZ_ITERS is 0, so this test would run nothing"
+	);
+	n.max(floor)
+}
+
+fn iter_count(floor: usize) -> usize {
+	iter_count_from(std::env::var("SHCL_FUZZ_ITERS").ok().as_deref(), floor)
+}
+
+#[test]
+fn the_iteration_count_refuses_a_value_that_is_not_one() {
+	assert_eq!(iter_count_from(None, 1), 300);
+	assert_eq!(iter_count_from(Some("20000"), 1), 20000);
+	assert_eq!(
+		iter_count_from(Some(" 500 "), 2000),
+		2000,
+		"the floor still wins"
+	);
+	for bad in ["", "0", "2OO", "-1", "1e5", "20 000"] {
+		assert!(
+			std::panic::catch_unwind(|| iter_count_from(Some(bad), 1)).is_err(),
+			"SHCL_FUZZ_ITERS={bad:?} was accepted"
+		);
+	}
+}
+
 fn mutate(rng: &mut Rng, base: &str) -> String {
 	let mut chars: Vec<char> = base.chars().collect();
 	let edits = 1 + rng.below(8);
@@ -64,6 +106,39 @@ fn mutate(rng: &mut Rng, base: &str) -> String {
 		}
 	}
 	chars.into_iter().collect()
+}
+
+/// A raw block, in any of the forms the line shapes below cannot build: the
+/// same-line and the block spelling, backticks or tildes, a run longer than
+/// three, an info string, a body of several lines or one shaped like a field,
+/// a closer at some other indent, and one that never closes at all. The
+/// 20260918 class fix - a field line inside a body is content, not structure -
+/// was checked by hand over these and by nothing since.
+fn fence(rng: &mut Rng, indent: &str, name: &str) -> String {
+	let mark = if rng.below(2) == 0 { "`" } else { "~" };
+	let run = mark.repeat(3 + rng.below(3));
+	// `c#` is the one that proves the info string ends where the comment does.
+	let info = ["", "sql", "c#", " py "][rng.below(4)];
+	let inner = format!("{indent}\t");
+	let mut lines = match rng.below(2) {
+		0 => vec![format!("{indent}{name}: {run}{info}")],
+		_ => vec![format!("{indent}{name}:"), format!("{inner}{run}{info}")],
+	};
+	lines.extend(match rng.below(4) {
+		0 => vec![format!("{inner}body")],
+		1 => vec![format!("{inner}b: 2"), format!("{inner}# not a comment")],
+		// Flush left, deeper than the fence, and empty: all three are content,
+		// and the emitter has to pad them back to the closer's indent.
+		2 => vec![String::new(), "x".to_string(), format!("{inner}\tdeeper")],
+		_ => vec![],
+	});
+	match rng.below(5) {
+		0 => {}
+		1 => lines.push(format!("{indent}{run}")),
+		2 => lines.push(run.clone()),
+		_ => lines.push(format!("{inner}{run}")),
+	}
+	lines.join("\n")
 }
 
 // Line-level shapes the character mutator almost never builds: duplicate keys
@@ -104,7 +179,7 @@ fn structural(rng: &mut Rng) -> String {
 			4 => format!("{indent}{name}: [{}, {}]", rng.below(9), rng.below(9)),
 			5 => format!("{indent}{name}{sel}:"),
 			6 => format!("{indent}{name}.{name}{sel}: {}", rng.below(9)),
-			7 => format!("{indent}{name}: ```\n{indent}\tbody\n{indent}```"),
+			7 => fence(rng, &indent, name),
 			8 => format!("{indent}{name}: \"open"),
 			9 => format!("{indent}{name}: 1, , 2 # trailing"),
 			10 => format!("{indent}\u{feff}{name}: 1"),
@@ -167,10 +242,7 @@ fn seed_texts() -> Vec<String> {
 
 #[test]
 fn mutated_inputs_never_panic_and_format_is_fixpoint() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let seeds = seed_texts();
 	let mut rng = Rng(0x5EED_CAFE_F00D_0001);
 	// SHCL_FUZZ_DUMP: also write the generated inputs out (capped), so the cicd
@@ -252,10 +324,7 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 /// value-level check because reads did not change.
 #[test]
 fn writes_on_structural_soup_stay_fixpoint() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0002);
 	for i in 0..iters {
 		let text = structural(&mut rng);
@@ -311,10 +380,7 @@ fn writes_on_structural_soup_stay_fixpoint() {
 /// holding it has to end with it.
 #[test]
 fn comments_behind_selectors_stay_comments() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0003);
 	let mut seen = 0usize;
 	for i in 0..iters {
@@ -346,10 +412,7 @@ fn comments_behind_selectors_stay_comments() {
 /// by content: a retained line's text comes back in the canonical output.
 #[test]
 fn lost_count_follows_the_outcome_table() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0004);
 	let (mut lost_seen, mut kept_seen) = (0usize, 0usize);
 	for i in 0..iters {
@@ -414,10 +477,7 @@ fn lost_count_follows_the_outcome_table() {
 /// capped line above holds its level, so the lines under it move.
 #[test]
 fn a_cap_refuses_only_a_line_that_would_bind() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	const REFUSING: &[&str] = &[
 		"E003", "E004", "E006", "E007", "E008", "E009", "E010", "E011", "E013", "E014", "E016",
 		"E019",
@@ -470,47 +530,95 @@ fn a_cap_refuses_only_a_line_that_would_bind() {
 	);
 }
 
+/// A leading run of three or more `` ` `` or `~`, which is how a fence line
+/// both opens and closes a block.
+fn fence_run(text: &str) -> Option<(char, usize)> {
+	let c = text.chars().next()?;
+	if c != '`' && c != '~' {
+		return None;
+	}
+	let n = text.chars().take_while(|&x| x == c).count();
+	(n >= 3).then_some((c, n))
+}
+
+/// Every raw body in the text, as 1-based line numbers: the line that opened
+/// the block, and the last line the block covers (its closing fence, or the
+/// last line of the file when it never closes). This is the spec's rule spelled
+/// out on its own - a block closes at the first later line whose trimmed text
+/// is a run of the same character, at least as long as the opener's - so the
+/// property below has an oracle rather than the parser's own answer.
+///
+/// Lexical, and deliberately: what the parser makes of the opening line - a
+/// fence with nothing to bind to, a line it skipped - does not change where the
+/// body is. A skipped field line takes its body with it, which is the whole
+/// point of the property below.
+fn raw_spans(text: &str) -> Vec<(usize, usize)> {
+	let lines: Vec<&str> = text.lines().collect();
+	let mut spans = Vec::new();
+	let mut open: Option<(char, usize, usize)> = None;
+	for (k, line) in lines.iter().enumerate() {
+		let bare = line.trim_start_matches([' ', '\t']);
+		if let Some((c, n, at)) = open {
+			let closer = line.trim();
+			if closer.chars().count() >= n && closer.chars().all(|x| x == c) {
+				spans.push((at, k + 1));
+				open = None;
+			}
+			continue;
+		}
+		// The block spelling: the fence is the whole line. The same-line
+		// spelling: it is the value half. No name the soup builds holds a
+		// `: `, so the first one is the field's. A `*` is no field name, so
+		// such a line has no value and opens nothing.
+		if bare.starts_with('*') {
+			continue;
+		}
+		let value = line.split_once(": ").map(|(_, v)| v.trim_start());
+		if let Some((c, n)) = fence_run(bare).or_else(|| value.and_then(fence_run)) {
+			open = Some((c, n, k + 1));
+		}
+	}
+	if let Some((_, _, at)) = open {
+		spans.push((at, lines.len()));
+	}
+	spans
+}
+
 /// A raw body is content, whatever becomes of the line that opened it. A
 /// skipped field line whose value opened a block left the body to be read as
 /// lines, and its closing fence then opened a block of its own; nine review
 /// items were some arm of that. So no diagnostic may land on a body line or a
 /// closing fence, unless the opening line has no value to read: a `*` name,
-/// which is no field at all, or a path that did not parse (E014). Shape 7 is
-/// the only fence in the soup, and it closes on the line after its body.
+/// which is no field at all, a path that did not parse (E014), or a fence with
+/// no field above it to bind to (E006).
 #[test]
 fn raw_bodies_stay_content() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0008);
 	let (mut seen, mut skipped) = (0usize, 0usize);
 	for i in 0..iters {
 		let text = structural(&mut rng);
 		let doc = Document::parse(&text);
 		let diags = doc.diagnostics();
-		for (k, line) in text.lines().enumerate() {
-			if !line.ends_with(": ```") || line.trim_start_matches([' ', '\t']).starts_with('*') {
-				continue;
-			}
-			let opener = k + 1;
-			let on = |n: usize, codes: &[&str]| {
-				diags
-					.iter()
-					.any(|d| d.line == n && (codes.is_empty() || codes.contains(&d.code)))
-			};
-			if on(opener, &["E014"]) {
+		let on = |n: usize, codes: &[&str]| {
+			diags
+				.iter()
+				.any(|d| d.line == n && (codes.is_empty() || codes.contains(&d.code)))
+		};
+		for (opener, last) in raw_spans(&text) {
+			if on(opener, &["E006", "E014"]) {
 				continue;
 			}
 			seen += 1;
 			if on(opener, &["E012", "E018"]) {
 				skipped += 1;
 			}
-			for body in [opener + 1, opener + 2] {
+			for body in (opener + 1)..=last {
 				assert!(
 					!on(body, &[]),
-					"diagnostic on raw body line {} at iteration {}:\n{}",
+					"diagnostic on raw body line {} of the block opened at {}, at iteration {}:\n{}",
 					body,
+					opener,
 					i,
 					text
 				);
@@ -530,10 +638,7 @@ fn raw_bodies_stay_content() {
 /// guarantee `fmt` gives, now for the composed document.
 #[test]
 fn merge_never_panics_and_stays_fixpoint() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let seeds = seed_texts();
 	let mut rng = Rng(0x5EED_CAFE_F00D_0007);
 	for i in 0..iters {
@@ -623,10 +728,7 @@ fn merge_never_panics_and_stays_fixpoint() {
 /// document a formatter fixpoint - even for the reserved/escape/fence hazards.
 #[test]
 fn writer_roundtrips_and_stays_fixpoint() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_0000_1234_ABCD);
 	for i in 0..iters {
 		let s = soup_text(&mut rng, 12);
@@ -679,11 +781,7 @@ fn writer_roundtrips_and_stays_fixpoint() {
 /// return among them), a comment glued or spaced, non-ASCII text.
 #[test]
 fn tokens_follow_the_grammar() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300)
-		.max(2000);
+	let iters = iter_count(2000);
 	let mut rng = Rng(0x5EED_70CE_0000_0005);
 	let mut tok = Tokens::default();
 	for i in 0..iters {
@@ -976,10 +1074,7 @@ fn generate_checked(schema_text: &str) -> Option<String> {
 /// passing by refusing.
 #[test]
 fn generated_starters_load_and_validate_clean() {
-	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(300);
+	let iters = iter_count(1);
 	const PATHS: &[&str] = &[
 		"a",
 		"a.b",

@@ -996,6 +996,12 @@ flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${t
 	|| fBad "flame-report.py stayed SEEN past a marker a --file run moved: ${flameOut@Q}"
 flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" 2>&1 || true)"
 [[ "${flameOut}" == "SEEN "* ]] || fBad "flame-report.py reported a graph it had already seen: ${flameOut@Q}"
+##	20260918b item 63: the line named the graph and said nothing about when it
+##	was profiled, so a startup look standing on a fortnight-old artifact read
+##	exactly like one standing on this morning's. Both gates say the age now.
+touch -d '16 days ago' "${tmpDir}/flameseen/flame_20260104-000000_frequent.svg"
+flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${tmpDir}/flameseen" 2>&1 || true)"
+[[ "${flameOut}" == *"16d old"* ]] || fBad "flame-report.py does not say how old the graph behind its report is: ${flameOut@Q}"
 
 ##	20260901b item 21: lint-report.bash counted the `-D warnings` in the clippy
 ##	command line the pre-push gate's nested run echoes as a warning, so every
@@ -1007,7 +1013,7 @@ lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run
 [[ "${lintOut}" == "CLEAN "* ]] || fBad "lint-report.bash counted an echoed command line as a warning: ${lintOut@Q}"
 printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n%s' "${lintDone}" >> "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
-[[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
+[[ "${lintOut}" == "FLAG "*"(2 warning line(s), "* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
 ##	20260909 item 23: a failed run printed CLEAN, since only rustc's `error[`
 ##	counted as a failure. Each spelling on its own must report FAILED.
 for failLine in 'src.c:3:5: error: conflicting types for x' 'SC2086 (info): Double quote to prevent globbing.' \
@@ -1047,6 +1053,10 @@ lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpD
 [[ "${lintOut}" == "FAILED run_20260103-000000.log"* ]] || fBad "lint-report.bash did not report the run once it failed: ${lintOut@Q}"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
 [[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash did not mark a finished failed run seen: ${lintOut@Q}"
+##	20260918b item 63, the other half: same silence about the log's age.
+touch -d '16 days ago' "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "SEEN "*"16d old)"* ]] || fBad "lint-report.bash does not say how old the log behind its report is: ${lintOut@Q}"
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one

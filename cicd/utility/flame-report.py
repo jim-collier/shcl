@@ -22,6 +22,7 @@ import bisect
 import html
 import re
 import sys
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -62,6 +63,22 @@ def fKept(path: Path) -> tuple[int, int] | None:
 		return int(got), int(want)
 	except (OSError, ValueError):
 		return None
+
+
+def fAge(path: Path) -> str:
+	##	How old the graph is, in whichever unit reads plainest. The name carries a
+	##	timestamp, but nobody reads a date as an age, and SEEN and NEW look the
+	##	same whether the profile behind them is from this morning or a fortnight
+	##	ago - and a stale one has been read as today's picture of the code.
+	try:
+		secs = max(0, int(time.time() - path.stat().st_mtime))
+	except OSError:
+		return "?"
+	if secs < 5400:
+		return f"{secs // 60}m"
+	if secs < 172800:
+		return f"{secs // 3600}h"
+	return f"{secs // 86400}d"
 
 
 def fNewest(pdir: Path) -> tuple[str, str] | None:
@@ -256,11 +273,11 @@ def main() -> None:
 		except OSError:
 			pass
 		if ts and ts == seen:
-			print(f"SEEN {name}  (nothing newer than {seen})")
+			print(f"SEEN {name}  (nothing newer than {seen}, {fAge(path)} old)")
 			return
 
 	total, frames = fParse(path)
-	print(f"{'NEW' if a.check else 'FLAME'} {name}  ({ts or 'n/a'}, {total} samples)")
+	print(f"{'NEW' if a.check else 'FLAME'} {name}  ({ts or 'n/a'}, {total} samples, {fAge(path)} old)")
 	kept = fKept(path)
 	if kept:
 		got, want = kept
