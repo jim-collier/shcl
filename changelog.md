@@ -244,7 +244,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, like the plain spelling.
 
-
 - A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
 
 - A value after an index selector on the last segment (`a[0]: 2`) was dropped with no diagnostic and no lost count, so an in-place write deleted it at exit 0. It is reported (`E002`) and counted as lost now, as a value after a value selector always was.
@@ -275,13 +274,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A file of lines with no colon at a constant indent parsed in quadratic time - a 1 MB plain text file took half a minute, and neither `ParseLimited` cap could stop it because no nodes or elements were built. Each refused line is kept as trivia, and every following line rewalked the whole retained list. The list is walked only as far as an incoming line could change it now, so the parse is linear again.
 
-
 - `SetFloat` wrote `inf`, `-inf` and `NaN`, and `SetDateTime` wrote whatever the struct held (month 99, February 30, a fraction with no seconds, an empty struct as an empty value), each reporting success and each leaving a field the reader refused. Both refuse the value now and return false, the way `SetRaw` refuses an info-string it cannot spell. The CLI's float ops refuse `inf`, `nan` and a literal past the double range for the same reason; a datetime op already did.
 
 - `init` wrote a child under a valued parent as a dotted line - `srv: web` and then `srv.port:` - which is two `srv` instances to the parser, so the child never landed where the schema looks. With a repeat lower bound of 1 on the child the self-check waved it through, and the starter config failed the schema that produced it at the very next `check --schema`. A line under a valued live parent now selects that instance by its value (`srv[web].port:`), and the self-check lets through only the one documented shortfall, a repeat lower bound of 2 or more. The C CLI reported a schema that does not build with the faults an empty document would owe it added on; it reports the build faults alone now, like the other three.
 
 - `SetLiteral` (and `--set-literal`) took bracket-array text and wrote a two-element array holding `[80` and `443]`, with nothing said, where the same text in a file is `E019` and the line binds nothing. It refuses the text now, the way it already refused a quote that never closes.
-
 
 - The C validator put one scratch arena per level of the nesting cap on the stack - 16 KB, fine on a main thread and past the whole stack of a small worker, where it crashed. They are heap-allocated now.
 
