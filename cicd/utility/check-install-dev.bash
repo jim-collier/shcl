@@ -20,6 +20,9 @@
 
 set -Eeuo pipefail
 
+## With GIT_DIR set, the clone and `git init` below act on the real repository.
+for gitVar in $(git rev-parse --local-env-vars 2>/dev/null || true); do unset "${gitVar}"; done
+
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 script="${root}/install-dev.bash"
 [[ -r "${script}" ]] || { echo "check-install-dev: cannot read ${script}" >&2; exit 2; }
@@ -100,3 +103,4 @@ exit "${rc}"
 
 ##	History:
 ##		- 2026-09-01 JC: Created.
+##		- 2026-09-19 JC: Clears git's local environment first.

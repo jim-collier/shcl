@@ -26,6 +26,10 @@
 
 set -Eeuo pipefail
 
+## With GIT_DIR set, every scratch repo built below acts on the real one. The
+## blocks that build one clear it again, so a block lifted out stays safe.
+for gitVar in $(git rev-parse --local-env-vars 2>/dev/null || true); do unset "${gitVar}"; done
+
 repoDir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cli="${repoDir}/source/rust/target/debug/shcl"
 while (($#)); do case "$1" in
@@ -48,6 +52,16 @@ fHave(){
 	command -v "$1" > /dev/null 2>&1 && return 0
 	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$1 is missing and the gate requires it"
 	echo "$1" >> "${SHCL_GATE_SKIPS:-/dev/null}"
+	return 1
+}
+##	fHave for a file the rows read rather than a tool they run: $1 is the path,
+##	$2 the package that ships it. A bare `[[ -r ]] && rows+=()` dropped half the
+##	completion rows with nothing said, under the gate too (20260918b item 43).
+fHaveFile(){
+	[[ -r "$1" ]] && return 0
+	[[ -n "${SHCL_GATE_STRICT:-}" ]] && fBad "$2 is missing ($1) and the gate requires it"
+	echo "shell-regress: skipping the $2 rows (no $1)" >&2
+	echo "$2" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 	return 1
 }
 
@@ -111,7 +125,7 @@ fComplete(){
 	' _ "$2" "${compBreaks}" 2>/dev/null || true
 }
 compModes=(bare)
-[[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
+if fHaveFile /usr/share/bash-completion/bash_completion bash-completion; then compModes+=(lib); fi
 for mode in "${compModes[@]}"; do
 	out="$(fComplete "${mode}" "shcl check --strictness=st")"
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on --strictness=st: ${out@Q}"
@@ -578,6 +592,7 @@ fi
 eval "$(sed -n '/^fStartOnDev()/,/^}/p' "${repoDir}/install-dev.bash")"
 nBadBefore="${nBad}"
 (
+	unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX GIT_CONFIG_COUNT
 	gdir="${tmpDir}/devclone"; mkdir -p "${gdir}/origin"
 	git -C "${gdir}/origin" init -q --initial-branch=main
 	git -C "${gdir}/origin" -c user.email=t@t -c user.name=t commit -q --allow-empty -m first
@@ -764,6 +779,21 @@ fPinsRun 's#^([[:space:]]*)(echo "8c3be12b)#\1\# \2#' && fBad "check-pins.bash p
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1curl -fsSL https://example.com/x.tgz | tar xz#' && fBad "check-pins.bash passed curl piped to tar"
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1wget -O x.tgz https://example.com/x.tgz#' && fBad "check-pins.bash passed wget -O"
 fPinsRun 's#^([[:space:]]*)(echo "8c3be12b.*)$#\1\2\n\1gh release download v1 -R a/b#' && fBad "check-pins.bash passed gh release download"
+##	20260918b item 45: the reverse check read its three install families in one
+##	group under errexit, so with no pip or npm line the go and PowerShell ones
+##	were never read and an unpinned `go install` passed. The run fails anyway
+##	here, since the pip pins lose their line; the message is what is checked.
+sed -E -e '/(pip|npm) install/d' -e 's#^([[:space:]]*)(go install honnef\.co.*)$#\1\2\n\1go install example.com/x/cmd/unpinnedtool@v1.0.0#' \
+	"${repoDir}/.github/workflows/ci.yml" > "${pinsYml}"
+pinsOut="$(bash "${tmpDir}/pins/cicd/utility/check-pins.bash" 2>&1 || true)"
+[[ "${pinsOut}" == *"installs unpinnedtool at a pinned version"* ]] \
+	|| fBad "check-pins.bash missed an unpinned go install once ci.yml had no pip line: $(tail -n 3 <<<"${pinsOut}")"
+##	And a family whose line is there but spelled so its pattern reads no name
+##	has gone blind; that is a failure too, not an empty list.
+fPinsRun 's#pip install ruff==.*$#pip install -r requirements.txt#' || true
+pinsOut="$(bash "${tmpDir}/pins/cicd/utility/check-pins.bash" 2>&1 || true)"
+[[ "${pinsOut}" == *"has a pip install line and no pinned name was read"* ]] \
+	|| fBad "check-pins.bash read no pip pins from a pip line and said nothing: $(tail -n 3 <<<"${pinsOut}")"
 ##	20260909 item 24: rotation retagged a graph and left its sidecar under the
 ##	old role, so the caveat vanished. And --check --file wrote the named graph's
 ##	stamp into the shared marker, so one dated ahead left the gate at SEEN for
@@ -788,17 +818,18 @@ flameOut="$(python3 "${repoDir}/cicd/utility/flame-report.py" --check --dir "${t
 ##	command line the pre-push gate's nested run echoes as a warning, so every
 ##	run that pushed to dev read as one finding. A real clippy warning and a
 ##	cppcheck one still count; the two echoed command lines do not.
-printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n' > "${tmpDir}/run_20260101-000000.log"
+lintDone=$'\n[ shcl CI/CD: done. ]\n'
+printf 'Lint ...........: cargo clippy --all-targets -- -D warnings\nLint ...........: cppcheck --enable=warning,portability src.c\nOK: lint\n%s' "${lintDone}" > "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
 [[ "${lintOut}" == "CLEAN "* ]] || fBad "lint-report.bash counted an echoed command line as a warning: ${lintOut@Q}"
-printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n' >> "${tmpDir}/run_20260101-000000.log"
+printf 'warning: unused variable: x\n --> src/main.rs:1:1\nsrc.c:12:3: warning: uninitialized variable [uninitvar]\n%s' "${lintDone}" >> "${tmpDir}/run_20260101-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260101-000000.log" 2>&1 || true)"
 [[ "${lintOut}" == "FLAG "*"(2 warning line(s))"* ]] || fBad "lint-report.bash missed a real warning: ${lintOut@Q}"
 ##	20260909 item 23: a failed run printed CLEAN, since only rustc's `error[`
 ##	counted as a failure. Each spelling on its own must report FAILED.
 for failLine in 'src.c:3:5: error: conflicting types for x' 'SC2086 (info): Double quote to prevent globbing.' \
 	'test result: FAILED. 3 passed; 8 failed' '--- FAIL: TestX (0.00s)' "thread 'main' panicked at src/lib.rs:1:1:" \
-	'Traceback (most recent call last):' '[ CICD ABORTED (exit 1) at line 5: false ]'; do
+	'Traceback (most recent call last):' '[ CICD ABORTED (exit 1) at line 5: false ]' '[ FAILED: tests failed ]'; do
 	printf 'OK: lint\n%s\n' "${failLine}" > "${tmpDir}/run_20260102-000000.log"
 	lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --file "${tmpDir}/run_20260102-000000.log" 2>&1 || true)"
 	[[ "${lintOut}" == "FAILED "* ]] || fBad "lint-report.bash called a failed run clean (${failLine}): ${lintOut@Q}"
@@ -806,15 +837,33 @@ done
 ##	20260909 item 24: --check --file wrote the named log's stamp into the shared
 ##	marker, so a name that sorts high left the gate at SEEN for good.
 mkdir -p "${tmpDir}/lintseen"
-printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260101-000000.log"
-printf 'OK: lint\n' > "${tmpDir}/zzz.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/lintseen/run_20260101-000000.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/zzz.log"
 bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" >/dev/null 2>&1 || true
 bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" --file "${tmpDir}/zzz.log" >/dev/null 2>&1 || true
-printf 'OK: lint\n' > "${tmpDir}/lintseen/run_20260102-000000.log"
+printf 'OK: lint\n%s' "${lintDone}" > "${tmpDir}/lintseen/run_20260102-000000.log"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
 [[ "${lintOut}" == "CLEAN run_20260102-000000.log"* ]] || fBad "lint-report.bash stayed SEEN past a marker a --file run moved: ${lintOut@Q}"
 lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
 [[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash reported a log it had already seen: ${lintOut@Q}"
+##	20260918b item 13: a log read while its run was still going, or after the run
+##	was killed, said CLEAN and took the marker, so the warnings and the abort that
+##	came after were never shown. A nested run's done line, echoed by a publish
+##	before the outer run ends, does not finish the outer one either.
+printf '[ 2/9  Build (debug) ]\n   Compiling shcl v2.0.0\n' > "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE run_20260103-000000.log"* ]] || fBad "lint-report.bash did not call an unfinished run INCOMPLETE: ${lintOut@Q}"
+printf 'warning: unused variable: x\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE run_20260103-000000.log"*"1 warning line(s)"* ]] || fBad "lint-report.bash marked an unfinished run seen: ${lintOut@Q}"
+printf '[ shcl CI/CD: done. ]\n[ 9/9  Publish ]\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "INCOMPLETE "* ]] || fBad "lint-report.bash took a nested run's done line for the end of the run: ${lintOut@Q}"
+printf '\n[ FAILED: the installers differ from origin/main ]\n' >> "${tmpDir}/lintseen/run_20260103-000000.log"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "FAILED run_20260103-000000.log"* ]] || fBad "lint-report.bash did not report the run once it failed: ${lintOut@Q}"
+lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpDir}/lintseen" 2>&1 || true)"
+[[ "${lintOut}" == "SEEN "* ]] || fBad "lint-report.bash did not mark a finished failed run seen: ${lintOut@Q}"
 
 ##	20260830b item 9: the stable channel took GitHub's date-ordered "latest
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
@@ -1144,6 +1193,26 @@ for g in "${repoDir}"/cicd/utility/*.bash; do
 			|| fBad "${g##*/}:${n} skips over a missing tool without noting it in SHCL_GATE_SKIPS"
 	done < <(grep -nE '^[[:space:]]*echo ".*skipping .*\(no ' "${g}" || true)
 done
+##	20260918b item 43: the rules above key on a skip message, so a skip that
+##	prints none passes them. This one keys on the defect instead: a list of rows
+##	or modes grown only when a tool or a system file is here. Each one has to
+##	read the strict flag within the next lines, or go through fHave or fHaveFile.
+fBareGrowth(){  ## fBareGrowth FILE: prints "LINE" per bare conditional growth
+	local n
+	while IFS=: read -r n _; do
+		# shellcheck disable=SC2016  ## the literal expansion is the pattern
+		sed -n "${n},$((n + 20))p" "$1" | grep -qF '${SHCL_GATE_STRICT' || echo "${n}"
+	done < <(grep -nE '(command -v [^;|]*|\[\[ -[rxefds] "?/[^]]*\]\])[[:space:]]*(&&|; then)[[:space:]]*[A-Za-z_]+\+=\(' "$1" || true)
+}
+for g in "${repoDir}"/cicd/utility/*.bash; do
+	for n in $(fBareGrowth "${g}"); do
+		fBad "${g##*/}:${n} grows a list only when a tool or file is here, and never reads SHCL_GATE_STRICT"
+	done
+done
+## Assembled, so the bait does not trip the scan when it sweeps this file.
+amp='&&'; thn='; then'
+printf '%s\n' "[[ -r /usr/share/x/y ]] ${amp} modes+=(lib)" "command -v zz >/dev/null 2>&1 ${amp} tools+=(zz)" "if [[ -x /opt/t ]]${thn} rows+=(t); fi" > "${tmpDir}/growth-bait"
+[[ "$(fBareGrowth "${tmpDir}/growth-bait" | paste -sd' ')" == "1 2 3" ]] || fBad "the bare list-growth scan missed its bait: $(fBareGrowth "${tmpDir}/growth-bait" | paste -sd' ')"
 grep -q 'record_green=0' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer holds back a partial run from recording its tree"
 
 ##	20260904 item 29: sanitize-c.bash replays every reads.tsv row type through
@@ -1471,6 +1540,16 @@ fScanUnguardedGrep(){
 	grep -qx definitely-not-a-tool "${tmpDir}/skips" || fBad "fHave skipped a missing tool without noting it in SHCL_GATE_SKIPS"
 	[[ -z "${runSkips}" ]] || ! grep -qx definitely-not-a-tool "${runSkips}" \
 		|| fBad "the fHave self-test noted its made-up tool in the run's own skip list"
+	## 20260918b item 43: the same three answers for a missing file, and the
+	## local skip says so, since a skip nobody sees is what the item was.
+	strictBad=0
+	( SHCL_GATE_STRICT=1; SHCL_GATE_SKIPS=/dev/null; fBad(){ exit 7 ;}; fHaveFile "${tmpDir}/no-such-file" made-up-package ) 2>/dev/null || strictBad=$?
+	((strictBad == 7)) || fBad "fHaveFile did not fail on a missing file under the gate"
+	laxBad=0
+	laxOut="$( ( unset SHCL_GATE_STRICT; SHCL_GATE_SKIPS="${tmpDir}/skips"; fBad(){ exit 7 ;}; fHaveFile "${tmpDir}/no-such-file" made-up-package ) 2>&1)" || laxBad=$?
+	((laxBad == 1)) || fBad "fHaveFile did not skip a missing file outside the gate (exit ${laxBad})"
+	[[ "${laxOut}" == *"skipping the made-up-package rows"* ]] || fBad "fHaveFile skipped a missing file with nothing said: ${laxOut@Q}"
+	grep -qx made-up-package "${tmpDir}/skips" || fBad "fHaveFile skipped a missing file without noting it in SHCL_GATE_SKIPS"
 }
 
 ##	The escape is assembled rather than written, so the bait for the second scan
@@ -1594,6 +1673,21 @@ while IFS= read -r f; do
 	fi
 done < <(fShellFiles)
 
+##	20260918b item 44: green-tree.bash went in with no line in the shellcheck
+##	list, and nothing noticed. The list is compared with the shell files the
+##	scans above walk, both ways, so a new script cannot miss the lint stage and
+##	a renamed one cannot leave a dead entry.
+# shellcheck source=/dev/null
+scTargets="$( ( set +u; source "${repoDir}/cicd/config.bash"; printf '%s\n' "${SHELLCHECK_TARGETS[@]}" ) | LC_ALL=C sort -u)"
+shFiles="$(while IFS= read -r f; do printf '%s\n' "${f#"${repoDir}/"}"; done < <(fShellFiles) | LC_ALL=C sort -u)"
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: a shell script the lint stage does not shellcheck; add it to SHELLCHECK_TARGETS"; fi
+done < <(LC_ALL=C comm -23 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: in SHELLCHECK_TARGETS and not a tracked shell script"; fi
+done < <(LC_ALL=C comm -13 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))
+((${#shFiles} > 0 && ${#scTargets} > 0)) || fBad "the shellcheck list comparison read an empty side"
+
 ##	20260902 item 18: the two corpus replays split a reads.tsv row with
 ##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
 ##	whitespace whatever IFS is set to - so the top-level `children` row arrived
@@ -1642,3 +1736,8 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##	History:
 ##		2026-08-30  Created, pinning the wrapper and installer defects from the
 ##		            20260829 and 20260830 rounds.
+##		2026-09-19  Clears git's local environment at the top.
+##		2026-09-19  fHaveFile, and a scan for a list grown only when a tool or file
+##		            is here. The lint-report rows cover an unfinished run.
+##		2026-09-19  The shellcheck list is compared with the tracked shell files.
+##		2026-09-19  check-pins: an empty pip family, and a pip line read blind.

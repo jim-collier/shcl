@@ -54,6 +54,7 @@ cat > "${repo}/cicd/cicd.bash" <<'EOF'
 #!/usr/bin/env bash
 echo "ran ${SHCL_GATE_REF:-}" >> "${STUB_LOG}"
 echo "$*" > "${STUB_LOG}.args"
+echo "${GIT_DIR:-unset}" > "${STUB_LOG}.gitdir"
 exit "${STUB_RC:-0}"
 EOF
 printf 'one\n' > "${repo}/a.txt"
@@ -176,6 +177,23 @@ fPush dev "${merged}"
 fPush main "${merged}"
 ((hookRc == 0 && ran == 1)) || fail "a merge pushed to main: exit ${hookRc}, gate ran ${ran} time(s)"
 
+## 20260918b item 2: a push from a linked worktree hands the hook GIT_DIR, and
+## passed on to the gate it pointed every scratch repo the gate built at this
+## one. This push goes through real git, since that is what sets it.
+git init -q --bare "${work}/remote.git" || { echo "check-push-gate: git init failed" >&2; exit 2; }
+git -C "${repo}" config core.hooksPath cicd/hooks
+git -C "${repo}" worktree add -q -b linked "${work}/linked" HEAD
+printf 'ten\n' > "${work}/linked/d.txt"
+git -C "${work}/linked" commit -q -am ten
+: > "${STUB_LOG}"; rm -f "${STUB_LOG}.gitdir"
+linkedRc=0; git -C "${work}/linked" push -q "${work}/remote.git" HEAD:main > "${work}/linked.out" 2>&1 || linkedRc=$?
+ran="$(wc -l < "${STUB_LOG}")"
+((linkedRc == 0 && ran == 1)) || fail "a push to main from a linked worktree: exit ${linkedRc}, gate ran ${ran} time(s): $(tail -c 300 "${work}/linked.out")"
+[[ "$(cat "${STUB_LOG}.gitdir" 2>/dev/null || true)" == unset ]] \
+	|| fail "the hook passed GIT_DIR on to the gate from a linked worktree: $(cat "${STUB_LOG}.gitdir" 2>/dev/null || true)"
+git -C "${repo}" config --unset core.hooksPath
+git -C "${repo}" worktree remove --force "${work}/linked"
+
 ## 20260918 item 6: the installer drift check, on a clone of this repository
 ## with the refs as they stand between a dev push that changes an installer and
 ## the main push that follows it. The hook runs before git moves origin/main,
@@ -226,7 +244,7 @@ FMT_CMD=(true); FMT_CHECK_CMD=(true); FMT_EXTRA=(); FMT_CHECK_EXTRA=()
 BUILD_CMD=(true); BUILD_EXTRA=()
 LINT_CMD=(true); LINT_EXTRA=(); SHELLCHECK_TARGETS=()
 TEST_CMD=(true); TEST_QUICK_CMD=(true)
-TEST_EXTRA=('if [[ -n "${STUB_SKIP:-}" ]]; then echo stub >> "${SHCL_GATE_SKIPS}"; fi')
+TEST_EXTRA=('if [[ -n "${STUB_SKIP:-}" ]]; then echo stub >> "${SHCL_GATE_SKIPS}"; fi' 'echo "${GIT_DIR:-unset}" > "${STUB_GITDIR:-/dev/null}"')
 BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
 DOGFOOD_FIXED_DESTS=(); GIT_PUBLISH=(); RELEASE_NATIVE_CMD=()
 CFG
@@ -250,8 +268,12 @@ fEngine -- --ci --no-fmt
 ((engRc == 0 && engRecorded == 0)) || fail "a run with the format check left out: exit ${engRc}, recorded ${engRecorded}"
 fEngine STUB_SKIP=1 -- --ci
 ((engRecorded == 0)) || fail "a run whose gate noted a skip recorded its tree"
+## 20260918b item 2: a direct run with GIT_DIR exported clears it too.
+fEngine GIT_DIR="${eng}/.git" STUB_GITDIR="${work}/eng.gitdir" -- --ci
+[[ "$(cat "${work}/eng.gitdir" 2>/dev/null || true)" == unset ]] \
+	|| fail "cicd.bash passed GIT_DIR on to its gates: $(cat "${work}/eng.gitdir" 2>/dev/null || true)"
 
-(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, only a push to main runs it with the full gate, a red gate refuses, the drift check judges the pushed tree as main, and a partial run records nothing"
+(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, only a push to main runs it with the full gate, a red gate refuses, no gate sees a linked worktree's GIT_DIR, the drift check judges the pushed tree as main, and a partial run records nothing"
 exit "${rc}"
 
 
@@ -263,3 +285,5 @@ exit "${rc}"
 ##		  are between the dev push and the main push.
 ##		- 2026-09-18 JC: The hook's gate flags are checked, and the engine's
 ##		  record hold-backs run for real on a stubbed repository.
+##		- 2026-09-19 JC: A push from a linked worktree, and a direct run with
+##		  GIT_DIR exported, must not hand GIT_DIR to the gate.

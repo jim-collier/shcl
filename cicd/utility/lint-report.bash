@@ -9,7 +9,9 @@
 ##		advisory lines so they can be addressed. Two modes: plain (print warnings
 ##		from the newest log) and --check (print only when that log is newer than the
 ##		one last recorded in a local marker, then record it - meant for a per-session
-##		startup look that is a no-op until a new cicd run has happened).
+##		startup look that is a no-op until a new cicd run has happened). A log with
+##		neither the done line nor an abort line reports INCOMPLETE and is not
+##		recorded, so the next look reads it again.
 ##	Syntax:
 ##		lint-report.bash [--check] [--force] [--no-mark] [--dir DIR] [--file LOG]
 ##		  --check     gate on the .lint-seen marker; print SEEN and stop if not newer
@@ -77,9 +79,19 @@ if ((check)) && ((! force)) && [[ -z "$file" ]]; then
 	fi
 fi
 
+##	A run is finished when its last line is the done line, or when it printed one of
+##	the pipeline's two abort lines. Anything else is still running or was cut off.
+##	The last line, not any line: a publish echoes the pre-push gate's nested run,
+##	done line and all. An unfinished log never gets the marker, since a look taken
+##	mid-run used to mark it seen and the warnings and abort that followed were
+##	never shown.
+lastLine="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -n 1 || true)"
+finished=0
+if [[ "$lastLine" == *"CI/CD: done."* ]] || grep -qE '^\[ FAILED: |CICD ABORTED' "$log" 2>/dev/null; then finished=1; fi
+
 ##	Record the marker now (before printing the body) so a caller that pipes stdout
 ##	to head/less and closes it early still records the look.
-if ((check)) && ((! noMark)) && [[ -z "$file" && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+if ((check)) && ((! noMark)) && ((finished)) && [[ -z "$file" && "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
 	printf '%s\n' "$ts" > "$marker" 2>/dev/null || echo "lint-report: could not write marker: $marker" >&2
 fi
 
@@ -97,8 +109,10 @@ warns="$(grep -inE 'warning|rustsec-|vulnerab|unmaintained|yanked' "$log" 2>/dev
 if [[ -n "$warns" ]]; then n=$(printf '%s\n' "$warns" | grep -c .); else n=0; fi
 
 ##	A failed run is never CLEAN. Case-sensitive: each tool spells its failure one
-##	way, and the lower-case words turn up in passing output.
-errs="$(grep -nE '(^|[^[:alnum:]_-])error(\[|:)|\bSC[0-9]{4}\b|test result: FAILED|^--- FAIL|^FAIL\b|panicked at|^Traceback \(most recent call last\)|CICD ABORTED' "$log" 2>/dev/null || true)"
+##	way, and the lower-case words turn up in passing output. The pipeline stops
+##	two ways: an unexpected error raises the ABORTED line, and a check that fails
+##	on purpose prints `[ FAILED: ... ]` and exits.
+errs="$(grep -nE '(^|[^[:alnum:]_-])error(\[|:)|\bSC[0-9]{4}\b|test result: FAILED|^--- FAIL|^FAIL\b|panicked at|^Traceback \(most recent call last\)|CICD ABORTED|^\[ FAILED: ' "$log" 2>/dev/null || true)"
 if [[ -n "$errs" ]]; then e=$(printf '%s\n' "$errs" | grep -c .); else e=0; fi
 
 tag="FLAG"; ((check)) && tag="NEW"
@@ -106,6 +120,9 @@ if ((e)); then
 	echo "FAILED $(basename "$log")  (${e} error line(s), ${n} warning line(s))"
 	echo
 	printf '%s\n' "$errs"
+	if ((n)); then echo; printf '%s\n' "$warns"; fi
+elif ((! finished)); then
+	echo "INCOMPLETE $(basename "$log")  (no done or abort line: still running, or cut off; ${n} warning line(s) so far)"
 	if ((n)); then echo; printf '%s\n' "$warns"; fi
 elif ((n)); then
 	echo "${tag} $(basename "$log")  (${n} warning line(s))"
@@ -121,3 +138,5 @@ fi
 ##		- 20260902: The echoed `-D warnings` of a nested clippy run is not a finding.
 ##		- 20260914: A failed run reports FAILED with its error lines. The marker
 ##		  moves only on the newest log, and SEEN needs an exact match.
+##		- 20260919: `[ FAILED: ... ]` counts as a failure. A log with no done or
+##		  abort line is INCOMPLETE and never marked seen.
