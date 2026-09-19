@@ -289,7 +289,10 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // the returned string is empty and nothing was kept. Bytes live in the schema's
 // read arena; valid until shcl_free, or until shcl_reads_release. Generation
 // faults from an earlier call on the same schema are dropped first, so the list
-// describes this call.
+// describes this call; the schema's own diagnostics stay. A failed allocation
+// goes to SHCL_OOM, as for any other call on a built document, once the call
+// has given back what it held; it never returns text the self-check did not
+// read.
 shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 
 // The info block shcl_generate writes at the bottom unless no_banner. Public
@@ -1003,7 +1006,10 @@ typedef struct {
 } ShclNode;
 typedef struct { ShclNode *data; size_t len, cap; } ShclVecNode;
 
-typedef struct { size_t line; shcl_severity sev; ShclStr message; const char *code; } ShclDiag;
+/* generated: pushed by shcl_generate, which drops its own at the start of the
+   next call. Matching by code dropped too little, and a document that came
+   through shcl_load_and_validate can hold V09x of its own. */
+typedef struct { size_t line; shcl_severity sev; ShclStr message; const char *code; int generated; } ShclDiag;
 DEFINE_VEC(ShclVecDiag, ShclDiag)
 
 /* Hash-keyed child map (the parser's accelerator and the read index); the
@@ -1062,6 +1068,16 @@ struct shcl_doc {
 	shcl_doc *probe_doc;
 	int probe;
 };
+
+/* Point every allocation a document can make at one recovery point, or back at
+   SHCL_OOM with NULL. A call that holds documents of its own across other
+   allocations arms this, so a longjmping hook cannot strand them. */
+static void doc_guard(shcl_doc *d, jmp_buf *panic) {
+	if (!d) return;
+	d->panic = panic;
+	arena_guard(&d->arena, panic); arena_guard(&d->scratch, panic);
+	arena_guard(&d->reads, panic); arena_guard(&d->index_arena, panic);
+}
 #define ROOT ((size_t)0)
 #define NODE(d, i) ((d)->nodes.data[i])
 #define NIL ((size_t)-1)
@@ -2636,8 +2652,14 @@ typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints;
 	size_t max_diags, unlisted_errors, unlisted_hints; } ShclParser;
 
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
-	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = code;
+	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = code; dg.generated = 0;
 	ShclVecDiag_push(&d->arena, &d->diags, dg);
+}
+/* A generation fault on the schema document. The text outlives the call, so it
+   is copied into the schema's arena here. */
+static void push_gen_diag(shcl_doc *schema, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
+	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = s_dup(&schema->arena, msg); dg.code = code; dg.generated = 1;
+	ShclVecDiag_push(&schema->arena, &schema->diags, dg);
 }
 /* Every parse diagnostic goes through here, so the cap sees them all. A
    message is built in the per-line arena and copied into the document only
@@ -5334,8 +5356,22 @@ void shcl_free(shcl_doc *d) { if (!d) return; shcl_free(d->probe_doc); free(d->n
 void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
 void shcl_compact(shcl_doc *d) {
 	if (!d) return;
-	shcl_doc *n = shcl_new();
-	if (!n) return;
+	/* The copy is off the frame, so the recovery point can give it back: a
+	   longjmping SHCL_OOM skips this frame, and every cut-short compaction
+	   used to keep the half-built copy for good (20260918b item 22). */
+	shcl_doc *volatile fresh = shcl_new();
+	if (!fresh) return;
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		shcl_doc *bad = fresh;
+		bad->probe_doc = NULL; // d's, never the copy's to free
+		shcl_free(bad);
+		doc_guard(d, NULL);
+		return; // d is left as it was, as the header says
+	}
+	shcl_doc *n = fresh;
+	doc_guard(n, &panic);
+	doc_guard(d, &panic);
 	ShclArena *a = &n->arena;
 	// The tree, root's own trivia included, then everything the load recorded
 	// that a save or a strict gate reads off the document.
@@ -5351,6 +5387,8 @@ void shcl_compact(shcl_doc *d) {
 	n->strictness = d->strictness;
 	n->lost = d->lost;
 	n->probe_doc = d->probe_doc;
+	doc_guard(n, NULL);
+	doc_guard(d, NULL);
 	// Swap the rebuilt document in and give the old storage back.
 	shcl_doc old = *d;
 	*d = *n;
@@ -5436,7 +5474,7 @@ static const ShclVecVCons *v_frag_get(const ShclVSchemaDef *def, ShclStr name) {
 }
 
 static void v_diag(ShclArena *a, ShclVecDiag *out, size_t line, const char *code, ShclStr msg) {
-	ShclDiag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = code;
+	ShclDiag dg; dg.line = line; dg.sev = SHCL_SEV_ERROR; dg.message = msg; dg.code = code; dg.generated = 0;
 	ShclVecDiag_push(a, out, dg);
 }
 static ShclStr v_msgz(ShclArena *a, const char *z) { ShclStr s; s.p = z; s.n = strlen(z); return s_dup(a, s); }
@@ -6581,16 +6619,15 @@ static ShclVecS v_disavowed_names(shcl_doc *schema, ShclArena *tmp, int (*pick)(
 	return names;
 }
 
-void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
-	/* Everything this probe builds - instance/repeat query results as well as
-	   the collected names (which must survive the per-read scratch resets) -
-	   goes into its own arena, freed on exit: the function owns neither doc,
-	   so it must not leave allocations behind in either. */
-	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
-	ShclVecS names = v_disavowed_names(schema, &tmp, v_pick_repeat);
-	if (!names.len) { arena_free(&tmp); return; }
+/* Everything a suppressor builds - instance/repeat query results as well as the
+   collected names (which must survive the per-read scratch resets) - goes into
+   an arena the caller owns: the function owns neither doc, so it must not leave
+   allocations behind in either. */
+static void suppress_repeats_in(ShclArena *tmp, shcl_doc *schema, shcl_doc *doc) {
+	ShclVecS names = v_disavowed_names(schema, tmp, v_pick_repeat);
+	if (!names.len) return;
 	ShclVecS heads = {0};
-	for (size_t k = 0; k < names.len; k++) ShclVecS_push(&tmp, &heads, h001_head(&tmp, names.data[k]));
+	for (size_t k = 0; k < names.len; k++) ShclVecS_push(tmp, &heads, h001_head(tmp, names.data[k]));
 	size_t w = 0;
 	for (size_t i = 0; i < doc->diags.len; i++) {
 		ShclDiag dg = doc->diags.data[i];
@@ -6605,16 +6642,13 @@ void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) {
 		if (!drop) doc->diags.data[w++] = dg;
 	}
 	doc->diags.len = w;
-	arena_free(&tmp);
 }
 
-void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
-	/* Same arena discipline as the H001 suppressor above. */
-	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
-	ShclVecS names = v_disavowed_names(schema, &tmp, v_pick_reopen);
-	if (!names.len) { arena_free(&tmp); return; }
+static void suppress_reopens_in(ShclArena *tmp, shcl_doc *schema, shcl_doc *doc) {
+	ShclVecS names = v_disavowed_names(schema, tmp, v_pick_reopen);
+	if (!names.len) return;
 	ShclVecS heads = {0};
-	for (size_t k = 0; k < names.len; k++) ShclVecS_push(&tmp, &heads, h002_head(&tmp, names.data[k]));
+	for (size_t k = 0; k < names.len; k++) ShclVecS_push(tmp, &heads, h002_head(tmp, names.data[k]));
 	size_t w = 0;
 	for (size_t i = 0; i < doc->diags.len; i++) {
 		ShclDiag dg = doc->diags.data[i];
@@ -6629,8 +6663,30 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) {
 		if (!drop) doc->diags.data[w++] = dg;
 	}
 	doc->diags.len = w;
-	arena_free(&tmp);
 }
+
+/* The public suppressors own their arena off the frame, so a longjmping
+   SHCL_OOM cannot strand it; the failure is handed on once it is freed. */
+static void suppress_owned(shcl_doc *schema, shcl_doc *doc, void (*run)(ShclArena *, shcl_doc *, shcl_doc *)) {
+	ShclArena *volatile tmp = (ShclArena *)calloc(1, sizeof *tmp);
+	if (!tmp) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		ShclArena *bad = tmp;
+		doc_guard(schema, NULL); doc_guard(doc, NULL);
+		arena_free(bad); free(bad);
+		SHCL_OOM();
+		abort();
+	}
+	arena_guard(tmp, &panic);
+	doc_guard(schema, &panic); doc_guard(doc, &panic);
+	run(tmp, schema, doc);
+	doc_guard(schema, NULL); doc_guard(doc, NULL);
+	ShclArena *done = tmp;
+	arena_free(done); free(done);
+}
+void shcl_suppress_declared_repeats(shcl_doc *schema, shcl_doc *doc) { suppress_owned(schema, doc, suppress_repeats_in); }
+void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) { suppress_owned(schema, doc, suppress_reopens_in); }
 
 // How many lines or values parsing dropped that canonical output cannot
 // re-emit - bad indentation, an unusable selector, a line past the depth cap.
@@ -6645,13 +6701,38 @@ size_t shcl_error_count(const shcl_doc *d) {
 	return n;
 }
 
+/* What a load and validate holds between its calls. Off the frame, so the
+   recovery point below can still reach it: a longjmping SHCL_OOM skips this
+   frame, and every cut-short call used to keep the document, the schema and
+   the validation for good (20260918b item 22). */
+typedef struct { shcl_doc *d, *sd; shcl_validation *v; ShclArena tmp; } ShclLoadOwn;
+
+static void load_release(ShclLoadOwn *own, int keep_doc) {
+	arena_free(&own->tmp);
+	shcl_validation_free(own->v);
+	shcl_free(own->sd);
+	if (keep_doc) doc_guard(own->d, NULL);
+	else shcl_free(own->d);
+	free(own);
+}
+
 shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schema, size_t slen, shcl_strictness s) {
-	shcl_doc *d = shcl_parse_with(text, len, s);
-	if (!d) return NULL;
+	ShclLoadOwn *volatile own = (ShclLoadOwn *)calloc(1, sizeof *own);
+	if (!own) return NULL;
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		load_release(own, 0);
+		return NULL;
+	}
+	arena_guard(&own->tmp, &panic);
+	shcl_doc *d = own->d = shcl_parse_with(text, len, s);
+	if (!d) { load_release(own, 0); return NULL; }
+	doc_guard(d, &panic);
 	ShclStr st; st.p = schema ? schema : ""; st.n = schema ? slen : 0;
 	if (s_trim(st).n != 0) {
-		shcl_doc *sd = shcl_parse(schema, slen);
-		if (!sd) { shcl_free(d); return NULL; }
+		shcl_doc *sd = own->sd = shcl_parse(schema, slen);
+		if (!sd) { load_release(own, 0); return NULL; }
+		doc_guard(sd, &panic);
 		// A schema that did not load would silently drop the constraints on
 		// its broken lines, or report every field as unknown - either way
 		// blaming the document for the schema. Say so instead, as `check`
@@ -6660,22 +6741,23 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 		for (size_t i = 0; i < sd->diags.len; i++) if (sd->diags.data[i].sev == SHCL_SEV_ERROR) { sbad = 1; break; }
 		if (sbad) {
 			push_diag(d, 0, SHCL_SEV_ERROR, "V099", s_lit("schema failed to load"));
-			shcl_free(sd);
+			load_release(own, 1);
 			return d;
 		}
-		shcl_validation *v = shcl_validate(d, sd);
-		if (!v) { shcl_free(sd); shcl_free(d); return NULL; }
+		shcl_validation *v = own->v = shcl_validate(d, sd);
+		if (!v) { load_release(own, 0); return NULL; }
+		// The validate disarmed the document's read arenas on its way out.
+		doc_guard(d, &panic);
 		for (size_t i = 0; i < v->diags.len; i++) {
 			ShclDiag dg = v->diags.data[i];
 			/* the validation arena dies below; codes are static strings */
 			dg.message = s_dup(&d->arena, dg.message);
 			ShclVecDiag_push(&d->arena, &d->diags, dg);
 		}
-		shcl_suppress_declared_repeats(sd, d);
-		shcl_suppress_declared_reopens(sd, d);
-		shcl_validation_free(v);
-		shcl_free(sd);
+		suppress_repeats_in(&own->tmp, sd, d);
+		suppress_reopens_in(&own->tmp, sd, d);
 	}
+	load_release(own, 1);
 	return d;
 }
 
@@ -7513,24 +7595,33 @@ static void g_expand_mounts(ShclArena *a, const ShclVSchemaDef *def, ShclVecVCon
 	g_expand_go(a, &def->cons, def, NULL, NULL, &stack, out, cut_path, cut_frag);
 }
 
-shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
-	// Only the returned bytes are contracted to live in the schema's arena;
-	// the constraint/fault lists, expansion copies, and the output builder are
-	// ~60x that, so they build in a private arena (shcl_validate's discipline)
-	// and die here - the caller may generate from one schema repeatedly.
-	ShclArena tmp; memset(&tmp, 0, sizeof tmp);
-	ShclArena *a = &tmp;
+/* What a generation holds while it works: its private arena and the nested
+   documents of the self-check. */
+typedef struct { ShclArena tmp; shcl_doc *self_, *one; shcl_validation *v; } ShclGenOwn;
+
+static void gen_release(shcl_doc *schema, ShclGenOwn *own) {
+	shcl_validation_free(own->v);
+	shcl_free(own->one);
+	shcl_free(own->self_);
+	arena_free(&own->tmp);
+	doc_guard(schema, NULL);
+	free(own);
+}
+
+/* The work of shcl_generate, in a frame of its own so the recovery point in
+   the caller leaves nothing here that a longjmp could clobber. */
+static shcl_str generate_in(shcl_doc *schema, int no_banner, int *ok, ShclGenOwn *own, jmp_buf *panic) {
+	ShclArena *a = &own->tmp;
 	ShclVSchemaDef def; memset(&def, 0, sizeof def);
 	ShclVecDiag faults = {0, 0, 0};
-	/* V096 and V097 can only come from generation, so any on the schema are
-	   this call's predecessors. Drop them, or a caller generating in a loop
-	   collects one copy per attempt and the diagnostic count stops meaning
-	   anything. */
+	/* What an earlier call on this schema pushed is that call's answer, not
+	   this one's. Drop it, or a caller generating in a loop collects one copy
+	   per attempt and the diagnostic count stops meaning anything. Only what
+	   generation pushed goes: the schema's own diagnostics stay. */
 	{
 		size_t w = 0;
 		for (size_t i = 0; i < schema->diags.len; i++) {
-			const char *c = schema->diags.data[i].code;
-			if (c && (!strcmp(c, "V096") || !strcmp(c, "V097"))) continue;
+			if (schema->diags.data[i].generated) continue;
 			schema->diags.data[w++] = schema->diags.data[i];
 		}
 		schema->diags.len = w;
@@ -7544,9 +7635,9 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		// so a caller sees the V09x list itself and does not have to rebuild
 		// it by validating an empty document (which adds that document's own
 		// V002/V007 to the list).
-		for (size_t i = 0; i < faults.len; i++) push_diag(schema, faults.data[i].line, faults.data[i].sev, faults.data[i].code, s_dup(&schema->arena, faults.data[i].message));
+		for (size_t i = 0; i < faults.len; i++) push_gen_diag(schema, faults.data[i].line, faults.data[i].sev, faults.data[i].code, faults.data[i].message);
 		if (ok) *ok = 0;
-		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; return r;
 	}
 	if (ok) *ok = 1;
 	ShclVecVCons cons = {0, 0, 0};
@@ -7559,9 +7650,9 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_puts(a, &m, "schema expands past "); sb_put_u64(a, &m, GEN_MAX_FIELDS);
 		sb_puts(a, &m, " fields; fragments mounted at more than one path multiply");
 		// the diag outlives this call: its text must leave the private arena
-		push_diag(schema, 0, SHCL_SEV_ERROR, "V096", s_dup(&schema->arena, sb_S(&m)));
+		push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V096", sb_S(&m));
 		if (ok) *ok = 0;
-		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; return r;
 	}
 	// Live concrete paths materialize instances; decide which must-exist
 	// wildcards get filled (their first-wildcard parent chain is a prefix of
@@ -7640,12 +7731,12 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		sb_puts(a, &m, " (");
 		sb_puts(a, &m, g_why_unwritable(c));
 		sb_puts(a, &m, ")");
-		push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+		push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 		blocked = 1;
 	}
 	if (blocked) {
 		if (ok) *ok = 0;
-		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; return r;
 	}
 	ShclSB out = {0, 0, 0};
 	ShclVecS wild_path = {0, 0, 0}, wild_type = {0, 0, 0};
@@ -7713,7 +7804,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			sb_puts(a, &m, "required path cannot be generated: ");
 			sb_putS(a, &m, schema_text(a, c->path));
 			sb_puts(a, &m, " (its parent's value has no selector spelling)");
-			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+			push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 			unspellable = 1;
 			continue;
 		}
@@ -7757,7 +7848,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	}
 	if (unspellable) {
 		if (ok) *ok = 0;
-		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp); return r;
+		ShclStr e = s_empty(); r.p = e.p; r.n = e.n; return r;
 	}
 	/* Tree order, first appearance first. A schema may list a.host.srv before
 	   a, and emitted as listed with another field between them, `a: x` re-opens
@@ -7841,22 +7932,27 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   lines merges them into one. A lower bound of 1 is a must-exist path
 	   like any other, so its V007 is a fault. */
 	{
-		shcl_doc *self_ = shcl_parse(s.p, s.n);
+		// A NULL from a nested call is an allocation that failed, not a text
+		// that passed: reading it as "no faults" returned unchecked text.
+		shcl_doc *self_ = own->self_ = shcl_parse(s.p, s.n);
+		if (!self_) arena_panic(panic);
+		doc_guard(self_, panic);
 		size_t nbad = 0;
 		/* The load comes first, in the order `check --schema` prints: a line that
 		   does not load is refused even when validation happens to pass without it. */
-		for (size_t i = 0; self_ && i < self_->diags.len; i++) {
+		for (size_t i = 0; i < self_->diags.len; i++) {
 			const ShclDiag *dg = &self_->diags.data[i];
 			if (dg->sev != SHCL_SEV_ERROR) continue;
 			ShclSB m = {0, 0, 0};
 			sb_puts(a, &m, "generated text does not load: ");
 			sb_puts(a, &m, dg->code); sb_putc(a, &m, ' '); sb_putS(a, &m, dg->message);
 			/* the diag outlives this call and self_: its text must leave both */
-			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+			push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 			nbad++;
 		}
-		shcl_validation *v = self_ ? shcl_validate(self_, schema) : NULL;
-		size_t nv = v ? shcl_validation_count(v) : 0;
+		shcl_validation *v = own->v = shcl_validate(self_, schema);
+		if (!v) arena_panic(panic);
+		size_t nv = shcl_validation_count(v);
 		for (size_t i = 0; i < nv; i++) {
 			const char *code = shcl_validation_code(v, i);
 			if (shcl_validation_severity(v, i) != SHCL_SEV_ERROR) continue;
@@ -7865,11 +7961,11 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 			sb_puts(a, &m, "generated value fails the schema that produced it: ");
 			sb_putS(a, &m, shcl_validation_message(v, i));
 			/* the diag outlives this call: its text must leave the private arena */
-			push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+			push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 			nbad++;
 		}
-		if (v) shcl_validation_free(v);
-		if (self_) shcl_free(self_);
+		shcl_validation_free(v); own->v = NULL;
+		shcl_free(self_); own->self_ = NULL;
 		/* A commented default fails the same check once someone uncomments it.
 		   Each line is read back alone and only its value is checked:
 		   uncommenting every line at once would pair a valued parent with a
@@ -7879,15 +7975,16 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 		   path selects is caught here as it is for a required field. */
 		for (size_t j = 0; j < commented_line.len; j++) {
 			ShclStr text = commented_line.data[j];
-			shcl_doc *one = shcl_parse(text.p, text.n);
-			if (!one) continue;
+			shcl_doc *one = own->one = shcl_parse(text.p, text.n);
+			if (!one) arena_panic(panic);
+			doc_guard(one, panic);
 			for (size_t i = 0; i < one->diags.len; i++) {
 				const ShclDiag *dg = &one->diags.data[i];
 				if (dg->sev != SHCL_SEV_ERROR) continue;
 				ShclSB m = {0, 0, 0};
 				sb_puts(a, &m, "generated text does not load: ");
 				sb_puts(a, &m, dg->code); sb_putc(a, &m, ' '); sb_putS(a, &m, dg->message);
-				push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+				push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 				nbad++;
 			}
 			if (NODE(one, ROOT).children.len) {
@@ -7903,7 +8000,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 					ShclSB m = {0, 0, 0};
 					sb_puts(a, &m, "generated value fails the schema that produced it: default does not name the instance its path selects: ");
 					sb_putS(a, &m, schema_text(a, cc->path));
-					push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+					push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 					nbad++;
 				}
 				for (size_t i = 0; i < found.len; i++) {
@@ -7911,15 +8008,15 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 					ShclSB m = {0, 0, 0};
 					sb_puts(a, &m, "generated value fails the schema that produced it: ");
 					sb_putS(a, &m, found.data[i].message);
-					push_diag(schema, 0, SHCL_SEV_ERROR, "V097", s_dup(&schema->arena, sb_S(&m)));
+					push_gen_diag(schema, 0, SHCL_SEV_ERROR, "V097", sb_S(&m));
 					nbad++;
 				}
 			}
-			shcl_free(one);
+			shcl_free(one); own->one = NULL;
 		}
 		if (nbad) {
 			if (ok) *ok = 0;
-			ShclStr e = s_empty(); r.p = e.p; r.n = e.n; arena_free(&tmp);
+			ShclStr e = s_empty(); r.p = e.p; r.n = e.n;
 			return r;
 		}
 	}
@@ -7928,7 +8025,35 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
 	   schema nothing, and a caller generating in a loop can give the copies
 	   back with shcl_reads_release. */
 	ShclStr kept = s_dup(&schema->reads, s); r.p = kept.p; r.n = kept.n;
-	arena_free(&tmp);
+	
+	return r;
+}
+
+shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok) {
+	// Only the returned bytes are contracted to live in the schema's arena;
+	// the constraint/fault lists, expansion copies, and the output builder are
+	// ~60x that, so they build in a private arena (shcl_validate's discipline)
+	// and die here - the caller may generate from one schema repeatedly. The
+	// arena and the self-check's documents sit off the frame, where the
+	// recovery point can still reach them (20260918b item 22).
+	ShclGenOwn *volatile own = (ShclGenOwn *)calloc(1, sizeof *own);
+	if (!own) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		/* An allocation failed below, or a nested parse or validate came back
+		   NULL for one. Give back what the call holds, then hand the failure
+		   on: the self-check did not run, so there is no answer to return. */
+		gen_release(schema, own);
+		SHCL_OOM();
+		abort();
+	}
+	arena_guard(&own->tmp, &panic);
+	doc_guard(schema, &panic);
+	/* Called through a volatile pointer so no compiler can inline the work back
+	   into this frame, where every local it keeps would sit beside the setjmp. */
+	shcl_str (*volatile run)(shcl_doc *, int, int *, ShclGenOwn *, jmp_buf *) = generate_in;
+	shcl_str r = run(schema, no_banner, ok, own, &panic);
+	gen_release(schema, own);
 	return r;
 }
 

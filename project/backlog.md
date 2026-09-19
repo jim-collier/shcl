@@ -136,23 +136,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 21: C's `shcl_generate` returns success with unchecked text when one allocation inside its self-check fails.
-		- Reproduced: a schema that must fault with `V097`, failing exactly one allocation. For allocations 2 to 15 it returns ok with text and the hook is never called.
-		- Cause: a NULL from the nested parse or validate reads as "no faults". The default-form probe two screens up checks it, and so does `shcl_load_and_validate`.
-		- Origin: `455198b` (2026-08-30), reachable since a parse began returning NULL on 2026-08-31. The 20260904 sweep failed every later allocation too, which always reaches the hook. Confirmed.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 22: `shcl_load_and_validate` and `shcl_generate` reach `SHCL_OOM` holding memory nothing can free.
-		- Reproduced: with the longjmp hook the header recommends. A cut-short `shcl_load_and_validate` leaks 9 to 13 blocks and `shcl_generate` 1 to 4. Fifteen other entry points leak nothing.
-		- Origin: `04541ec` (2026-08-31) and `bf950a8` (2026-08-30). The unswept siblings of 20260909 item 51. Confirmed.
-		- Keep: `shcl_compact` does the same, and the 20260904 round read that as documented. Either fix it with these or make its header sentence say so.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 24: `shcl_generate` drops only `V096` and `V097` before a call, so a schema that does not build gains one more copy of each build fault per call.
-		- Reproduced: three calls on a schema with a bad `repeat` give 1, 2, then 3 diagnostics. The header and the veneer say the list describes this call. C only, since the others return the list.
-		- Origin: `67f1c80` (2026-09-01), with the drop from 20260902 item 21 written for two of the three kinds. Confirmed.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 28: a field written under a kept `*` element re-parents to the field, and every later line at the element's column is `E012` and lost.
 		- Reproduced: in all four. `* x`, a deeper `c: 1`, then `d: 2` and `* y` at the element's column. Lines 4 and 5 are `E012`, whose message says the indentation matches no open level, when that level was opened two lines up. With a field in place of the element everything binds.
 		- Origin: the element arm's 2026-07 form, reworked in `9b54fba` (2026-09-05). The half of 20260904 item 15 that was never covered: a dropped element holds its level and a kept one does not. Confirmed.
@@ -770,6 +753,27 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260918-193000
 		- Closed: 20260919-133424
 
+	- ✅ Item 21: C's `shcl_generate` returns success with unchecked text when one allocation inside its self-check fails.
+		- Reproduced: a schema that must fault with `V097`, failing exactly one allocation. For allocations 2 to 15 it returns ok with text and the hook is never called.
+		- Cause: a NULL from the nested parse or validate reads as "no faults". The default-form probe two screens up checks it, and so does `shcl_load_and_validate`.
+		- Origin: `455198b` (2026-08-30), reachable since a parse began returning NULL on 2026-08-31. The 20260904 sweep failed every later allocation too, which always reaches the hook. Confirmed.
+		- Fixed: a NULL from the self-check's nested parse, validate or per-line parse is an allocation that failed, and `shcl_generate` now gives back what it holds and calls `SHCL_OOM`, the answer for any call on a built document. The header says it never returns text the self-check did not read.
+		- Pinned by: a single-failure allocator in `oom_hook.c`, which fails exactly the Nth allocation and none after it, at every position of a generation on a schema that must fault. On the old header allocations 14 and 15 returned text at ok=1. None does now.
+		- Swept: the three nested calls in `shcl_generate`. `shcl_load_and_validate` already checked its two.
+		- Opened: 20260918-193000
+		- Closed: 20260919-134952
+
+	- ✅ Item 22: `shcl_load_and_validate` and `shcl_generate` reach `SHCL_OOM` holding memory nothing can free.
+		- Reproduced: with the longjmp hook the header recommends. A cut-short `shcl_load_and_validate` leaks 9 to 13 blocks and `shcl_generate` 1 to 4. Fifteen other entry points leak nothing.
+		- Origin: `04541ec` (2026-08-31) and `bf950a8` (2026-08-30). The unswept siblings of 20260909 item 51. Confirmed.
+		- Keep: `shcl_compact` does the same, and the 20260904 round read that as documented. Either fix it with these or make its header sentence say so.
+		- Fixed: item 51's shape at each site. What the call holds sits off the frame (`ShclGenOwn`, `ShclLoadOwn`, a heap copy in `shcl_compact`), a recovery point armed over every arena involved (`doc_guard`, new) frees it, and then `shcl_generate` hands the failure to `SHCL_OOM`, `shcl_load_and_validate` returns NULL and `shcl_compact` leaves the document as it was, which is what each header already said. `shcl_generate` does its work in `generate_in`, called through a volatile pointer so nothing is inlined beside the `setjmp`.
+		- Fixed: a sibling the pin found. Both suppressors built in a private frame-local arena, so a failure inside `shcl_load_and_validate` reached the hook through them. They take the caller's arena now (`suppress_repeats_in`, `suppress_reopens_in`), and the public calls own theirs off the frame.
+		- Pinned by: the single-failure sweep in `oom_hook.c` counts live blocks around every cut-short `shcl_generate`, `shcl_load_and_validate` and `shcl_compact`, on a sound schema too. On the old header generate left 4 blocks, and the other two reached the hook. All clean now, at `-O0` to `-Os` under gcc, gcc-15 and clang, and under `sanitize-c.bash`.
+		- Keep: `shcl_compact`'s header sentence, which is now true.
+		- Opened: 20260918-193000
+		- Closed: 20260919-134952
+
 	- ✅ Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
 		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.
 		- Origin: `3ca7fa9` (2026-09-18), the 20260918 item 5 fix. Third appearance of this handle's lifetime. Confirmed.
@@ -780,6 +784,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: what the item reproduced is now a use the header forbids, the same as reading a freed document. Nothing on the library side is left to pin.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
+
+	- ✅ Item 24: `shcl_generate` drops only `V096` and `V097` before a call, so a schema that does not build gains one more copy of each build fault per call.
+		- Reproduced: three calls on a schema with a bad `repeat` give 1, 2, then 3 diagnostics. The header and the veneer say the list describes this call. C only, since the others return the list.
+		- Origin: `67f1c80` (2026-09-01), with the drop from 20260902 item 21 written for two of the three kinds. Confirmed.
+		- Fixed: `ShclDiag` carries a `generated` flag, set by `push_gen_diag` for everything `shcl_generate` pushes, and the drop at the start of a call removes those alone. Matching on V096 and V097 missed the build faults, and would have dropped a V09x the schema got some other way.
+		- Pinned by: `mem_bounds.c` runs 50 generations on a schema that does not build and holds an `E014` of its own. The count stays at its own plus one fault. The old header ended at 51.
+		- Opened: 20260918-193000
+		- Closed: 20260919-134952
 
 	- ✅ Item 25: a fragment name holding a line break escapes `init`'s trailing comment block and becomes a live line.
 		- Reproduced: in all four at exit 0. The block's second column prints the fragment name raw, and `b: 1` comes out as a binding the schema never asked for.
