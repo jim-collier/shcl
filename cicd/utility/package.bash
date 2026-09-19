@@ -104,6 +104,8 @@ fCheckDeps(){
 		fDie "rpm is missing and the gate requires it to read the package back"
 	fi
 	grep -q ' ./usr/share/shcl/$' <<<"${listing}" || fDie "$(basename "${stem}").deb: does not own /usr/share/shcl"
+	## Debian's zsh looks in vendor-completions and never in site-functions.
+	grep -q ' ./usr/share/zsh/vendor-completions/_shcl$' <<<"${listing}" || fDie "$(basename "${stem}").deb: zsh completion is not where Debian's zsh looks"
 	if command -v rpm >/dev/null 2>&1; then
 		deps="$(rpm -qp --requires "${stem}.rpm" 2>/dev/null)"
 		[[ "${deps}" == *"glibc >= ${glibc}"* ]] || fDie "$(basename "${stem}").rpm: Requires ${deps@Q} lacks glibc >= ${glibc}"
@@ -113,6 +115,7 @@ fCheckDeps(){
 		local files; files="$(rpm -qlp "${stem}.rpm" 2>/dev/null)"
 		grep -qx '/usr/share/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/shcl"
 		grep -qx '/usr/share/doc/shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: does not own /usr/share/doc/shcl"
+		grep -qx '/usr/share/zsh/site-functions/_shcl' <<<"${files}" || fDie "$(basename "${stem}").rpm: no zsh completion in site-functions"
 	fi
 }
 
