@@ -420,6 +420,21 @@ int main(int argc, char **argv) {
 		if (again.n != got.n || (got.n && memcmp(again.p, got.p, got.n) != 0)) fail(names[ci], "formatter is not idempotent");
 		shcl_free(d2);
 
+		// A document merged onto itself is left as it is (20260918b item 19).
+		// The walk read over while it wrote d, so Go doubled a retained line,
+		// Python grew without end and C ran out of memory. Same fixture in
+		// every runner.
+		{
+			shcl_doc *sm = shcl_parse(input, ilen);
+			shcl_str b = shcl_to_canonical(sm);
+			char *bc = (char *)malloc(b.n + 1);
+			if (bc) memcpy(bc, b.p, b.n);
+			shcl_merge(sm, sm);
+			shcl_str a = shcl_to_canonical(sm);
+			if (!bc || a.n != b.n || (b.n && memcmp(a.p, bc, b.n) != 0)) fail(names[ci], "merge onto itself changed the document");
+			free(bc); shcl_free(sm);
+		}
+
 		// Diagnostics: count, line, severity, and stable code must match the golden
 		// (the same shape `check` prints to stdout at Standard).
 		snprintf(path, sizeof path, "%s/%s/expected-diags.txt", corpus, names[ci]); size_t dlen; char *ediags = read_file(path, &dlen);

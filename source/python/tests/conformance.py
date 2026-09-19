@@ -431,6 +431,17 @@ def main():
 	fails = []
 	cases = load_cases()
 
+	# A document merged onto itself is left as it is (20260918b item 19). The
+	# walk read over while it wrote self, so Go doubled a retained line, Python
+	# grew without end and C ran out of memory. Every corpus input, and the
+	# three lines that showed it. Same fixture in every runner.
+	for name, text in [("self-merge", "# c\na: 1\nbad line\n")] + [(c["name"], c["input"]) for c in cases]:
+		doc = shcl.Document.parse(text)
+		before = doc.to_canonical()
+		doc.merge(doc)
+		if doc.to_canonical() != before:
+			fails.append(f"{name}: merge onto itself changed the document")
+
 	# Write dimension: the library Writer must reproduce expected-write.shcl and
 	# the result must be a formatter fixpoint.
 	for case in cases:

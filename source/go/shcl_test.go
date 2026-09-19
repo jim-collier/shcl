@@ -1229,6 +1229,25 @@ func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
 	}
 }
 
+func TestMergeOntoItselfLeavesItAlone(t *testing.T) {
+	// A document merged onto itself is left as it is (20260918b item 19). The
+	// walk read over while it wrote d, so Go doubled a retained line, Python
+	// grew without end and C ran out of memory. Every corpus input, and the
+	// three lines that showed it. Same fixture in every runner.
+	texts := []string{"# c\na: 1\nbad line\n"}
+	for _, c := range loadCases(t) {
+		texts = append(texts, c.input)
+	}
+	for _, text := range texts {
+		d := Parse(text)
+		before := d.ToCanonical()
+		d.Merge(d)
+		if got := d.ToCanonical(); got != before {
+			t.Errorf("merge onto itself changed the document:\n%q\nbecame\n%q", before, got)
+		}
+	}
+}
+
 func TestSaveReplacesOnlyARegularFile(t *testing.T) {
 	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
 	// was swapped for a regular file at exit 0, a link whose text names a

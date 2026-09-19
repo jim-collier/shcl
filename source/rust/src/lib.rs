@@ -5232,6 +5232,8 @@ impl Document {
 	/// so a value from a stricter layer reads with self's coercion. And a
 	/// replaced node is kept until the document is dropped: this costs a pass
 	/// over the touched scopes plus an index rebuild on the next read.
+	/// A document merged onto itself is left as it is. The borrow rules make
+	/// that call impossible here; the other bindings check for it.
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;

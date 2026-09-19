@@ -566,7 +566,7 @@ int shcl_set_datetime_array_default(shcl_doc *d, const char *path, size_t plen, 
 // four orders of magnitude more than a single write, so a process folding
 // layers in a loop is the one that has to call shcl_compact rather than the one
 // that rewrites a field. It costs a pass over the touched scopes plus an index
-// rebuild on the next read.
+// rebuild on the next read. A document merged onto itself is left as it is.
 void shcl_merge(shcl_doc *d, const shcl_doc *over);
 
 // CLI/aliases: 1|2|3 or loose|standard|strict. Returns 1 on success.
@@ -4615,6 +4615,9 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 }
 
 void shcl_merge(shcl_doc *d, const shcl_doc *over) {
+	// The walk reads over while it writes d, so the same document on both sides
+	// grew until SHCL_OOM.
+	if (over == d) return;
 	index_drop(d);
 	d->lost += over->lost;
 	ShclArena *a = &d->arena;

@@ -324,6 +324,7 @@ public:
 
 	// Layered loading: overlay `over` (a higher-priority layer) onto this doc.
 	// Leaf names in `over` override; container instances merge by (name, value).
+	// A document merged onto itself is left as it is.
 	void merge(const Document &over) { shcl_merge(d_.get(), over.d_.get()); }
 
 	// Give back what repeated writes left behind: the document is rebuilt into

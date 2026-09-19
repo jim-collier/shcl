@@ -5294,7 +5294,13 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // stricter layer reads with d's coercion. And a replaced node is kept until the
 // document is dropped: this costs a pass over the touched scopes plus an index
 // rebuild on the next read.
+//
+// A document merged onto itself is left as it is. The walk reads over while it
+// writes d, so the same document on both sides duplicated lines.
 func (d *Document) Merge(over *Document) {
+	if over == d {
+		return
+	}
 	d.index.Store(nil)
 	d.lost += over.lost
 	d.overlay(root, over, root)

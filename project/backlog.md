@@ -136,12 +136,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 19: merging a document onto itself never returns in Python, ends the process in C, and duplicates lines in Go.
-		- Reproduced: `d.merge(d)` on three lines with a comment. Python allocates without end, and 15 of the 126 corpus inputs do the same. C hits `SHCL_OOM` at 534 MB. Go returns with a retained line doubled. Rust's borrow rules make the call impossible, so the ports had nothing to mirror.
-		- Origin: `af850096` (2026-08-21). Never filed. Confirmed.
-		- Probable fix: an identity check at the top of `merge` in Python, Go, C and the C++ veneer, with one stated answer in all four doc comments.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 20: Python's `Document.parse` raises `UnicodeEncodeError` on a string holding a lone surrogate, and so does every call that takes a path.
 		- Reproduced: `Document.parse("a: x\udc80\n")`. The README and the doc comment both say parse never raises. Python hands out such strings from `sys.argv`, `os.environ` and `os.listdir`.
 		- Origin: `fbbe7ce` (2026-09-07), the byte tokenizer. A regression: the commit before it parsed the text and read such a path as `NotFound`. Confirmed.
@@ -700,7 +694,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `30120bc` (2026-07-23). Third facet of this function, after 20260725 item 26 and 20260901 item 8. Confirmed.
 		- Probable fix: keep each sibling name once and bucket by length, since only names within two characters can match. The `suggest` workload in `perf-gate.bash` has 30 names and cannot see it.
 		- Fixed: each chain's sibling names are kept once, and past the first 16 queries on a chain every name up to 16 characters is filed under each spelling with up to two characters deleted. Two names within edit distance 2 share such a spelling, so a query measures only the names its own spellings find, and the answer is the same name the scan chose. Longer names keep the scan, filtered by length. `SuggestNames` in Rust, `suggestNames` in Go, `_SuggestNames` in Python and `ShclSuggestNames` in C, each with its deletion-spelling walk. Python keys on the spellings themselves, since a hash written in Python costs more than the dict's own.
-		- Measured: 4000 unknown names against 4000 schema names took 30.6 s in the Rust debug build and 1.2 s now. 16000 of each, which the old code could not finish in reasonable time, take 0.18 to 2.2 s across the four. 4000 fields under one section went from 4.9 s to under 0.2 s.
+		- Measured: 4000 unknown names against 4000 schema names took 30.6 s in the Rust debug build and 1.2 s now. 16000 of each take 0.18 to 2.2 s across the four, where the review measured 32 s in C and 63 s in a Rust release build. 4000 fields under one section went from 4.9 s to under 0.2 s.
 		- Pinned by: an `unknowns` workload in `perf-gate.bash`, 4000 unknown names of eight pseudo-random letters against 4000 top-level names and 4000 under one section. All four were over budget on the old code (2.4 s to 54 s against budgets under 2.1 s) and are inside it now. The hints came out byte-identical to the old code on the 4000-name case.
 		- Opened: 20260918-193000
 		- Closed: 20260919-132749
@@ -761,6 +755,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Swept: `resolve_target` in all four.
 		- Opened: 20260918-193000
 		- Closed: 20260919-122956
+
+	- ✅ Item 19: merging a document onto itself never returns in Python, ends the process in C, and duplicates lines in Go.
+		- Reproduced: `d.merge(d)` on three lines with a comment. Python allocates without end, and 15 of the 126 corpus inputs do the same. C hits `SHCL_OOM` at 534 MB. Go returns with a retained line doubled. Rust's borrow rules make the call impossible, so the ports had nothing to mirror.
+		- Origin: `af850096` (2026-08-21). Never filed. Confirmed.
+		- Probable fix: an identity check at the top of `merge` in Python, Go, C and the C++ veneer, with one stated answer in all four doc comments.
+		- Decided: a document merged onto itself is left as it is. The reference cannot make the call, and merging an equal copy is not the identity in every case, so the answer is stated rather than borrowed.
+		- Fixed: an identity check at the top of `Merge` (Go), `merge` (Python) and `shcl_merge` (C), which the C++ veneer calls. The same sentence is in all four doc comments and the veneer's.
+		- Pinned by: every corpus input, and the three lines that showed it, merged onto itself and compared with its canonical text before, in the Go test `TestMergeOntoItselfLeavesItAlone` and the Python and C runners. On the old code Go failed the compare, and the Python and C runners never returned. The veneer smoke gained the same three lines, which did not fail on the old C.
+		- Opened: 20260918-193000
+		- Closed: 20260919-133211
 
 	- ✅ Item 23: a `shcl_tokens` reused after `shcl_free` still writes into freed memory.
 		- Reproduced: tokenize, free, parse the next file, tokenize again with the same struct. glibc gives the new document the old address, so the "another document" test passes and the stale arrays are kept. ASan's quarantine prevents the reuse, which is why the gates cannot see it.

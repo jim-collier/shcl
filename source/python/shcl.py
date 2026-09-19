@@ -3669,7 +3669,13 @@ class Document:
 		document the CLI's left fold produces. self keeps its own strictness, so
 		a value from a stricter layer reads with self's coercion. And a replaced
 		node is kept until the document is dropped: this costs a pass over the
-		touched scopes plus an index rebuild on the next read."""
+		touched scopes plus an index rebuild on the next read.
+
+		A document merged onto itself is left as it is. The walk reads over
+		while it writes self, so the same document on both sides grew without
+		end."""
+		if over is self:
+			return
 		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
