@@ -817,7 +817,27 @@ static int dir_takes_a_temp(const char *file) {
 #endif
 }
 
-static int write_back(shcl_doc *d, const char *file, Opts *o) {
+// FILE still holds the bytes the load read. `set` waits on stdin between the
+// load and the save, and an edit made in that wait was reverted at exit 0. A
+// gap is left between this read and the publish, the width of one save.
+static int unchanged_since_read(const char *file, const char *before, size_t n) {
+	FILE *f = open_rb(file);
+	int same = f != NULL;
+	if (f) {
+		char buf[65536]; size_t got, at = 0;
+		while (same && (got = fread(buf, 1, sizeof buf, f)) > 0) {
+			same = at + got <= n && !memcmp(buf, before + at, got);
+			at += got;
+		}
+		same = same && !ferror(f) && at == n;
+		fclose(f);
+	}
+	if (!same) fprintf(stderr, "%s: changed since it was read; nothing written\n", file);
+	return same;
+}
+
+static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, size_t read_len) {
+	if (read && !unchanged_since_read(file, read, read_len)) return EXIT_IO;
 	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
 	if (r == SHCL_SAVE_OK) return 0;
 	// The rule stays in the library; only the wording is the CLI's, because the
@@ -847,7 +867,7 @@ static int do_fmt(Opts *o) {
 	if (gate) return gate;
 	int rc;
 	if (o->write) {
-		rc = write_back(L.doc, file, o);
+		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len);
 	} else {
 		shcl_str c = shcl_to_canonical(L.doc);
 		fwrite(c.p, 1, c.n, stdout);
@@ -922,6 +942,8 @@ static int do_migrate(const Opts *o) {
 		} else if (shcl_lost_count(d) != 0 && !o->lossy) {
 			fprintf(stderr, "%s: refusing to rewrite: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
 			rc = 7;
+		} else if (!unchanged_since_read(file, text, len)) {
+			rc = EXIT_IO;
 		} else if (!shcl_write_file_atomic(file, m.text, m.len)) {
 			int e = errno;
 			if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
@@ -1292,7 +1314,8 @@ static int do_set(Opts *o) {
 					nd = xdoc(shcl_parse_with(nt, c.n + 1, o->strictness));
 				}
 			}
-			rc = write_back(nd ? nd : d, file, o);
+			// A file that was there is read again first, for the same wait.
+			rc = write_back(nd ? nd : d, file, o, creating ? NULL : L.texts[L.ntexts - 1], L.base_len);
 		}
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}

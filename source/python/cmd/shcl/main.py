@@ -715,11 +715,27 @@ def load_doc_from(file, text, strictness):
 		return None, 6
 
 
-def write_back(doc, file, o):
+def unchanged_since_read(file, before):
+	# FILE still holds the bytes the load read. `set` waits on stdin between the
+	# load and the save, and an edit made in that wait was reverted at exit 0.
+	# A gap is left between this read and the publish, the width of one save.
+	try:
+		with open(file, "rb") as fh:
+			if fh.read() == before.encode("utf-8"):
+				return True
+	except (OSError, ValueError):
+		pass
+	sys.stderr.write(f"{file}: changed since it was read; nothing written\n")
+	return False
+
+
+def write_back(doc, file, o, read=None):
 	# The in-place half of fmt/set. Overwriting the source is the one place a
 	# recovered load turns destructive, so the save runs through the library's
 	# own gate rather than a second copy of the rule - the CLI and a consumer
 	# program cannot then disagree about which rewrites are safe.
+	if read is not None and not unchanged_since_read(file, read):
+		return EXIT_IO
 	try:
 		if o.lossy:
 			doc.save_file_lossy(file)
@@ -1143,14 +1159,14 @@ def do_fmt(o):
 	if o.write and not write_target_ok(file):
 		return EXIT_IO
 	try:
-		doc, code = load_layered(o, file)
+		doc, read, code = load_layered_from(o, file, None)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
 	if o.write:
-		return write_back(doc, file, o)
+		return write_back(doc, file, o, read)
 	sys.stdout.write(doc.to_canonical())
 	return 0
 
@@ -1217,6 +1233,8 @@ def do_migrate(o):
 		if doc.lost_count() != 0 and not o.lossy:
 			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
 			return 7
+		if not unchanged_since_read(file, text):
+			return EXIT_IO
 		err = shcl.write_file_atomic(file, m.text)
 		if err is not None:
 			sys.stderr.write(err + "\n")
@@ -1590,7 +1608,7 @@ def do_set(o):
 	elif file == "-" and not o.sets:
 		given = ""
 	try:
-		doc, _, code = load_layered_from(o, file, given)
+		doc, read, code = load_layered_from(o, file, given)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
@@ -1642,7 +1660,8 @@ def do_set(o):
 				head = text[: -len(shcl.GEN_BANNER)]
 				if head and not head.endswith("\n\n"):
 					doc = shcl.Document.parse(head + "\n" + shcl.GEN_BANNER)
-		return write_back(doc, file, o)
+		# A file that was there is read again first, for the same wait.
+		return write_back(doc, file, o, None if creating else read)
 	sys.stdout.write(doc.to_canonical())
 	return 0
 

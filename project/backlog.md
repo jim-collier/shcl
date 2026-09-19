@@ -173,13 +173,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `29cd38e` (2026-09-05), the fix for 20260904 item 10, one `=` short. Confirmed.
 		- Opened: 20260918-193000
 
-	- 🔘 Item 16: `set --write` loads FILE, waits on stdin, then saves, so an edit made during the wait is reverted at exit 0.
-		- Reproduced: in all four, with a 1.2 s delay on the op script and an edit at 0.5 s. The other edit's line is gone and nothing is said.
-		- Origin: as old as the op-script form. 20260909 item 6 closed this window for a file that does not exist yet, on the reasoning that it "is not a microsecond race", and left this half. Confirmed.
-		- Keep: item 6 decided against a second save call. This adds none.
-		- Probable fix: look again before the save, as item 6 did. Re-read FILE and exit 8 if the bytes differ from what was loaded.
-		- Opened: 20260918-193000
-
 	- 🔘 Item 19: merging a document onto itself never returns in Python, ends the process in C, and duplicates lines in Go.
 		- Reproduced: `d.merge(d)` on three lines with a comment. Python allocates without end, and 15 of the 126 corpus inputs do the same. C hits `SHCL_OOM` at 534 MB. Go returns with a retained line doubled. Rust's borrow rules make the call impossible, so the ports had nothing to mirror.
 		- Origin: `af850096` (2026-08-21). Never filed. Confirmed.
@@ -731,6 +724,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Swept: `do_set` in `main.rs`, `main.py` and `main.c`, `doSet` in `main.go`. No other subcommand builds its own fold.
 		- Opened: 20260918-193000
 		- Closed: 20260919-123632
+
+	- ✅ Item 16: `set --write` loads FILE, waits on stdin, then saves, so an edit made during the wait is reverted at exit 0.
+		- Reproduced: in all four, with a 1.2 s delay on the op script and an edit at 0.5 s. The other edit's line is gone and nothing is said.
+		- Origin: as old as the op-script form. 20260909 item 6 closed this window for a file that does not exist yet, on the reasoning that it "is not a microsecond race", and left this half. Confirmed.
+		- Keep: item 6 decided against a second save call. This adds none.
+		- Probable fix: look again before the save, as item 6 did. Re-read FILE and exit 8 if the bytes differ from what was loaded.
+		- Fixed: `--write` reads FILE again just before the save and exits 8 with "changed since it was read" when the bytes differ, in `fmt`, `set` and `migrate`. `unchanged_since_read` in `main.rs`, `main.py` and `main.c`, `unchangedSinceRead` in `main.go`, called from `write_back` (`writeBack`) and from `migrate`'s own save. `set` takes FILE's text back from the shared fold (item 14) to compare. A file `set` is creating keeps item 6's check. The library's save is unchanged, as decided on 2026-09-19. `design.md` -> Save outcomes has the row, and the spec the sentence.
+		- Pinned by: `cli-regress.bash` row `write-changed-during-wait`, through a new `@change` stdin mode that edits FILE after the stdin notice. It exited 0 in all four on the old code, with the other edit gone.
+		- Keep: 20260909 item 6's decision against a second save call. None was added.
+		- Left alone: the gap between the second read and the publish, the width of one save. Closing it needs a lock the other writer would also have to take.
+		- Opened: 20260918-193000
+		- Closed: 20260919-124213
 
 	- ✅ Item 17: Go resolves a dangling relative link by cleaning the path, so the file is created in the wrong directory at exit 0.
 		- Reproduced: a link holding `..` whose own directory is reached through a symlink. Rust, C and Python create the file where the kernel would. Go creates it elsewhere, the link stays dangling, and the next load is `NotFound`.

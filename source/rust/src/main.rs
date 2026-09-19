@@ -1197,7 +1197,12 @@ fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Docu
 /// command succeeded, and the save runs through the library's own gate rather
 /// than a second copy of the rule - the CLI and a consumer program cannot then
 /// disagree about which rewrites are safe.
-fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
+fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
+	if let Some(before) = read
+		&& !unchanged_since_read(file, before)
+	{
+		return EXIT_IO;
+	}
 	let r = if o.lossy {
 		doc.save_file_lossy(file)
 	} else {
@@ -1218,6 +1223,19 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 		Err(e) => {
 			errln!("{}", e);
 			EXIT_IO
+		}
+	}
+}
+
+/// FILE still holds the bytes the load read. `set` waits on stdin between the
+/// load and the save, and an edit made in that wait was reverted at exit 0.
+/// A gap is left between this read and the publish, the width of one save.
+fn unchanged_since_read(file: &str, before: &str) -> bool {
+	match std::fs::read(file) {
+		Ok(now) if now == before.as_bytes() => true,
+		_ => {
+			errln!("{}: changed since it was read; nothing written", file);
+			false
 		}
 	}
 }
@@ -1500,12 +1518,12 @@ fn do_fmt(o: &Opts) -> u8 {
 	if o.write && !write_target_ok(file) {
 		return EXIT_IO;
 	}
-	let doc = match load_layered(o, file) {
-		Ok(d) => d,
+	let (doc, read) = match load_layered_from(o, file, None) {
+		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
 	if o.write {
-		return write_back(&doc, file, o);
+		return write_back(&doc, file, o, Some(&read));
 	}
 	out!("{}", doc.to_canonical());
 	0
@@ -1609,6 +1627,9 @@ fn do_migrate(o: &Opts) -> u8 {
 				doc.lost_count()
 			);
 			return 7;
+		}
+		if !unchanged_since_read(file, &text) {
+			return EXIT_IO;
 		}
 		return match write_file_atomic(file, &m.text) {
 			Ok(()) => {
@@ -1999,7 +2020,7 @@ fn do_set(o: &Opts) -> u8 {
 	} else {
 		None
 	};
-	let (mut doc, _base_text) = match load_layered_from(o, file, base) {
+	let (mut doc, read) = match load_layered_from(o, file, base) {
 		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
@@ -2054,7 +2075,8 @@ fn do_set(o: &Opts) -> u8 {
 				doc = Document::parse(&format!("{}\n{}", head, GEN_BANNER));
 			}
 		}
-		return write_back(&doc, file, o);
+		// A file that was there is read again first, for the same wait.
+		return write_back(&doc, file, o, (!creating).then_some(read.as_str()));
 	}
 	out!("{}", doc.to_canonical());
 	0

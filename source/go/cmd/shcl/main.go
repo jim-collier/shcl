@@ -1178,6 +1178,19 @@ func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 // nothing to do with the remedy for a usage error, which keeps 1.
 const exitIO = 8
 
+// unchangedSinceRead says whether FILE still holds the bytes the load read.
+// `set` waits on stdin between the load and the save, and an edit made in that
+// wait was reverted at exit 0. A gap is left between this read and the
+// publish, the width of one save.
+func unchangedSinceRead(file, before string) bool {
+	now, err := os.ReadFile(file)
+	if err == nil && string(now) == before {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "%s: changed since it was read; nothing written\n", file)
+	return false
+}
+
 // writeTargetOK says whether a --write FILE is a regular file or nothing yet.
 // Asked before the read, since reading a FIFO takes what was written to it and
 // the save would then refuse it anyway. A directory is left to the read, which
@@ -1270,7 +1283,10 @@ func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document,
 // though the command succeeded, and the save runs through the library's own
 // gate rather than a second copy of the rule - the CLI and a consumer program
 // cannot then disagree about which rewrites are safe.
-func writeBack(doc *shcl.Document, file string, o *opts) int {
+func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
+	if read != nil && !unchangedSinceRead(file, *read) {
+		return exitIO
+	}
 	var werr error
 	if o.lossy {
 		werr = doc.SaveFileLossy(file)
@@ -1570,12 +1586,12 @@ func doFmt(o *opts) int {
 	if o.write && !writeTargetOK(file) {
 		return exitIO
 	}
-	doc, code := loadLayered(o, file)
+	doc, read, code := loadLayeredFrom(o, file, nil)
 	if doc == nil {
 		return code
 	}
 	if o.write {
-		return writeBack(doc, file, o)
+		return writeBack(doc, file, o, &read)
 	}
 	outs(doc.ToCanonical())
 	return 0
@@ -1667,6 +1683,9 @@ func doMigrate(o *opts) int {
 			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the migrated text drops %d line(s)/value(s) "+
 				"on load (--lossy overrides)\n", file, doc.LostCount())
 			return 7
+		}
+		if !unchangedSinceRead(file, text) {
+			return exitIO
 		}
 		if err := shcl.WriteFileAtomic(file, m.Text); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -2273,7 +2292,7 @@ func doSet(o *opts) int {
 		empty := ""
 		given = &empty
 	}
-	doc, _, code := loadLayeredFrom(o, file, given)
+	doc, read, code := loadLayeredFrom(o, file, given)
 	if doc == nil {
 		return code
 	}
@@ -2326,7 +2345,11 @@ func doSet(o *opts) int {
 				doc = shcl.Parse(head + "\n" + shcl.GenBanner)
 			}
 		}
-		return writeBack(doc, file, o)
+		// A file that was there is read again first, for the same wait.
+		if creating {
+			return writeBack(doc, file, o, nil)
+		}
+		return writeBack(doc, file, o, &read)
 	}
 	outs(doc.ToCanonical())
 	return 0

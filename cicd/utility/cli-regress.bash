@@ -229,7 +229,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	return that is not indent, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
-##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
+##	stream, '@fullout' / '@fullerr' point it at a device that is always full,
+##	'@appear' / '@change' make %C% or change it while the command waits on
+##	stdin for its ops.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
@@ -544,6 +546,9 @@ rows=(
 	## 20260909 item 6: the create was decided before the wait on stdin, so a
 	## file made during the wait was replaced by the edits at exit 0.
 	'create-appeared|set --write %C%|@appear|8|-|exists|b: 2\n'
+	## 20260918b item 16: the same wait on a file that was there. Another edit
+	## made meanwhile was reverted at exit 0.
+	'write-changed-during-wait|set --write %C%|@change|8|-|changed since it was read|a: 1\nb: 2\n'
 	## Literal text is read the way a file line is, so a # opens a comment
 	## there too and only what comes before it is written.
 	'literal-hash|set --write --no-banner %C% --set-literal=color=red#ff0000|-|0|-|-|color: red\n'
@@ -688,7 +693,7 @@ for row in "${rows[@]}"; do
 		echo "cli-regress ${id}" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 		continue
 	fi
-	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${id}" == write-names-the-phase ) ]]; then
+	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${stdinSpec}" == @change || "${id}" == write-names-the-phase ) ]]; then
 		echo "cli-regress: skipping ${id} (POSIX fixture; not judged on windows)"
 		continue
 	fi
@@ -713,7 +718,9 @@ for row in "${rows[@]}"; do
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
 			## The file turns up while the command waits on stdin: after its
 			## notice and before the ops, so the create has already been decided.
-			@appear)
+			## @change: the file is there first and changes during the wait.
+			@appear|@change)
+				[[ "${stdinSpec}" == @change ]] && printf 'a: 1\n' >"${tmpDir}/created.shcl"
 				rm -f "${tmpDir}/in.fifo"; mkfifo "${tmpDir}/in.fifo"
 				"${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" <"${tmpDir}/in.fifo" &
 				appearPid=$!
@@ -722,7 +729,11 @@ for row in "${rows[@]}"; do
 					grep -q 'reading write-ops' "${tmpDir}/err" && break
 					sleep 0.05
 				done
-				printf 'b: 2\n' >"${tmpDir}/created.shcl"
+				if [[ "${stdinSpec}" == @change ]]; then
+					printf 'a: 1\nb: 2\n' >"${tmpDir}/created.shcl"
+				else
+					printf 'b: 2\n' >"${tmpDir}/created.shcl"
+				fi
 				printf 'int\tk\t1\n' >&"${fifoFd}"
 				exec {fifoFd}>&-
 				wait "${appearPid}" || rc=$?
