@@ -1532,6 +1532,16 @@ func TestParseLimitedCaps(t *testing.T) {
 	if v, st := doc.GetIntArray("arr"); st != Good || !reflect.DeepEqual(v, []int64{1, 2}) {
 		t.Fatalf("star array: %v %v", v, st)
 	}
+	// A cap refuses only a line that would bind: bracket text stays E019 and
+	// kept, and an element under a field with a value stays E011.
+	doc, _ = ParseLimited("arr: [1, 2, 3]\nk: x\n\t* 1\n", Standard, 0, 1, 0)
+	got := ""
+	for _, d := range doc.Diagnostics() {
+		got += fmt.Sprintf("%d %s;", d.Line, d.Code)
+	}
+	if got != "1 E019;3 E011;" || doc.LostCount() != 1 || !strings.Contains(doc.ToCanonical(), "arr: [1, 2, 3]") {
+		t.Fatalf("cap over a refused line: %q lost %d", got, doc.LostCount())
+	}
 	// The count the cap judges is the count the array reads back as, spelling
 	// by spelling: quoted commas, a backslash (a character, so it shields
 	// nothing), empty and blank slots, a Unicode blank (content: only a space

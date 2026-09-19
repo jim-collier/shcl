@@ -434,6 +434,8 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 | `H001` | hint | bound |
 | `H002` | hint | bound |
 
+- A line that qualifies for more than one refusal takes the first that applies, in this order: where it sits (`E012`, `E018`), then what it is (`E014`, `E019`, and on an element line `E007` to `E011`), and only then the element cap (`E021`). A cap refuses only a line that would otherwise bind. Bracket text under a cap is `E019` and kept, and an element under a field that already has a value is `E011`. The bracket test reads the value's first piece, which a capped scan keeps, not the value span, which it empties. The fuzz property `a_cap_refuses_only_a_line_that_would_bind` holds the order.
+
 - The one thing the table changed when it was written: a raw fence with no parent field (`E006`) never held its level, so a line written deeper than it bound to the root. It holds it now, like every other dropped line.
 
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.

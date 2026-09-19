@@ -406,6 +406,70 @@ fn lost_count_follows_the_outcome_table() {
 	);
 }
 
+/// An element cap refuses only a line that would otherwise bind. A line the
+/// uncapped parse refuses or keeps verbatim reads the same under a cap, since
+/// a code judged after the cap check used to lose to it: bracket text under a
+/// cap came out `E021` and lost, where uncapped it is `E019` and kept. `E012`
+/// and `E018` are left out on both sides: they judge where a line sits, and a
+/// capped line above holds its level, so the lines under it move.
+#[test]
+fn a_cap_refuses_only_a_line_that_would_bind() {
+	let iters: usize = std::env::var("SHCL_FUZZ_ITERS")
+		.ok()
+		.and_then(|v| v.parse().ok())
+		.unwrap_or(300);
+	const REFUSING: &[&str] = &[
+		"E003", "E004", "E006", "E007", "E008", "E009", "E010", "E011", "E013", "E014", "E016",
+		"E019",
+	];
+	let mut rng = Rng(0x5EED_57A7_1C00_0009);
+	let mut kept_under_cap = 0usize;
+	for i in 0..iters {
+		let text = structural(&mut rng);
+		let open = Document::parse(&text);
+		let capped = Document::parse_limited(&text, Strictness::Standard, 0, 1, 0).unwrap();
+		let on = |doc: &Document, n: usize, code: &str| {
+			doc.diagnostics()
+				.iter()
+				.any(|d| d.line == n && d.code == code)
+		};
+		for d in capped.diagnostics().iter().filter(|d| d.code == "E021") {
+			let refused: Vec<_> = open
+				.diagnostics()
+				.iter()
+				.filter(|o| o.line == d.line && REFUSING.contains(&o.code))
+				.map(|o| o.code)
+				.collect();
+			assert!(
+				refused.is_empty(),
+				"the cap refused line {} that the open parse reads as {:?}, at iteration {}:\n{}",
+				d.line,
+				refused,
+				i,
+				text
+			);
+		}
+		for d in open.diagnostics().iter().filter(|d| d.code == "E019") {
+			if on(&capped, d.line, "E012") || on(&capped, d.line, "E018") {
+				continue;
+			}
+			assert!(
+				on(&capped, d.line, "E019"),
+				"bracket text on line {} is not E019 under a cap, at iteration {}:\n{}",
+				d.line,
+				i,
+				text
+			);
+			kept_under_cap += 1;
+		}
+	}
+	assert!(
+		kept_under_cap > iters / 8,
+		"the soup checked only {} bracket lines under a cap",
+		kept_under_cap
+	);
+}
+
 /// A raw body is content, whatever becomes of the line that opened it. A
 /// skipped field line whose value opened a block left the body to be read as
 /// lines, and its closing fence then opened a block of its own; nine review

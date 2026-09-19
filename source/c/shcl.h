@@ -2038,6 +2038,15 @@ static int selector_open_quote(const ShclTokens *tok) {
 	return 0;
 }
 
+/* Bracket text (E019): a `[` first after the colon. Read off the first piece
+   rather than the value span, since a capped scan empties the span and keeps
+   the pieces it built. */
+static int bracket_text(const ShclTokens *tok, ShclStr text) {
+	if (!tok->has_sep || tok->nelem == 0) return 0;
+	ShclPiece p = tok->elements[0];
+	return p.quote == SHCL_QUOTE_NONE && p.end > p.start && p.start < text.n && text.p[p.start] == '[';
+}
+
 /* The path the tokens spell. ok == 0 with err is the tokenizer's fault: input
    that is not a path at all, which the caller skips with a diagnostic. */
 static ShclPathScan path_of(ShclArena *a, const ShclTokens *tok, ShclStr text) {
@@ -3090,8 +3099,9 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 	if (!element_of(a, &piece, text, &el)) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return; }
 	if (piece.quote == SHCL_QUOTE_OPEN) p_err(P, line, "E017", s_lit("unterminated quote in value"));
 	/* Element cap: each element line past it is refused on its own, the way
-	   any other bad element line is. */
-	if (P->max_elements && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
+	   any other bad element line is. Only a line that would join the list:
+	   under a field that already has a value it is E011, cap or not. */
+	if (P->max_elements && NODE(P->d, parent).star_list && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
 		ShclSB m = {0}; sb_puts(P->line, &m, "array longer than "); sb_put_u64(P->line, &m, P->max_elements); sb_puts(P->line, &m, " elements; line skipped");
 		p_refuse(P, line, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
 		return;
@@ -3362,18 +3372,29 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			i++; continue;
 		}
 		size_t next = i + 1;
+		/* A selector body takes the same open-quote rule as a value element,
+		   and the same code: the body is read bare, quotes and all, so the line
+		   still binds - somewhere the author did not mean. */
+		if (selector_open_quote(&tok)) p_err(&P, lineno, "E017", s_lit("unterminated quote in selector"));
+		/* A value spelled the way JSON, TOML and YAML spell an array. The
+		   brackets are not a selector after the colon, and reading the text
+		   without them would bake a changed value in, so the line is kept
+		   verbatim. Judged before the cap and from the first piece, which the
+		   cap keeps: a cap refuses only a line that would bind. */
+		if (bracket_text(&tok, rest)) {
+			p_refuse(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"), out_retained(trim_wsp_end(rest), had_blank), indent);
+			i = next; continue;
+		}
 		/* Element cap: the whole line is refused, so a capped load never holds
 		   a truncated array that would read as the document's value. The scan
-		   stopped at the cap, so nothing past it was built either. */
+		   stopped at the cap, so nothing past it was built either, and the
+		   value span is empty: this has to come before the value is read, or
+		   the line would bind as empty. */
 		if (tok.capped) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "array longer than "); sb_put_u64(P.line, &m, P.max_elements); sb_puts(P.line, &m, " elements; line skipped");
 			p_refuse(&P, lineno, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
 			i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue;
 		}
-		/* A selector body takes the same open-quote rule as a value element,
-		   and the same code: the body is read bare, quotes and all, so the line
-		   still binds - somewhere the author did not mean. */
-		if (selector_open_quote(&tok)) p_err(&P, lineno, "E017", s_lit("unterminated quote in selector"));
 		ShclValue value;
 		if (!scan.has_value) {
 			/* A clean path with no colon is the one defined repair: the obvious
@@ -3382,14 +3403,6 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			value = v_empty();
 		}
 		else if (scan.value_text.n == 0) value = v_empty();
-		else if (scan.value_text.p[0] == '[') {
-			/* A value spelled the way JSON, TOML and YAML spell an array. The
-			   brackets are not a selector after the colon, and reading the text
-			   without them would bake a changed value in, so the line is kept
-			   verbatim. */
-			p_refuse(&P, lineno, "E019", s_lit("bracket array syntax; an array is comma-separated, without brackets"), out_retained(trim_wsp_end(rest), had_blank), indent);
-			i = next; continue;
-		}
 		else {
 			ShclFence vf = fence_open(scan.value_text);
 			if (vf.ok) value = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, vf, &next);

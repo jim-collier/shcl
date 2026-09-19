@@ -998,6 +998,12 @@ def main():
 	ldoc = shcl.Document.parse_limited("arr:\n\t* 1\n\t* 2\n\t* 3\n", shcl.Strictness.Standard, 0, 2)
 	if sum(1 for g in ldoc.diagnostics() if g.code == "E021") != 1 or ldoc.get_int_array("arr") != [1, 2]:
 		raise SystemExit("element cap: a stacked array keeps what fit")
+	# A cap refuses only a line that would bind: bracket text stays E019 and
+	# kept, and an element under a field with a value stays E011.
+	ldoc = shcl.Document.parse_limited("arr: [1, 2, 3]\nk: x\n\t* 1\n", shcl.Strictness.Standard, 0, 1)
+	lgot = [(g.line, g.code) for g in ldoc.diagnostics()]
+	if lgot != [(1, "E019"), (3, "E011")] or ldoc.lost_count() != 1 or "arr: [1, 2, 3]" not in ldoc.to_canonical():
+		raise SystemExit(f"element cap over a refused line: {lgot} lost {ldoc.lost_count()}")
 	# The count the cap judges is the count the array reads back as, spelling
 	# by spelling: quoted commas, a backslash (a character, so it shields
 	# nothing), empty and blank slots, a Unicode blank (content: only a space

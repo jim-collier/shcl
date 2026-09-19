@@ -950,6 +950,20 @@ int main(int argc, char **argv) {
 		if (ncap != 1 || ra.status != SHCL_GOOD || ra.n != 2 || ra.values[0] != 1 || ra.values[1] != 2)
 			fail("parse_limited", "stacked array must keep what fit");
 		shcl_free(ld);
+		// A cap refuses only a line that would bind: bracket text stays E019
+		// and kept, and an element under a field with a value stays E011.
+		const char *bt = "arr: [1, 2, 3]\nk: x\n\t* 1\n";
+		ld = shcl_parse_limited(bt, strlen(bt), SHCL_STANDARD, 0, 1, 0);
+		{
+			shcl_str canon = shcl_to_canonical(ld);
+			int ok = shcl_diag_count(ld) == 2
+				&& shcl_diag_line(ld, 0) == 1 && strcmp(shcl_diag_code(ld, 0), "E019") == 0
+				&& shcl_diag_line(ld, 1) == 3 && strcmp(shcl_diag_code(ld, 1), "E011") == 0
+				&& shcl_lost_count(ld) == 1
+				&& canon.n >= 14 && memcmp(canon.p, "arr: [1, 2, 3]", 14) == 0;
+			if (!ok) fail("parse_limited", "a cap over a refused line must keep that line's code");
+		}
+		shcl_free(ld);
 		// The count the cap judges is the count the array reads back as,
 		// spelling by spelling: quoted commas, a backslash (a character, so it
 		// shields nothing), empty and blank slots, a Unicode blank (content:

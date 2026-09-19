@@ -1762,6 +1762,16 @@ def _selector_open_quote(tok):
 	return any(seg.selector is not None and seg.selector.quote is Quote.OPEN for seg in tok.segments)
 
 
+def _bracket_text(tok):
+	"""Bracket text (E019): a `[` first after the colon. Read off the first
+	piece rather than the value span, since a capped scan empties the span
+	and keeps the pieces it built."""
+	if tok.sep is None or not tok.elements:
+		return False
+	p = tok.elements[0]
+	return p.quote is Quote.NONE and p.end > p.start and tok.src[p.start] == 0x5B
+
+
 def _path_of(tok, s):
 	"""The path the tokens spell: (segments, value_text), value_text None when
 	there was no separator. Raises _PathError with the tokenizer's fault:
@@ -2289,9 +2299,11 @@ class _Parser:
 		if piece.quote is Quote.OPEN:
 			self._err(line, "E017", "unterminated quote in value")
 		# Element cap: each element line past it is refused on its own, the way
-		# any other bad element line is.
+		# any other bad element line is. Only a line that would join the list:
+		# under a field that already has a value it is E011, cap or not.
 		if (
 			self.max_elements
+			and self.arena[parent].star_list
 			and self.arena[parent].value.kind == "cell"
 			and len(self.arena[parent].value.els) >= self.max_elements
 		):
@@ -2514,19 +2526,29 @@ class _Parser:
 				i += 1
 				continue
 			nxt = i + 1
-			# Element cap: the whole line is refused, so a capped load never
-			# holds a truncated array that would read as the document's
-			# value. The scan stopped at the cap, so nothing past it was
-			# built either.
-			if tok.capped:
-				self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
-				i = self._skip_field_line(lines, i, indent, tok)
-				continue
 			# A selector body takes the same open-quote rule as a value
 			# element, and the same code: the body is read bare, quotes and
 			# all, so the line still binds - somewhere the author did not mean.
 			if _selector_open_quote(tok):
 				self._err(lineno, "E017", "unterminated quote in selector")
+			# A value spelled the way JSON, TOML and YAML spell an array. The
+			# brackets are not a selector after the colon, and reading the
+			# text without them would bake a changed value in, so the line is
+			# kept verbatim. Judged before the cap and from the first piece,
+			# which the cap keeps: a cap refuses only a line that would bind.
+			if _bracket_text(tok):
+				self._refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", _out_retained(_trim_wsp_end(rest), had_blank), indent)
+				i = nxt
+				continue
+			# Element cap: the whole line is refused, so a capped load never
+			# holds a truncated array that would read as the document's
+			# value. The scan stopped at the cap, so nothing past it was
+			# built either, and the value span is empty: this has to come
+			# before the value is read, or the line would bind as empty.
+			if tok.capped:
+				self._refuse(lineno, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
+				i = self._skip_field_line(lines, i, indent, tok)
+				continue
 			# The verbatim value span, kept for reads' `raw` (only the plain
 			# scalar/inline-array case has a one-line source spelling).
 			src_text = None
@@ -2537,14 +2559,6 @@ class _Parser:
 				value = _empty()
 			elif value_text == "":
 				value = _empty()
-			elif value_text.startswith("["):
-				# A value spelled the way JSON, TOML and YAML spell an array.
-				# The brackets are not a selector after the colon, and reading
-				# the text without them would bake a changed value in, so the
-				# line is kept verbatim.
-				self._refuse(lineno, "E019", "bracket array syntax; an array is comma-separated, without brackets", _out_retained(_trim_wsp_end(rest), had_blank), indent)
-				i = nxt
-				continue
 			else:
 				fence = _fence_open(value_text)
 				if fence is not None:
