@@ -1659,6 +1659,22 @@ def main():
 	if "value=1" not in rtext or "Status.Good" not in rtext or "0x" in rtext:
 		raise SystemExit(f"Read repr is not readable: {rtext}")
 
+	# Python-only, and the same class as the two above: two parses of one
+	# datetime compared unequal, since nothing but identity said otherwise.
+	# The other three compare field by field. Same-moment is a separate
+	# question and belongs to the value code, so `12:00:00Z` and
+	# `12:00:00+00:00` still differ here.
+	ddoc = shcl.Document.parse("a: 2026-09-19T12:00:00Z\nb: 2026-09-19T12:00:00Z\n"
+		"c: 2026-09-19T12:00:00+00:00\nd: 2026-09-19\n")
+	da, db, dc, dd = (ddoc.get_datetime(p) for p in ("a", "b", "c", "d"))
+	if da != db or hash(da) != hash(db) or len({da, db}) != 1:
+		raise SystemExit("two parses of one datetime are not equal")
+	if da in (dd, dc, "2026-09-19T12:00:00Z"):
+		raise SystemExit("datetimes that differ compare equal")
+	dtxt = repr(da)
+	if "2026" not in dtxt or "zone=" not in dtxt or "0x" in dtxt:
+		raise SystemExit(f"ShclDateTime repr is not readable: {dtxt}")
+
 	# Both halves of a path can carry a line break and spell it \n: a name
 	# through the name escaper, a selector value through the value emitter. The
 	# selector was refused while elements were stored in their source spelling

@@ -4480,20 +4480,29 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		}
 		ShclVecSize_push(t, &buckets[g], i);
 	}
-	// Base side, one pass: does the name exist / have a container instance
-	// (entries name a representative base child), and which child carries
-	// each (name, merge key).
+	// Base side, one pass: every child of a name (entries index a posting
+	// list, whose first element names it), which names have a container
+	// instance, and which child carries each (name, merge key). The posting
+	// list is what keeps the override arm below off a scan of every base
+	// child, which made N overridden leaves quadratic (20260918b item 58).
 	ShclVecSize base = {0};
 	{ ShclVecSize bk = NODE(d, bp).children; for (size_t i = 0; i < bk.len; i++) ShclVecSize_push(t, &base, bk.data[i]); }
-	ShclCMap in_base, has_cont, by_key;
-	memset(&in_base, 0, sizeof in_base); memset(&has_cont, 0, sizeof has_cont); memset(&by_key, 0, sizeof by_key);
+	ShclVecSize *named = NULL; size_t nn = 0, cn = 0;
+	ShclCMap by_name, has_cont, by_key;
+	memset(&by_name, 0, sizeof by_name); memset(&has_cont, 0, sizeof has_cont); memset(&by_key, 0, sizeof by_key);
 	for (size_t i = 0; i < base.len; i++) {
 		size_t b = base.data[i]; ShclStr nm = NODE(d, b).name;
 		uint64_t hn = cmap_hash(nm, s_empty());
-		int seen = 0;
-		for (ShclCMapEnt *e = cmap_first(&in_base, hn); e; e = cmap_next(e, hn))
-			if (s_eq(NODE(d, e->val).name, nm)) { seen = 1; break; }
-		if (!seen) cmap_put(t, &in_base, hn, b);
+		size_t ni = (size_t)-1;
+		for (ShclCMapEnt *e = cmap_first(&by_name, hn); e; e = cmap_next(e, hn))
+			if (s_eq(NODE(d, named[e->val].data[0]).name, nm)) { ni = e->val; break; }
+		if (ni == (size_t)-1) {
+			if (nn == cn) { size_t nc = cn ? cn * 2 : 8; named = (ShclVecSize *)arena_grow(t, named, cn, nc, sizeof(ShclVecSize)); cn = nc; }
+			memset(&named[nn], 0, sizeof named[nn]);
+			ni = nn++;
+			cmap_put(t, &by_name, hn, ni);
+		}
+		ShclVecSize_push(t, &named[ni], b);
 		if (NODE(d, b).children.len > 0) {
 			int seenc = 0;
 			for (ShclCMapEnt *e = cmap_first(&has_cont, hn); e; e = cmap_next(e, hn))
@@ -4529,9 +4538,9 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 		int over_leafy = 1;
 		for (size_t i = 0; i < grp.len; i++) if (over->nodes.data[okids.data[grp.data[i]]].children.len > 0) { over_leafy = 0; break; }
 		uint64_t hn = cmap_hash(name, s_empty());
-		int inb = 0, bc = 0;
-		for (ShclCMapEnt *e = cmap_first(&in_base, hn); e; e = cmap_next(e, hn))
-			if (s_eq(NODE(d, e->val).name, name)) { inb = 1; break; }
+		int inb = 0, bc = 0; size_t bni = (size_t)-1;
+		for (ShclCMapEnt *e = cmap_first(&by_name, hn); e; e = cmap_next(e, hn))
+			if (s_eq(NODE(d, named[e->val].data[0]).name, name)) { inb = 1; bni = e->val; break; }
 		for (ShclCMapEnt *e = cmap_first(&has_cont, hn); e; e = cmap_next(e, hn))
 			if (s_eq(NODE(d, e->val).name, name)) { bc = 1; break; }
 		if (over_leafy && !bc) {
@@ -4549,9 +4558,8 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 				   replacement. A comment starts with `#`, a retained line
 				   never does. The texts already live in the document arena. */
 				ShclVecLead kept = {0};
-				for (size_t i = 0; i < base.len; i++) {
-					size_t b = base.data[i];
-					if (!s_eq(NODE(d, b).name, name)) continue;
+				for (size_t i = 0; i < named[bni].len; i++) {
+					size_t b = named[bni].data[i];
 					const ShclTrivia *bt = NODE(d, b).trivia;
 					if (!bt) continue;
 					const ShclVecLead *lists[3] = { &bt->leading, &bt->inside, &bt->after };
@@ -7158,6 +7166,11 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	// mode, and after the data, because a write by anyone but root clears
 	// setuid/setgid. Best effort: a filesystem that cannot carry the mode is
 	// not a failure.
+	// The group first, because a chown clears setuid/setgid on most systems.
+	// Best effort like the mode: a caller who is not in the old group keeps its
+	// own, which is what it had before this. The owner is not carried - see the
+	// file tier in spec.md.
+	if (ok && have_st) (void)fchown(fileno(f), (uid_t)-1, st.st_gid);
 	if (ok && have_st) (void)fchmod(fileno(f), st.st_mode & 07777);
 #endif
 	ok = (fclose(f) == 0) && ok;

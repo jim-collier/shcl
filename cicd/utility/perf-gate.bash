@@ -124,6 +124,15 @@ awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 
 awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 2147483647; s = s sprintf("%c", 97 + x % 26) } return s }
 	BEGIN { x = 7; for (i = 0; i < 4000; i++) printf "%s: 1\n", nm() }' > "${unkDoc}"
 
+## Two flat documents of the same names, so every name in the higher layer
+## overrides a leaf below. Collecting the replaced leaf's comments scanned every
+## base child once per overridden name, which is quadratic when the two files
+## name the same keys (20260918b item 58). Half the key count keeps the old
+## code's run inside the timeout in the slowest binding.
+mergeBase="${tmpDir}/merge-base.shcl"; mergeOver="${tmpDir}/merge-over.shcl"
+awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "k%d: %d\n", i, i }' > "${mergeBase}"
+awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "k%d: %d\n", i, i + 1 }' > "${mergeOver}"
+
 ##	A run that never comes back is a failure, not a wait. Without this a binding
 ##	that stopped terminating hung the gate until whatever was running it gave up,
 ##	and on hosted CI that is the job's own timeout with no workload named. The cap
@@ -162,6 +171,8 @@ fTimeMs(){
 			fRun "${cli}" check "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == unknowns ]]; then
 			fRun "${cli}" check --schema "${unkSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == merge ]]; then
+			fRun "${cli}" fmt --layer "${mergeBase}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			fRun "${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -230,7 +241,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns; do
+	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns merge; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
@@ -247,6 +258,8 @@ for b in "${bindings[@]}"; do
 			ms="$(fTimeMs "${cli}" "${selDoc}" selectors 1)"
 		elif [[ "${w}" == unknowns ]]; then
 			ms="$(fTimeMs "${cli}" "${unkDoc}" unknowns 4000)"
+		elif [[ "${w}" == merge ]]; then
+			ms="$(fTimeMs "${cli}" "${mergeOver}" merge "$((keys / 2))")"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
@@ -282,6 +295,8 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            delete one and leave the gate reporting OK on a CLI that failed.
 ##		2026-09-17  stars and mounts workloads: the unknown-field sweep's two
 ##		            element-wise matchers, each scanning its whole list per node.
+##		2026-09-19  merge workload: two flat files naming the same keys, whose
+##		            override arm scanned every base child per name.
 ##		2026-09-19  selectors workload: quoted `[value]` selectors, each a new
 ##		            instance, which scanned every sibling on the create path.
 ##		2026-09-19  unknowns workload: every name unknown, which compared each with

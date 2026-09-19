@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl migrate FILE [--write | --check] [--from-2x]`, and `migrate(text, from_v2)` in every binding: a file written for 2.x, rewritten for the 3.0 lexical rules so the parser reads the same tree. Only what the two rule sets read differently is touched - a backslash 2.x read as an escape outside double quotes, a quote that never closed, and the `name:[disc]` selector sugar - and comments, blank lines, raw bodies and layout come through as written. `--write` goes through the same gate as `fmt --write`. Which rule set wrote a file is not in its text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it: a file carrying it has nothing to migrate, and a file without it keeps the spellings the two rule sets read differently and exits 7 unless `--from-2x` says it really is 2.x. A rewritten file is stamped with that line, so running `migrate` twice cannot damage what the first run produced. Bracket text after the colon is the one line 2.x bound that has no spelling here; it is left as written and reported at exit 7, which `--lossy` overrides on a rewrite. `--check` prints nothing, names each line a rewrite would change, and exits 6 when there is one, so a tree can be scanned for the files that need it. `--write` says how many lines it rewrote. A `Format` line inside a raw body is that block's content, not the file's version, and the highest one in a file decides.
 
+- `fmt --check`: prints nothing, names the file on stderr and exits 6 when a rewrite would change it, 0 when it would not. Every other formatter has one, and up to now a CI check meant `shcl fmt f | cmp -s - f`. It cannot be combined with `--write`, as `migrate --check` cannot.
+
 - `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer. C's `shcl_tokens` grows its two arrays in the read arena of the document it was last handed, so zero the struct before handing it another one.
 
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
@@ -173,6 +175,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A malformed line (`E014`) names the column where the path went wrong.
 
 ### Fixed
+
+- A `--write` that has nothing to write no longer rewrites the file. What the save would publish is compared with the bytes read back first, so a canonical file keeps its inode, its mtime and its hard links, an idempotent `--set-default` in a provisioning script stops reporting a change on every run, and a canonical file in a read-only directory stops failing at exit 8. A load that dropped content still refuses the write before any of this.
+
+- A `--write` that creates FILE says `FILE: created` on stderr. A typo in the name exited 0 with an empty stderr and a new file nobody asked for.
+
+- A rewrite carries the file's group, best effort, along with its mode. A `root:www-data 0640` config came back with the saver's own group, so the service lost its read. The owner is still not carried, which a save that is not root cannot do anyway; the spec said "ownership" where it meant the owner.
+
+- Merging two documents that name the same leaves is no longer quadratic in the number of names. Collecting a replaced leaf's comments scanned every child of the base parent once per name: 32,000 overridden leaves took 2.9 s in C and 13.2 s in the Rust debug build, and now take 0.05 s and 0.70 s.
+
+- Python's `ShclDateTime` compares by value and prints its fields. Two parses of one datetime compared unequal, and it printed as an object address.
 
 - The help and the man page name every subcommand each of `--strictness`, `--layer`, `--set` and `--write` belongs to. They had said "all but" a list, so every subcommand added since joined it unseen.
 

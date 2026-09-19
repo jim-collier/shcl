@@ -145,9 +145,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          rule sets read differently; without
                                          it those are left alone and migrate
                                          exits 7
-  --check                                (migrate) print nothing, name each
-                                         line the rewrite would change on
-                                         stderr, and exit 6 when there is one
+  --check                                (fmt/migrate) print nothing and exit 6
+                                         when a rewrite would change the file;
+                                         migrate names each line it would
+                                         change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
                                          children/paths) or 1|2|3 (default
                                          standard)
@@ -203,7 +204,7 @@ layers prints the merged canonical document.
 
 Exit codes: 0 good, 1 usage error, 2 empty, 3 not found, 4 bad type,
 5 multiple instances, 6 check failed, strict load failed, init's schema has
-faults, or migrate --check found a line to rewrite, 7 in-place write refused
+faults, or --check found a rewrite to make, 7 in-place write refused
 (--lossy overrides) or migrate left something behind, 8 a file or stream could
 not be read or written.
 """
@@ -738,14 +739,29 @@ def write_back(doc, file, o, read=None):
 	# The in-place half of fmt/set. Overwriting the source is the one place a
 	# recovered load turns destructive, so the save runs through the library's
 	# own gate rather than a second copy of the rule - the CLI and a consumer
-	# program cannot then disagree about which rewrites are safe.
+	# program cannot then disagree about which rewrites are safe. read is the
+	# bytes FILE held when the command read it, and None when this write is
+	# creating FILE.
 	if read is not None and not unchanged_since_read(file, read):
 		return EXIT_IO
+	# Nothing to write: what the save would publish is already on disk. A
+	# rewrite would give the file a new inode and mtime for nothing, so an
+	# idempotent --set-default in a provisioning script reported a change on
+	# every run, watchers fired, other hard links broke, and a canonical file
+	# in a read-only directory failed. The refusal comes first: a load that
+	# dropped content refuses the write whatever the bytes say.
+	if read is not None and (o.lossy or doc.lost_count() == 0) and doc.to_canonical() == read:
+		return 0
 	try:
 		if o.lossy:
 			doc.save_file_lossy(file)
 		else:
 			doc.save_file(file)
+		# A created file is the one write with nothing to compare against
+		# afterwards, and a typo in the name used to end at exit 0 with an
+		# empty stderr and a new file nobody asked for.
+		if read is None:
+			sys.stderr.write(f"{file}: created\n")
 		return 0
 	# The rule stays in the library; only the wording is the CLI's, because the
 	# override a user has here is a flag, not a function.
@@ -813,7 +829,7 @@ def allowed_opts(cmd):
 	elif cmd == "set":
 		allowed = ("--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove", "--write", "--lossy", "--no-banner")
 	elif cmd == "fmt":
-		allowed = ("--write", "--lossy", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
+		allowed = ("--write", "--lossy", "--check", "--strictness", "--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove")
 	elif cmd == "check":
 		allowed = ("--strictness", "--schema")
 	elif cmd == "init":
@@ -1170,6 +1186,14 @@ def do_fmt(o):
 		return EXIT_IO
 	if doc is None:
 		return code
+	# --check is migrate --check's sibling, and the spelling every other
+	# formatter has: print nothing, and say by the exit code whether a rewrite
+	# would change the file. It was `shcl fmt f | cmp -s - f` before.
+	if o.check:
+		if doc.to_canonical() == read:
+			return 0
+		sys.stderr.write(f"{file}: not canonical; fmt --write would rewrite it\n")
+		return 6
 	if o.write:
 		return write_back(doc, file, o, read)
 	sys.stdout.write(doc.to_canonical())

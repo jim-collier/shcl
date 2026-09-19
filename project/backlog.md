@@ -144,60 +144,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's eleven enhancements. The defects are under Bugs, and the round bullet there says what was covered. With fifty-three defects open, none of these should be taken in the fix round.
 
-	- 🔘 Item 54: `fmt --check`.
-		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 55: `set --write` says nothing when it creates FILE.
-		- A typo in the file name exits 0 with empty stderr and leaves a new file, where `migrate --write` reports what it did. The create itself is decided. A `FILE: created` note on stderr is what is missing.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 56: `fmt --write` and `set --write` replace the file even when the bytes would not change.
-		- A new inode and mtime on every run, so an idempotent `--set-default` in a provisioning script reports a change each time, watchers fire, and other hard links break for nothing. A canonical file in a read-only directory fails at exit 8 with nothing to write. `migrate --write` already skips a current file.
-		- Note: pairs with bug item 16's second look.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 57: a rewrite keeps the mode and drops the group, and the spec's ownership sentence is wrong about the group.
-		- A `me:www-data 0640` config comes back `me:<primary group> 0640`, so the service loses its read. The spec says lost ownership "only shows when that is not the old file's owner", and the group changes even then.
-		- Keep: 20260829 item 8 decided that ownership is not kept. A best-effort `fchown` to the old group before the `fchmod` would part-reverse that, so it is a decision and not a bug fix. The spec sentence wants correcting either way.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 58: the leaf-override path of `merge` rescans the base children once per overridden name.
-		- Measured: N leaves overridden by the same N. C takes 0.69 s at 16,000, 2.9 s at 32,000 and 13.9 s at 64,000. Disjoint names are linear.
-		- Origin: `157b9aa` (2026-09-05). The comment above `overlay` says the quadratic terms at one parent were removed, and this put one back.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 59: Python's `ShclDateTime` has no `__eq__`, `__hash__` or `__repr__`.
-		- Two parses of the same datetime compare unequal, and it prints as an object address. The reference derives equality and a debug form. 20260909 item 50 gave `__repr__` to `Diagnostic` and `Read` only.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 60: `check-wheel.bash` downloads and runs an unpinned setuptools from PyPI on every gate run, the pre-push gate included.
-		- `build` is pinned and `pyproject.toml` says `setuptools>=77`, so each lint stage runs whatever PyPI serves that day, and the gate needs the network. A pinned setuptools with `--no-isolation`, or a hashed constraints file, closes it.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 61: the README's performance numbers come from a 1.2.0 build, and nothing in the release steps reruns them.
-		- The newest recorded run is 2026-08-21. The tokenizer, the funnel and the setters have all changed since. Bug item 4 forces a rerun anyway.
-		- Note: the tool has not been built on this box from its committed lock, and whether it still compiles against the 3.0 API was checked only by grepping the calls it makes.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 62: `assets/demo.gif` shows output the CLI no longer prints, and its last note argues with its own frame.
-		- The `fmt` frame ends in the old E014 wording. The note says "values verbatim" over a frame where `window: 2026-07-12T14:30` comes back quoted, which is right per the spec and reads like the claim failing. The release gate passes `--no-gif`, so nothing refreshes it before a cut.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 63: three gates trust more than they should.
-		- `sanitize-c.bash` counts only exit 77, so a sanitized CLI that dies by signal or `abort()` is not counted.
-		- `perf-gate.bash` has no timeout around a workload, and its own comment says one past defect was 2^60, so a return of it hangs the gate.
-		- Both startup gates have said SEEN against 2026-09-03 artifacts through two fix rounds, since `--ci` writes no log. Printing the artifact's age would make a stale gate read as stale.
-		- Opened: 20260918-193000
-
-	- 🔘 Item 64: the fuzz's structural generator cannot build most fence forms, and a typo in `SHCL_FUZZ_ITERS` silently runs 300.
-		- Never generated: the block spelling of a fence, a tilde fence, an info string, a run longer than three, an unterminated block, a body of more than one line or one that looks like a field, and a closer at another indent. The 20260918 class fix was checked by hand over those and holds, so this is coverage.
-		- A value that does not parse falls back to 300 in all eight tests, and at 0 three tests loop zero times and pass.
-		- Opened: 20260918-193000
-
 ### Done
 
 #### Done - Bugs
+
+- ✅ Under an element cap, a `*` line reported `E021` where the open parse drops it as `E008`.
+	- Reproduced: through `parse_limited` at element cap 1 on the nine lines the fuzz built. The open parse binds a field under the element's field (`E001`) and refuses the element after it as `E008`; the capped parse refuses the field line as `E021`, so the element would join the list and the cap refuses it too.
+	- Decided: no parser change. The cap is right on both lines. The two parses read the same document only up to the first line the cap refuses; after that a dropped line has taken its children's level or its parent's field children with it, which is the same reasoning that already kept `E012` and `E018` out of the property.
+	- Fixed: `a_cap_refuses_only_a_line_that_would_bind` compares the first capped line alone, and skips a bracket line after it. The reason is at the site.
+	- Pinned by: the property itself, watched to fail at iteration 1 with 20260918b item 29's order put back (bracket text judged after the cap), and green at 200000 with the fix in.
+	- Note: found by the fuzz once 20260918b item 64 gave the structural generator its fence shapes. It was out of reach at 300 and at 20000 iterations.
+	- Opened: 20260919-150633
+	- Closed: 20260919-152000
 
 - ✅ `migrate` stamps a file again on every run when an older `Format` line comes before its own stamp.
 	- Reproduced in all four. `a: 1` and `##    Format   0`: `migrate` appends `##    Format   3`, and a second run appends another, at exit 0 both times.
@@ -4381,6 +4339,119 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260918b:
+
+	- Items closed so far. The rest of the round is open under Features and enhancements.
+
+	- ✅ Item 54: `fmt --check`.
+		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.
+		- Fixed: `fmt --check` in all four CLIs. It prints nothing, exits 6 when the canonical form differs from the file's bytes and 0 when it does not, and names the file on stderr. `--check` with `--write` is the usage error it already was for `migrate`. Help, man page, completions and spec say so.
+		- Pinned by: `cli-regress.bash` rows `fmt-check-noncanonical`, `fmt-check-canonical` and `fmt-check-write`. All three fail on the old code (exit 1, "option --check not valid for fmt").
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 55: `set --write` says nothing when it creates FILE.
+		- A typo in the file name exits 0 with empty stderr and leaves a new file, where `migrate --write` reports what it did. The create itself is decided. A `FILE: created` note on stderr is what is missing.
+		- Fixed: a `--write` that created FILE says `FILE: created` on stderr, in all four CLIs. A write over an existing file still says nothing.
+		- Pinned by: `cli-regress.bash` rows `create-says` and `write-existing-quiet`. The first fails on the old code with an empty stderr.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 56: `fmt --write` and `set --write` replace the file even when the bytes would not change.
+		- A new inode and mtime on every run, so an idempotent `--set-default` in a provisioning script reports a change each time, watchers fire, and other hard links break for nothing. A canonical file in a read-only directory fails at exit 8 with nothing to write. `migrate --write` already skips a current file.
+		- Note: pairs with bug item 16's second look.
+		- Fixed: a `--write` whose canonical text equals the bytes read back publishes nothing and exits 0, in all four CLIs. The file keeps its inode, mtime and hard links. The library's save is unchanged, since its caller may want the publish. A load that dropped content still refuses first.
+		- Pinned by: `cli-regress.bash` save-target cases `same` and `differs`, which compare the inode across the run. `same` fails on the old code.
+		- Note: the new Save outcomes table in `design.md` carries both rows.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152715
+
+	- ✅ Item 57: a rewrite keeps the mode and drops the group, and the spec's ownership sentence is wrong about the group.
+		- A `me:www-data 0640` config comes back `me:<primary group> 0640`, so the service loses its read. The spec says lost ownership "only shows when that is not the old file's owner", and the group changes even then.
+		- Keep: 20260829 item 8 decided that ownership is not kept. A best-effort `fchown` to the old group before the `fchmod` would part-reverse that, so it is a decision and not a bug fix. The spec sentence wants correcting either way.
+		- Decided: the group is carried, best effort, and the owner still is not. A save that is not root cannot set the owner, and 20260829 item 8 stands. A saver outside the old group leaves its own group on the file, which is what happened before.
+		- Fixed: all four bindings chown the group on the temp file before the mode, since a chown clears setuid and setgid. Go reads the gid through reflect, because `syscall.Stat_t` does not exist on windows and `shcl.go` has to compile there.
+		- Fixed: the spec's ownership sentence now says owner rather than ownership, and says the group is carried. `design.md`'s "What is carried" bullet and the Save outcomes table say the same.
+		- Pinned by: `cli-regress.bash` save-target case `group`, which rewrites a `0640` file owned by a second group and reads the group back. It fails on the old code (the group comes back as the caller's own). The case drops out where the caller is in one group only.
+		- Opened: 20260918-193000
+		- Closed: 20260919-152956
+
+	- ✅ Item 58: the leaf-override path of `merge` rescans the base children once per overridden name.
+		- Measured: N leaves overridden by the same N. C takes 0.69 s at 16,000, 2.9 s at 32,000 and 13.9 s at 64,000. Disjoint names are linear.
+		- Origin: `157b9aa` (2026-09-05). The comment above `overlay` says the quadratic terms at one parent were removed, and this put one back.
+		- Fixed: the base pass builds a name to children index alongside the two maps it already built, and the override arm reads the replaced leaf's comments off it. All four bindings. C keeps one posting list per name, which the map entries index. Merge output is byte-identical before and after, on the small shapes and on the big one.
+		- Measured: 32,000 leaves overridden by the same 32,000, `fmt --layer`. C 2.93 s to 0.05 s, rust debug 13.2 s to 0.70 s.
+		- Pinned by: `perf-gate.bash` workload `merge`, two flat files naming the same keys at half the key count. On the old code it is 1041 ms against a 283 ms budget in C and 5161 ms against 969 ms in rust. New code: c 34, go 74, rust 417, python 760, all well inside.
+		- Opened: 20260918-193000
+		- Closed: 20260919-153822
+
+	- ✅ Item 59: Python's `ShclDateTime` has no `__eq__`, `__hash__` or `__repr__`.
+		- Two parses of the same datetime compare unequal, and it prints as an object address. The reference derives equality and a debug form. 20260909 item 50 gave `__repr__` to `Diagnostic` and `Read` only.
+		- Fixed: `ShclDateTime` gets `__eq__`, `__hash__` and `__repr__`, field by field as the reference derives them. Same-moment comparison is a different question and stays in the value code, so `12:00:00Z` and `12:00:00+00:00` are still two values.
+		- Pinned by: the Python runner's repr block, beside the Diagnostic and Read checks 20260909 item 50 left there. With the three methods taken back out it fails with "two parses of one datetime are not equal".
+		- Opened: 20260918-193000
+		- Closed: 20260919-154025
+
+	- ✅ Item 60: `check-wheel.bash` downloads and runs an unpinned setuptools from PyPI on every gate run, the pre-push gate included.
+		- `build` is pinned and `pyproject.toml` says `setuptools>=77`, so each lint stage runs whatever PyPI serves that day, and the gate needs the network. A pinned setuptools with `--no-isolation`, or a hashed constraints file, closes it.
+		- Fixed: `cicd/packaging/python-build-constraints.txt` names the version (`setuptools==78.1.1`) and `check-wheel.bash` exports it as `PIP_CONSTRAINT`, so the isolated build stands the same backend up every time. The gate then reads the version back out of the built wheel's `WHEEL` metadata (`Generator: setuptools (X)`) and fails when it is not the pinned one, so a pin that stops taking effect is a red gate rather than a quiet drift.
+		- Pinned by: `check-wheel.bash` itself. With the `PIP_CONSTRAINT` export commented out it said `the constraints file pins setuptools 78.1.1, and the wheel was built by 84.0.0` and exited 1; with it, exit 0.
+		- Measured: PyPI serves 84.0.0 today against the box's 78.1.1, so the drift the item describes is live, not hypothetical.
+		- Left alone: no `--hash` lines, though a constraints file takes them. One hash puts pip in `--require-hashes` mode, where it refuses any requirement not pinned with `==`, and that includes `pyproject.toml`'s published `setuptools>=77`, which is the contract for whoever builds the sdist and not this gate's to narrow. The file says so. `TOOL_PINS` is not the home for it either: the backend is fetched per build, not installed on the box, the same reasoning as `CPPCHECK_WHEEL`. `ci.yml` needs no change, since the constraint travels with the repo.
+		- Opened: 20260918-193000
+		- Opened: 20260918-193000
+		- Closed: 20260919-150633
+
+	- ✅ Item 61: the README's performance numbers come from a 1.2.0 build, and nothing in the release steps reruns them.
+		- The newest recorded run is 2026-08-21. The tokenizer, the funnel and the setters have all changed since. Bug item 4 forces a rerun anyway.
+		- Note: the tool has not been built on this box from its committed lock, and whether it still compiles against the 3.0 API was checked only by grepping the calls it makes.
+		- Fixed: the release recipe now says to rerun `cicd/utility/comparison/compare.bash` and refresh the numbers before the bump commit, with the two other places that carry them (the README tables, the design.md table and its `rerun on <date>` line). Added to `details.md` -> Release cut recipe, above the gate bullet. The file was backed up first.
+		- Fixed: `check-docs.bash` compares design.md's `rerun on <date>` with the newest `run:` stamp in `results.shcl` and fails when they disagree. That is the only currency claim in the repo, so it is now the one a gate reads.
+		- Pinned by: `check-docs.bash`, watched to fail. Dating design.md back to 2026-08-21 gave "project/design.md says the comparison was rerun on 2026-08-21, but the newest run in results.shcl is 20260919", and the file was restored by copy. Green before and after, and shellcheck clean.
+		- Left alone: the README carries no run stamp, only a link to `results.shcl`. Adding one would rewrite hand-written prose for no gain, since the date in design.md already pins the pair and both are refreshed together.
+		- Left alone: the numbers themselves. The 2026-09-19 rerun (bug item 4) already landed on dev, so only the process half was open.
+		- Opened: 20260918-193000
+		- Closed: 20260919-143953
+
+	- ✅ Item 62: `assets/demo.gif` shows output the CLI no longer prints, and its last note argues with its own frame.
+		- The `fmt` frame ends in the old E014 wording. The note says "values verbatim" over a frame where `window: 2026-07-12T14:30` comes back quoted, which is right per the spec and reads like the claim failing. The release gate passes `--no-gif`, so nothing refreshes it before a cut.
+		- Fixed: the gif was rerendered against a fresh release build of this branch, so its `check` frame carries today's `E014 malformed line skipped: unexpected character after the path, at column 9` and the explain line under it. The old gif showed `unexpected '5' after field`, a wording two rounds old, and no explain line.
+		- Fixed: the last note read "Canonical fmt; values verbatim" over a frame where `window: 2026-07-12T14:30` comes back quoted. It reads "Canonical fmt; nothing lost" now, which is true of the frame (the bad line is retained, nothing dropped) and does not depend on how a value is spelled. Changed in `cicd/demo-scenario.toml` and its mirror `cicd/demo/script.txt`. The input was left as it is, since the datetime is worth showing and the quoting is per spec.
+		- Pinned by: a new check in `cicd/utility/shell-regress.bash`, watched to fail. It runs the scenario's steps through `gen-demo-gif.py`'s own `fRunStep`, which is what the gif carries, and compares the text with `cicd/demo/expected.txt`. Doctoring the golden back to the old E014 wording gave "the demo steps no longer print what assets/demo.gif shows; rerender the gif ... and refresh cicd/demo/expected.txt", and the golden was restored by copy.
+		- Fixed: the recipe also gained a line saying the release gate passes `--no-gif`, so a cut never rerenders the gif and it has to be done by hand when output changes. That is why nothing caught this: the gif stage is the one stage the gate skips.
+		- Left alone: comparing the gif's pixels or frame count. The frames are rendered from the captured text, so the text check catches the same drift for nothing, and a pixel check would go red on a font or a Pillow version.
+		- Frames were extracted from the old and new gifs and read directly: the old `check` frame carries the retired wording, the new one matches what the CLI prints today, and the `fmt` frame shows the reworded note over the quoted value.
+		- `shell-regress.bash` green with the debug binary, `check-docs.bash` green, shellcheck clean. No full `--ci` run, since one was already running in another worktree.
+		- Opened: 20260918-193000
+		- Closed: 20260919-143953
+
+	- ✅ Item 63: three gates trust more than they should.
+		- `sanitize-c.bash` counts only exit 77, so a sanitized CLI that dies by signal or `abort()` is not counted.
+		- `perf-gate.bash` has no timeout around a workload, and its own comment says one past defect was 2^60, so a return of it hangs the gate.
+		- Both startup gates have said SEEN against 2026-09-03 artifacts through two fix rounds, since `--ci` writes no log. Printing the artifact's age would make a stale gate read as stale.
+		- Fixed, `sanitize-c.bash`: a CLI run counts as bad at exit 77 or anything above 128, so a run killed by a signal is a finding. Only 77 counted before, and a sanitized CLI that aborted on every input read as a clean gate. The message carries the exit code now.
+		- Fixed, `perf-gate.bash`: every timed run goes through `timeout -k 5 300`, and a run that hits it is refused rather than timed. The cap is far above any budget on purpose - a merely slow binding still finishes and fails on its number, which is the more useful report - so only a hang reaches it. Before this a binding that stopped terminating hung the gate until whatever was running it gave up, which on hosted CI is the job timeout with no workload named.
+		- Fixed, both startup gates: `lint-report.bash` and `flame-report.py` print how old the artifact is (`0m`, `7h`, `16d`) on every line they print, SEEN included. A SEEN against a fortnight-old run used to read exactly like one against this morning's.
+		- Pinned by: a bait in each gate, plus two `shell-regress.bash` rows. `sanitize-c.bash` builds a CLI that raises SIGKILL and refuses to go on unless its own counter caught it; with the old `code == 77` test the gate exited 2 at `a CLI killed by a signal went uncounted`. `perf-gate.bash` has a third bait beside the two it had, a CLI that sleeps 30 s then prints its line and exits 0, so no other guard can catch it; with the timeout wrapper neutered the self-test reported it as `timed as 30002 ms, not refused`. The two `shell-regress.bash` rows age a fixture log and a fixture graph 16 days and look for `16d old`; both fail on the pre-fix scripts.
+		- Measured: `sanitize-c.bash` green, 2572 CLI runs. `perf-gate.bash` green on rust debug, 40000 keys, eleven workloads, nothing near the cap (largest 505 ms against a 966 ms budget). `shell-regress.bash` green.
+		- Left alone: the age comes off the file's mtime, not the timestamp in its name. Both are the run's time for any artifact the pipeline writes, and mtime is the one that exists whatever the file is called. One existing `shell-regress.bash` row was widened to `(2 warning line(s), ` since the age now follows it.
+		- Note: `lint-report.bash` already carried the 20260918b item 13 work. That is untouched; the age is a second history line under it.
+		- Opened: 20260918-193000
+		- Opened: 20260918-193000
+		- Closed: 20260919-150633
+
+	- ✅ Item 64: the fuzz's structural generator cannot build most fence forms, and a typo in `SHCL_FUZZ_ITERS` silently runs 300.
+		- Never generated: the block spelling of a fence, a tilde fence, an info string, a run longer than three, an unterminated block, a body of more than one line or one that looks like a field, and a closer at another indent. The 20260918 class fix was checked by hand over those and holds, so this is coverage.
+		- A value that does not parse falls back to 300 in all eight tests, and at 0 three tests loop zero times and pass.
+		- Fixed, the count: one `iter_count(floor)` for all ten reads of `SHCL_FUZZ_ITERS`. A value that does not parse panics with what it read, and 0 panics rather than looping zero times and passing. An absent variable still means 300, and `tokens_follow_the_grammar` keeps its 2000 floor.
+		- Fixed, the shapes: `fence()` builds a raw block in any of the forms shape 7 could not - the same-line and the block spelling, backticks or tildes, a run of three to five, an info string (including the `c#` that ends at the comment), a body of one line, of a field line and a comment line, or of a blank, a flush-left line and a deeper one, and a closer at the body's indent, at the field's, flush left, or missing.
+		- Fixed, `raw_bodies_stay_content`: the property knew only shape 7's geometry, two body lines and a closer. It now works out each block's extent by the spec's own rule - the first later line whose trimmed text is a run of the same character, at least as long as the opener's - so it covers every new shape, unterminated blocks included.
+		- Pinned by: `the_iteration_count_refuses_a_value_that_is_not_one`, over `""`, `0`, `2OO`, `-1`, `1e5` and `20 000`. It fails on the old `.and_then(|v| v.parse().ok()).unwrap_or(300)` at the first case and passes on the new one.
+		- Measured: 200000 iterations in release. Ten of the eleven properties pass. The eleventh found a defect the new shapes reach at iteration 49124, filed and closed as a loose bug under Done - Bugs: a capped `*` line reading `E021` where the open parse drops it as `E008`. The two gates that read the soup are green on it: `crosscheck.bash` has all four bindings agreeing on 16308 comparisons over the corpus and a 500-document dump, and `check-migrate.bash` compares 563 documents (124 corpus, 439 dumped) with its 8 lost counts matching. So the new shapes are parity-clean and migrate the same way.
+		- Left alone: the mutated-seed half of `generated_starters_load_and_validate_clean` still has no iteration floor. Giving it one would multiply the default `cargo test` cost of that test by about seven, and with 0 and a typo now refused the floor is no longer what stands between the test and running nothing.
+		- Opened: 20260918-193000
+		- Closed: 20260919-150633
 
 - Code review 20260918:
 

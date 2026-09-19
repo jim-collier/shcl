@@ -21,7 +21,7 @@ shcl \- read, edit, validate and format Simple Hierarchical Config Language file
 .YS
 .SY shcl
 .B fmt
-.RB [ \-\-write | \-w ]
+.RB [ \-\-write | \-w | \-\-check ]
 .RI [ options ]
 .I FILE
 .YS
@@ -130,6 +130,9 @@ Print the canonical form of
 .IR FILE ,
 or rewrite it in place with
 .BR \-\-write .
+.B \-\-check
+prints nothing and says by the exit code whether a rewrite would change the
+file.
 Comments and their placement survive. With
 .B \-\-layer
 it prints the merged document.
@@ -330,11 +333,13 @@ exits 7, because the same bytes mean one thing under each rule set and
 nothing in the file says which one wrote it.
 .TP
 .B \-\-check
-.RB ( migrate )
-Print nothing, and name on stderr each line the rewrite would change, as
+.RB ( fmt ", " migrate )
+Print nothing. Exit 6 when a rewrite would change the file and 0 when it would
+not, so a script can ask which files in a tree need formatting or migrating.
+.B migrate
+also names on stderr each line it would change, as
 .IR FILE : LINE .
-Exits 6 when there is one and 0 when there is none, so a script can ask which
-files in a tree need migrating. It cannot be combined with
+It cannot be combined with
 .BR \-\-write .
 .TP
 .BR \-\-strictness= loose | standard | strict
@@ -627,8 +632,8 @@ Multiple instances matched where one was wanted.
 found errors, a strict load failed,
 .BR init 's
 schema has faults, or
-.B migrate \-\-check
-found a line to rewrite.
+.B \-\-check
+found a rewrite to make.
 .TP
 .B 7
 An in-place write was refused because the load dropped content the rewrite

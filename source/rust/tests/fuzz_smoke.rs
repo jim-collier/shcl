@@ -493,7 +493,14 @@ fn a_cap_refuses_only_a_line_that_would_bind() {
 				.iter()
 				.any(|d| d.line == n && d.code == code)
 		};
-		for d in capped.diagnostics().iter().filter(|d| d.code == "E021") {
+		// Only the first line the cap refuses: up to there the two parses have
+		// read the same document, so what the open parse makes of that line is
+		// what the capped one would make of it without the cap. After it they
+		// are different documents - a dropped line takes its children's level
+		// or its parent's field children with it - and a later line may be
+		// refused for a different reason in each, which is the same reasoning
+		// that keeps E012 and E018 out of the second half below.
+		if let Some(d) = capped.diagnostics().iter().find(|d| d.code == "E021") {
 			let refused: Vec<_> = open
 				.diagnostics()
 				.iter()
@@ -509,8 +516,15 @@ fn a_cap_refuses_only_a_line_that_would_bind() {
 				text
 			);
 		}
+		// The same rule for the bracket half: a line after the first cap
+		// refusal is in a document the open parse never read.
+		let first_capped = capped
+			.diagnostics()
+			.iter()
+			.find(|d| d.code == "E021")
+			.map_or(usize::MAX, |d| d.line);
 		for d in open.diagnostics().iter().filter(|d| d.code == "E019") {
-			if on(&capped, d.line, "E012") || on(&capped, d.line, "E018") {
+			if d.line > first_capped || on(&capped, d.line, "E012") || on(&capped, d.line, "E018") {
 				continue;
 			}
 			assert!(
