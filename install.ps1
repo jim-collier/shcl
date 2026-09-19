@@ -154,6 +154,17 @@ file. Nothing unverified is installed.
 		return [int]$response.Value.StatusCode
 	}
 
+	## The shcl program that comes first on PATH when it is not $Installed, or
+	## nothing. On a first install there is none at all, since only the registry
+	## PATH was written, and reading .Source off nothing threw under strict mode
+	## after a good install, at exit 1. An Application, so a dot-sourced shcl
+	## wrapper function is not taken for a program.
+	function Get-ShclShadow([string]$Installed) {
+		$cmd = Get-Command shcl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+		if ($cmd -and $cmd.Source -ne $Installed) { return $cmd.Source }
+		return $null
+	}
+
 	function Select-ReleaseTag([string]$Channel, $Releases) {
 		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
 		$all = @($all) | Where-Object { -not $_.draft }
@@ -443,8 +454,8 @@ file. Nothing unverified is installed.
 		## here. A user install cannot get ahead of a machine one - windows puts
 		## the machine entries first - so a setup.exe install shadows it until
 		## that one is removed, and saying so is all this can do.
-		$onPath = (Get-Command shcl -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-		if ($onPath -and $onPath -ne "$dest\shcl.exe") {
+		$onPath = Get-ShclShadow "$dest\shcl.exe"
+		if ($onPath) {
 			Write-Output "note: shcl on your PATH is $onPath, not the copy just installed - it comes first on PATH"
 		}
 		## Already proved above, from the temp dir; this line is the receipt.

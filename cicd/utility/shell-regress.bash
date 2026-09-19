@@ -325,6 +325,29 @@ if fHave pwsh; then
 	[[ "${out}" == *"three=3"* ]]    || fBad "install.ps1 smoke test lost a nonzero exit: ${out@Q}"
 	[[ "${out}" == *"good=0"* ]]     || fBad "install.ps1 smoke test failed a working binary: ${out@Q}"
 
+	##	20260918b item 5: on a first install nothing named shcl is on the
+	##	session's PATH yet, and reading .Source off that nothing threw under
+	##	strict mode after a good install, at exit 1. The three answers the
+	##	bash twin gives: none, our own copy, someone else's copy first.
+	mkdir -p "${tmpDir}/pshadow/ours" "${tmpDir}/pshadow/theirs" "${tmpDir}/pshadow/none"
+	printf '#!/bin/sh\n' > "${tmpDir}/pshadow/ours/shcl"; printf '#!/bin/sh\n' > "${tmpDir}/pshadow/theirs/shcl"
+	chmod 755 "${tmpDir}/pshadow/ours/shcl" "${tmpDir}/pshadow/theirs/shcl"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Get-ShclShadow/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$ours = '${tmpDir}/pshadow/ours/shcl'"
+		echo "foreach (\$dirs in 'none', 'ours', 'theirs:ours') {"
+		echo "	\$env:PATH = ((\$dirs -split ':') | ForEach-Object { '${tmpDir}/pshadow/' + \$_ }) -join ':'"
+		echo '	try { $r = Get-ShclShadow $ours; Write-Output "$dirs=[$r]" } catch { Write-Output "$dirs=threw $_" }'
+		echo '}'
+	} > "${tmpDir}/shadow.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/shadow.ps1" 2>&1 || true)"
+	[[ "${out}" == *"none=[]"* ]] || fBad "install.ps1 fails when no shcl is on PATH yet: ${out@Q}"
+	[[ "${out}" == *"ours=[]"* ]] || fBad "install.ps1 called its own copy a shadow: ${out@Q}"
+	[[ "${out}" == *"theirs:ours=[${tmpDir}/pshadow/theirs/shcl]"* ]] || fBad "install.ps1 did not see the copy shadowing it: ${out@Q}"
+
 	##	20260918b item 36: a request with no response at all (DNS, a refused
 	##	port, a proxy) has no status, and reading one threw under strict mode,
 	##	so the network-down message was never printed. A 403 still has to read
@@ -518,8 +541,11 @@ nBadBefore="${nBad}"
 		&& fBad "install.bash reported a shadow where there is no shcl at all"
 	exit $((nBad - nBadBefore))
 ) || nBad=$((nBad + 1))
-grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
-	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
+##	The install.ps1 half was a source grep, and it passed while the check it
+##	looked for threw on every first install (20260918b item 5). The pwsh block
+##	runs Get-ShclShadow over the same three answers instead.
+# grep -q 'Get-Command shcl -ErrorAction SilentlyContinue' "${repoDir}/install.ps1" \
+# 	|| fBad "install.ps1 never asks what shcl resolves to on PATH"
 
 ##	20260901b item 39: a read-only HOME got through both downloads and then
 ##	failed on a raw mkdir error. The destinations are probed first, and the
