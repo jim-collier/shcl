@@ -156,11 +156,15 @@ fence-line      = indent fence-open *blank [ comment ]
                 ; already carries one - same rule as a repeated leaf.
 fence-open      = fence-run [ info-string ]
 fence-run       = 3*"`" / 3*"~"                 ; run length N captured for close-match
-info-string     = *blank 1*bare-plain *( *blank 1*bare-plain )
+info-string     = *blank 1*info-char *( *blank 1*info-char )
                                                ; optional label (e.g. a language), read
                                                ; as bare text: a "#" ends it and opens
                                                ; the line's comment, in either spelling,
                                                ; so ```c# labels the block c
+info-char       = %x00-08 / %x0B-0C / %x0E-1F / %x21-22 / %x24-10FFFF
+                ; any char but a blank, LF and "#". Wider than bare-plain on
+                ; purpose: ":", ",", quotes and "[" are plain text in a label
+                ; (```sql:pg, "v" [x] reads back as written, and SetRaw writes it).
 raw-content-line= *non-newline                 ; verbatim; only while a fence is open
 ; fence-close (context): indent (N*"`" / N*"~") *blank   where char matches opener
 ;                        and length >= opener length.

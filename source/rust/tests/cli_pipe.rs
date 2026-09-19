@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+
 //! A reader that closes stdout early must not make the CLI print anything on
 //! stderr or fail loudly: on unix it dies of SIGPIPE like every other tool,
 //! and on windows, which has no such signal, it exits quietly. The release

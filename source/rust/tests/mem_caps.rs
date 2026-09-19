@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+
 // Allocation bounds the corpus cannot see: a capped parse must not hold what
 // it is about to refuse. Its own test binary because the counting allocator
 // is global to the process, and the other test files run in parallel.

@@ -164,10 +164,10 @@ These test results cover three scenarios, each with the same data in all five co
 
 This test covers the kind of config a person hand-edits. The test data contains entries for server, logging, database, cache, auth, paths, limits, feature flags, and a banner block.
 
-| Config file       | JSON      | XML   | TOML  | YAML  | SHCL
-| :--               | :--       | :--   | :--   | :--   | :--
-| File size (KB)    | 2.2       | 3.0   | 1.7   | 1.7   | **1.6**
-| Read time (ms)    | **0.009** | 0.015 | 0.024 | 0.066 | 0.066
+| Config file       | JSON      | XML   | TOML  | SHCL    | YAML
+| :--               | :--       | :--   | :--   | :--     | :--
+| File size (KB)    | 2.2       | 3.0   | 1.7   | **1.6** | 1.7
+| Read time (ms)    | **0.007** | 0.014 | 0.024 | 0.043   | 0.066
 
 Practically nobody chooses a format based on read times that low, except maybe a realtime embedded system whose whole executable is measured in kilobytes. (And one of those would not be linking in any library anyway.)
 
@@ -175,28 +175,28 @@ Practically nobody chooses a format based on read times that low, except maybe a
 
 This test covers 197 table definitions, each with typed columns, nullability, defaults, keys, indexes, and comments.
 
-| Schema file    | JSON    | XML | TOML | YAML | SHCL
-| :--            | :--     | :-- | :--  | :--  | :--
-| File size (KB) | 431     | 498 | 298  | 322  | **262**
-| Read time (ms) | **1.7** | 2.8 | 4.5  | 12.8 | 12.6
+| Schema file    | JSON    | XML | TOML | SHCL    | YAML
+| :--            | :--     | :-- | :--  | :--     | :--
+| File size (KB) | 431     | 498 | 298  | **262** | 322
+| Read time (ms) | **1.8** | 2.6 | 4.5  | 6.9     | 11.4
 
-Here SHCL is 39% smaller than JSON and 47% smaller than XML, and still reads in under an eightieth of a second. This is the size SHCL is built for: a big file that people still edit by hand.
+Here SHCL is 39% smaller than JSON and 47% smaller than XML, and still reads in under a hundredth of a second. This is the size SHCL is built for: a big file that people still edit by hand.
 
 #### Unrealistic stress test
 
 Far past anything anyone edits by hand: one array of 302,230 records.
 
-| Stress test                | JSON     | XML     | TOML | YAML | SHCL
-| :--                        | :--      | :--     | :--  | :--  | :--
-| File size (MB)             | 107      | 160     | 77   | 80   | **67**
-| Gzipped (MB)               | 8.9      | 11.0    | 9.3  | 9.4  | 9.1
-| Read time (s)              | **0.62** | 1.02    | 1.74 | 4.20 | 4.78
-| Peak memory (GB)           | 2.1      | **1.5** | 3.0  | 3.9  | 1.8
-| Keeps your file as written | no       | no      | no   | no   | **yes**
+| Stress test                | JSON     | XML  | TOML | SHCL    | YAML
+| :--                        | :--      | :--  | :--  | :--     | :--
+| File size (MB)             | 107      | 160  | 77   | **67**  | 80
+| Gzipped (MB)               | 8.9      | 11.0 | 9.3  | 9.1     | 9.4
+| Read time (s)              | **0.59** | 1.01 | 1.74 | 3.02    | 4.12
+| Peak memory (GB)           | **1.1**  | 1.5  | 2.4  | 2.1     | 2.7
+| Keeps your file as written | no       | no   | no   | **yes** | no
 
-`toml_edit` is the only other parser here that keeps the file contents (e.g. comments), and SHCL uses a quarter of the memory - but at twice the read time.
+`toml_edit` is the only other parser here that keeps the file contents (e.g. comments), and SHCL uses half the memory - but at a third more read time.
 
-Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.5 times slower than `tomllib`; in Rust, 2.1 times slower than `toml`. Two languages, two separate implementations, the same few-fold gap.
+Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.7 times slower than `tomllib`; in Rust, 1.5 times slower than `toml`. Two languages, two separate implementations, and SHCL is behind in both.
 
 TLDR: If you are moving a lot of machine-generated data over a high-bandwidth connection, use JSON. If you want to save developer time, and respect end-user sanity, use SHCL.
 
@@ -927,7 +927,7 @@ One read-side companion belongs with this: canonical output lowercases field nam
 curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
 ```
 
-Linux and macOS; on Windows, use WSL, since the pipeline is bash. Then, from the clone:
+Linux. macOS is untested for the pipeline, and some of its checks need Linux. On Windows, use WSL, since the pipeline is bash. Then, from the clone:
 
 ```sh
 cicd/cicd.bash --ci

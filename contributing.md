@@ -229,8 +229,3 @@ The full rules live in [`style-guide.md`](style-guide.md) - read it before touch
 ### Branches
 
 - Work on a short-named feature branch and PR against `dev`; `main` is release-only.
-
-<!-- omit in toc -->
-## Attribution
-
-This guide is based on the [contributing.md generator](https://contributing.md/generator)!

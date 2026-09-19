@@ -151,6 +151,77 @@ while IFS= read -r hit; do
 done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
 	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
 
+##	Two lexical rules were withdrawn and their wording outlived them, one site
+##	per round: a `#` ending a value only behind a blank (2026-09-06, replaced
+##	on 2026-09-10 by a `#` outside quotes always opening a comment), and an open
+##	quote running to the line end (2.x). The documents that state the current
+##	rules may not carry the old phrasing. The changelog is history and is left
+##	out.
+# shellcheck disable=SC2016  ## the backticks are markdown, not command substitution
+while IFS= read -r hit; do
+	fBad "states a withdrawn lexical rule: ${hit}"
+done < <(grep -nHiE 'behind a blank|a `#` anywhere else|swallowing the trailing comment|comma hides inside the open quote' \
+	"${repoDir}/README.md" "${repoDir}/style-guide.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
+	"${repoDir}/project/conformance/README.md" "${repoDir}/source/man/shcl.1" 2>/dev/null | sed "s|^${repoDir}/||" || true)
+
+##	contributing.md says the corpus README carries a note per case, and 58
+##	cases went without one. Every case directory has to be named in a note,
+##	alone (`044`) or as the edge of a range (`014`-`016`).
+corpusDir="${repoDir}/project/conformance"
+if [[ -f "${corpusDir}/README.md" ]]; then
+	# shellcheck disable=SC2016  ## the backticks are markdown, not command substitution
+	noted="$(grep -oE '`[0-9]{3}`(-`[0-9]{3}`)?' "${corpusDir}/README.md" | tr -d '`' || true)"
+	for d in "${corpusDir}"/[0-9][0-9][0-9]-*/; do
+		[[ -d "${d}" ]] || continue
+		n="$(basename -- "${d}")"; n="${n%%-*}"
+		found=0
+		while IFS= read -r r; do
+			[[ -n "${r}" ]] || continue
+			lo="${r%%-*}"; hi="${r##*-}"
+			if ((10#${n} >= 10#${lo} && 10#${n} <= 10#${hi})); then found=1; break; fi
+		done <<<"${noted}"
+		((found)) || fBad "project/conformance/README.md has no note for case ${n}"
+	done
+fi
+
+##	The style guide says every source file starts with the SPDX line and the
+##	copyright, and files added later kept arriving without them. "Starts with"
+##	means the header block, which in a script comes after the purpose text, so
+##	the first 80 lines are searched.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	while IFS= read -r f; do
+		[[ -f "${repoDir}/${f}" ]] || continue
+		head -n 80 "${repoDir}/${f}" | grep -q 'SPDX-License-Identifier' || fBad "${f} has no SPDX line in its header"
+		head -n 80 "${repoDir}/${f}" | grep -q 'Copyright' || fBad "${f} has no copyright line in its header"
+	done < <(git -C "${repoDir}" ls-files -- '*.rs' '*.go' '*.py' '*.c' '*.h' '*.hpp' '*.cpp' '*.bash' '*.ps1' || true)
+fi
+
+##	The grammar is the oracle harnesses are written against. It has to read as
+##	ABNF and derive what the parser reads; the samples live in check-abnf.py.
+python3 "${repoDir}/cicd/utility/check-abnf.py" "${repoDir}/project/grammar.abnf" >/dev/null \
+	|| fBad "project/grammar.abnf failed check-abnf.py (run it for the detail)"
+
+##	The man page carries a revision date and no version, and the date went
+##	stale on the next edit twice. The rule: the .TH date is no earlier than the
+##	last commit that touched the page. A commit that edits the page and bumps
+##	the date the same day passes, and so does a bump not yet committed. A
+##	shallow clone has only its tip commit, whose date says nothing about the
+##	page, so there it is skipped.
+man="${repoDir}/source/man/shcl.1"
+if [[ -f "${man}" ]] && git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	if [[ "$(git -C "${repoDir}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+		echo "check-docs: skipping the man page date check (shallow clone)"
+	else
+		thDate="$(sed -nE 's/^\.TH [^ ]+ [^ ]+ ([0-9]{4}-[0-9]{2}-[0-9]{2}) .*/\1/p' "${man}" | head -n1)"
+		lastEdit="$(git -C "${repoDir}" log -1 --format=%cs -- source/man/shcl.1 2>/dev/null || true)"
+		if [[ -z "${thDate}" ]]; then
+			fBad "source/man/shcl.1 has no YYYY-MM-DD date on its .TH line"
+		elif [[ -n "${lastEdit}" && "${thDate}" < "${lastEdit}" ]]; then
+			fBad "source/man/shcl.1 .TH date ${thDate} is older than its last commit, ${lastEdit}"
+		fi
+	fi
+fi
+
 ##	Two top-level bullets with no blank line between them. Auto-generated TOC
 ##	blocks are the exception - the tool strips blank lines out of them, so a
 ##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
@@ -419,3 +490,9 @@ echo "check-docs: OK"
 ##		2026-09-19  install.ps1 stays ASCII with no byte-order mark, and parses
 ##		            from its raw bytes.
 ##		2026-09-19  Every go test a gate runs passes -count=1.
+##		2026-09-19  The man page date is no older than its last commit.
+##		2026-09-19  grammar.abnf reads as ABNF and derives the fence labels
+##		            the parser reads.
+##		2026-09-19  Every tracked source file carries the SPDX and copyright lines.
+##		2026-09-19  The corpus README states no withdrawn lexical rule and has a
+##		            note for every case.

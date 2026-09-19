@@ -118,7 +118,7 @@ LINT_EXTRA=(
 	## python utilities: ruff never imports what it checks, so this costs nothing
 	## and the files are covered. cicd/utility/ruff.toml extends the project rule
 	## set for them.
-	'RAYON_NUM_THREADS="${CPU_CAP}" ruff check ${QUIET_FLAG} cicd/utility/flame-report.py cicd/utility/gen-demo-gif.py cicd/utility/comparison/pyworker.py'
+	'RAYON_NUM_THREADS="${CPU_CAP}" ruff check ${QUIET_FLAG} cicd/utility/flame-report.py cicd/utility/gen-demo-gif.py cicd/utility/check-abnf.py cicd/utility/comparison/pyworker.py'
 	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
