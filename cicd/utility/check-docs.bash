@@ -121,6 +121,36 @@ if [[ -f "${ps1}" && -f "${readme}" ]] && grep -q "needs tar to unpack" "${ps1}"
 		|| fBad "install.ps1 requires tar and README.md never says so on the Windows side"
 fi
 
+##	The README runs install.ps1 through `irm | iex`, and irm keeps a byte-order
+##	mark as the first character, which puts `param` second and fails the parse.
+##	Every test ran the file with -File, which strips the mark. So the file stays
+##	ASCII with no mark: nothing then needs one, PSScriptAnalyzer's BOM rule
+##	included. The parse below reads the bytes the way irm hands them over.
+if [[ -f "${ps1}" ]]; then
+	[[ "$(head -c3 "${ps1}" | od -An -tx1 | tr -d ' \n')" == efbbbf ]] \
+		&& fBad "install.ps1 starts with a byte-order mark, which breaks the README's irm | iex line"
+	LC_ALL=C grep -qP '[^\x00-\x7F]' "${ps1}" \
+		&& fBad "install.ps1 holds a non-ASCII byte; it has to stay ASCII so it needs no byte-order mark"
+	if command -v pwsh >/dev/null; then
+		# shellcheck disable=SC2016  ## PowerShell text, expanded by pwsh
+		nParse="$(SHCL_PS1="${ps1}" pwsh -NoProfile -NonInteractive -Command '$t = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:SHCL_PS1)); $e = $null; $null = [System.Management.Automation.Language.Parser]::ParseInput($t, [ref]$null, [ref]$e); $e.Count' 2>/dev/null || true)"
+		[[ "${nParse}" == 0 ]] || fBad "install.ps1 does not parse from its raw bytes, the way irm | iex reads it (${nParse:-no answer})"
+	elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+		fBad "no pwsh to parse install.ps1 with, and the gate requires it"
+	else
+		echo "check-docs: SKIPPED the install.ps1 parse - no pwsh"
+		echo check-docs >> "${SHCL_GATE_SKIPS:-/dev/null}"
+	fi
+fi
+
+##	The corpus sits outside the Go module, so go's test cache cannot see a
+##	changed case and answers `ok (cached)` over a broken golden. Every go test
+##	a gate runs passes -count=1.
+while IFS= read -r hit; do
+	fBad "go test without -count=1, which a cached pass hides a corpus change behind: ${hit}"
+done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" "${repoDir}/cicd/utility/win-runners.bash" \
+	| grep -v -e '-count=1' -e ':[0-9]*:[[:space:]]*#' || true)
+
 ##	Two top-level bullets with no blank line between them. Auto-generated TOC
 ##	blocks are the exception - the tool strips blank lines out of them, so a
 ##	`<!-- TOC -->` region is skipped, as is any list of bare anchor links, which
@@ -386,3 +416,6 @@ echo "check-docs: OK"
 ##		2026-09-18  Under the hook for a push to main, the tree under test
 ##		            stands in for main, since origin/main has not moved yet.
 ##		2026-09-10  The comment-rule example is no longer required; the rule is 2.x's.
+##		2026-09-19  install.ps1 stays ASCII with no byte-order mark, and parses
+##		            from its raw bytes.
+##		2026-09-19  Every go test a gate runs passes -count=1.

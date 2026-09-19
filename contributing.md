@@ -164,7 +164,7 @@ None of this is needed for `--ci`, which is the gate that matters for a pull req
 - Fast loop: `cargo test --manifest-path source/rust/Cargo.toml` - runs the conformance corpus plus the fuzz smoke against the reference.
 
 - Each binding also tests natively:
-	- Go: `go -C source/go test ./...`
+	- Go: `go -C source/go test -count=1 ./...`. The corpus sits outside the module, so without `-count=1` a cached pass hides a changed case.
 	- Python: `python3 source/python/tests/conformance.py`
 	- C: compile and run `source/c/tests/conformance.c` with `-Isource/c`, passing `project/conformance` as the corpus dir.
 

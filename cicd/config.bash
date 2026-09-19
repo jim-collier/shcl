@@ -195,9 +195,11 @@ TEST_CMD=(env SHCL_FUZZ_ITERS=200000 RUST_TEST_THREADS="${CPU_CAP}" cargo test -
 ## --quick swaps in this test command: same suites, fuzz at the old 20k gate
 ## depth - the minute-scale 200k soak is what the fast loop sheds.
 TEST_QUICK_CMD=(env SHCL_FUZZ_ITERS=20000 RUST_TEST_THREADS="${CPU_CAP}" cargo test -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
+## -count=1: the corpus sits outside the Go module, so go's test cache cannot
+## see a changed case and answers `ok (cached)` over a broken golden.
 TEST_EXTRA=(
-	'GOMAXPROCS="${CPU_CAP}" go -C source/go test ./...'
-	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test ./...'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go test -count=1 ./...'
+	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test -count=1 ./...'
 	'python3 source/python/tests/conformance.py'
 	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
 	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
