@@ -1,4 +1,4 @@
-﻿#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 ## install.ps1
 ##
 ##	Release installer for shcl (Simple Hierarchical Config Language) on Windows.
@@ -29,9 +29,9 @@
 ##		code\       drop-in single-file bindings (lib.rs, shcl.go, shcl.py,
 ##		            shcl.h, shcl.hpp)
 ##		scripts\    the PowerShell wrapper (shcl.ps1) and bash wrapper
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
-##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Copyright (C) 2026 Jim Collier
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
