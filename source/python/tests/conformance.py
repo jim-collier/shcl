@@ -431,6 +431,46 @@ def main():
 	fails = []
 	cases = load_cases()
 
+	# A lone surrogate, which os.listdir, sys.argv and os.environ hand out, is
+	# one more character to the parse and to a lookup path, as it was before
+	# the tokenizer read bytes (20260918b item 20). A strict encode made parse
+	# raise, where it promises never to. The save is where it fails. Python
+	# only: no other binding's string can hold one.
+	sdoc = shcl.Document.parse("a: x\udc80\n\"k\udc81\": 2\n")
+	if sdoc.to_canonical() != "a: x\udc80\n\"k\udc81\": 2\n" or sdoc.diagnostics():
+		fails.append("surrogate: the parse did not keep the text")
+	if sdoc.read_string("a").value != "x\udc80" or sdoc.read_string('"k\udc81"').status != shcl.Status.Good:
+		fails.append("surrogate: a read did not find what the parse kept")
+	if sdoc.read_string("z\udc80").status != shcl.Status.NotFound or sdoc.exists("q\udc80.r"):
+		fails.append("surrogate: a path holding one is not NotFound")
+	with tempfile.TemporaryDirectory() as sd:
+		try:
+			sdoc.save_file(os.path.join(sd, "s.shcl"))
+			fails.append("surrogate: a document with no UTF-8 spelling saved")
+		except shcl.SaveFailed:
+			pass
+
+	# The reference's tokenizer offset is unsigned, so a negative one has
+	# nothing else it can mean. Go panicked and Python read it as an offset
+	# from the end (20260918b item 31). Same fixture in the Go test.
+	neg, zero = shcl.Tokens(), shcl.Tokens()
+	shcl.tokenize_value("x, 'y' # c", -3, shcl.Rules.CURRENT, neg)
+	shcl.tokenize_value("x, 'y' # c", 0, shcl.Rules.CURRENT, zero)
+	if [(p.start, p.end, p.quote) for p in neg.elements] != [(p.start, p.end, p.quote) for p in zero.elements] \
+			or neg.value != zero.value or neg.comment != zero.comment:
+		fails.append("a negative tokenizer offset did not read as zero")
+
+	# A document merged onto itself is left as it is (20260918b item 19). The
+	# walk read over while it wrote self, so Go doubled a retained line, Python
+	# grew without end and C ran out of memory. Every corpus input, and the
+	# three lines that showed it. Same fixture in every runner.
+	for name, text in [("self-merge", "# c\na: 1\nbad line\n")] + [(c["name"], c["input"]) for c in cases]:
+		doc = shcl.Document.parse(text)
+		before = doc.to_canonical()
+		doc.merge(doc)
+		if doc.to_canonical() != before:
+			fails.append(f"{name}: merge onto itself changed the document")
+
 	# Write dimension: the library Writer must reproduce expected-write.shcl and
 	# the result must be a formatter fixpoint.
 	for case in cases:
@@ -1321,6 +1361,39 @@ def main():
 			for link in (cyc_a, cyc_b):
 				if not os.path.islink(link):
 					raise SystemExit("a symlink cycle was replaced by a regular file")
+			# Save outcomes in design.md, the rows the CLI's own check hides. A
+			# FIFO was swapped for a regular file at exit 0, a link whose text
+			# names a directory made a file of that name, and Go cleaned `lnk/..`
+			# as text where the kernel follows lnk first. Same fixture in every
+			# POSIX runner.
+			tdoc = shcl.Document.parse("a: 1\n")
+			fifo = os.path.join(td, "p.shcl")
+			os.mkfifo(fifo)
+			try:
+				tdoc.save_file(fifo)
+				raise SystemExit("a FIFO saved without an error")
+			except shcl.SaveFailed:
+				pass
+			if not stat.S_ISFIFO(os.lstat(fifo).st_mode):
+				raise SystemExit("a FIFO was replaced by a regular file")
+			ldir = os.path.join(td, "l.shcl")
+			os.symlink("d/", ldir)
+			try:
+				tdoc.save_file(ldir)
+				raise SystemExit("a link naming a directory saved without an error")
+			except shcl.SaveFailed:
+				pass
+			if os.path.lexists(os.path.join(td, "d")):
+				raise SystemExit("a link naming a directory made a file")
+			os.makedirs(os.path.join(td, "tgt", "real", "sub"))
+			os.makedirs(os.path.join(td, "tgt", "top"))
+			os.symlink("../real/sub", os.path.join(td, "tgt", "top", "lnkdir"))
+			os.symlink("../x.shcl", os.path.join(td, "tgt", "real", "sub", "f.shcl"))
+			tdoc.save_file(os.path.join(td, "tgt", "top", "lnkdir", "f.shcl"))
+			if _read(os.path.join(td, "tgt", "real", "x.shcl")) != "a: 1\n":
+				raise SystemExit("save did not create the file behind lnk/..")
+			if os.path.lexists(os.path.join(td, "tgt", "top", "x.shcl")):
+				raise SystemExit("lnk/.. was cleaned as text")
 		if os.name == "nt":
 			# A read-only target is rewritten, as it is on POSIX, and comes back
 			# read-only; no temp file is left behind. Same fixture in every runner.

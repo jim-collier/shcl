@@ -219,6 +219,17 @@ int main(void) {
 	if (arena_bytes(&d->arena) > held + 200 * 256) fail("a refused generation kept its output");
 	if (shcl_diag_count(d) != 1) fail("generation faults accumulated across calls");
 	shcl_free(d);
+	// A schema that does not build: its build faults were pushed by the call
+	// and dropped by code, V096 and V097 only, so each call added one more copy
+	// (20260918b item 24). A schema diagnostic of the document's own stays.
+	const char *nobuild = "field: srv\n\trepeat: 0..5\nbad line\n";
+	d = shcl_parse(nobuild, strlen(nobuild));
+	size_t own_diags = shcl_diag_count(d);
+	for (int i = 0; i < 50; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (gok || t.n) fail("a schema that does not build generated"); }
+	printf("mem_bounds: unbuilt generation: %zu diagnostic(s) of its own, %zu after 50 calls\n", own_diags, shcl_diag_count(d));
+	if (shcl_diag_count(d) != own_diags + 1) fail("schema build faults accumulated across generate calls");
+	if (own_diags < 1 || strcmp(shcl_diag_code(d, 0), "E014") != 0) fail("the schema's own diagnostic was dropped");
+	shcl_free(d);
 	d = shcl_parse("field: a\n\trequired: yes\n", 25);
 	held = arena_bytes(&d->arena);
 	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (!gok || !t.n) fail("generation failed"); shcl_reads_release(d); }

@@ -23,9 +23,11 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 	- [Schema validation](#schema-validation)
 	- [Formatter](#formatter)
 	- [Saving a file](#saving-a-file)
+	- [Save outcomes](#save-outcomes)
 	- [Load outcomes](#load-outcomes)
 	- [Lexical edges](#lexical-edges)
 	- [Write outcomes](#write-outcomes)
+	- [Generation outcomes](#generation-outcomes)
 	- [Testing](#testing)
 	- [Format comparison](#format-comparison)
 	- [CI/CD](#cicd)
@@ -393,6 +395,23 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - **A symlink cycle at the write target is an error.** Resolving the target is what makes a linked-in config written through rather than replaced, and a cycle used to fall out of the resolver as "no target", which quietly replaced the link with a regular file. A loop is reported as what it is - too many levels of symbolic links - and nothing is written.
 
+### Save outcomes
+
+What a save does with each thing it can find at the path. The same answer comes from the library's save in every binding and from the CLI's `--write`, and the CLI reports every refusal at exit 8. The table is the rule. Six review items in three weeks were one row answered at one site and not its sibling, so a new case gets a row here before it gets code.
+
+| At the path, after links are followed                                   | A save                                                                                                                                                                                                                               | Settled by
+| :---------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------
+| A regular file                                                          | Replaces it. The mode comes over. What does not is under Saving a file.                                                                                                                                                              | 20260725 item 7
+| Nothing, in a directory that exists                                     | Creates it, at `0666` narrowed by the umask. Anything that turns up before the publish is left alone and the save fails.                                                                                                             | 20260909 item 6
+| A link to a regular file                                                | Replaces the file the link reaches. The link stays.                                                                                                                                                                                  | 20260725 item 7
+| A dangling link                                                         | Creates the file where the link points. The link stays. The walk joins each link's text to the directory the link sits in as written, never cleaned, since the kernel follows `lnk` in `lnk/..` before it goes up.                   | 20260829 item 7, 20260918b item 17
+| A link whose text ends in a separator, `.` or `..`                      | Refused: is a directory. That text can only reach a directory, and the kernel refuses to create a file through it.                                                                                                                   | 20260918b item 18
+| A link cycle                                                            | Refused: too many levels of symbolic links.                                                                                                                                                                                          | 20260901b item 29
+| A path ending in a separator, `.` or `..`                               | Refused: is a directory.                                                                                                                                                                                                             | 20260902 item 40
+| A directory                                                             | Refused: is a directory.                                                                                                                                                                                                             | 20260918b item 3
+| A FIFO, a socket, a device, or anything else that is not a regular file | Refused: not a regular file. A rename would swap it for a regular file. The CLI asks before it reads FILE, since reading a FIFO takes what was written to it.                                                                        | 20260918b item 3
+| A regular file whose bytes changed since the CLI read it                | Refused under `--write`: changed since it was read. The CLI reads FILE again just before the save. The library's save does not look, since its caller holds the text and knows when it read it. A gap the width of one save is left. | 20260918b item 16
+
 ### Load outcomes
 
 Every load-time code has one outcome, and the parser derives the lost count and the held indent level from that outcome alone. Each diagnosing arm names its code and its outcome and does nothing else; one function records the diagnostic, counts, and holds the level. Before this, every arm counted and pushed by hand, and nine review items over five weeks were an arm that skipped one or the other. A line has one of four outcomes:
@@ -435,6 +454,8 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 | `H002` | hint | bound |
 
 - A line that qualifies for more than one refusal takes the first that applies, in this order: where it sits (`E012`, `E018`), then what it is (`E014`, `E019`, and on an element line `E007` to `E011`), and only then the element cap (`E021`). A cap refuses only a line that would otherwise bind. Bracket text under a cap is `E019` and kept, and an element under a field that already has a value is `E011`. The bracket test reads the value's first piece, which a capped scan keeps, not the value span, which it empties. The fuzz property `a_cap_refuses_only_a_line_that_would_bind` holds the order.
+
+- A kept `*` element holds its column, with its field as the level's node, the way a dropped one holds its own. Without that no level was open at the element's column, so the list's next sibling - a field or another element - was `E012`, "matches no open level", two lines under the level that opened it. One mistake cost every later line of the list. The 20260904 item 15 decision covered dropped elements only, and the kept half was never settled until 20260918b item 28.
 
 - The one thing the table changed when it was written: a raw fence with no parent field (`E006`) never held its level, so a line written deeper than it bound to the root. It holds it now, like every other dropped line.
 
@@ -479,6 +500,18 @@ The mirror of the load outcomes, on the write side. A setter builds its line tex
 - `SetLiteral` takes syntax rather than data, so whatever a file line spells with its text is what gets stored - a trailing blank comes off and a `#` outside quotes ends the value. What it refuses is what a file reports as an error, since a setter has no diagnostic to report one with: a line break, an unterminated quote (`E017`), bracket text (`E019`).
 
 - A path may carry a line break in either half. A name emits through the name escaper and a selector value through the value emitter, and both spell one `\n` and read it back. The selector was refused until the tokenizer cut, while elements were still stored in their source spelling and the value emitter had nothing to escape with.
+
+### Generation outcomes
+
+What `init` writes for each kind of line, and what proves the line reads back. The table is the rule. `init` output that failed its own check is the longest-running class in the backlog, seventeen items by 20260918b, and every one was the generator predicting what the scanner would read. It does not predict now: each spelling it picks is scanned back as a file line first, the way the load will scan it, and every line it writes is read back.
+
+| A generated line           | How it is spelled                                                                                                                                                                                            | How it is checked
+| :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------
+| A field's path             | The schema's own spelling when a file line reads it back as the same path, else rendered from the path's segments.                                                                                           | The whole output loads with no error and validates clean against the schema.
+| A child of a valued parent | Selects the parent by its value. The body is the first candidate a file line reads back as a value selector for that value: a single element as written, bare, then quoted. An array has only the bare body. | No candidate reads back: `V097`.
+| Two lines on one path      | The first is written, and its value is the instance the children select. Two by-value fields with different values are two instances, and both are written.                                                  | The same as a field's path.
+| An optional field's line   | Commented, with or without a default.                                                                                                                                                                        | Read back alone, and its value checked against its own field.
+| Text in the trailing block | Every schema string through `schema_text`, so a line break stays inside the comment.                                                                                                                         | Nothing reads the block back; the escaper is the rule.
 
 ### Testing
 

@@ -10,6 +10,7 @@ import errno
 import math
 import os
 import signal
+import stat
 import sys
 
 # The single-file library sits two directories up (lib in source/python/, CLI in
@@ -131,6 +132,10 @@ Options (the subcommands each belongs to are in parentheses):
   --no-banner                            (init, and set --write when it creates
                                          FILE) leave out the info block naming
                                          the format and pointing at its spec
+  --write                                (fmt/set/migrate) rewrite FILE in
+                                         place, spelled -w too, through a
+                                         temp file and a rename; refused
+                                         with a FILE of '-'
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -181,10 +186,11 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
-refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --no-banner on 'set' without --write; --check with --write;
---layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
-across FILE, --layer and --schema.
+refused: --write with --layer; --write with --set outside 'set'; --write with a
+FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
+--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
+--default with --on-bad=error or --on-bad=flag; '-' named more than once across
+FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -662,6 +668,20 @@ def parse_opts(argv):
 EXIT_IO = 8
 
 
+def write_target_ok(file):
+	# A --write FILE is a regular file or nothing yet. Asked before the read,
+	# since reading a FIFO takes what was written to it and the save would then
+	# refuse it anyway. A directory is left to the read, which names it.
+	try:
+		st = os.stat(file)
+	except (OSError, ValueError):
+		return True
+	if not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode):
+		sys.stderr.write(f"{file}: not a regular file\n")
+		return False
+	return True
+
+
 def read_input(file):
 	if file == "-":
 		try:
@@ -687,15 +707,10 @@ def read_input(file):
 		raise ValueError(f"{file}: stream did not contain valid UTF-8") from e
 
 
-def load_doc(text, strictness):
-	# Returns (doc, None) or (None, code). On strict load failure, prints the
-	# reference's diagnostic lines to stderr and reports code 6.
-	return load_doc_from("", text, strictness)
-
-
 def load_doc_from(file, text, strictness):
-	# The same, labelled with the file the text came from, so a strict failure
-	# in one layer of a fold says which layer.
+	# Returns (doc, None) or (None, code). On strict load failure, prints the
+	# diagnostic lines to stderr, labelled with the file the text came from so
+	# a strict failure in one layer of a fold says which layer, and reports 6.
 	try:
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
@@ -705,11 +720,27 @@ def load_doc_from(file, text, strictness):
 		return None, 6
 
 
-def write_back(doc, file, o):
+def unchanged_since_read(file, before):
+	# FILE still holds the bytes the load read. `set` waits on stdin between the
+	# load and the save, and an edit made in that wait was reverted at exit 0.
+	# A gap is left between this read and the publish, the width of one save.
+	try:
+		with open(file, "rb") as fh:
+			if fh.read() == before.encode("utf-8"):
+				return True
+	except (OSError, ValueError):
+		pass
+	sys.stderr.write(f"{file}: changed since it was read; nothing written\n")
+	return False
+
+
+def write_back(doc, file, o, read=None):
 	# The in-place half of fmt/set. Overwriting the source is the one place a
 	# recovered load turns destructive, so the save runs through the library's
 	# own gate rather than a second copy of the rule - the CLI and a consumer
 	# program cannot then disagree about which rewrites are safe.
+	if read is not None and not unchanged_since_read(file, read):
+		return EXIT_IO
 	try:
 		if o.lossy:
 			doc.save_file_lossy(file)
@@ -736,10 +767,19 @@ def load_layered(o, file):
 	# with nothing said about them. A merge does not carry diagnostics over, so
 	# reading them off the merged document drops the ones for FILE itself, which
 	# is the one the caller named.
+	doc, _, code = load_layered_from(o, file, None)
+	return doc, code
+
+
+def load_layered_from(o, file, given):
+	# The same fold with FILE's text given rather than read, which is how `set`
+	# creates a file or takes an empty document, and FILE's text handed back.
+	# `set` kept its own copy of the fold, and twice a fix to this one missed
+	# it. Returns (doc, text, None) or (None, "", code).
 	texts = []
 	for lf in o.layers:
 		texts.append(read_input(lf))
-	texts.append(read_input(file))
+	texts.append(read_input(file) if given is None else given)
 	# Lowest layer first, each labelled with its own file when there is more than
 	# one: the line numbers share a space on the screen otherwise, and two layers
 	# with a bad line 2 printed the same thing twice.
@@ -748,20 +788,20 @@ def load_layered(o, file):
 		return names[i] if len(names) > 1 else ""
 	doc, code = load_doc_from(label(0), texts[0], o.strictness)
 	if doc is None:
-		return None, code
+		return None, "", code
 	say_diagnostics_from(label(0), doc.diagnostics())
 	for i, t in enumerate(texts[1:]):
 		over, c = load_doc_from(label(i + 1), t, o.strictness)
 		if over is None:
-			return None, c
+			return None, "", c
 		say_diagnostics_from(label(i + 1), over.diagnostics())
 		doc.merge(over)
 	for st in o.sets:
 		if not st.apply(doc):
 			why = describe_refusal(doc, st.path, "the value text is not one value")
 			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
-			return None, 1
-	return doc, None
+			return None, "", 1
+	return doc, texts[-1], None
 
 
 def allowed_opts(cmd):
@@ -1121,15 +1161,17 @@ def do_fmt(o):
 	if o.write and file == "-":
 		sys.stderr.write("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	try:
-		doc, code = load_layered(o, file)
+		doc, read, code = load_layered_from(o, file, None)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
 	if doc is None:
 		return code
 	if o.write:
-		return write_back(doc, file, o)
+		return write_back(doc, file, o, read)
 	sys.stdout.write(doc.to_canonical())
 	return 0
 
@@ -1155,6 +1197,8 @@ def do_migrate(o):
 	if o.write and file == "-":
 		sys.stderr.write("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	try:
 		text = read_input(file)
 	except (OSError, ValueError) as e:
@@ -1194,6 +1238,8 @@ def do_migrate(o):
 		if doc.lost_count() != 0 and not o.lossy:
 			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
 			return 7
+		if not unchanged_since_read(file, text):
+			return EXIT_IO
 		err = shcl.write_file_atomic(file, m.text)
 		if err is not None:
 			sys.stderr.write(err + "\n")
@@ -1543,11 +1589,12 @@ def do_set(o):
 	if o.write and file == "-":
 		sys.stderr.write("set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n")
 		return 1
+	if o.write and not write_target_ok(file):
+		return EXIT_IO
 	# Base doc: with the edits given as options no ops script is read, so a '-'
 	# file is the document on stdin the way it is everywhere else; only when
 	# stdin is the ops script does '-' mean an empty base. Reading neither threw
 	# a piped document away at exit 0.
-	# Any --layer files sit under it and --set overrides sit on top, before ops.
 	# --write names the file this command produces, so a FILE that is not there
 	# yet is a create and the edits land in a new document. Only under --write,
 	# and only when nothing is at the path at all: without --write there is
@@ -1557,35 +1604,21 @@ def do_set(o):
 	# format it is. Comments in an otherwise empty document are the document's
 	# trailing trivia, so the edits land above it and the write still goes
 	# through the library's save gate.
+	# The --layer files sit under it and --set overrides sit on top, before
+	# ops, through the same fold every other subcommand uses.
 	creating = o.write and file != "-" and not os.path.exists(file)
+	given = None
+	if creating:
+		given = "" if o.no_banner else shcl.GEN_BANNER
+	elif file == "-" and not o.sets:
+		given = ""
 	try:
-		layer_texts = [read_input(lf) for lf in o.layers]
-		if creating:
-			base = "" if o.no_banner else shcl.GEN_BANNER
-		else:
-			base = "" if file == "-" and not o.sets else read_input(file)
+		doc, read, code = load_layered_from(o, file, given)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
-	layer_texts.append(base)
-	doc, code = load_doc(layer_texts[0], o.strictness)
 	if doc is None:
 		return code
-	diags = list(doc.diagnostics())
-	for t in layer_texts[1:]:
-		over, c = load_doc(t, o.strictness)
-		if over is None:
-			return c
-		diags.extend(over.diagnostics())
-		doc.merge(over)
-	# The load's diagnostics belong to the load, so they go out before any edit
-	# runs: a refused --set or a failing op used to return with nothing said.
-	say_diagnostics(diags)
-	for st in o.sets:
-		if not st.apply(doc):
-			why = describe_refusal(doc, st.path, "the value text is not one value")
-			sys.stderr.write(f"{st.opt()}: cannot write {st.path}: {why}\n")
-			return 1
 	# --set carries the edits, so stdin is left alone: reading it here would
 	# block on the console for anyone who passed edits as options.
 	# The ops script is contract input like the reference's read_to_string:
@@ -1632,7 +1665,8 @@ def do_set(o):
 				head = text[: -len(shcl.GEN_BANNER)]
 				if head and not head.endswith("\n\n"):
 					doc = shcl.Document.parse(head + "\n" + shcl.GEN_BANNER)
-		return write_back(doc, file, o)
+		# A file that was there is read again first, for the same wait.
+		return write_back(doc, file, o, None if creating else read)
 	sys.stdout.write(doc.to_canonical())
 	return 0
 

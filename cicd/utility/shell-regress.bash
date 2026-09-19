@@ -71,6 +71,9 @@ out="$(_SHCL_BIN=/nonexistent SHCL_BIN="${cli}" bash -c "source '${repoDir}/sour
 ##	the value. Driven the way readline hands the words over, both with
 ##	bash-completion's word joining and with the completion's own fallback.
 mkdir -p "${tmpDir}/comp" && touch "${tmpDir}/comp/alpha.shcl" "${tmpDir}/comp/beta.txt"
+## The break characters readline splits a completion word at, which is bash's
+## own default for COMP_WORDBREAKS less the whitespace.
+compBreaks=$'"\'><=;|&(:'
 fComplete(){
 	## $1 = lib|bare, $2 = the command line as typed (a trailing space means a
 	## fresh word). Prints COMPREPLY space-joined.
@@ -83,15 +86,29 @@ fComplete(){
 	[[ "$1" == lib ]] && setup='source /usr/share/bash-completion/bash_completion; _filedir(){ mapfile -t COMPREPLY < <(compgen -f -- "${cur}"); }'
 	bash -c '
 		'"${setup}"'; source '"'${repoDir}/source/completions/shcl.bash'"'
-		line="$1"; COMP_WORDS=()
+		line="$1"; brk="$2"; COMP_WORDS=()
+		## Readline cuts every word at each character of COMP_WORDBREAKS and
+		## hands the break over as a word of its own. Splitting at the first
+		## `=` only, as this did, made `--set url=http://x` look like two words
+		## where the shell gives six, and the row passed on code that lost the
+		## FILE slot (20260918b item 15).
 		for t in ${line}; do
-			if [[ "${t}" == --*=* ]]; then COMP_WORDS+=("${t%%=*}" "="); v="${t#*=}"; [[ -n "${v}" ]] && COMP_WORDS+=("${v}")
-			else COMP_WORDS+=("${t}"); fi
+			piece=""
+			for (( k = 0; k < ${#t}; k++ )); do
+				c="${t:k:1}"
+				if [[ "${brk}" == *"${c}"* ]]; then
+					[[ -n "${piece}" ]] && COMP_WORDS+=("${piece}")
+					piece=""; COMP_WORDS+=("${c}")
+				else
+					piece+="${c}"
+				fi
+			done
+			[[ -n "${piece}" ]] && COMP_WORDS+=("${piece}")
 		done
 		[[ "${line}" == *" " ]] && COMP_WORDS+=("")
 		COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); COMP_LINE="${line}"; COMP_POINT=${#line}
 		cd '"'${tmpDir}/comp'"'; COMPREPLY=(); _shcl; printf "%s\n" "${COMPREPLY[@]}" | sort | paste -sd" " | sed "s/^ $//"
-	' _ "$2" 2>/dev/null || true
+	' _ "$2" "${compBreaks}" 2>/dev/null || true
 }
 compModes=(bare)
 [[ -r /usr/share/bash-completion/bash_completion ]] && compModes+=(lib)
@@ -114,6 +131,19 @@ for mode in "${compModes[@]}"; do
 	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set-default=x=1: ${out@Q}"
 	out="$(fComplete "${mode}" "shcl check --strictness st")"
 	[[ "${out}" == "standard strict" ]] || fBad "bash completion (${mode}) on the space form: ${out@Q}"
+	## 20260918b item 15: a value holding another `=` or a `:` is still one
+	## word to the shell, and the FILE slot has to survive it.
+	out="$(fComplete "${mode}" "shcl set --set a=1 ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after --set a=1: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl set --set url=http://x ")"
+	[[ "${out}" == "alpha.shcl beta.txt" ]] || fBad "bash completion (${mode}) lost the FILE slot after a value holding a colon: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl get --default=a:b alpha.shcl ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered files for the PATH after --default=a:b: ${out@Q}"
+	## A FILE of `-` fills the slot, and everything after `--` is a positional.
+	out="$(fComplete "${mode}" "shcl fmt - ")"
+	[[ -z "${out}" ]] || fBad "bash completion (${mode}) offered a second FILE after a FILE of -: ${out@Q}"
+	out="$(fComplete "${mode}" "shcl fmt -- al")"
+	[[ "${out}" == "alpha.shcl" ]] || fBad "bash completion (${mode}) lost the FILE slot after --: ${out@Q}"
 done
 
 ##	20260904 item 39: nothing had ever compared what the two wrappers hand back
@@ -186,6 +216,42 @@ done
 			[[ "${got}" == "${want}" ]] || fBad "wrapper ${mode} differs from the binary on ${id}: ${got@Q} against ${want@Q}"
 		done
 	done
+
+	##	20260918b item 32: the matrix above pipes into the script, where the
+	##	binary inherits the process's stdin and a wrapper that drops $input
+	##	looks fine. A typed helper is only reached from a PowerShell pipeline,
+	##	and every one of them passed @args without $input, so `'a: 5' |
+	##	shcl_fmt -` printed nothing at exit 0. The rows below build that
+	##	pipeline inside PowerShell and hold each helper against the binary.
+	if [[ " ${wrapModes[*]} " == *" pwshsrc "* ]]; then
+		#  shellcheck disable=2016  ## PowerShell's own $variables.
+		{
+			echo ". '${repoDir}/source/powershell/shcl.ps1'"
+			echo '$data = $args[0]; $fn = $args[1]'
+			echo '$rest = @(); if ($args.Count -gt 2) { $rest = $args[2..($args.Count - 1)] }'
+			echo 'if ($data -ne "") { $data | & $fn @rest } else { & $fn @rest }'
+			echo 'exit $LASTEXITCODE'
+		} > "${tmpDir}/whelp.ps1"
+		##	id | piped text | the helper call | the same thing on the binary
+		helperRows=(
+			'fmt|a: 5|shcl_fmt -|fmt -'
+			'int|a: 5|shcl_int - a|get --int - a'
+			'array|a: 1, 2|shcl_array --int - a|get --array --int - a'
+			'check|bad line|shcl_check -|check -'
+			'count|a: 1|shcl_count - a|count - a'
+		)
+		for row in "${helperRows[@]}"; do
+			IFS='|' read -r hid piped hcall bcall <<<"${row}"
+			read -r -a hargs <<<"${hcall}"
+			read -r -a bargs <<<"${bcall}"
+			hrc=0
+			hout="$(pwsh -NoProfile -File "${tmpDir}/whelp.ps1" "${piped}" "${hargs[@]}" 2>&1)" || hrc=$?
+			brc=0
+			bout="$(printf '%s\n' "${piped}" | "${cli}" "${bargs[@]}" 2>&1)" || brc=$?
+			[[ "${hout}" == "${bout}" && "${hrc}" == "${brc}" ]] \
+				|| fBad "piped helper ${hid} differs from the binary: ${hout@Q} rc=${hrc} against ${bout@Q} rc=${brc}"
+		done
+	fi
 	unset SHCL_BIN
 }
 
@@ -231,6 +297,12 @@ ZEOF
 		[[ "${out}" == "<files>" ]] || fBad "zsh completion gave the FILE slot to a --set value: ${out@Q}"
 		out="$(fZComplete "shcl check a.shcl ")"
 		[[ -z "${out}" ]] || fBad "zsh completion offered files where a PATH goes: ${out@Q}"
+		##	20260918b item 15: `-` is a FILE, and everything after `--` is a
+		##	positional whatever it looks like.
+		out="$(fZComplete "shcl check - ")"
+		[[ -z "${out}" ]] || fBad "zsh completion offered a second FILE after a FILE of -: ${out@Q}"
+		out="$(fZComplete "shcl check -- ")"
+		[[ "${out}" == "<files>" ]] || fBad "zsh completion lost the FILE slot after --: ${out@Q}"
 		##	`-w` is the only short option the CLI takes on a subcommand, and the
 		##	comment in both completions says so. Offered where --write is and
 		##	nowhere else; -h is informational and rides along everywhere.
@@ -257,6 +329,16 @@ if fHave pwsh; then
 	[[ "${out}" == *"unknown option"* ]] || fBad "pwsh now hands a bare -- to the sourced function; the wrapper note is stale: ${out@Q}"
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl get '--' '${tmpDir}/dash.shcl' '-dash'" 2>&1 || true)"
 	[[ "${out}" == "5" ]] || fBad "pwsh dot-sourced shcl did not take a quoted --: ${out@Q}"
+
+	##	20260918b item 35: the second difference, documented the same way.
+	##	PowerShell splits an unquoted `a,b` into an array for a function and
+	##	not for a native command, so the comma spelling of an inline array is a
+	##	usage error dot-sourced and works quoted.
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl set --set-literal=ports=80,443 '${tmpDir}/w.shcl'" 2>&1 || true)"
+	[[ "${out}" == *"usage"* || "${out}" == *"unknown"* || "${out}" == *"bad --set"* ]] \
+		|| fBad "pwsh no longer splits an unquoted comma for a sourced function; the wrapper note is stale: ${out@Q}"
+	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${cli}'; shcl set '--set-literal=ports=80,443' '${tmpDir}/w.shcl'" 2>&1 || true)"
+	[[ "${out}" == *"ports: 80, 443"* ]] || fBad "pwsh dot-sourced shcl did not take a quoted comma value: ${out@Q}"
 
 	out="$(pwsh -NoProfile -Command ". '${repoDir}/source/powershell/shcl.ps1'; \$env:SHCL_BIN = '${tmpDir}'; shcl_get '${tmpDir}/t.shcl' a" 2>&1 || true)"
 	[[ "${out}" == *"not executable"* ]] || fBad "PowerShell wrapper took a directory as SHCL_BIN: ${out@Q}"

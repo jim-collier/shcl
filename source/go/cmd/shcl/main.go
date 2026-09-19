@@ -138,6 +138,10 @@ Options (the subcommands each belongs to are in parentheses):
   --no-banner                            (init, and set --write when it creates
                                          FILE) leave out the info block naming
                                          the format and pointing at its spec
+  --write                                (fmt/set/migrate) rewrite FILE in
+                                         place, spelled -w too, through a
+                                         temp file and a rename; refused
+                                         with a FILE of '-'
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -188,10 +192,11 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
-refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --no-banner on 'set' without --write; --check with --write;
---layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
-across FILE, --layer and --schema.
+refused: --write with --layer; --write with --set outside 'set'; --write with a
+FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
+--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
+--default with --on-bad=error or --on-bad=flag; '-' named more than once across
+FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -525,11 +530,15 @@ type opts struct {
 	from2x      bool
 	check       bool
 	noBanner    bool
-	schema      string
-	layers      []string // lower-priority layers, in listed order
-	sets        []setOpt // final override layer, in the order given
-	args        []string // positional: FILE [PATH]
-	seen        []string // canonical names of options given, for per-command validation
+	// schemaSet, not an empty schema path: `--schema=` is a path the command
+	// line gave, and the other three read it and fail at exit 8 (20260918b
+	// item 33, the class of 20260918 item 9).
+	schema    string
+	schemaSet bool
+	layers    []string // lower-priority layers, in listed order
+	sets      []setOpt // final override layer, in the order given
+	args      []string // positional: FILE [PATH]
+	seen      []string // canonical names of options given, for per-command validation
 	// A value option in space form that took the LAST word on the line. That
 	// word is usually the FILE, and the usage line alone never says so.
 	swallowedOpt   string
@@ -640,6 +649,7 @@ func setValueOpt(o *opts, name, v string) error {
 		o.seen = append(o.seen, "--strictness")
 	case "--schema":
 		o.schema = v
+		o.schemaSet = true
 		o.seen = append(o.seen, "--schema")
 	case "--layer":
 		o.layers = append(o.layers, v)
@@ -1178,6 +1188,31 @@ func sayDiagnosticsFrom(file string, diags []shcl.Diagnostic) {
 // nothing to do with the remedy for a usage error, which keeps 1.
 const exitIO = 8
 
+// unchangedSinceRead says whether FILE still holds the bytes the load read.
+// `set` waits on stdin between the load and the save, and an edit made in that
+// wait was reverted at exit 0. A gap is left between this read and the
+// publish, the width of one save.
+func unchangedSinceRead(file, before string) bool {
+	now, err := os.ReadFile(file)
+	if err == nil && string(now) == before {
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "%s: changed since it was read; nothing written\n", file)
+	return false
+}
+
+// writeTargetOK says whether a --write FILE is a regular file or nothing yet.
+// Asked before the read, since reading a FIFO takes what was written to it and
+// the save would then refuse it anyway. A directory is left to the read, which
+// names it.
+func writeTargetOK(file string) bool {
+	if st, err := os.Stat(file); err == nil && !st.Mode().IsRegular() && !st.IsDir() {
+		fmt.Fprintf(os.Stderr, "%s: not a regular file\n", file)
+		return false
+	}
+	return true
+}
+
 // No stream on the other end at all, as opposed to one that failed part way
 // through. POSIX says EBADF; windows has no single answer - a handle a shell
 // closed comes back as an invalid handle or an invalid function depending on
@@ -1229,12 +1264,8 @@ func readInput(file string) (string, error) {
 	return string(b), nil
 }
 
-func loadDoc(text string, strictness shcl.Strictness) (*shcl.Document, int) {
-	return loadDocFrom("", text, strictness)
-}
-
-// loadDocFrom is the same, labelled with the file the text came from, so a
-// strict failure in one layer of a fold says which layer.
+// loadDocFrom is a load labelled with the file the text came from, so a strict
+// failure in one layer of a fold says which layer.
 func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document, int) {
 	doc, err := shcl.ParseWith(text, strictness)
 	if err != nil {
@@ -1262,7 +1293,10 @@ func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document,
 // though the command succeeded, and the save runs through the library's own
 // gate rather than a second copy of the rule - the CLI and a consumer program
 // cannot then disagree about which rewrites are safe.
-func writeBack(doc *shcl.Document, file string, o *opts) int {
+func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
+	if read != nil && !unchangedSinceRead(file, *read) {
+		return exitIO
+	}
 	var werr error
 	if o.lossy {
 		werr = doc.SaveFileLossy(file)
@@ -1295,19 +1329,34 @@ func writeBack(doc *shcl.Document, file string, o *opts) int {
 // reading them off the merged document drops the ones for FILE itself, which
 // is the one the caller named.
 func loadLayered(o *opts, file string) (*shcl.Document, int) {
+	doc, _, code := loadLayeredFrom(o, file, nil)
+	return doc, code
+}
+
+// loadLayeredFrom is the same fold with FILE's text given rather than read,
+// which is how `set` creates a file or takes an empty document, and FILE's
+// text handed back. `set` kept its own copy of the fold, and twice a fix to
+// this one missed it.
+func loadLayeredFrom(o *opts, file string, given *string) (*shcl.Document, string, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			return nil, exitIO
+			return nil, "", exitIO
 		}
 		texts = append(texts, t)
 	}
-	base, err := readInput(file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return nil, exitIO
+	var base string
+	if given != nil {
+		base = *given
+	} else {
+		t, err := readInput(file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return nil, "", exitIO
+		}
+		base = t
 	}
 	texts = append(texts, base)
 	// Lowest layer first, each labelled with its own file when there is more
@@ -1322,13 +1371,13 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	}
 	doc, code := loadDocFrom(label(0), texts[0], o.strictness)
 	if code != 0 {
-		return nil, code
+		return nil, "", code
 	}
 	sayDiagnosticsFrom(label(0), doc.Diagnostics())
 	for i, t := range texts[1:] {
 		over, c := loadDocFrom(label(i+1), t, o.strictness)
 		if c != 0 {
-			return nil, c
+			return nil, "", c
 		}
 		sayDiagnosticsFrom(label(i+1), over.Diagnostics())
 		doc.Merge(over)
@@ -1336,10 +1385,10 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 	for _, s := range o.sets {
 		if !s.apply(doc) {
 			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
-			return nil, 1
+			return nil, "", 1
 		}
 	}
-	return doc, 0
+	return doc, base, 0
 }
 
 // doGet: one value read, formatted for the shell: scalars print as one line,
@@ -1544,12 +1593,15 @@ func doFmt(o *opts) int {
 		fmt.Fprintln(os.Stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
-	doc, code := loadLayered(o, file)
+	if o.write && !writeTargetOK(file) {
+		return exitIO
+	}
+	doc, read, code := loadLayeredFrom(o, file, nil)
 	if doc == nil {
 		return code
 	}
 	if o.write {
-		return writeBack(doc, file, o)
+		return writeBack(doc, file, o, &read)
 	}
 	outs(doc.ToCanonical())
 	return 0
@@ -1585,6 +1637,9 @@ func doMigrate(o *opts) int {
 	if o.write && file == "-" {
 		fmt.Fprintln(os.Stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
+	}
+	if o.write && !writeTargetOK(file) {
+		return exitIO
 	}
 	text, err := readInput(file)
 	if err != nil {
@@ -1638,6 +1693,9 @@ func doMigrate(o *opts) int {
 			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the migrated text drops %d line(s)/value(s) "+
 				"on load (--lossy overrides)\n", file, doc.LostCount())
 			return 7
+		}
+		if !unchangedSinceRead(file, text) {
+			return exitIO
 		}
 		if err := shcl.WriteFileAtomic(file, m.Text); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -2209,20 +2267,13 @@ func doSet(o *opts) int {
 		fmt.Fprintln(os.Stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE")
 		return 1
 	}
+	if o.write && !writeTargetOK(file) {
+		return exitIO
+	}
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	layerTexts := make([]string, 0, len(o.layers)+1)
-	for _, lf := range o.layers {
-		t, err := readInput(lf)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitIO
-		}
-		layerTexts = append(layerTexts, t)
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -2232,46 +2283,28 @@ func doSet(o *opts) int {
 	// format it is. Comments in an otherwise empty document are the document's
 	// trailing trivia, so the edits land above it and the write still goes
 	// through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	creating := false
 	if o.write && file != "-" {
 		if _, serr := os.Stat(file); serr != nil {
 			creating = true
 		}
 	}
-	base := ""
-	if creating && !o.noBanner {
-		base = shcl.GenBanner
-	}
-	if !creating && (file != "-" || len(o.sets) > 0) {
-		t, err := readInput(file)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return exitIO
+	var given *string
+	if creating {
+		banner := ""
+		if !o.noBanner {
+			banner = shcl.GenBanner
 		}
-		base = t
+		given = &banner
+	} else if file == "-" && len(o.sets) == 0 {
+		empty := ""
+		given = &empty
 	}
-	layerTexts = append(layerTexts, base)
-	doc, code := loadDoc(layerTexts[0], o.strictness)
+	doc, read, code := loadLayeredFrom(o, file, given)
 	if doc == nil {
 		return code
-	}
-	diags := append([]shcl.Diagnostic(nil), doc.Diagnostics()...)
-	for _, t := range layerTexts[1:] {
-		over, c := loadDoc(t, o.strictness)
-		if over == nil {
-			return c
-		}
-		diags = append(diags, over.Diagnostics()...)
-		doc.Merge(over)
-	}
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	sayDiagnostics(diags)
-	for _, s := range o.sets {
-		if !s.apply(doc) {
-			fmt.Fprintf(os.Stderr, "%s: cannot write %s: %s\n", s.opt(), s.path, describeRefusal(doc, s.path, "the value text is not one value"))
-			return 1
-		}
 	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
@@ -2322,7 +2355,11 @@ func doSet(o *opts) int {
 				doc = shcl.Parse(head + "\n" + shcl.GenBanner)
 			}
 		}
-		return writeBack(doc, file, o)
+		// A file that was there is read again first, for the same wait.
+		if creating {
+			return writeBack(doc, file, o, nil)
+		}
+		return writeBack(doc, file, o, &read)
 	}
 	outs(doc.ToCanonical())
 	return 0
@@ -2350,7 +2387,7 @@ func doCheck(o *opts) int {
 		// --schema: append validation diagnostics under the same contract. The
 		// schema itself always loads at Standard (a program artifact); one that
 		// does not load cleanly is a single V099 schema fault.
-		if o.schema != "" {
+		if o.schemaSet {
 			stext, serr := readInput(o.schema)
 			if serr != nil {
 				fmt.Fprintln(os.Stderr, serr)
@@ -2420,7 +2457,7 @@ func doInit(o *opts) int {
 		fmt.Fprintln(os.Stderr, "init takes no file argument (see --help)")
 		return 1
 	}
-	if o.schema == "" {
+	if !o.schemaSet {
 		fmt.Fprintln(os.Stderr, "init needs --schema=FILE (see --help)")
 		return 1
 	}

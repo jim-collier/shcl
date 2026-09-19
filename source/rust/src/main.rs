@@ -130,6 +130,10 @@ Options (the subcommands each belongs to are in parentheses):
   --no-banner                            (init, and set --write when it creates
                                          FILE) leave out the info block naming
                                          the format and pointing at its spec
+  --write                                (fmt/set/migrate) rewrite FILE in
+                                         place, spelled -w too, through a
+                                         temp file and a rename; refused
+                                         with a FILE of '-'
   --lossy                                (fmt/set/migrate) with --write, rewrite
                                          even when the load dropped lines this
                                          write would delete; without it the
@@ -180,10 +184,11 @@ the space form the next argument is taken as the value whatever it looks like,
 so --default --int reads --int as the default. Use -- to end the options when a
 FILE or PATH begins with a dash.
 An option a subcommand does not use is a usage error, not ignored. Also
-refused: --write with --layer; --write with --set outside 'set'; --lossy
-without --write; --no-banner on 'set' without --write; --check with --write;
---layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once
-across FILE, --layer and --schema.
+refused: --write with --layer; --write with --set outside 'set'; --write with a
+FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
+--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
+--default with --on-bad=error or --on-bad=flag; '-' named more than once across
+FILE, --layer and --schema.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -1137,6 +1142,13 @@ fn say_diagnostics_from(file: &str, diags: &[Diagnostic]) {
 /// reading them off it drops the diagnostics for FILE itself, which is the one
 /// the caller named.
 fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
+	load_layered_from(o, file, None).map(|(doc, _)| doc)
+}
+
+/// The same fold with FILE's text given rather than read, which is how `set`
+/// creates a file or takes an empty document, and FILE's text handed back.
+/// `set` kept its own copy of the fold, and twice a fix to this one missed it.
+fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Document, String), u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
@@ -1145,10 +1157,13 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			EXIT_IO
 		})?);
 	}
-	let base_text = read_input(file).map_err(|e| {
-		errln!("{}", e);
-		EXIT_IO
-	})?;
+	let base_text = match base {
+		Some(t) => t,
+		None => read_input(file).map_err(|e| {
+			errln!("{}", e);
+			EXIT_IO
+		})?,
+	};
 	texts.push(base_text);
 	// Lowest layer first, each labelled with its own file when there is more
 	// than one: the line numbers share a space on the screen otherwise, and two
@@ -1178,7 +1193,8 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 			return Err(1);
 		}
 	}
-	Ok(doc)
+	let base_text = texts.pop().unwrap_or_default();
+	Ok((doc, base_text))
 }
 
 /// The in-place half of `fmt`/`set`. Overwriting the source is the one place a
@@ -1186,7 +1202,12 @@ fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
 /// command succeeded, and the save runs through the library's own gate rather
 /// than a second copy of the rule - the CLI and a consumer program cannot then
 /// disagree about which rewrites are safe.
-fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
+fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
+	if let Some(before) = read
+		&& !unchanged_since_read(file, before)
+	{
+		return EXIT_IO;
+	}
 	let r = if o.lossy {
 		doc.save_file_lossy(file)
 	} else {
@@ -1211,10 +1232,36 @@ fn write_back(doc: &Document, file: &str, o: &Opts) -> u8 {
 	}
 }
 
+/// FILE still holds the bytes the load read. `set` waits on stdin between the
+/// load and the save, and an edit made in that wait was reverted at exit 0.
+/// A gap is left between this read and the publish, the width of one save.
+fn unchanged_since_read(file: &str, before: &str) -> bool {
+	match std::fs::read(file) {
+		Ok(now) if now == before.as_bytes() => true,
+		_ => {
+			errln!("{}: changed since it was read; nothing written", file);
+			false
+		}
+	}
+}
+
 /// A file or stream that could not be read or written. Its own code since a
 /// script's remedy - fix the path, the permissions, the disk - has nothing to
 /// do with the remedy for a usage error, which keeps 1.
 const EXIT_IO: u8 = 8;
+
+/// A `--write` FILE is a regular file or nothing yet. Asked before the read,
+/// since reading a FIFO takes what was written to it and the save would then
+/// refuse it anyway. A directory is left to the read, which names it.
+fn write_target_ok(file: &str) -> bool {
+	match std::fs::metadata(file) {
+		Ok(m) if !m.is_file() && !m.is_dir() => {
+			errln!("{}: not a regular file", file);
+			false
+		}
+		_ => true,
+	}
+}
 
 /// No stream on the other end at all, as opposed to one that failed part way
 /// through. POSIX says EBADF; windows has no single answer - a handle a shell
@@ -1251,11 +1298,7 @@ fn read_input(file: &str) -> Result<String, String> {
 	}
 }
 
-fn load(text: &str, strictness: Strictness) -> Result<Document, u8> {
-	load_from("", text, strictness)
-}
-
-/// The same, labelled with the file the text came from, so a strict failure in
+/// A load, labelled with the file the text came from, so a strict failure in
 /// one layer of a fold says which layer.
 fn load_from(file: &str, text: &str, strictness: Strictness) -> Result<Document, u8> {
 	match Document::parse_with(text, strictness) {
@@ -1477,12 +1520,15 @@ fn do_fmt(o: &Opts) -> u8 {
 		errln!("fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
-	let doc = match load_layered(o, file) {
-		Ok(d) => d,
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
+	}
+	let (doc, read) = match load_layered_from(o, file, None) {
+		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
 	if o.write {
-		return write_back(&doc, file, o);
+		return write_back(&doc, file, o, Some(&read));
 	}
 	out!("{}", doc.to_canonical());
 	0
@@ -1516,6 +1562,9 @@ fn do_migrate(o: &Opts) -> u8 {
 	if o.write && file == "-" {
 		errln!("migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
+	}
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
 	}
 	let text = match read_input(file) {
 		Ok(t) => t,
@@ -1583,6 +1632,9 @@ fn do_migrate(o: &Opts) -> u8 {
 				doc.lost_count()
 			);
 			return 7;
+		}
+		if !unchanged_since_read(file, &text) {
+			return EXIT_IO;
 		}
 		return match write_file_atomic(file, &m.text) {
 			Ok(()) => {
@@ -1943,21 +1995,13 @@ fn do_set(o: &Opts) -> u8 {
 		errln!("set --write cannot rewrite stdin; drop --write to print, or pass a FILE");
 		return 1;
 	}
+	if o.write && !write_target_ok(file) {
+		return EXIT_IO;
+	}
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	let mut layer_texts: Vec<String> = Vec::new();
-	for lf in &o.layers {
-		match read_input(lf) {
-			Ok(t) => layer_texts.push(t),
-			Err(e) => {
-				errln!("{}", e);
-				return EXIT_IO;
-			}
-		}
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -1967,53 +2011,24 @@ fn do_set(o: &Opts) -> u8 {
 	// format it is. Comments in an otherwise empty document are the
 	// document's trailing trivia, so the edits land above it and the write
 	// still goes through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	let creating = o.write && file != "-" && !std::path::Path::new(file).exists();
-	let base_text = if creating {
-		if o.no_banner {
+	let base = if creating {
+		Some(if o.no_banner {
 			String::new()
 		} else {
 			GEN_BANNER.to_string()
-		}
+		})
 	} else if file == "-" && o.sets.is_empty() {
-		String::new()
+		Some(String::new())
 	} else {
-		match read_input(file) {
-			Ok(t) => t,
-			Err(e) => {
-				errln!("{}", e);
-				return EXIT_IO;
-			}
-		}
+		None
 	};
-	layer_texts.push(base_text);
-	let mut doc = match load(&layer_texts[0], o.strictness) {
-		Ok(d) => d,
+	let (mut doc, read) = match load_layered_from(o, file, base) {
+		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
-	let mut diags = doc.diagnostics().to_vec();
-	for t in &layer_texts[1..] {
-		match load(t, o.strictness) {
-			Ok(over) => {
-				diags.extend_from_slice(over.diagnostics());
-				doc.merge(&over);
-			}
-			Err(code) => return code,
-		}
-	}
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	say_diagnostics(&diags);
-	for s in &o.sets {
-		if !s.apply(&mut doc) {
-			errln!(
-				"{}: cannot write {}: {}",
-				s.opt(),
-				s.path,
-				describe_refusal(&doc, &s.path, "the value text is not one value")
-			);
-			return 1;
-		}
-	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
 	let mut ops = String::new();
@@ -2065,7 +2080,8 @@ fn do_set(o: &Opts) -> u8 {
 				doc = Document::parse(&format!("{}\n{}", head, GEN_BANNER));
 			}
 		}
-		return write_back(&doc, file, o);
+		// A file that was there is read again first, for the same wait.
+		return write_back(&doc, file, o, (!creating).then_some(read.as_str()));
 	}
 	out!("{}", doc.to_canonical());
 	0

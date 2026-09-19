@@ -1029,9 +1029,18 @@ def _scan_piece(s, pos, term, rules, comments):
 
 def tokenize_value(text: str, from_: int, rules: Rules, out: Tokens) -> None:
 	"""The value half: everything from the byte offset from_ on, split into
-	pieces, with the comment found on the way."""
+	pieces, with the comment found on the way. A negative offset reads as 0:
+	the reference's offset is unsigned, so there is nothing else one can mean,
+	and Python read it as an offset from the end (20260918b item 31)."""
 	out._clear()
-	s = text.encode("utf-8")
+	if from_ < 0:
+		from_ = 0
+	# A Python string can hold a lone surrogate (os.listdir, sys.argv and
+	# os.environ hand them out), and a strict encode raised from a parse that
+	# promises never to. Carried through, it is one more non-ASCII character,
+	# as it was before the tokenizer read bytes; every decode here matches.
+	# The save is where text with no UTF-8 spelling fails.
+	s = text.encode("utf-8", "surrogatepass")
 	out.src = s
 	_scan_value(s, from_, rules, out)
 
@@ -1108,7 +1117,7 @@ def tokenize(text: str, sep: str, path: bool, rules: Rules, out: Tokens) -> None
 	reused, so a parse allocates once per document rather than once per line.
 	text is the line after its indent, or the path."""
 	out._clear()
-	s = text.encode("utf-8")
+	s = text.encode("utf-8", "surrogatepass")
 	out.src = s
 	sep_b = ord(sep)
 	n = len(s)
@@ -1186,7 +1195,7 @@ def tokenize(text: str, sep: str, path: bool, rules: Rules, out: Tokens) -> None
 def _piece_text(p, s):
 	"""The text of a piece as the reader sees it: escapes applied inside double
 	quotes, everything else as written. s is the tokenized text's bytes."""
-	raw = s[p.start:p.end].decode("utf-8")
+	raw = s[p.start:p.end].decode("utf-8", "surrogatepass")
 	if p.quote is Quote.DOUBLE and "\\" in raw:
 		return _apply_escapes(raw)
 	return raw
@@ -1196,8 +1205,8 @@ def _piece_is(p, s, want):
 	"""True when a piece reads as this exact text, without building it."""
 	raw = s[p.start:p.end]
 	if p.quote is Quote.DOUBLE and _B_BACKSLASH in raw:
-		return _apply_escapes(raw.decode("utf-8")) == want
-	return raw == want.encode("utf-8")
+		return _apply_escapes(raw.decode("utf-8", "surrogatepass")) == want
+	return raw == want.encode("utf-8", "surrogatepass")
 
 
 def _element_of(p, s):
@@ -1420,7 +1429,14 @@ def _format_version(text):
 		if head.startswith(FORMAT_LINE_HEAD):
 			n = head[len(FORMAT_LINE_HEAD):]
 			if n and all("0" <= c <= "9" for c in n):
-				v = int(n)
+				# A number too long for int() - CPython refuses past 4300
+				# digits - is one no format will ever carry. The reference's
+				# parse fails on it too and reads the line as this major, so
+				# the file needs nothing (20260918b item 30).
+				digits = n.lstrip("0") or "0"
+				if len(digits) > 10:
+					return FORMAT_MAJOR
+				v = int(digits)
 				if v >= FORMAT_MAJOR:
 					return v
 				found = v if found is None else max(found, v)
@@ -1556,7 +1572,7 @@ def _value_edits(s, tok, edits, st):
 	it quoted) and re-spelled only where the current rules would read the
 	same text as something else."""
 	for p in tok.elements:
-		raw = s[p.start:p.end].decode("utf-8")
+		raw = s[p.start:p.end].decode("utf-8", "surrogatepass")
 		quoted = p.quote is Quote.SINGLE or p.quote is Quote.DOUBLE
 		if quoted:
 			a, b = p.start - 1, p.end + 1
@@ -1565,7 +1581,7 @@ def _value_edits(s, tok, edits, st):
 		if p.quote is Quote.NONE and "\\" not in raw and raw:
 			continue
 		logical = _apply_escapes(raw)
-		if _reads_same(s[a:b].decode("utf-8"), quoted, logical):
+		if _reads_same(s[a:b].decode("utf-8", "surrogatepass"), quoted, logical):
 			continue
 		# A resolved escape is the one edit that turns on which rule set wrote
 		# the file: these bytes say one thing under 2.x and another here. An
@@ -1574,7 +1590,7 @@ def _value_edits(s, tok, edits, st):
 			st.ambiguous += 1
 			continue
 		spelling = _migrate_spelling(logical, not (quoted or p.quote is Quote.OPEN))
-		edits.append((a, b, spelling.encode("utf-8")))
+		edits.append((a, b, spelling.encode("utf-8", "surrogatepass")))
 
 
 def _migrate_line(rest, tok, fence, st):
@@ -1587,7 +1603,7 @@ def _migrate_line(rest, tok, fence, st):
 	if fo is not None:
 		return rest, (fo[0], fo[1])
 	edits: list = []
-	s = rest.encode("utf-8")
+	s = rest.encode("utf-8", "surrogatepass")
 	if rest.startswith("*") and len(s) > 1 and _is_wsp_byte(s[1]):
 		tokenize_value(rest, 1, Rules.V2, tok)
 		# A bare comma was refused (E010), so there is nothing to carry.
@@ -1599,10 +1615,10 @@ def _migrate_line(rest, tok, fence, st):
 			return rest, fence
 		last = len(tok.segments) - 1
 		for i, seg in enumerate(tok.segments):
-			name = s[seg.name.start:seg.name.end].decode("utf-8")
+			name = s[seg.name.start:seg.name.end].decode("utf-8", "surrogatepass")
 			if seg.name.quote is Quote.SINGLE and _apply_escapes(name) != name:
 				if st.from_v2:
-					edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8")))
+					edits.append((seg.name.start - 1, seg.name.end + 1, _escape_name(_apply_escapes(name)).encode("utf-8", "surrogatepass")))
 				else:
 					st.ambiguous += 1
 			sel = seg.selector
@@ -1623,7 +1639,7 @@ def _migrate_line(rest, tok, fence, st):
 				k -= 1
 			if k > 0 and s[k - 1] == 0x3A:
 				colon = k - 1
-			body = s[sel.start:sel.end].decode("utf-8")
+			body = s[sel.start:sel.end].decode("utf-8", "surrogatepass")
 			logical = _apply_escapes(body)
 			if i == last and tok.sep is None:
 				if colon is not None:
@@ -1649,10 +1665,10 @@ def _migrate_line(rest, tok, fence, st):
 					if logical != body:
 						spelling = _migrate_spelling(logical, False)
 					elif quoted:
-						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8"))
+						spelling = _trim_wsp(s[open_at + 1:close].decode("utf-8", "surrogatepass"))
 					else:
 						spelling = _migrate_spelling(logical, True)
-					edits.append((colon, close + 1, (": " + spelling).encode("utf-8")))
+					edits.append((colon, close + 1, (": " + spelling).encode("utf-8", "surrogatepass")))
 					continue
 			elif colon is not None:
 				# The colon goes, and one space after it when the author
@@ -1667,16 +1683,16 @@ def _migrate_line(rest, tok, fence, st):
 						a, b = sel.start - 1, sel.end + 1
 					else:
 						a, b = sel.start, sel.end
-					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8")))
+					edits.append((a, b, _migrate_spelling(logical, False).encode("utf-8", "surrogatepass")))
 				else:
 					st.ambiguous += 1
 		if tok.sep is not None:
 			# A same-line fence: the info string ran to the end of the line.
-			fo = _fence_open(s[tok.value[0]:].decode("utf-8"))
+			fo = _fence_open(s[tok.value[0]:].decode("utf-8", "surrogatepass"))
 			if fo is not None:
-				return _splice(s, edits).decode("utf-8"), (fo[0], fo[1])
+				return _splice(s, edits).decode("utf-8", "surrogatepass"), (fo[0], fo[1])
 			_value_edits(s, tok, edits, st)
-	return _splice(s, edits).decode("utf-8"), fence
+	return _splice(s, edits).decode("utf-8", "surrogatepass"), fence
 
 
 # ---------------------------------------------------------------------------
@@ -1781,7 +1797,7 @@ def _path_of(tok, s):
 		raise _PathError(tok.fault[1])
 	segments = []
 	for seg in tok.segments:
-		raw = s[seg.name.start:seg.name.end].decode("utf-8")
+		raw = s[seg.name.start:seg.name.end].decode("utf-8", "surrogatepass")
 		# Names resolve escapes, the same rule values follow when they are
 		# compared: two spellings of one name are one name. name_src keeps
 		# the source spelling, which is what authored_name hands back.
@@ -1798,7 +1814,7 @@ def _path_of(tok, s):
 		segments.append(_Segment(name, raw, selector, seg.star))
 	if tok.sep is None:
 		return segments, None
-	return segments, s[tok.value[0]:tok.value[1]].decode("utf-8")
+	return segments, s[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")
 
 
 def _scan_lookup(inp):
@@ -2116,9 +2132,9 @@ class _Parser:
 		# A capped scan zeroed the value, and a fence is told by its leading run
 		# alone.
 		if tok.capped:
-			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8"))
+			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8", "surrogatepass"))
 		else:
-			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8")
+			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")
 		fence = _fence_open(v)
 		if fence is None:
 			return i + 1
@@ -2228,10 +2244,14 @@ class _Parser:
 		if found is not None and quoted and not _single_scalar(self.arena[found].value):
 			found = None
 		if found is None and quoted:
-			for c in self.arena[cur].children:
-				nd = self.arena[c]
-				if nd.name == name and _single_scalar(nd.value) and _disp_key(nd.value) == want:
-					return c
+			# The display map keeps only the first same-display child, which may
+			# be an array where a quoted selector wants the scalar. A scalar
+			# child with this text is exactly the one-element value the merge
+			# map is keyed on, so ask that map: a scan of every sibling was the
+			# same answer, quadratic on the create path.
+			cmap = self.child_map[cur]
+			if cmap is not None:
+				return cmap.get(_merge_key(name, _cell([_new_element(want)])))
 		return found
 
 	def _consume_raw(self, lines, i, open_line, open_indent, fence):
@@ -2332,6 +2352,13 @@ class _Parser:
 			node.value.els.append(el)
 		else:
 			self._refuse(line, "E011", "field already has a value; list element ignored", OUT_DROPPED, indent)
+			return
+		# A kept element holds its column as a dropped one does, with the field
+		# as that level's node: a line written deeper binds where it always did,
+		# and a line back at the element's column is its sibling, where no level
+		# had been opened there and every later sibling was E012 (20260918b
+		# item 28).
+		self.stack.append((indent, parent))
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -2427,9 +2454,9 @@ class _Parser:
 				tokenize_value(rest, 0, Rules.CURRENT, tok)
 				# A capped scan zeroed the value, and a fence is told by its
 				# leading run alone.
-				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8"))
+				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"))
 			if fence is not None:
-				comment = tok.src[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+				comment = tok.src[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 				parent = self._resolve_parent(indent)
 				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent is None:
@@ -2471,7 +2498,7 @@ class _Parser:
 						i += 1
 						continue
 					tokenize_value(rest, 1, Rules.CURRENT, tok)
-					comment = tok.src[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+					comment = tok.src[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 					# Elements have no node of their own; trivia rides the field. At the
 					# root there is no field (E007), so the comment rides the document
 					# like any other pending one.
@@ -2500,7 +2527,7 @@ class _Parser:
 			# Field line.
 			tokenize(rest, ":", False, Rules.CURRENT, tok)
 			s = tok.src
-			comment = s[tok.comment:].decode("utf-8") if tok.comment is not None else ""
+			comment = s[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
 			parent = self._resolve_parent(indent)
 			if parent is None:
 				self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
@@ -3665,7 +3692,13 @@ class Document:
 		document the CLI's left fold produces. self keeps its own strictness, so
 		a value from a stricter layer reads with self's coercion. And a replaced
 		node is kept until the document is dropped: this costs a pass over the
-		touched scopes plus an index rebuild on the next read."""
+		touched scopes plus an index rebuild on the next read.
+
+		A document merged onto itself is left as it is. The walk reads over
+		while it writes self, so the same document on both sides grew without
+		end."""
+		if over is self:
+			return
 		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
@@ -4373,7 +4406,7 @@ class Document:
 			for s in c.segs:
 				if s.star:
 					break   # no sibling entry for '*'; deeper chains are pattern-only
-				siblings.setdefault(chain, []).append(s.name)
+				siblings.setdefault(chain, _SuggestNames()).push(s.name)
 				chain = _chain_push(chain, s.name)
 				legal.add(chain)
 		# Both element-wise matchers below used to scan their whole list per
@@ -4676,8 +4709,7 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# or its last component is `.` or `..`. The OS refuses to open such a path as
 	# a regular file, but a path cleanup drops the trailing separator first, so a
 	# save through `f/.` used to rewrite `f` in some bindings.
-	last = file.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else file.rsplit("/", 1)[-1]
-	if file and (file[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", "..")):
+	if _names_a_directory(file):
 		return f"{file}: is a directory"
 	try:
 		target = _resolve_target(file)
@@ -4716,6 +4748,11 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		existing = os.stat(target)
 	except (OSError, ValueError):
 		existing = None
+	# Only a regular file is replaced. A rename over a FIFO or a device node
+	# swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	# rule for what a save does with each thing it can find at the path.
+	if existing is not None and not stat.S_ISREG(existing.st_mode):
+		return f"{file}: is a directory" if stat.S_ISDIR(existing.st_mode) else f"{file}: not a regular file"
 	# Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	# be removed after a failure, so the attribute comes off the target for the
 	# publish and goes back on the new file after it - the same outcome as
@@ -4796,6 +4833,11 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	return None
 
 
+def _names_a_directory(path):
+	last = path.replace("\\", "/").rsplit("/", 1)[-1] if os.name == "nt" else path.rsplit("/", 1)[-1]
+	return bool(path) and (path[-1] in ("/", "\\" if os.name == "nt" else "/") or last in (".", ".."))
+
+
 def _resolve_target(file):
 	"""The path a save actually rewrites. A symlink is followed so the write goes
 	through it; realpath does that but only a path that exists resolves whole,
@@ -4814,6 +4856,10 @@ def _resolve_target(file):
 			nxt = os.readlink(p)
 		except OSError:
 			break
+		# A link whose text ends in a separator, `.` or `..` can only reach a
+		# directory, and the kernel refuses to create a file through it.
+		if _names_a_directory(nxt):
+			raise OSError("is a directory")
 		if os.path.isabs(nxt):
 			p = nxt
 		else:
@@ -5046,7 +5092,7 @@ def _value_reads_back(v):
 		return True
 	tok = Tokens()
 	tokenize_value(line, 0, Rules.CURRENT, tok)
-	if _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8")) != (v.fence_char, v.fence_len, v.info):
+	if _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")) != (v.fence_char, v.fence_len, v.info):
 		return False
 	# A body line ending in a carriage return loses it to the load's line-end
 	# trim, and one spelling the closing fence would end the block early.
@@ -6090,11 +6136,12 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	# lands where the schema looks. Any line under such a parent selects it by
 	# its value: `srv[web].port:`.
 	# A filled wildcard emits a valued line of its own, so it belongs here too.
-	parent_values = {
-		tuple(names_of(c.segs)): c.default_text
-		for i, c in enumerate(cons)
-		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None
-	}
+	# First wins, as the line it selects does: of two lines on one path the
+	# first spelling is the one written, and its value is the instance.
+	parent_values: dict = {}
+	for i, c in enumerate(cons):
+		if (not has_wild(c) or fill[i]) and not unwritable(c) and must_exist(c) and c.default_text is not None:
+			parent_values.setdefault(tuple(names_of(c.segs)), c.default_text)
 	# A commented line under a commented valued parent has the same problem
 	# once both are uncommented, so it selects the parent's default too. A
 	# live line keeps the dotted form under a commented parent: selecting by
@@ -6130,8 +6177,13 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 	out = []
 	wild = []
 	# Dropping a trailing `[*]` can render the same line a concrete sibling
-	# already wrote; the first spelling wins.
-	emitted = set()
+	# already wrote; the first spelling wins. A line from a dropped `[value]`
+	# selector is its own instance, so two of them with different values are
+	# both written: `env[prod]` and `env[dev]` are two `env` lines. Each path
+	# maps to None once a plain line wrote it, or to the values written so far.
+	emitted: dict = {}
+	# A child whose valued parent has no selector spelling cannot be written.
+	unspellable: list[Diagnostic] = []
 	# One block per generated line - its desc, annotation and binding - with
 	# the path's names, so the blocks can be laid out in tree order below.
 	blocks = []
@@ -6159,16 +6211,32 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		# A value after a last-segment selector is ignored, so a default there
 		# goes on the bare path: the line materializes the instance, and
 		# validation below decides whether the default names the one selected.
+		# The schema's own spelling is kept when a file line reads it back as
+		# the same path. A selector body holding a `#` is fine in a lookup and
+		# opens a comment on a file line, so that one goes through the renderer.
 		last = c.segs[-1]
-		if c.default_text is not None and last.selector is not None and last.selector[0] == "val":
+		selects_by_value = c.default_text is not None and last.selector is not None and last.selector[0] == "val"
+		if selects_by_value:
 			path = _gen_path_text(c.segs[:-1] + [_Segment(last.name, last.name_src, None, last.star)], values)
-		elif fill[i] or under_valued_parent or "\n" in c.path:
+		elif fill[i] or under_valued_parent or not _path_reads_back(c.path, c.segs):
 			path = _gen_path_text(c.segs, values)
 		else:
 			path = c.path
-		if path in emitted:
+		if path is None:
+			_vdiag(
+				unspellable,
+				0,
+				"V097",
+				"required path cannot be generated: " + _schema_text(c.path) + " (its parent's value has no selector spelling)",
+			)
 			continue
-		emitted.add(path)
+		dval = c.default_text if c.default_text is not None else ""
+		if path not in emitted:
+			emitted[path] = {dval} if selects_by_value else None
+		elif emitted[path] is None or not selects_by_value or dval in emitted[path]:
+			continue
+		else:
+			emitted[path].add(dval)
 		block = []
 		if c.desc is not None:
 			for line in c.desc.split("\n"):
@@ -6183,7 +6251,10 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			if not must_exist(c):
 				commented.append((i, line))
 		else:
-			block.append(f"{prefix}{path}:\n")
+			line = f"{path}:\n"
+			block.append(prefix + line)
+			if not must_exist(c):
+				commented.append((i, line))
 		blocks.append((tuple(names_of(c.segs)), "".join(block)))
 	# Tree order, first appearance first. A schema may list `a.host.srv`
 	# before `a`, and emitted as listed with another field between them,
@@ -6211,6 +6282,8 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 		out.append("## Paths needing an instance name (not generated):\n")
 		for path, tyname in wild:
 			out.append(f"##   {path}   {tyname}\n")
+	if unspellable:
+		return "", unspellable
 	text = "".join(out)
 	if not no_banner:
 		if text:
@@ -6327,33 +6400,60 @@ def _v007_sanctioned(message):
 
 
 def _gen_selector_text(v):
-	"""A default's spelling inside a `[value]` selector. A quoted element is
-	already a quoted selector body. A bare spelling goes in as is unless a
-	bare body would read it as something else - a bracket ends the selector,
-	a leading quote opens one, edge whitespace is trimmed, a whitespace-`#`
-	opens a comment, digits or `*` name an index or the wildcard - and those
-	go quoted (the selector matches on the display form, so the quoted
-	spelling finds the bare value)."""
-	if "\n" in v:
-		return _gen_default_text(v)
+	"""The selector body that picks out the instance a line `name: v` makes, or
+	None when no body can. It is built from the elements the reader takes out
+	of that line's value, and each candidate is scanned back the way a file
+	line is scanned, so none of the scanner's rules is copied here to go stale.
+	That copy was the cause twice: an all-digit body past 64 bits, and a
+	quoted array element spelled as the body. One element tries the spelling
+	it was written in first; an array has only the bare body, since a quoted
+	selector matches one element only, and a bare one the elements joined."""
+	spelled = _gen_default_text(v)
 	tok = Tokens()
-	tokenize_value(v, 0, Rules.CURRENT, tok)
-	if (
-		len(tok.elements) == 1
-		and (tok.elements[0].quote is Quote.SINGLE or tok.elements[0].quote is Quote.DOUBLE)
-		and tok.value == (0, len(tok.src))
-	):
-		return v
-	body = v.strip()
-	reads_as_selector = body == "*" or _parse_uint(body) is not None or (body[:1] == "#" and _parse_uint(body[1:]) is not None)
-	needs = (
-		v != _trim_wsp(v)
-		or v[:1] in ('"', "'")
-		or any(ch in v for ch in "[]\t")
-		or tok.comment is not None
-		or reads_as_selector
+	tokenize_value(spelled, 0, Rules.CURRENT, tok)
+	els = [_piece_text(p, tok.src) for p in tok.elements]
+	display = ", ".join(els)
+	if len(els) == 1:
+		tries = []
+		if tok.elements[0].quote is Quote.SINGLE or tok.elements[0].quote is Quote.DOUBLE:
+			tries.append((tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"), els[0], True))
+		tries += [(display, display, False), (_quote_text(els[0]), els[0], True)]
+	else:
+		tries = [(display, display, False)]
+	for body, text, quoted in tries:
+		if _selector_reads_back(body, text, quoted):
+			return body
+	return None
+
+
+def _selector_reads_back(body, text, quoted):
+	"""Whether body between brackets on a file line reads back as a value
+	selector for text, quoted or bare as asked."""
+	tok = Tokens()
+	tokenize(f"x[{body}]:", ":", False, Rules.CURRENT, tok)
+	if _selector_open_quote(tok) or tok.comment is not None:
+		return False
+	try:
+		segs, _ = _path_of(tok, tok.src)
+	except _PathError:
+		return False
+	return len(segs) == 1 and segs[0].selector == ("val", text, quoted)
+
+
+def _path_reads_back(path, segs):
+	"""Whether a schema path written on a file line reads back as the same
+	segments. A lookup path takes spellings a file line does not."""
+	tok = Tokens()
+	tokenize(path + ":", ":", False, Rules.CURRENT, tok)
+	if _selector_open_quote(tok) or tok.comment is not None:
+		return False
+	try:
+		got, _ = _path_of(tok, tok.src)
+	except _PathError:
+		return False
+	return len(got) == len(segs) and all(
+		a.name == b.name and a.star == b.star and a.selector == b.selector for a, b in zip(got, segs)
 	)
-	return _quote_text(v) if needs else v
 
 
 def _gen_path_text(segs, parent_values):
@@ -6361,7 +6461,8 @@ def _gen_path_text(segs, parent_values):
 	(a generated line targets the one instance it materializes) and quoting a
 	name that needs it, so the result is a path the scanner reads back the same.
 	A segment whose prefix names a live line carrying a value selects that
-	instance by the value, in place of a wildcard or a bare name."""
+	instance by the value, in place of a wildcard or a bare name. None when a
+	selector has no spelling a file line reads back."""
 	out = []
 	names = []
 	for i, s in enumerate(segs):
@@ -6374,11 +6475,23 @@ def _gen_path_text(segs, parent_values):
 		names.append(s.name)
 		v = parent_values.get(tuple(names))
 		if v is not None and i + 1 < len(segs) and (s.selector is None or s.selector[0] != "val"):
-			out.append(f"[{_gen_selector_text(v)}]")
+			body = _gen_selector_text(v)
+			if body is None:
+				return None
+			out.append(f"[{body}]")
 			continue
 		if s.selector is not None:
 			if s.selector[0] == "val":
-				out.append(f"[{_quote_text(s.selector[1]) if s.selector[2] else s.selector[1]}]")
+				# The body as the schema meant it: a quoted one stays quoted,
+				# and a bare one goes bare when a file line reads it back.
+				text = s.selector[1]
+				quoted_body = _quote_text(text)
+				if not s.selector[2] and _selector_reads_back(text, text, False):
+					out.append(f"[{text}]")
+				elif _selector_reads_back(quoted_body, text, True):
+					out.append(f"[{quoted_body}]")
+				else:
+					return None
 			elif s.selector[0] == "idx":
 				out.append(f"[#{s.selector[1]}]")
 			# a wildcard selector is dropped
@@ -6414,7 +6527,7 @@ def _expand_mounts(sdef):
 			# A chain long enough to outrun the stack, or a mount that
 			# re-enters, stops here and is noted instead of expanded.
 			if c.inherits in chain or len(chain) >= MAX_DEPTH:
-				cuts.append((_schema_text(path), c.inherits))
+				cuts.append((_schema_text(path), _schema_text(c.inherits)))
 			else:
 				fcs = sdef.frags.get(c.inherits)
 				if fcs is not None:
@@ -6566,11 +6679,95 @@ def _v_suggest(siblings, parent_chain, name):
 	"""Closest legal sibling name (same parent chain, schema order, edit
 	distance <= 2) as "; did you mean 'x'?" - or nothing. Prose only, never
 	contract. The sibling lists are prebuilt once per validate."""
-	best = None
-	for s in siblings.get(parent_chain, ()):
-		dist = _edit_distance(name, s, 2)
-		if dist <= 2 and (best is None or dist < best[0]):
-			best = (dist, s)
+	names = siblings.get(parent_chain)
+	best = names.closest(name) if names is not None else None
 	if best is None:
 		return ""
-	return f"; did you mean '{_diag_name(best[1])}'?"
+	return f"; did you mean '{_diag_name(best)}'?"
+
+
+# How many queries the scan answers before a chain gets its index. A few typos
+# in a large section should not pay for indexing it.
+_SUGGEST_INDEXED = 16
+_SUGGEST_SCANS = 16
+
+
+class _SuggestNames:
+	"""The legal names under one parent chain, each once, in schema order.
+	Every unknown field used to be compared with every sibling, and the list
+	held one copy per schema field, so a document whose names all miss cost
+	the schema times the document (20260918b item 10). Past the first few
+	queries on a chain, each name of up to _SUGGEST_INDEXED characters is filed
+	under every spelling it has with up to two characters deleted. Two names
+	within edit distance 2 share such a spelling, so a query checks only the
+	names its own spellings find. A longer name keeps the scan, filtered by
+	length. The spellings are the dict keys themselves here, where the other
+	bindings key on a hash of them: a hash written in Python costs more than
+	the dict's own."""
+
+	__slots__ = ("names", "seen", "queries", "index", "long", "stamp")
+
+	def __init__(self):
+		self.names = []
+		self.seen = set()
+		self.queries = 0
+		self.index = None
+		self.long = []
+		# The query that last looked at each name, so a name found under
+		# several spellings is measured once.
+		self.stamp = []
+
+	def push(self, name):
+		if name not in self.seen:
+			self.seen.add(name)
+			self.names.append(name)
+
+	def closest(self, name):
+		self.queries += 1
+		best = None
+		names = self.names
+
+		def consider(i):
+			nonlocal best
+			dist = _edit_distance(name, names[i], 2)
+			if dist <= 2 and (best is None or (dist, i) < best):
+				best = (dist, i)
+
+		if self.queries <= _SUGGEST_SCANS:
+			for i in range(len(names)):
+				consider(i)
+		else:
+			if self.index is None:
+				index: dict = {}
+				for i, n in enumerate(names):
+					if len(n) > _SUGGEST_INDEXED:
+						self.long.append(i)
+						continue
+					for sp in _deletion_spellings(n):
+						lst = index.setdefault(sp, [])
+						if not lst or lst[-1] != i:
+							lst.append(i)
+				self.index = index
+				self.stamp = [0] * len(names)
+			stamp = self.stamp
+			if len(name) <= _SUGGEST_INDEXED + 2:
+				for sp in _deletion_spellings(name):
+					for i in self.index.get(sp, ()):
+						if stamp[i] != self.queries:
+							stamp[i] = self.queries
+							consider(i)
+			for i in self.long:
+				if abs(len(names[i]) - len(name)) <= 2:
+					consider(i)
+		return None if best is None else names[best[1]]
+
+
+def _deletion_spellings(s):
+	"""Each spelling of s with none, one or two of its characters deleted. The
+	same spelling can come up more than once."""
+	yield s
+	for a in range(len(s)):
+		one = s[:a] + s[a + 1:]
+		yield one
+		for b in range(a, len(one)):
+			yield one[:b] + one[b + 1:]

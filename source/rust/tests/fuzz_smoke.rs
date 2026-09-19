@@ -1088,6 +1088,8 @@ fn generated_starters_load_and_validate_clean() {
 	// Recorded after 20260909 item 5. A change to this count needs a reason on
 	// the backlog item that moves it. 20260918 item 4 took it from 1171: the
 	// 132 optional fields whose default names another instance than the path
-	// selects are refused now, as the required ones already were.
-	assert_eq!(generated, 1039, "grid schemas that generate");
+	// selects are refused now, as the required ones already were. 20260918b
+	// item 26 took it to 1041: `a[b#c]` required, and at repeat 1, generate
+	// `a["b#c"]:` where the bare body was a comment and the schema refused.
+	assert_eq!(generated, 1041, "grid schemas that generate");
 }

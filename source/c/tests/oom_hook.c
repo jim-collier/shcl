@@ -18,14 +18,20 @@
 #endif
 
 static long budget = 1L << 30;
+// Exactly one failing allocation: the Nth after it is set, and none after that.
+// The budget model fails every later allocation too, so the hook is always
+// reached, and a call that checked one nested failure and not another looked
+// sound (20260918b item 21).
+static long fail_one = 0;
+static int fails_now(void) { if (--budget < 0) return 1; return fail_one > 0 && --fail_one == 0; }
 // Live block count, so a call the hook cut short can be asked whether it left
 // anything behind. Blocks, not bytes: a leak is a block nobody can reach any
 // more, and counting them needs no header on every allocation.
 static long live_blocks = 0;
 static void tracked_free(void *p) { if (p) live_blocks--; free(p); }
-static void *failing_malloc(size_t n) { if (--budget < 0) return NULL; void *p = malloc(n); if (p) live_blocks++; return p; }
-static void *failing_calloc(size_t a, size_t b) { if (--budget < 0) return NULL; void *p = calloc(a, b); if (p) live_blocks++; return p; }
-static void *failing_realloc(void *p, size_t n) { if (--budget < 0) return NULL; void *q = realloc(p, n); if (q && !p) live_blocks++; return q; }
+static void *failing_malloc(size_t n) { if (fails_now()) return NULL; void *p = malloc(n); if (p) live_blocks++; return p; }
+static void *failing_calloc(size_t a, size_t b) { if (fails_now()) return NULL; void *p = calloc(a, b); if (p) live_blocks++; return p; }
+static void *failing_realloc(void *p, size_t n) { if (fails_now()) return NULL; void *q = realloc(p, n); if (q && !p) live_blocks++; return q; }
 
 static jmp_buf oom_jmp;
 static int oom_hits = 0;
@@ -77,6 +83,34 @@ static int migrate_under(const char *text, size_t len, long b) {
 	budget = 1L << 30;
 	tracked_free(m.text);
 	return 1;
+}
+
+// Generation with its Kth allocation failing: 1 when it returned text, 0 when it
+// refused, 2 when the hook fired. Its own function so nothing main holds is
+// live across the longjmp.
+static int generate_one_failure(shcl_doc *schema, long k) {
+	if (SHCL_SETJMP(oom_jmp)) { fail_one = 0; return 2; }
+	fail_one = k;
+	int ok = 0;
+	shcl_generate(schema, 1, &ok);
+	return ok;
+}
+
+// A load and validate with its Kth allocation failing: the document or NULL,
+// and 2 in *hooked when the hook fired, which the header rules out.
+static shcl_doc *load_one_failure(const char *text, const char *schema, long k, int *hooked) {
+	*hooked = 0;
+	if (SHCL_SETJMP(oom_jmp)) { fail_one = 0; *hooked = 1; return NULL; }
+	fail_one = k;
+	return shcl_load_and_validate(text, strlen(text), schema, strlen(schema), SHCL_STANDARD);
+}
+
+// A compaction with its Kth allocation failing: 1 when the hook fired.
+static int compact_one_failure(shcl_doc *d, long k) {
+	if (SHCL_SETJMP(oom_jmp)) { fail_one = 0; return 1; }
+	fail_one = k;
+	shcl_compact(d);
+	return 0;
 }
 
 // 2.x spellings the current rules read differently, so every line gets rewritten
@@ -158,6 +192,65 @@ int main(void) {
 	free(v2);
 	if (!migrated) { fprintf(stderr, "FAIL oom_hook: no budget under 4096 allocations completed the migration\n"); failures++; }
 	if (!sawCut) { fprintf(stderr, "FAIL oom_hook: no budget cut the migration short\n"); failures++; }
+
+	// One failing allocation at every position of three calls that hold
+	// documents of their own across other allocations (20260918b items 21 and
+	// 22). A cut-short call has to give everything back, and generation must
+	// never hand out text its self-check did not read: this schema's default
+	// breaks its own max, so the only answers are a refusal or the hook.
+	{
+		const char *bad = "field: a.b\n\ttype: int\n\trequired: true\n\tmin: 1\n\tmax: 10\n\tdefault: 99\n";
+		const char *good = "field: a.b\n\ttype: int\n\trequired: true\n\tdefault: 5\nfield: c\n\tdefault: x\n";
+		const char *schemas[2] = { bad, good };
+		for (int w = 0; w < 2; w++) {
+			int reached_end = 0;
+			for (long k = 1; k < 4000 && !reached_end; k++) {
+				long before = live_blocks;
+				shcl_doc *sd = shcl_parse(schemas[w], strlen(schemas[w]));
+				int r = generate_one_failure(sd, k);
+				reached_end = fail_one > 0;
+				fail_one = 0;
+				shcl_free(sd);
+				if (w == 0 && r == 1) { fprintf(stderr, "FAIL oom_hook: generate returned unchecked text with allocation %ld failing\n", k); failures++; }
+				if (w == 1 && r == 0) { fprintf(stderr, "FAIL oom_hook: generate refused a sound schema with allocation %ld failing\n", k); failures++; }
+				if (live_blocks != before) { fprintf(stderr, "FAIL oom_hook: generate with allocation %ld failing left %ld block(s)\n", k, live_blocks - before); failures++; break; }
+			}
+			if (!reached_end) { fprintf(stderr, "FAIL oom_hook: generate did not finish inside 4000 allocations\n"); failures++; }
+		}
+		const char *doc = "a:\n\tb: 3\nzz: 1\n";
+		int reached_end = 0;
+		for (long k = 1; k < 4000 && !reached_end; k++) {
+			long before = live_blocks;
+			int hooked;
+			shcl_doc *d = load_one_failure(doc, good, k, &hooked);
+			reached_end = fail_one > 0;
+			fail_one = 0;
+			shcl_free(d);
+			if (hooked) { fprintf(stderr, "FAIL oom_hook: load_and_validate reached the hook with allocation %ld failing; the header says NULL\n", k); failures++; break; }
+			if (live_blocks != before) { fprintf(stderr, "FAIL oom_hook: load_and_validate with allocation %ld failing left %ld block(s)\n", k, live_blocks - before); failures++; break; }
+		}
+		if (!reached_end) { fprintf(stderr, "FAIL oom_hook: load_and_validate did not finish inside 4000 allocations\n"); failures++; }
+		reached_end = 0;
+		const char *wide = "a: 1\n# c\nb:\n\tc: [x]\n\td: 2, 3\nbad line\n";
+		for (long k = 1; k < 4000 && !reached_end; k++) {
+			long before = live_blocks;
+			shcl_doc *d = shcl_parse(wide, strlen(wide));
+			shcl_str c0 = shcl_to_canonical(d);
+			char *was = (char *)malloc(c0.n + 1);
+			memcpy(was, c0.p, c0.n);
+			size_t wn = c0.n;
+			int hooked = compact_one_failure(d, k);
+			reached_end = fail_one > 0;
+			fail_one = 0;
+			shcl_str c1 = shcl_to_canonical(d);
+			if (c1.n != wn || memcmp(c1.p, was, wn) != 0) { fprintf(stderr, "FAIL oom_hook: compact with allocation %ld failing changed the document\n", k); failures++; }
+			free(was);
+			shcl_free(d);
+			if (hooked) { fprintf(stderr, "FAIL oom_hook: compact reached the hook with allocation %ld failing; the header says the document is left as it was\n", k); failures++; break; }
+			if (live_blocks != before) { fprintf(stderr, "FAIL oom_hook: compact with allocation %ld failing left %ld block(s)\n", k, live_blocks - before); failures++; break; }
+		}
+		if (!reached_end) { fprintf(stderr, "FAIL oom_hook: compact did not finish inside 4000 allocations\n"); failures++; }
+	}
 
 	if (oom_hits == 0) { fprintf(stderr, "FAIL oom_hook: the hook never fired\n"); failures++; }
 	if (failures == 0) printf("oom_hook: ok (%d hook hits)\n", oom_hits);

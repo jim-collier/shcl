@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1225,6 +1226,89 @@ func TestSaveReportsASymlinkCycleInsteadOfReplacingIt(t *testing.T) {
 		if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("a symlink cycle was replaced by a regular file: %v %v", st, err)
 		}
+	}
+}
+
+func TestTokenizeValueTakesANegativeOffsetAsZero(t *testing.T) {
+	// The reference's offset is unsigned, so a negative one has nothing else
+	// it can mean. Go panicked inside skipWsp and Python read it as an offset
+	// from the end (20260918b item 31). Same fixture in the Python runner.
+	var a, b Tokens
+	TokenizeValue("x, 'y' # c", -3, RulesCurrent, &a)
+	TokenizeValue("x, 'y' # c", 0, RulesCurrent, &b)
+	if !reflect.DeepEqual(a.Elements, b.Elements) || a.Value != b.Value || a.Comment != b.Comment {
+		t.Errorf("negative offset: %+v, from zero: %+v", a, b)
+	}
+}
+
+func TestMergeOntoItselfLeavesItAlone(t *testing.T) {
+	// A document merged onto itself is left as it is (20260918b item 19). The
+	// walk read over while it wrote d, so Go doubled a retained line, Python
+	// grew without end and C ran out of memory. Every corpus input, and the
+	// three lines that showed it. Same fixture in every runner.
+	texts := []string{"# c\na: 1\nbad line\n"}
+	for _, c := range loadCases(t) {
+		texts = append(texts, c.input)
+	}
+	for _, text := range texts {
+		d := Parse(text)
+		before := d.ToCanonical()
+		d.Merge(d)
+		if got := d.ToCanonical(); got != before {
+			t.Errorf("merge onto itself changed the document:\n%q\nbecame\n%q", before, got)
+		}
+	}
+}
+
+func TestSaveReplacesOnlyARegularFile(t *testing.T) {
+	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
+	// was swapped for a regular file at exit 0, a link whose text names a
+	// directory made a file of that name, and Go cleaned `lnk/..` as text where
+	// the kernel follows lnk first. Same fixture in every POSIX runner.
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX FIFO and symlink fixture")
+	}
+	dir := t.TempDir()
+	for _, d := range []string{"real/sub", "top"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	doc := Parse("a: 1\n")
+	fifo := filepath.Join(dir, "p.shcl")
+	if err := exec.Command("mkfifo", fifo).Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(fifo); err == nil {
+		t.Error("a FIFO saved without an error")
+	}
+	if st, err := os.Lstat(fifo); err != nil || st.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("a FIFO was replaced by a regular file: %v %v", st, err)
+	}
+	ldir := filepath.Join(dir, "l.shcl")
+	if err := os.Symlink("d/", ldir); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(ldir); err == nil {
+		t.Error("a link naming a directory saved without an error")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "d")); err == nil {
+		t.Error("a link naming a directory made a file")
+	}
+	if err := os.Symlink("../real/sub", filepath.Join(dir, "top", "lnkdir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../x.shcl", filepath.Join(dir, "real", "sub", "f.shcl")); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.SaveFile(filepath.Join(dir, "top", "lnkdir", "f.shcl")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "real", "x.shcl")); err != nil || string(got) != "a: 1\n" {
+		t.Errorf("file behind lnk/..: got %q %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "top", "x.shcl")); err == nil {
+		t.Error("lnk/.. was cleaned as text")
 	}
 }
 

@@ -60,15 +60,12 @@ _shcl() {
 	local cur prev cmd opts i word positional fileslot cword split
 	local -a words
 
-	## bash has already cut `--opt=value` into three words here, because `=`
-	## is in COMP_WORDBREAKS. bash-completion's _init_completion -s joins them
-	## back, with prev the option and cur the value; the fallback does the
-	## same by hand, for a hand-sourced copy on a box without it.
-	if declare -F _init_completion >/dev/null; then
-		_init_completion -s || return
-	else
-		_shcl_words
-	fi
+	## bash has already cut the line at every character of COMP_WORDBREAKS,
+	## which holds `=` and `:`, so `--set url=http://x` arrives as six words.
+	## _shcl_words puts them back the way the shell split the line, which is
+	## what the CLI sees; bash-completion's -s handles the first `=` only, and
+	## the count below then read a value as the FILE.
+	_shcl_words
 
 	## Word 1 is the subcommand and nothing else.
 	if (( cword == 1 )); then
@@ -104,12 +101,19 @@ _shcl() {
 
 	## A positional. Count the ones already given, skipping options and the
 	## values that follow them in the space form (the =VALUE form is one word).
+	## `-` is a FILE (stdin), and everything after `--` is a positional whatever
+	## it looks like, so neither is skipped as an option.
 	positional=0
+	local ended=0
 	for (( i = 2; i < cword; i++ )); do
 		word="${words[i]}"
-		if [[ " ${_shcl_valopts} " == *" ${word} "* ]]; then
+		if (( ended )); then
+			(( positional++ ))
+		elif [[ "${word}" == "--" ]]; then
+			ended=1
+		elif [[ " ${_shcl_valopts} " == *" ${word} "* ]]; then
 			(( i++ ))
-		elif [[ "${word}" != -* ]]; then
+		elif [[ "${word}" == "-" || "${word}" != -* ]]; then
 			(( positional++ ))
 		fi
 	done
@@ -117,20 +121,22 @@ _shcl() {
 	(( fileslot && positional + 1 == fileslot )) && _shcl_files "${cur}"
 }
 
-## Without bash-completion: rejoin what bash cut at `=`, then split the current
-## word the way _init_completion -s does. Sets words, cword, cur and prev.
+## Put back what readline cut at a break character, then split the current word
+## the way _init_completion -s does. Sets words, cword, cur and prev. The line
+## itself says where the shell's own words end: a piece that follows without a
+## blank between belongs to the piece before it.
 _shcl_words() {
-	local w
+	local w rest="${COMP_LINE:0:${COMP_POINT}}"
 	words=()
 	for (( i = 0; i <= COMP_CWORD; i++ )); do
 		w="${COMP_WORDS[i]}"
-		if (( ${#words[@]} )) && [[ "${w}" == "=" && "${words[-1]}" == --* && "${words[-1]}" != *=* ]]; then
-			words[-1]+="="
-		elif (( ${#words[@]} )) && [[ "${words[-1]}" == --*= && "${COMP_WORDS[i-1]}" == "=" ]]; then
+		if (( i > 0 && ${#words[@]} )) && [[ -n "${w}" && "${rest}" != [[:space:]]* ]]; then
 			words[-1]+="${w}"
 		else
+			while [[ "${rest}" == [[:space:]]* ]]; do rest="${rest#?}"; done
 			words+=("${w}")
 		fi
+		rest="${rest#"${w}"}"
 	done
 	cword=$(( ${#words[@]} - 1 ))
 	cur="${words[cword]}"

@@ -176,6 +176,13 @@ int main() {
 	CHECK(base.get_or<int64_t>("port", 0) == 9090);
 	CHECK(base.get_or<int64_t>("server[web1].port", 0) == 80);
 	CHECK(base.get_or<std::string>("server[web1].host", std::string()) == "h1");
+	// Merged onto itself, a document is left as it is (20260918b item 19).
+	{
+		auto self = shcl::Document::parse("# c\na: 1\nbad line\n");
+		auto before = self.to_canonical();
+		self.merge(self);
+		CHECK(self.to_canonical() == before);
+	}
 	// Compaction: the same document in fresh storage.
 	auto beforeCompact = base.to_canonical();
 	base.compact();

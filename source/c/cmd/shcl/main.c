@@ -114,6 +114,10 @@ static const char *HELP =
 	"  --no-banner                            (init, and set --write when it creates\n"
 	"                                         FILE) leave out the info block naming\n"
 	"                                         the format and pointing at its spec\n"
+	"  --write                                (fmt/set/migrate) rewrite FILE in\n"
+	"                                         place, spelled -w too, through a\n"
+	"                                         temp file and a rename; refused\n"
+	"                                         with a FILE of '-'\n"
 	"  --lossy                                (fmt/set/migrate) with --write, rewrite\n"
 	"                                         even when the load dropped lines this\n"
 	"                                         write would delete; without it the\n"
@@ -164,10 +168,11 @@ static const char *HELP =
 	"so --default --int reads --int as the default. Use -- to end the options when a\n"
 	"FILE or PATH begins with a dash.\n"
 	"An option a subcommand does not use is a usage error, not ignored. Also\n"
-	"refused: --write with --layer; --write with --set outside 'set'; --lossy\n"
-	"without --write; --no-banner on 'set' without --write; --check with --write;\n"
-	"--layer=- on 'set'; --array with --raw or --rawinfo; '-' named more than once\n"
-	"across FILE, --layer and --schema.\n"
+	"refused: --write with --layer; --write with --set outside 'set'; --write with a\n"
+	"FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;\n"
+	"--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;\n"
+	"--default with --on-bad=error or --on-bad=flag; '-' named more than once across\n"
+	"FILE, --layer and --schema.\n"
 	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
 	"once per run; 'shcl explain CODE' gives the rule behind one of their codes. An\n"
 	"in-place write also refuses when the load dropped content the rewrite would\n"
@@ -442,6 +447,23 @@ static int is_a_directory(const char *file) {
 #endif
 }
 
+// A --write FILE is a regular file or nothing yet. Asked before the read,
+// since reading a FIFO takes what was written to it and the save would then
+// refuse it anyway. A directory is left to the read, which names it. Windows
+// has no FIFO at a path; the save itself answers for a device name there.
+static int write_target_ok(const char *file) {
+#ifndef _WIN32
+	struct stat st;
+	if (stat(file, &st) == 0 && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
+		fprintf(stderr, "%s: not a regular file\n", file);
+		return 0;
+	}
+#else
+	(void)file;
+#endif
+	return 1;
+}
+
 static char *read_input(const char *file, size_t *len) {
 	char *buf = NULL; size_t cap = 0, n = 0;
 	int is_stdin = strcmp(file, "-") == 0;
@@ -533,7 +555,7 @@ static int strict_gate_from(const char *file, const shcl_doc *d) {
 // too: a merge does not carry diagnostics over, so their docs are the only
 // place the layers' own diagnostics live. Free everything with layered_free.
 typedef struct { shcl_doc *doc; shcl_doc **overs; int novers; char **texts; int ntexts;
-	const char **names; int nnames; } LayeredDoc;
+	const char **names; int nnames; size_t base_len; } LayeredDoc;
 
 static void layered_push_text(LayeredDoc *L, char *t) {
 	L->texts = (char **)xrealloc(L->texts, ((size_t)L->ntexts + 1) * sizeof *L->texts);
@@ -607,17 +629,29 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 	return ok;
 }
 
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out);
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
+	return load_layered_from(o, file, NULL, 0, out);
+}
+
+// The same fold with FILE's text given rather than read (a malloc'd buffer the
+// fold then owns), which is how `set` creates a file or takes an empty
+// document. FILE's text is the last of out->texts, base_len bytes. `set` kept
+// its own copy of the fold, and twice a fix to this one missed it.
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out) {
 	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
 	out->names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *out->names);
-	out->nnames = 0;
+	out->nnames = 0; out->base_len = 0;
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	for (int i = 0; i <= o->nlayers; i++) {
 		const char *fname = i < o->nlayers ? o->layers[i] : file;
 		out->names[out->nnames++] = fname;
-		size_t len; char *t = read_input(fname, &len);
-		if (!t) { layered_free(out); return EXIT_IO; }
+		size_t len; char *t;
+		if (i == o->nlayers && given) { t = given; len = given_len; given = NULL; }
+		else t = read_input(fname, &len);
+		if (!t) { free(given); layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
+		if (i == o->nlayers) out->base_len = len;
 		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
 		int g = strict_gate_from(o->nlayers ? fname : "", dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
@@ -788,7 +822,27 @@ static int dir_takes_a_temp(const char *file) {
 #endif
 }
 
-static int write_back(shcl_doc *d, const char *file, Opts *o) {
+// FILE still holds the bytes the load read. `set` waits on stdin between the
+// load and the save, and an edit made in that wait was reverted at exit 0. A
+// gap is left between this read and the publish, the width of one save.
+static int unchanged_since_read(const char *file, const char *before, size_t n) {
+	FILE *f = open_rb(file);
+	int same = f != NULL;
+	if (f) {
+		char buf[65536]; size_t got, at = 0;
+		while (same && (got = fread(buf, 1, sizeof buf, f)) > 0) {
+			same = at + got <= n && !memcmp(buf, before + at, got);
+			at += got;
+		}
+		same = same && !ferror(f) && at == n;
+		fclose(f);
+	}
+	if (!same) fprintf(stderr, "%s: changed since it was read; nothing written\n", file);
+	return same;
+}
+
+static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, size_t read_len) {
+	if (read && !unchanged_since_read(file, read, read_len)) return EXIT_IO;
 	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
 	if (r == SHCL_SAVE_OK) return 0;
 	// The rule stays in the library; only the wording is the CLI's, because the
@@ -813,11 +867,12 @@ static int do_fmt(Opts *o) {
 		fprintf(stderr, "fmt --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	LayeredDoc L; int gate = load_layered(o, file, &L);
 	if (gate) return gate;
 	int rc;
 	if (o->write) {
-		rc = write_back(L.doc, file, o);
+		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len);
 	} else {
 		shcl_str c = shcl_to_canonical(L.doc);
 		fwrite(c.p, 1, c.n, stdout);
@@ -859,6 +914,7 @@ static int do_migrate(const Opts *o) {
 		fprintf(stderr, "migrate --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	size_t len; char *text = read_input(file, &len);
 	if (!text) return EXIT_IO;
 	shcl_migration m = shcl_migrate(text, len, o->from_2x);
@@ -891,6 +947,8 @@ static int do_migrate(const Opts *o) {
 		} else if (shcl_lost_count(d) != 0 && !o->lossy) {
 			fprintf(stderr, "%s: refusing to rewrite: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
 			rc = 7;
+		} else if (!unchanged_since_read(file, text, len)) {
+			rc = EXIT_IO;
 		} else if (!shcl_write_file_atomic(file, m.text, m.len)) {
 			int e = errno;
 			if (!dir_takes_a_temp(file)) fprintf(stderr, "%s: cannot create temporary file: %s\n", file, strerror(e));
@@ -1180,26 +1238,11 @@ static int do_set(Opts *o) {
 		fprintf(stderr, "set --write cannot rewrite stdin; drop --write to print, or pass a FILE\n");
 		return 1;
 	}
+	if (o->write && !write_target_ok(file)) return EXIT_IO;
 	// Base doc: with the edits given as options no ops script is read, so a '-'
 	// file is the document on stdin the way it is everywhere else; only when
 	// stdin is the ops script does '-' mean an empty base. Reading neither threw
 	// a piped document away at exit 0.
-	// Any --layer files sit under it and --set overrides sit on top, before ops.
-	// The base layer's node strings are not dup'd off its text, so keep all
-	// buffers.
-	LayeredDoc L; L.doc = NULL; L.overs = NULL; L.novers = 0; L.texts = NULL; L.ntexts = 0;
-	L.names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *L.names);
-	L.nnames = 0;
-	for (int i = 0; i < o->nlayers; i++) {
-		L.names[L.nnames++] = o->layers[i];
-		size_t llen; char *lt = read_input(o->layers[i], &llen);
-		if (!lt) { layered_free(&L); return EXIT_IO; }
-		layered_push_text(&L, lt);
-		shcl_doc *dd = xdoc(shcl_parse_with(lt, llen, o->strictness));
-		int g = strict_gate(dd);
-		if (g) { shcl_free(dd); layered_free(&L); return g; }
-		layered_push_doc(&L, dd);
-	}
 	// --write names the file this command produces, so a FILE that is not there
 	// yet is a create and the edits land in a new document. Only under --write,
 	// and only when nothing is at the path at all: without --write there is
@@ -1211,30 +1254,19 @@ static int do_set(Opts *o) {
 	// format it is. Comments in an otherwise empty document are the document's
 	// trailing trivia, so the edits land above it and the write still goes
 	// through the library's save gate.
+	// The --layer files sit under it and --set overrides sit on top, before
+	// ops, through the same fold every other subcommand uses.
 	int creating = o->write && strcmp(file, "-") != 0 && path_absent(file);
-	char *text; size_t len;
+	char *given = NULL; size_t given_len = 0;
 	if (creating && !o->no_banner) {
-		len = strlen(SHCL_GEN_BANNER);
-		text = (char *)xrealloc(NULL, len + 1);
-		memcpy(text, SHCL_GEN_BANNER, len + 1);
+		given_len = strlen(SHCL_GEN_BANNER);
+		given = (char *)xrealloc(NULL, given_len + 1);
+		memcpy(given, SHCL_GEN_BANNER, given_len + 1);
 	}
-	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { text = (char *)xrealloc(NULL, 1); len = 0; }
-	else { text = read_input(file, &len); if (!text) { layered_free(&L); return EXIT_IO; } }
-	layered_push_text(&L, text);
-	L.names[L.nnames++] = file;
-	{
-		shcl_doc *dd = xdoc(shcl_parse_with(text, len, o->strictness));
-		int gate = strict_gate(dd);
-		if (gate) { shcl_free(dd); layered_free(&L); return gate; }
-		layered_push_doc(&L, dd);
-	}
+	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { given = (char *)xrealloc(NULL, 1); given[0] = '\0'; }
+	LayeredDoc L; int lgate = load_layered_from(o, file, given, given_len, &L);
+	if (lgate) return lgate;
 	shcl_doc *d = L.doc;
-	// The load's diagnostics belong to the load, so they go out before any edit
-	// runs: a refused --set or a failing op used to return with nothing said.
-	say_layered_diagnostics(&L);
-	for (int i = 0; i < o->nsets; i++) {
-		if (!set_apply(d, &o->sets[i])) { layered_free(&L); return 1; }
-	}
 	// --set carries the edits, so stdin is left alone: reading it here would
 	// block on the console for anyone who passed edits as options.
 	size_t opslen = 0; char *ops = NULL;
@@ -1287,7 +1319,8 @@ static int do_set(Opts *o) {
 					nd = xdoc(shcl_parse_with(nt, c.n + 1, o->strictness));
 				}
 			}
-			rc = write_back(nd ? nd : d, file, o);
+			// A file that was there is read again first, for the same wait.
+			rc = write_back(nd ? nd : d, file, o, creating ? NULL : L.texts[L.ntexts - 1], L.base_len);
 		}
 		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
 	}

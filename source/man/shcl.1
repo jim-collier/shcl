@@ -464,6 +464,28 @@ would persist what was given as a read-time override.
 without
 .B \-\-write
 overrides nothing.
+.B \-\-no\-banner
+on
+.B set
+without
+.B \-\-write
+has no file to leave the info block out of.
+.B \-\-check
+with
+.B \-\-write
+asks for both answers at once.
+.B \-\-write
+with a
+.I FILE
+of
+.B \-
+has no file to rewrite.
+.B \-\-default
+with
+.B \-\-on\-bad=error
+or
+.B \-\-on\-bad=flag
+gives a value that neither mode would print.
 .B \-\-layer=\-
 is not valid on
 .BR set ,

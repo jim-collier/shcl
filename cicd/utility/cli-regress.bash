@@ -161,6 +161,10 @@ printf 'p: %s\nnote:\n\t```\n##    Format   2\n\t```\n' "'C:\temp'" > "${tmpDir}
 printf 'p: %s\nnote:\n\t```\n##    Format   3\n\t```\n' "'C:\temp'" > "${tmpDir}/rawfmt3.shcl"
 ## A stamped file behind a BOM, whose value 2.x would have read another way.
 printf '\357\273\277##    Format   3\np: %s\n' 'C:\temp' > "${tmpDir}/bomstamped.shcl"
+## A Format line of five thousand digits: no format will carry that number, and
+## CPython refuses an int() past 4300 digits, so Python raised where the other
+## three read it as this major and said there was nothing to migrate.
+{ printf 'p: 1\n##    Format   '; printf '9%.0s' $(seq 5000); printf '\n'; } > "${tmpDir}/bigfmt.shcl"
 ## An older Format line with migrate's own stamp after it, so the first line
 ## found is the older one.
 printf 'a: 1\n##    Format   0\n##    Format   3\n' > "${tmpDir}/twostamps.shcl"
@@ -180,6 +184,11 @@ printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int
 ## is what that one now has to say to pass.
 printf 'field: env[prod]\n\tdefault: staging\n' > "${tmpDir}/optselbad.shcl"
 printf 'field: srv\n\trepeat: 0, 1\n\tdefault: web\nfield: srv.port\n\ttype: int\n\tdefault: 80\nfield: "a[b]"\n\tdefault: b\n' > "${tmpDir}/optdefok2.shcl"
+## An optional line with no default was never read back, so a selector whose
+## value breaks the field's type went out commented at exit 0. And a valued
+## parent whose array default holds a `]` has no selector a child can use.
+printf 'field: "flag[on]"\n\ttype: int\n' > "${tmpDir}/optnodef.shcl"
+printf 'field: tags\n\trequired: yes\n\tdefault: "a]", c\nfield: tags.x\n\trequired: yes\n' > "${tmpDir}/nosel.shcl"
 
 ## A 250-character basename. The temp file used to carry the whole name plus
 ## the process id, which put it over the filesystem's limit somewhere in the
@@ -211,12 +220,14 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
 ##	%V3B% the same behind a BOM, %V03% an older Format line and then the
-##	current one, %RF2%/%RF3% a raw body holding a Format line,
+##	current one, %FB% a Format line of five thousand digits, %RF2%/%RF3% a raw body holding a Format line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone, %SH% an optional field whose default
 ##	names another instance than its path selects, %SI% the %SE% schema with a
-##	default that names its instance,
+##	default that names its instance, %SJ% an optional selector with no
+##	default whose value breaks its type, %SK% a valued parent whose array
+##	default has no selector spelling,
 ##	%C% a path with nothing at it, cleared before every binding's run, %E% an
 ##	empty argument, %LS% a long s (U+017F), which Unicode upper-cases to S,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
@@ -229,7 +240,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ##	return that is not indent, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
-##	stream, '@fullout' / '@fullerr' point it at a device that is always full.
+##	stream, '@fullout' / '@fullerr' point it at a device that is always full,
+##	'@appear' / '@change' make %C% or change it while the command waits on
+##	stdin for its ops.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
@@ -267,6 +280,10 @@ rows=(
 	'opt-before-cmd|--schema=x check %F%|-|1||^option --schema goes after the subcommand'
 	'unknown-opt-before-cmd|--nope check %F%|-|1||^unknown option: --nope'
 	'opt-space-ate-file|check --schema %F%|-|1||took .* as its value, so no FILE is left'
+	## 20260918b item 33: `--schema=` is a path the command line gave, so every
+	## binding reads it and fails; Go read the empty string as "no schema".
+	'schema-empty-value|check --schema= %F%|-|8|-|-'
+	'init-schema-empty-value|init --schema=|-|8|-|-'
 	## init takes no FILE, so the space form has to keep working there.
 	'opt-space-init-ok|init --no-banner --schema %S2%|-|0|-|^$'
 	## 20260829 item 10: Python recursed a frame per level in three places.
@@ -319,6 +336,11 @@ rows=(
 	## same schema with the default naming `b`.
 	# 'init-optional-defaults-ok|init --no-banner --schema=%SE%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: c\n|-'
 	'init-optional-defaults-ok-named|init --no-banner --schema=%SI%|-|0|## any, repeat 0-1\n# srv: web\n\n## int\n# srv[web].port: 80\n\n## any\n# a: b\n|-'
+	## 20260918b item 26: every commented line is read back, not only one
+	## carrying a default. Item 27: no selector spelling is a refusal, not a
+	## child under another instance.
+	'init-optional-no-default-read-back|init --schema=%SJ%|-|6||V097 generated value fails the schema that produced it: wrong type at .flag\[on\].'
+	'init-no-selector-spelling|init --schema=%SK%|-|6||V097 required path cannot be generated: tags.x \(its parent.s value has no selector spelling\)'
 	## 20260918 item 9: an empty topic is an unknown command, as in the
 	## reference; the ports read it as no topic and printed the help at exit 0.
 	'help-empty-topic|help %E%|-|1||^unknown command:  \(see --help\)$'
@@ -414,6 +436,8 @@ rows=(
 	## Found by the fuzz in the 20260918 fix round: the first Format line decided,
 	## so a file naming an older format was stamped again on every run.
 	'migrate-two-stamps|migrate %V03%|-|0|-|nothing to migrate'
+	## 20260918b item 30: Python raised on a Format line past 4300 digits.
+	'migrate-huge-format|migrate %FB%|-|0|-|nothing to migrate'
 	## 20260909 item 10: 2.x bound the bracket array and nothing binds it now.
 	## Leaving the line is the decision; exiting 0 was the defect, since a
 	## scripted migration could not tell "migrated" from "gave up".
@@ -437,6 +461,10 @@ rows=(
 	## 20260909 item 16.
 	'wide-name-write|fmt --write %LW%|-|0||-'
 	'sugar-migrate-write-stdin|migrate --write -|-|1|-|cannot rewrite stdin'
+	## 20260918b item 34: the same refusal on the other two, which the help's
+	## "Also refused" list now names.
+	'write-stdin-fmt|fmt --write -|-|1|-|cannot rewrite stdin'
+	'write-stdin-set|set --write -|-|1|-|cannot rewrite stdin'
 	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
@@ -475,6 +503,8 @@ rows=(
 	## 20260901b item 24: two layers with a bad line 2 printed the same thing
 	## twice, with nothing to say which file each came from.
 	'layer-diags-named|fmt --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
+	## 20260918b item 14: `set` kept its own copy of the fold and missed it.
+	'layer-diags-named-set|set --set=q=1 --layer=%B% %B2%|-|0|-|bad2.shcl line 2: Error: E014'
 	'single-file-diags-unnamed|fmt %B%|-|0|-|^line 3: Error: E014'
 	## 20260909 item 34: E014 says where on the line the path went wrong, as
 	## a byte column, which the tokenizer computed and the message dropped.
@@ -485,6 +515,7 @@ rows=(
 	## 20260901b item 26: a strict failure in a lower layer ends the fold there,
 	## and says which layer it was.
 	'layer-strict-names-the-layer|fmt --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
+	'layer-strict-names-the-layer-set|set --set=q=1 --strictness=strict --layer=%B% %B2%|-|6|-|bad.shcl line 2: Error: E015'
 	## 20260902 item 44: the failing phase is named, not guessed.
 	'write-names-the-phase|set --write --set=a=2 %N%|-|8|-|cannot create temporary file'
 	## 20260902 item 41: the schema's own diagnostics were never printed, so the
@@ -541,6 +572,9 @@ rows=(
 	## 20260909 item 6: the create was decided before the wait on stdin, so a
 	## file made during the wait was replaced by the edits at exit 0.
 	'create-appeared|set --write %C%|@appear|8|-|exists|b: 2\n'
+	## 20260918b item 16: the same wait on a file that was there. Another edit
+	## made meanwhile was reverted at exit 0.
+	'write-changed-during-wait|set --write %C%|@change|8|-|changed since it was read|a: 1\nb: 2\n'
 	## Literal text is read the way a file line is, so a # opens a comment
 	## there too and only what comes before it is written.
 	'literal-hash|set --write --no-banner %C% --set-literal=color=red#ff0000|-|0|-|-|color: red\n'
@@ -609,6 +643,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%SE%/${tmpDir}/optdefok.shcl}"
 	argv="${argv//%SH%/${tmpDir}/optselbad.shcl}"
 	argv="${argv//%SI%/${tmpDir}/optdefok2.shcl}"
+	argv="${argv//%SJ%/${tmpDir}/optnodef.shcl}"
+	argv="${argv//%SK%/${tmpDir}/nosel.shcl}"
 	argv="${argv//%R%/${tmpDir}/rawval.shcl}"
 	argv="${argv//%N%/${tmpDir}/nowrite/f.shcl}"
 	argv="${argv//%X%/${tmpDir}/sel.shcl}"
@@ -630,6 +666,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%V3%/${tmpDir}/stamped.shcl}"
 	argv="${argv//%V3B%/${tmpDir}/bomstamped.shcl}"
 	argv="${argv//%V03%/${tmpDir}/twostamps.shcl}"
+	argv="${argv//%FB%/${tmpDir}/bigfmt.shcl}"
 	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
 	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	freshCopy=0
@@ -685,7 +722,7 @@ for row in "${rows[@]}"; do
 		echo "cli-regress ${id}" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 		continue
 	fi
-	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${id}" == write-names-the-phase ) ]]; then
+	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${stdinSpec}" == @change || "${id}" == write-names-the-phase ) ]]; then
 		echo "cli-regress: skipping ${id} (POSIX fixture; not judged on windows)"
 		continue
 	fi
@@ -710,7 +747,9 @@ for row in "${rows[@]}"; do
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
 			## The file turns up while the command waits on stdin: after its
 			## notice and before the ops, so the create has already been decided.
-			@appear)
+			## @change: the file is there first and changes during the wait.
+			@appear|@change)
+				[[ "${stdinSpec}" == @change ]] && printf 'a: 1\n' >"${tmpDir}/created.shcl"
 				rm -f "${tmpDir}/in.fifo"; mkfifo "${tmpDir}/in.fifo"
 				"${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" <"${tmpDir}/in.fifo" &
 				appearPid=$!
@@ -719,7 +758,11 @@ for row in "${rows[@]}"; do
 					grep -q 'reading write-ops' "${tmpDir}/err" && break
 					sleep 0.05
 				done
-				printf 'b: 2\n' >"${tmpDir}/created.shcl"
+				if [[ "${stdinSpec}" == @change ]]; then
+					printf 'a: 1\nb: 2\n' >"${tmpDir}/created.shcl"
+				else
+					printf 'b: 2\n' >"${tmpDir}/created.shcl"
+				fi
 				printf 'int\tk\t1\n' >&"${fifoFd}"
 				exec {fifoFd}>&-
 				wait "${appearPid}" || rc=$?
@@ -757,6 +800,67 @@ for row in "${rows[@]}"; do
 		fi
 	done
 done
+
+## What a save does with each thing it can find at the path, one case per row of
+## the Save outcomes table in design.md, which is the rule. A FIFO, a link whose
+## text names a directory and a clean of `lnk/..` were each a site fix away from
+## the last one (20260918b items 3, 17 and 18). Each binding gets a fresh
+## directory, since the save is what is under test, and a timeout, since the old
+## code blocked reading a FIFO. POSIX fixtures: links and FIFOs.
+saveDir="${tmpDir}/save"
+fSaveSetup() {
+	case "$1" in
+		regular)  printf 'a: 1\n' > f.shcl ;;
+		nothing)  : ;;
+		link)     printf 'a: 1\n' > real.shcl; ln -s real.shcl f.shcl ;;
+		dangling) mkdir sub; ln -s sub/x.shcl f.shcl ;;
+		dotdot)   mkdir -p real/sub top; ln -s ../real/sub top/lnkdir; ln -s ../x.shcl real/sub/f.shcl ;;
+		linkdir)  ln -s d/ f.shcl ;;
+		cycle)    ln -s g.shcl f.shcl; ln -s f.shcl g.shcl ;;
+		slash)    printf 'a: 1\n' > f.shcl ;;
+		dir)      mkdir f.shcl ;;
+		fifo*)    mkfifo f.shcl ;;
+		device)   ln -s /dev/null f.shcl ;;
+	esac
+}
+## id | argv | exit | what must hold afterwards, as a bash test run in the directory
+saveCases=(
+	'regular|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
+	'nothing|set --write --set b=2 f.shcl|0|[[ -f f.shcl && ! -L f.shcl ]] && grep -qx "b: 2" f.shcl'
+	'link|set --write --set b=2 f.shcl|0|[[ -L f.shcl ]] && grep -qx "b: 2" real.shcl'
+	'dangling|set --write --set b=2 f.shcl|0|[[ -L f.shcl ]] && grep -qx "b: 2" sub/x.shcl'
+	'dotdot|set --write --set b=2 top/lnkdir/f.shcl|0|[[ -L real/sub/f.shcl && ! -e top/x.shcl ]] && grep -qx "b: 2" real/x.shcl'
+	'linkdir|set --write --set b=2 f.shcl|8|[[ -L f.shcl && ! -e d ]]'
+	'cycle|set --write --set b=2 f.shcl|8|[[ -L f.shcl && -L g.shcl ]]'
+	'slash|set --write --set b=2 f.shcl/|8|[[ -f f.shcl ]] && ! grep -q b f.shcl'
+	'dir|set --write --set b=2 f.shcl|8|[[ -d f.shcl ]]'
+	'fifo|set --write --set b=2 f.shcl|8|[[ -p f.shcl ]]'
+	'fifo-fmt|fmt --write f.shcl|8|[[ -p f.shcl ]]'
+	'device|set --write --set b=2 f.shcl|8|[[ -L f.shcl && -c /dev/null ]]'
+)
+if [[ "${onWindows}" == 1 ]]; then
+	echo "cli-regress: skipping the save-target cases (POSIX fixtures; not judged on windows)"
+else
+	for sc in "${saveCases[@]}"; do
+		IFS='|' read -r id argv wantRc holds <<<"${sc}"
+		read -r -a args <<<"${argv}"
+		for b in "${bindings[@]}"; do
+			## Absolute, since the run is from inside the fixture directory.
+			name="${b%%|*}"; cli="$(realpath -- "${b#*|}")"
+			rm -rf "${saveDir}"; mkdir -p "${saveDir}"
+			(cd "${saveDir}" && fSaveSetup "${id}")
+			rc=0
+			(cd "${saveDir}" && timeout 20 "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null) || rc=$?
+			nRun+=1
+			if ((rc != wantRc)); then
+				echo "cli-regress: save-${id} [${name}]: exit ${rc}, expected ${wantRc}: $(head -c 200 "${tmpDir}/err")" >&2; nBad+=1; continue
+			fi
+			if ! (cd "${saveDir}" && eval "${holds}"); then
+				echo "cli-regress: save-${id} [${name}]: afterwards, not true: ${holds}" >&2; nBad+=1
+			fi
+		done
+	done
+fi
 
 ## The help text is a column-aligned table sitting at exactly 80 wide, and it is
 ## hand-duplicated in four CLIs, so one added word wraps it in every terminal at
@@ -805,7 +909,21 @@ done
 ## "(same)", or no parentheses at all, carries the entry above.
 for b in "${bindings[@]}"; do
 	name="${b%%|*}"; cli="${b#*|}"
-	mapfile -t cmds < <("${cli}" help 2>/dev/null </dev/null | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	helpText="$("${cli}" help 2>/dev/null </dev/null)"
+	mapfile -t cmds < <(printf '%s\n' "${helpText}" | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	## Every option the completions offer must have an entry in the help. The
+	## scope check below walks the entries the help prints, so an option with no
+	## entry at all was invisible to it - `--write` had none for three rounds
+	## (20260918b item 34). The completion table is the list check-completions
+	## holds against the CLI's own.
+	mapfile -t offered < <(grep -oE "echo '[^']*'" "${repoDir}/source/completions/shcl.bash" | grep -oE '\-\-[a-z0-9-]+' | sort -u)
+	((${#offered[@]} >= 10)) || { echo "cli-regress: option-entries [${name}]: only ${#offered[@]} option(s) found in the completions" >&2; nBad+=1; }
+	for o in "${offered[@]}"; do
+		nRun+=1
+		grep -qE "^  ${o}([=,[:space:]]|$)" <<<"${helpText}" || {
+			echo "cli-regress: option-entries [${name}]: ${o} is offered by the completions and has no entry in the help" >&2; nBad+=1
+		}
+	done
 	nOpts=0
 	claim=""
 	while IFS=$'\t' read -r spell par; do
@@ -841,7 +959,7 @@ for b in "${bindings[@]}"; do
 		if [[ "${claim}" != "${takes}" ]]; then
 			echo "cli-regress: option-scopes [${name}]: ${opt}: the help names (${claim}), the CLI takes it on (${takes})" >&2; nBad+=1
 		fi
-	done < <("${cli}" help 2>/dev/null </dev/null | awk '
+	done < <(printf '%s\n' "${helpText}" | awk '
 		/^Options \(/ { on = 1; next }
 		on && /^[^ ]/ { on = 0 }
 		!on { next }

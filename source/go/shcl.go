@@ -957,10 +957,15 @@ func scanPiece(s string, pos int, term byte, rules Rules, comments bool) (Piece,
 	return Piece{Start: start, End: contentEnd, Quote: quote}, clamp(pos)
 }
 
-// TokenizeValue reads the value half: everything from `from` on, split into
-// pieces, with the comment found on the way.
+// TokenizeValue reads the value half: everything from the byte offset from on,
+// split into pieces, with the comment found on the way. A negative offset
+// reads as 0: the reference's offset is unsigned, so there is nothing else one
+// can mean, and Go panicked on it (20260918b item 31).
 func TokenizeValue(text string, from int, rules Rules, out *Tokens) {
 	out.clear()
+	if from < 0 {
+		from = 0
+	}
 	scanValue(text, from, rules, out)
 }
 
@@ -2686,12 +2691,15 @@ func (p *parser) findByValue(cur int, name, text string, quoted bool) (int, bool
 		ok = false
 	}
 	if !ok && quoted {
-		for _, c := range p.arena[cur].children {
-			if p.arena[c].name == name && singleScalar(&p.arena[c].value) && dispKey(&p.arena[c].value) == want {
-				found, ok = c, true
-				break
-			}
-		}
+		// The display map keeps only the first same-display child, which may
+		// be an array where a quoted selector wants the scalar. A scalar child
+		// with this text is exactly the one-element value the merge map is
+		// keyed on, so ask that map: a scan of every sibling was the same
+		// answer, quadratic on the create path.
+		disc := value{kind: vCell, els: []element{newElement(want)}}
+		found, ok = slotFirstMatch(p.childMap[cur], mergeHash(name, &disc), func(c int) bool {
+			return mergeEq(p.arena[c].name, &p.arena[c].value, name, &disc)
+		})
 	}
 	return found, ok
 }
@@ -2810,7 +2818,13 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
 		p.refuse(line, "E011", "field already has a value; list element ignored", outDropped, indent)
+		return
 	}
+	// A kept element holds its column as a dropped one does, with the field as
+	// that level's node: a line written deeper binds where it always did, and a
+	// line back at the element's column is its sibling, where no level had been
+	// opened there and every later sibling was E012 (20260918b item 28).
+	p.stack = append(p.stack, stackEnt{indent: indent, node: parent})
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a
@@ -3633,6 +3647,15 @@ func WriteFileAtomic(file, data string) error {
 	// preserve, so it takes the one an ordinary create would: 0666 narrowed by
 	// the umask, like every other file the user's tools produce.
 	existing, existErr := os.Stat(target)
+	// Only a regular file is replaced. A rename over a FIFO or a device node
+	// swaps it for a regular file at exit 0. Save outcomes in design.md is the
+	// rule for what a save does with each thing it can find at the path.
+	if existErr == nil && !existing.Mode().IsRegular() {
+		if existing.IsDir() {
+			return fmt.Errorf("%s: is a directory", file)
+		}
+		return fmt.Errorf("%s: not a regular file", file)
+	}
 	born := os.FileMode(0o600)
 	if existErr != nil {
 		born = 0o666
@@ -3749,19 +3772,44 @@ func resolveTarget(file string) (string, error) {
 		if err != nil {
 			break
 		}
+		// A link whose text ends in a separator, `.` or `..` can only reach a
+		// directory, and the kernel refuses to create a file through it.
+		if namesADirectory(next) {
+			return "", errors.New("is a directory")
+		}
 		if filepath.IsAbs(next) {
 			p = next
 		} else {
-			p = filepath.Join(filepath.Dir(p), next)
+			p = rawDir(p) + string(filepath.Separator) + next
 		}
 	}
 	if _, err := os.Readlink(p); err == nil {
 		return "", errors.New("too many levels of symbolic links")
 	}
-	if dir, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+	if dir, err := filepath.EvalSymlinks(rawDir(p)); err == nil {
 		return filepath.Join(dir, filepath.Base(p)), nil
 	}
 	return p, nil
+}
+
+// rawDir is the directory half of p as written. filepath.Dir cleans it, and a
+// clean cancels `lnk/..` as text where the kernel follows lnk first, so a link
+// holding `..` reached through a linked directory was created somewhere else.
+func rawDir(p string) string {
+	vol := filepath.VolumeName(p)
+	i := len(p)
+	for i > len(vol) && !os.IsPathSeparator(p[i-1]) {
+		i--
+	}
+	switch {
+	case i == len(vol) && vol == "":
+		return "."
+	case i == len(vol):
+		return vol
+	case i == len(vol)+1:
+		return p[:i] // the root keeps its separator
+	}
+	return p[:i-1]
 }
 
 // setReadOnly toggles the windows read-only attribute, which is all Chmod
@@ -5257,7 +5305,13 @@ func (d *Document) SetDateTimeArrayDefault(path string, v []DateTime) bool {
 // stricter layer reads with d's coercion. And a replaced node is kept until the
 // document is dropped: this costs a pass over the touched scopes plus an index
 // rebuild on the next read.
+//
+// A document merged onto itself is left as it is. The walk reads over while it
+// writes d, so the same document on both sides duplicated lines.
 func (d *Document) Merge(over *Document) {
+	if over == d {
+		return
+	}
 	d.index.Store(nil)
 	d.lost += over.lost
 	d.overlay(root, over, root)
@@ -7282,11 +7336,15 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	// lands where the schema looks. Any line under such a parent selects it
 	// by its value: `srv[web].port:`.
 	// A filled wildcard emits a valued line of its own, so it belongs here too.
+	// First wins, as the line it selects does: of two lines on one path the
+	// first spelling is the one written, and its value is the instance.
 	parentValues := map[string]string{}
 	for i := range cons {
 		c := &cons[i]
 		if (!hasWild(c) || fill[i]) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
-			parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			if _, ok := parentValues[namesKey(namesOf(c.segs))]; !ok {
+				parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			}
 		}
 	}
 	// A commented line under a commented valued parent has the same problem
@@ -7329,8 +7387,13 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	var b strings.Builder
 	var wild [][2]string
 	// Dropping a trailing `[*]` can render the same line a concrete sibling
-	// already wrote; the first spelling wins.
-	emitted := map[string]bool{}
+	// already wrote; the first spelling wins. A line from a dropped `[value]`
+	// selector is its own instance, so two of them with different values are
+	// both written: `env[prod]` and `env[dev]` are two `env` lines. Each path
+	// maps to nil once a plain line wrote it, or to the values written so far.
+	emitted := map[string]map[string]bool{}
+	// A child whose valued parent has no selector spelling cannot be written.
+	var unspellable []Diagnostic
 	// One block per generated line - its desc, annotation and binding - with
 	// the path's names, so the blocks can be laid out in tree order below.
 	type genBlock struct {
@@ -7379,18 +7442,37 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		// validation below decides whether the default names the one selected.
 		last := c.segs[len(c.segs)-1].sel
 		selectsByValue := c.defaultText != nil && last != nil && last.kind == selByValue
-		path := c.path
+		// The schema's own spelling is kept when a file line reads it back as
+		// the same path. A selector body holding a `#` is fine in a lookup and
+		// opens a comment on a file line, so that one goes through the renderer.
+		path, spelled := c.path, true
 		if selectsByValue {
 			segs := append([]segment(nil), c.segs...)
 			segs[len(segs)-1].sel = nil
-			path = genPathText(segs, values)
-		} else if fill[i] || underValuedParent || strings.Contains(c.path, "\n") {
-			path = genPathText(c.segs, values)
+			path, spelled = genPathText(segs, values)
+		} else if fill[i] || underValuedParent || !pathReadsBack(c.path, c.segs) {
+			path, spelled = genPathText(c.segs, values)
 		}
-		if emitted[path] {
+		if !spelled {
+			unspellable = append(unspellable, Diagnostic{Line: 0, Severity: SeverityError, Code: "V097",
+				Message: "required path cannot be generated: " + schemaText(c.path) + " (its parent's value has no selector spelling)"})
 			continue
 		}
-		emitted[path] = true
+		dval := ""
+		if c.defaultText != nil {
+			dval = *c.defaultText
+		}
+		if vals, ok := emitted[path]; !ok {
+			if selectsByValue {
+				emitted[path] = map[string]bool{dval: true}
+			} else {
+				emitted[path] = nil
+			}
+		} else if vals == nil || !selectsByValue || vals[dval] {
+			continue
+		} else {
+			vals[dval] = true
+		}
 		var block strings.Builder
 		if c.desc != nil {
 			for _, line := range strings.Split(*c.desc, "\n") {
@@ -7420,7 +7502,12 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 				commented = append(commented, genCommented{i, line})
 			}
 		} else {
-			fmt.Fprintf(&block, "%s%s:\n", prefix, path)
+			line := path + ":\n"
+			block.WriteString(prefix)
+			block.WriteString(line)
+			if !mustExist(c) {
+				commented = append(commented, genCommented{i, line})
+			}
 		}
 		blocks = append(blocks, genBlock{namesOf(c.segs), block.String()})
 	}
@@ -7477,6 +7564,9 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 		for _, w := range wild {
 			fmt.Fprintf(&b, "##   %s   %s\n", w[0], w[1])
 		}
+	}
+	if len(unspellable) > 0 {
+		return "", unspellable
 	}
 	if !noBanner {
 		if b.Len() > 0 {
@@ -7619,35 +7709,86 @@ func namesKey(names []string) string {
 	return b.String()
 }
 
-// genSelectorText is a default's spelling inside a `[value]` selector. A
-// quoted element is already a quoted selector body. A bare spelling goes in
-// as is unless a bare body would read it as something else - a bracket ends
-// the selector, a leading quote opens one, edge whitespace is trimmed, a
-// whitespace-`#` opens a comment, digits or `*` name an index or the
-// wildcard - and those go quoted (the selector matches on the display form,
-// so the quoted spelling finds the bare value).
-func genSelectorText(v string) string {
-	if strings.Contains(v, "\n") {
-		return genDefaultText(v)
-	}
+// genSelectorText is the selector body that picks out the instance a line
+// `name: v` makes, or false when no body can. It is built from the elements
+// the reader takes out of that line's value, and each candidate is scanned
+// back the way a file line is scanned, so none of the scanner's rules is
+// copied here to go stale. That copy was the cause twice: an all-digit body
+// past 64 bits, and a quoted array element spelled as the body. One element
+// tries the spelling it was written in first; an array has only the bare
+// body, since a quoted selector matches one element only, and a bare one the
+// elements joined.
+func genSelectorText(v string) (string, bool) {
+	spelled := genDefaultText(v)
 	var tok Tokens
-	TokenizeValue(v, 0, RulesCurrent, &tok)
-	if len(tok.Elements) == 1 && (tok.Elements[0].Quote == QuoteSingle || tok.Elements[0].Quote == QuoteDouble) &&
-		tok.Value == [2]int{0, len(v)} {
-		return v
+	TokenizeValue(spelled, 0, RulesCurrent, &tok)
+	els := make([]string, len(tok.Elements))
+	for k := range tok.Elements {
+		els[k] = pieceText(&tok.Elements[k], spelled)
 	}
-	body := strings.TrimSpace(v)
-	_, isIndex := parseIndex(body)
-	if !isIndex {
-		_, isIndex = hashIndex(body)
+	display := strings.Join(els, ", ")
+	type try struct {
+		body, text string
+		quoted     bool
 	}
-	readsAsSelector := body == "*" || isIndex
-	needs := v != trimWsp(v) || strings.HasPrefix(v, "\"") || strings.HasPrefix(v, "'") ||
-		strings.ContainsAny(v, "[]\t") || tok.Comment >= 0 || readsAsSelector
-	if needs {
-		return quoteText(v)
+	var tries []try
+	if len(els) == 1 {
+		if q := tok.Elements[0].Quote; q == QuoteSingle || q == QuoteDouble {
+			tries = append(tries, try{spelled[tok.Value[0]:tok.Value[1]], els[0], true})
+		}
+		tries = append(tries, try{display, display, false}, try{quoteText(els[0]), els[0], true})
+	} else {
+		tries = append(tries, try{display, display, false})
 	}
-	return v
+	for _, t := range tries {
+		if selectorReadsBack(t.body, t.text, t.quoted) {
+			return t.body, true
+		}
+	}
+	return "", false
+}
+
+// selectorReadsBack reports whether body between brackets on a file line
+// reads back as a value selector for text, quoted or bare as asked.
+func selectorReadsBack(body, text string, quoted bool) bool {
+	line := "x[" + body + "]:"
+	var tok Tokens
+	Tokenize(line, ':', false, RulesCurrent, &tok)
+	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
+		return false
+	}
+	ps, err := pathOf(&tok, line)
+	if err != nil || len(ps.segments) != 1 {
+		return false
+	}
+	sel := ps.segments[0].sel
+	return sel != nil && sel.kind == selByValue && sel.value == text && sel.quoted == quoted
+}
+
+// pathReadsBack reports whether a schema path written on a file line reads
+// back as the same segments. A lookup path takes spellings a file line does
+// not.
+func pathReadsBack(path string, segs []segment) bool {
+	line := path + ":"
+	var tok Tokens
+	Tokenize(line, ':', false, RulesCurrent, &tok)
+	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
+		return false
+	}
+	ps, err := pathOf(&tok, line)
+	if err != nil || len(ps.segments) != len(segs) {
+		return false
+	}
+	for k, a := range ps.segments {
+		b := segs[k]
+		if a.name != b.name || a.star != b.star || (a.sel == nil) != (b.sel == nil) {
+			return false
+		}
+		if a.sel != nil && *a.sel != *b.sel {
+			return false
+		}
+	}
+	return true
 }
 
 // genPathText renders parsed segments back as a dotted path, dropping
@@ -7655,8 +7796,9 @@ func genSelectorText(v string) string {
 // materializes) and quoting a name that needs it, so the result is a path the
 // scanner reads back the same. A segment whose prefix names a live line
 // carrying a value selects that instance by the value, in place of a wildcard
-// or a bare name.
-func genPathText(segs []segment, parentValues map[string]string) string {
+// or a bare name. False when a selector has no spelling a file line reads
+// back.
+func genPathText(segs []segment, parentValues map[string]string) (string, bool) {
 	var out strings.Builder
 	names := make([]string, 0, len(segs))
 	for i, s := range segs {
@@ -7670,20 +7812,32 @@ func genPathText(segs []segment, parentValues map[string]string) string {
 		}
 		names = append(names, s.name)
 		if v, ok := parentValues[namesKey(names)]; ok && i+1 < len(segs) && (s.sel == nil || s.sel.kind != selByValue) {
+			body, ok := genSelectorText(v)
+			if !ok {
+				return "", false
+			}
 			out.WriteByte('[')
-			out.WriteString(genSelectorText(v))
+			out.WriteString(body)
 			out.WriteByte(']')
 			continue
 		}
 		if s.sel != nil {
 			switch s.sel.kind {
 			case selByValue:
-				out.WriteByte('[')
-				if s.sel.quoted {
-					out.WriteString(quoteText(s.sel.value))
-				} else {
-					out.WriteString(s.sel.value)
+				// The body as the schema meant it: a quoted one stays quoted,
+				// and a bare one goes bare when a file line reads it back.
+				text, quotedBody := s.sel.value, quoteText(s.sel.value)
+				var body string
+				switch {
+				case !s.sel.quoted && selectorReadsBack(text, text, false):
+					body = text
+				case selectorReadsBack(quotedBody, text, true):
+					body = quotedBody
+				default:
+					return "", false
 				}
+				out.WriteByte('[')
+				out.WriteString(body)
 				out.WriteByte(']')
 			case selByIndex:
 				fmt.Fprintf(&out, "[#%d]", s.sel.index)
@@ -7691,7 +7845,7 @@ func genPathText(segs []segment, parentValues map[string]string) string {
 			}
 		}
 	}
-	return out.String()
+	return out.String(), true
 }
 
 // expandMounts inlines every fragment mount into a flat constraint list,
@@ -7733,7 +7887,7 @@ func expandMounts(def *schemaDef) ([]constraint, [][2]string) {
 				// A chain long enough to outrun the stack, or a mount that
 				// re-enters, stops here and is noted instead of expanded.
 				if onStack || len(stack) >= MaxDepth {
-					cuts = append(cuts, [2]string{schemaText(path), fr})
+					cuts = append(cuts, [2]string{schemaText(path), schemaText(fr)})
 				} else if fcs, ok := def.frags[fr]; ok {
 					stack = append(stack, fr)
 					walk(fcs, path, segs, true)
@@ -8206,7 +8360,7 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 	// Sibling names per parent chain, built once (schema order): vSuggest
 	// used to rebuild every chain per unknown field, which bit hardest on
 	// the wholesale-unmatched documents the feature exists for.
-	siblings := map[string][]string{}
+	siblings := map[string]*suggestNames{}
 	// Paths with a `*` segment can't live in the exact-chain hash; they
 	// match element-wise (a star matches any one name, prefixes included).
 	var starPats [][]segment
@@ -8222,7 +8376,10 @@ func (d *Document) vUnknown(def *schemaDef, out *[]Diagnostic) {
 			if s.star {
 				break // no sibling entry for '*'; deeper chains are pattern-only
 			}
-			siblings[chain] = append(siblings[chain], s.name)
+			if siblings[chain] == nil {
+				siblings[chain] = &suggestNames{seen: map[string]bool{}}
+			}
+			siblings[chain].push(s.name)
 			chain = chainPush(chain, s.name)
 			legal[chain] = true
 		}
@@ -8439,18 +8596,127 @@ func chainPartsLegal(cons []constraint, set string, frags map[string][]constrain
 // vSuggest finds the closest legal sibling name (same parent chain, schema
 // order, edit distance <= 2) as "; did you mean 'x'?" - or nothing. Prose
 // only, never contract.
-func vSuggest(siblings map[string][]string, parentChain, name string) string {
-	bestDist := -1
-	bestName := ""
-	for _, s := range siblings[parentChain] {
-		dist := editDistance(name, s, 2)
-		if dist <= 2 && (bestDist < 0 || dist < bestDist) {
-			bestDist = dist
-			bestName = s
-		}
-	}
-	if bestDist < 0 {
+func vSuggest(siblings map[string]*suggestNames, parentChain, name string) string {
+	names := siblings[parentChain]
+	if names == nil {
 		return ""
 	}
-	return fmt.Sprintf("; did you mean '%s'?", diagName(bestName))
+	best, ok := names.closest(name)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("; did you mean '%s'?", diagName(best))
+}
+
+// suggestNames is the legal names under one parent chain, each once, in
+// schema order. Every unknown field used to be compared with every sibling,
+// and the list held one copy per schema field, so a document whose names all
+// miss cost the schema times the document (20260918b item 10). Past the first
+// few queries on a chain, each name of up to suggestIndexed characters is
+// filed under every spelling it has with up to two characters deleted. Two
+// names within edit distance 2 share such a spelling, so a query checks only
+// the names its own spellings find. A longer name keeps the scan, filtered by
+// length.
+type suggestNames struct {
+	names   []string
+	seen    map[string]bool
+	queries int
+	index   map[uint64][]int
+	long    []int
+	// The query that last looked at each name, so a name found under several
+	// spellings is measured once.
+	stamp []int
+}
+
+const suggestIndexed = 16
+
+// suggestScans is how many queries the scan answers before a chain gets its
+// index. A few typos in a large section should not pay for indexing it.
+const suggestScans = 16
+
+func (sn *suggestNames) push(name string) {
+	if !sn.seen[name] {
+		sn.seen[name] = true
+		sn.names = append(sn.names, name)
+	}
+}
+
+func (sn *suggestNames) closest(name string) (string, bool) {
+	sn.queries++
+	bestDist, bestIdx := -1, -1
+	consider := func(i int) {
+		dist := editDistance(name, sn.names[i], 2)
+		if dist <= 2 && (bestDist < 0 || dist < bestDist || (dist == bestDist && i < bestIdx)) {
+			bestDist, bestIdx = dist, i
+		}
+	}
+	if sn.queries <= suggestScans {
+		for i := range sn.names {
+			consider(i)
+		}
+	} else {
+		if sn.index == nil {
+			sn.index = map[uint64][]int{}
+			for i, n := range sn.names {
+				cs := []rune(n)
+				if len(cs) > suggestIndexed {
+					sn.long = append(sn.long, i)
+					continue
+				}
+				deletionSpellings(cs, func(h uint64) {
+					list := sn.index[h]
+					if len(list) == 0 || list[len(list)-1] != i {
+						sn.index[h] = append(list, i)
+					}
+				})
+			}
+			sn.stamp = make([]int, len(sn.names))
+		}
+		q := []rune(name)
+		if len(q) <= suggestIndexed+2 {
+			deletionSpellings(q, func(h uint64) {
+				for _, i := range sn.index[h] {
+					if sn.stamp[i] != sn.queries {
+						sn.stamp[i] = sn.queries
+						consider(i)
+					}
+				}
+			})
+		}
+		for _, i := range sn.long {
+			if absDiff(utf8.RuneCountInString(sn.names[i]), len(q)) <= 2 {
+				consider(i)
+			}
+		}
+	}
+	if bestIdx < 0 {
+		return "", false
+	}
+	return sn.names[bestIdx], true
+}
+
+// deletionSpellings calls f with the hash of each spelling of cs with none,
+// one or two of its characters deleted. The same spelling can come up more
+// than once.
+func deletionSpellings(cs []rune, f func(uint64)) {
+	hash := func(skipA, skipB int) uint64 {
+		h := newFnv()
+		var buf [utf8.UTFMax]byte
+		for k, c := range cs {
+			if k != skipA && k != skipB {
+				n := utf8.EncodeRune(buf[:], c)
+				for _, b := range buf[:n] {
+					h.byte(b)
+				}
+			}
+		}
+		return h.h
+	}
+	f(hash(-1, -1))
+	for a := range cs {
+		f(hash(a, -1))
+		for b := a + 1; b < len(cs); b++ {
+			f(hash(a, b))
+		}
+	}
 }

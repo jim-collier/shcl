@@ -420,6 +420,21 @@ int main(int argc, char **argv) {
 		if (again.n != got.n || (got.n && memcmp(again.p, got.p, got.n) != 0)) fail(names[ci], "formatter is not idempotent");
 		shcl_free(d2);
 
+		// A document merged onto itself is left as it is (20260918b item 19).
+		// The walk read over while it wrote d, so Go doubled a retained line,
+		// Python grew without end and C ran out of memory. Same fixture in
+		// every runner.
+		{
+			shcl_doc *sm = shcl_parse(input, ilen);
+			shcl_str b = shcl_to_canonical(sm);
+			char *bc = (char *)malloc(b.n + 1);
+			if (bc) memcpy(bc, b.p, b.n);
+			shcl_merge(sm, sm);
+			shcl_str a = shcl_to_canonical(sm);
+			if (!bc || a.n != b.n || (b.n && memcmp(a.p, bc, b.n) != 0)) fail(names[ci], "merge onto itself changed the document");
+			free(bc); shcl_free(sm);
+		}
+
 		// Diagnostics: count, line, severity, and stable code must match the golden
 		// (the same shape `check` prints to stdout at Standard).
 		snprintf(path, sizeof path, "%s/%s/expected-diags.txt", corpus, names[ci]); size_t dlen; char *ediags = read_file(path, &dlen);
@@ -1331,6 +1346,46 @@ int main(int argc, char **argv) {
 		if (lstat(cb, &cs) != 0 || !S_ISLNK(cs.st_mode)) fail("cycle", "a symlink cycle was replaced by a regular file");
 		shcl_free(cd);
 		remove(ca); remove(cb); rmdir(cdir);
+	}
+	// Save outcomes in design.md, the rows the CLI's own check hides. A FIFO
+	// was swapped for a regular file at exit 0, a link whose text names a
+	// directory made a file of that name, and Go cleaned `lnk/..` as text where
+	// the kernel follows lnk first. Same fixture in every POSIX runner.
+	{
+		char tdir[256], tp[320], tq[320], tr[320];
+		snprintf(tdir, sizeof tdir, "%s/shcl-targets-%ld", tmp_root(), (long)getpid());
+		if (mkdir(tdir, 0700) != 0) fail("targets", "mkdir failed");
+		shcl_doc *td = shcl_parse("a: 1\n", 5);
+		struct stat ts;
+		snprintf(tp, sizeof tp, "%s/p.shcl", tdir);
+		if (mkfifo(tp, 0600) != 0) fail("targets", "mkfifo failed");
+		if (shcl_save_file(td, tp) == SHCL_SAVE_OK) fail("targets", "a FIFO saved without an error");
+		if (lstat(tp, &ts) != 0 || !S_ISFIFO(ts.st_mode)) fail("targets", "a FIFO was replaced by a regular file");
+		remove(tp);
+		snprintf(tp, sizeof tp, "%s/l.shcl", tdir);
+		snprintf(tq, sizeof tq, "%s/d", tdir);
+		if (symlink("d/", tp) != 0) fail("targets", "symlink failed");
+		if (shcl_save_file(td, tp) == SHCL_SAVE_OK) fail("targets", "a link naming a directory saved without an error");
+		if (lstat(tq, &ts) == 0) fail("targets", "a link naming a directory made a file");
+		remove(tp);
+		snprintf(tp, sizeof tp, "%s/real", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/real/sub", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/top", tdir); if (mkdir(tp, 0700) != 0) fail("targets", "mkdir failed");
+		snprintf(tp, sizeof tp, "%s/top/lnkdir", tdir);
+		snprintf(tq, sizeof tq, "%s/real/sub/f.shcl", tdir);
+		if (symlink("../real/sub", tp) != 0 || symlink("../x.shcl", tq) != 0) fail("targets", "symlink failed");
+		snprintf(tr, sizeof tr, "%s/top/lnkdir/f.shcl", tdir);
+		if (shcl_save_file(td, tr) != SHCL_SAVE_OK) fail("targets", "save through lnk/.. failed");
+		snprintf(tr, sizeof tr, "%s/real/x.shcl", tdir);
+		size_t xn; char *xt = read_file(tr, &xn);
+		if (!xt || xn != 5 || memcmp(xt, "a: 1\n", 5) != 0) fail("targets", "file not created behind lnk/..");
+		free(xt);
+		remove(tr); remove(tq); remove(tp);
+		snprintf(tp, sizeof tp, "%s/top", tdir); rmdir(tp);
+		snprintf(tp, sizeof tp, "%s/real/sub", tdir); rmdir(tp);
+		snprintf(tp, sizeof tp, "%s/real", tdir); rmdir(tp);
+		rmdir(tdir);
+		shcl_free(td);
 	}
 #endif
 	// A read-only target is rewritten, as it is on POSIX, and comes back
