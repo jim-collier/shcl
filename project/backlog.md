@@ -80,7 +80,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Where they come from: seventeen sit in code merged from 2026-09-15 to 2026-09-17 with no soak, ten of them in the CLI work of 20260909 items 42 to 61. Three are the sibling of a fix that reached one site and not its twin (items 3, 13 and 14). Item 18 is the third time a new subcommand has made the help's option lists stale, and item 3 is the ninth item in the class of a refused line and what sits under it. Both want a fix for the class, not the site.
 
-	- The fix round closed all twenty-three on 2026-09-18, and the enhancement. Items 3 and 18 got class fixes: one skip helper that every refused field line goes through, with a fuzz property over raw bodies, and a check that asks each CLI which subcommands take each option. The fuzz also found a loose bug in `migrate`, filed and closed under Done - Bugs. Item 13 was pinned from the compiled setup on Linux and has not been run on Windows.
+	- The fix round closed all twenty-three on 2026-09-18, and the enhancement. Items 3 and 18 got class fixes: one skip helper that every refused field line goes through, with a fuzz property over raw bodies, and a check that asks each CLI which subcommands take each option. The fuzz also found a loose bug in `migrate`, filed and closed under Done - Bugs. Item 13 was pinned from the compiled setup on Linux and then reproduced and verified on Windows, with items 7, 9, 10 and 17. The review's NTFS publish-race probe was not part of the fix round and was not run.
 
 	- Finished items are under Done - Bugs, and the enhancement under Done - Features and enhancements, each in a bullet of the same name.
 
@@ -424,6 +424,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 16, and parity with the other three.
 		- Fixed: `write_file_atomic` falls back to the whole path only when the name is empty, before the cut, as Rust does. A cut that backs off to nothing leaves nothing, as in Go and C.
 		- Pinned by: a POSIX block in the Python runner that saves a name of `\xc3` and 70 `\x80` bytes under `sub/`. It fails on the old code.
+		- Verified on Windows (B29W): `write_file_atomic` of `sub/` plus forty `é` saves. That name cuts on a character start, so Windows never reached the defect.
 		- Opened: 20260918-133258
 		- Closed: 20260918-154909
 
@@ -447,6 +448,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: `style-guide_ui-ux.md:9`, the ports match the Rust CLI on stdout and exit code.
 		- Fixed: the ports hold "no topic" apart from an empty one, as the reference does: `hasTopic` in Go, `None` in Python, a NULL topic in C. `shcl help ''` and `shcl '' --help` are an unknown command at exit 1 in all four.
 		- Pinned by: `cli-regress.bash` rows `help-empty-topic` and `empty-cmd-help`, which fail in Go, Python and C on the old code. A `%E%` in a row now stands for an empty argument, which a row could not spell before.
+		- Verified on Windows (B29W, pwsh 7.6): `help ''` and `'' --help` give the unknown command at exit 1 in all four CLIs through real Windows argv.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161509
 
@@ -458,6 +460,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: the comment above this branch in all four, that asking for the help by name or by flag prints it and succeeds, and 20260909 item 59's rule against handing a user's own spelling back.
 		- Fixed: after `help`, a `-h` or `--help` is dropped before the topic is chosen, in the help branch of all four CLIs. `help --help` and `help -h` print the full help, and `help get --help` prints get's.
 		- Pinned by: rows `help-help-flag`, `help-h-flag` and `help-cmd-help-flag`, which fail in all four on the old code.
+		- Verified on Windows (B29W): `help --help`, `help -h` and `help get --help` exit 0 in all four CLIs.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161509
 
@@ -491,6 +494,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 38, that an uninstall removes what the install laid down and nothing else.
 		- Fixed: the uninstaller removes the payload by name. `fUninstallList` in `package.bash` writes one Delete line per file from the same payload the setup copies, and `shcl.nsi` includes it in place of the two globs.
 		- Pinned by: shell-regress compiles `shcl.nsi` at makensis `-V4` against a scratch payload and the list package.bash writes, and requires a Delete naming each file and none with a wildcard. It fails on the old `.nsi` and on the old package.bash.
+		- Reproduced on Windows (B29W, in Windows Sandbox, 2026-09-18): the setup built from the old `.nsi` installed, took a `mine.txt` in `code\` and in `scripts\`, and its silent uninstall deleted both. The new setup's uninstall removed the payload and kept both. The machine PATH came back as it was in both runs. So the item is Confirmed.
 		- Opened: 20260918-132951
 		- Closed: 20260918-163344
 
@@ -536,6 +540,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Against: 20260909 item 43, no suggestion for a non-ASCII word, and `style-guide_ui-ux.md:19`.
 		- Fixed: `explain` upper-cases the code by ASCII only, through a new `asciiUpper` in Go and `_ascii_upper` in Python, as Rust and C already did.
 		- Pinned by: row `explain-non-ascii-no-suggestion`, which fails in Go and Python on the old code. A `%LS%` in a row stands for the long s.
+		- Verified on Windows (B29W): `explain` with a long s gets no suggestion, at exit 1, in all four CLIs.
 		- Opened: 20260918-135050
 		- Closed: 20260918-161626
 
