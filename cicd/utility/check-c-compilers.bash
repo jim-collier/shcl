@@ -100,6 +100,11 @@ for cc in "${compilers[@]}"; do
 	## Most Linux consumers define _GNU_SOURCE, and glibc declares more under it,
 	## so a static name in the header can collide with one of those functions.
 	fBuild "${cc}" -O2 source/c/cmd/shcl/main.c -D_GNU_SOURCE
+	## Distributions build with _FORTIFY_SOURCE on, and glibc then marks calls
+	## such as fchown warn_unused_result, which a (void) cast does not silence.
+	## That reached dev once and only the hosted runner said so, where the flag
+	## is on by default and here it is not.
+	fBuild "${cc}" -O2 source/c/cmd/shcl/main.c -D_FORTIFY_SOURCE=2
 	fRefuse "${cc}" "${tmpDir}/order-bad.c" "included before any system header"
 	## The two OOM tests get every level. Their shape is the one this gate was
 	## written for - which locals a compiler thinks a setjmp's unwind can
