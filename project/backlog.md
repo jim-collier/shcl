@@ -86,6 +86,99 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260920:
+
+	- Review document `20260920-055406`. The first Panoplia code review on this project, over the whole tree, split four ways and run one part at a time: the Rust reference and its CLI, the Go, Python, C and C++ bindings, the pipeline and gates and installers, and the documents and the conformance corpus. Aimed at what the four-way crosscheck cannot see: behavior that never reaches stdout, structural inputs the value-level fuzz never generates, and round-trip and fixpoint properties where the code reads back its own output.
+
+	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
+
+	- 🔘 Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
+		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
+		- Cause: both `--check` arms compare text and never ask the save gate the matching `--write` goes through.
+		- Probable fix: let the refusal win over 6, the way `migrate --check` already lets 7 win over its own two refusal counts.
+		- Origin: new ground, no earlier round read it. `fmt --check` reached dev 2026-09-19, `migrate --check` 2026-09-16. Confirmed.
+		- Sweep: the same two `--check` arms in the Go, Python and C CLIs.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
+		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one. Stage 6 of the `--ci` run prints "release builds skipped".
+		- Cause: the cross-check loop sits inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
+		- Effect: the mingw build of the C library and CLI for windows, the build with file I/O compiled out, and the `GOOS=windows` build, vet and staticcheck of the Go library are compiled by no gate that decides whether a commit reaches main. The windows job covers two of them partly, and only on a push to main.
+		- Probable fix: run the cross checks whenever correctness is gated, not only when a release binary is built.
+		- Note: `--quick`, the fast in-editor loop, runs all three; `--ci`, the gate, runs none. The `--help` line for `--ci` says "no cross/publish", which reads against `--no-cross` as the cross-compile targets rather than the checks.
+		- Origin: new ground, no earlier round read it. The checks and the loop arrived in `464b5df` (2026-08-18) inside a branch that was already unreachable under `--ci`. Confirmed.
+		- Sweep: anything else in the release stage that is a check rather than an artifact. Read at filing time there is nothing else.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
+		- Reproduced: the line prints 7,800 lines, all sent to `/dev/null`, and its result is never read. The check below it is the whole of that block's assertion.
+		- Cause: a first attempt left in place when the grep form replaced it.
+		- Probable fix: delete the line.
+		- Origin: new ground. Arrived with the block in `404de2d` (2026-09-03). Confirmed. Nit.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 4 (F8): the profiler report's reads bucket names a function the reference no longer has.
+		- Reproduced: two small fixture flamegraphs, alike but for the leaf's name. Time in `scan_lookup` is reported as "other"; the same time under the old name `scan_path` is reported as "reads".
+		- Cause: the lookup scanner was renamed by `e58fe9f` and the bucket was not moved with it. The only `scan_path` left is inside the packaged 1.0.0 and 1.1.0 copies under the build dir.
+		- Effect: the line reads "reads (lookup/coercion)" and the lookup half of it is counted elsewhere. The session startup asks for a prose read of exactly that attribution.
+		- Probable fix: the current name, and check the other three buckets' keys at the same time. All of those still exist.
+		- Origin: new ground, no earlier round read this file. Confirmed. Nit.
+		- Sweep: any other report that names a reference function by string.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 5 (F9): the grammar does not derive the most ordinary line in the language.
+		- Reproduced: the bare-value character class leaves out the space and the colon, so `field-line` derives none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` does not derive `* Bond James`. Every one of those loads at exit 0 with no diagnostics. The first, the third and the fourth are the spec's own examples.
+		- Cause: the class was written as the formatter's minimal output shape, but it is not that either - the formatter quotes `]` and `'` on output and both are inside the class, while `[` is outside it at every position although only a leading one means anything.
+		- Effect: the grammar is what an oracle generator is written against, and a generator written from it would never produce a line with a space in its value.
+		- Which side moves: the file. The reference's own tokenizer oracle draws its bare pieces from a set holding every character the grammar's class cuts out, spaces and colons included, so the code already knows the wider language.
+		- Note: the grammar's own comments cite `it's fine` and `C:\dir` as lines that load clean, and neither is derivable. The prose saying the parser is wider is in the file already; the rules do not follow it.
+		- Probable fix: a bare piece is every character but a newline, `#` and `,`, with the leading-quote and leading-`[` cases carved out as the prose already does. Keep the formatter's minimal shape as a separate rule nothing on the parse side reaches.
+		- Note: the grammar check's three whole-file rows assert nothing, since a rule for verbatim block content derives any text at all. Its two field-line rows are the ones that assert, and neither has a space or a colon in its value.
+		- Origin: new ground, no earlier round read the grammar against the tokenizer. The character class predates the grammar check, which arrived 2026-09-19. Confirmed.
+		- Sweep: any other rule whose character class was written from the formatter's output. Read at filing time there is none; the fence-label class is deliberately wide and has its own rows in the check.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 6 (F10): one comparison figure on the front page is two runs and a major old.
+		- Reproduced: the README and design.md both say SHCL reads 3.7 times slower than `tomllib` in Python, against 1.5 times slower than `toml` in Rust. The newest run in the results file gives 3.5 for the Python pair and 1.5 for the Rust pair. 3.7 is the ratio in the first of the four runs, taken against 1.2.0. No shape in the newest run comes to 3.7 either.
+		- Cause: the 2026-09-19 rerun refreshed the tables, the date and the Rust half of that sentence, and left the Python half.
+		- Effect: both documents point the reader at the results file for the Python tier, and the figure there is not the one they print.
+		- Probable fix: the figure the newest run gives.
+		- Checked: everything else in both places matches that run - all three README tables cell by cell, the two percentage claims, the memory and read-time comparison against the one other parser that keeps the file, and all four of design.md's result bullets.
+		- Probable pin: the docs check already reads the results file for the rerun date. It can take the two ratios from the newest run and compare them with the two figures in the sentence.
+		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
+		- Sweep: every other number in either document taken from the results file by hand. Checked at filing time; this is the only one that does not match.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
+		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
+		- Cause: the guide has one commit, from two days before `fmt --check` reached dev. The help's own exit sentence was generalized then and the guide was not.
+		- Effect: the guide says a CLI doing anything else is the bug, so a later pass could take the `fmt` arm for one.
+		- Note: the help, the man page and the spec all describe it correctly.
+		- Probable fix: name both arms, or `--check` generically as the other three do.
+		- Probable pin: the docs check already reads the help out of the debug binary. It can compare the guide's exit rows against the help's exit sentence.
+		- Origin: new ground, no earlier round read this file against the CLI. Confirmed. Nit.
+		- Sweep: every other claim in the file, since nothing holds any of it to the CLI. All driven at filing time and clean.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 8 (F12): the spec has no table of contents.
+		- Reproduced: 758 lines and 37 headings below the title, with no contents block. The README, the design document and the AI guidelines all carry one, and the spec is longer than two of the three and has more headings than either.
+		- Effect: the README sends a new reader to the spec first, and there is nothing to jump by.
+		- Probable fix: generate one the way the other three are generated, covering h2 to h5.
+		- Checked: the three that exist are all current - every heading listed, in order, at the right depth, nothing left over. Nothing in the pipeline compares them.
+		- Note: the design document's title line is missing the ignore comment the other two titles carry. It changes no output, but it is the same pass.
+		- Origin: new ground, no earlier round read the documents for this. Confirmed. Nit.
+		- Opened: 20260920-055406
+
+	- 🔘 Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
+		- Reproduced: seventeen cases carry a strict load row. Sixteen expect a failure and every one of them has an error diagnostic, so each pins "an error fails a strict load". The seventeenth expects success and has no diagnostics at all. None asserts a strict load succeeding with a hint present.
+		- Effect: the spec calls the strictness table normative and says every level is corpus-pinned, so a binding cannot drift on any row. A binding that failed a strict load on a repeated-leaf hint would pass the whole corpus.
+		- Cause: the level column arrived with the cases that use it, and this row was never given one.
+		- Probable fix: one line added to a hint-only case, in the shape the clean strict case already uses. Sixteen hint-only cases to choose from; one for each hint code covers both.
+		- Note: watch it fail - make a hint fatal at strict in one binding and see the row go red. And any corpus change shifts the fuzz seeds, so expect a gate round with it.
+		- Origin: new ground, no earlier round read the corpus against the table this way. Confirmed.
+		- Sweep: the other six rows of the table. All pinned, checked at filing time. The colon-less repair's strict half is thin - it has no case of its own and rides the general rule.
+		- Opened: 20260920-055406
+
 - Code review 20260918b:
 
 	- A full pass over the whole codebase, the copied-in scripts included, split ten ways: the load path, the writes and the filesystem, schema and `init` and merge, the C binding as C, the Go and Python ports as libraries, the four CLIs with the man page, completions and wrappers, the gates and hooks, the installers and packaging, the ground no round had read (the comparison tool, the demo, the report gates, the Rust tests, corpus hygiene), and the documents as claims. Fifty-three defects here and eleven enhancements under Features and enhancements. Fifty were reproduced or checked on this box. Items 38, 40 and 46 need Windows, openSUSE or macOS and are Plausible. Items 1, 5 and 36 are Confirmed on pwsh 7 and wait on Windows PowerShell 5.1 for their second half.
@@ -140,6 +233,78 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
 	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
 	- Opened: 20260914-184244
+
+- Code review 20260920:
+
+	- The round's ideas. The defects are under Bugs, and the round bullet there says what was covered.
+
+	- 🔘 Idea 1: a `remove` that matches many instances is quadratic in the sibling count.
+		- Measured: removing every instance of one top-level name takes 0.95 s at 10,000 siblings, 3.33 s at 20,000 and 12.17 s at 40,000, where the parse of the same file is 0.30 s. Four times the work for twice the input.
+		- Cause: the parent's child list is rebuilt once per removed node, and the name index chain is walked from its head each time.
+		- Probable fix: one pass per parent over a set of targets, and drop the name index the way a merge already does.
+		- Note: reads, `fmt` and `paths` on the same files are linear. Nothing states a bound on `remove`, so this is an idea, not a defect.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
+		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 3: the C OOM test sweeps a validate eight allocations deep and a parse four hundred.
+		- Eight budgets all fail in the opening moves of building the schema, so the recovery arm that gives back the per-level arena pool and the half-built name index never runs.
+		- Probable fix: the same loop bound the parse and load sweeps use. The widened version was built and run under the address and undefined-behavior sanitizers with leak detection and still passes, so it can go in as it stands.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 4: on windows the C save refuses a device name only because the publish happens to fail.
+		- The pre-read check is a no-op there, and the save's windows arm tests only the directory attribute. A device name has no attributes, so it reads as "nothing is there yet" and the call goes on to create and publish. Go asks for the file's type and refuses on both platforms.
+		- Probable fix: an explicit file-type test in the windows arm, so the answer does not rest on the publish. The reference has the same shape and would move with it.
+		- Note: the batch on 2026-09-19 confirmed that device names refuse at exit 8 in all four on a real box, so this is about where the refusal comes from, not whether it happens.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
+		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.
+		- Probable fix: the same derived comparison the shell list already gets, once per kind. The Python side has two lists, one in the pipeline config and one in the binding's own project file.
+		- Note: the shell list drifted this way once and got its check on 2026-09-19.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 6: the dev installer's tool stocktaking is reached by no gate.
+		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
+		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
+		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 7: the completions gate's own fixture is built by replaces that nothing checks applied.
+		- The row adds an option-less subcommand to a copy of the CLI and both completion files by literal string replace. A replace whose anchor has moved is silent, so one broken anchor makes the row fail for the wrong reason and all of them broken makes it compare the real files with each other and pass.
+		- Checked: all six apply today, so the row does assert.
+		- Probable fix: assert each replaced text changed, and name the anchor that did not.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 8: the two installers read the same signed checksums file by different rules.
+		- The Linux one anchors the asset name at the end of the line, which it has to, or the package lines would match too. The Windows one matches anywhere in the line and takes the first hit. No asset name a cut produces contains another, so nothing is wrong today.
+		- Probable fix: match the whole line on the Windows side as well.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 9: the README check builds three of the five code examples and runs none of them.
+		- The Rust and Python blocks are built by nothing. No example is executed, and nothing compares the file the four leave behind against the README block that is meant to be exactly that.
+		- Checked: all four were built and run against the README's own config file, and all four leave it byte-identical to that block. Nothing is wrong today.
+		- Probable fix: the check already stands up a Go module and a C compile. A Rust one is a short manifest with a path dependency, and Python needs the module copied beside the block. Then run each and compare the file.
+		- Note: the same site has been fixed twice for this class already - a fragment that did not compile, and transcripts that drifted.
+		- Origin: idea.
+		- Opened: 20260920-055406
+
+	- 🔘 Idea 10: two documents state the CLI's contract and nothing compares either with the CLI.
+		- The help's option parentheses are derived from the CLI and compared, and both completion files are held to it. The man page carries the same per-option subcommand lists and the same exit codes, compared with nothing; the CLI style guide carries a third copy of the exit codes, also compared with nothing.
+		- Checked: the man page's twelve option lists all match today. One of the guide's nine exit rows does not, which is bug item 7.
+		- Probable fix: the same derived comparison, run twice more in the docs check.
+		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
+		- Opened: 20260920-055406
 
 - Code review 20260918b:
 
