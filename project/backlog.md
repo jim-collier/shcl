@@ -503,6 +503,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Swept: nothing else in the release stage is a check rather than an artifact.
 		- Pinned by: `shell-regress.bash` stands up the throwaway repo the round used - the real engine, a stub config, a cross check that touches a marker - and asserts three things: `--ci` runs it, a failing one aborts the run by name, and `--no-cross` skips it. All three watched to fail on the old engine.
 		- Measured: the three checks add about a minute to a `--ci` run.
+		- Note: the full gate then went red on `check-push-gate.bash`, whose throwaway repo runs the real engine over a stubbed config and has no C source to compile. Its stub empties `CROSS_CHECKS` now, beside the `CROSS_TARGETS` it already emptied.
 		- Opened: 20260920-055406
 		- Closed: 20260920-083425
 
