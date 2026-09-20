@@ -92,22 +92,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
 
-	- 🔘 Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
-		- Reproduced: the line prints 7,800 lines, all sent to `/dev/null`, and its result is never read. The check below it is the whole of that block's assertion.
-		- Cause: a first attempt left in place when the grep form replaced it.
-		- Probable fix: delete the line.
-		- Origin: new ground. Arrived with the block in `404de2d` (2026-09-03). Confirmed. Nit.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 4 (F8): the profiler report's reads bucket names a function the reference no longer has.
-		- Reproduced: two small fixture flamegraphs, alike but for the leaf's name. Time in `scan_lookup` is reported as "other"; the same time under the old name `scan_path` is reported as "reads".
-		- Cause: the lookup scanner was renamed by `e58fe9f` and the bucket was not moved with it. The only `scan_path` left is inside the packaged 1.0.0 and 1.1.0 copies under the build dir.
-		- Effect: the line reads "reads (lookup/coercion)" and the lookup half of it is counted elsewhere. The session startup asks for a prose read of exactly that attribution.
-		- Probable fix: the current name, and check the other three buckets' keys at the same time. All of those still exist.
-		- Origin: new ground, no earlier round read this file. Confirmed. Nit.
-		- Sweep: any other report that names a reference function by string.
-		- Opened: 20260920-055406
-
 	- 🔘 Item 5 (F9): the grammar does not derive the most ordinary line in the language.
 		- Reproduced: the bare-value character class leaves out the space and the colon, so `field-line` derives none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` does not derive `* Bond James`. Every one of those loads at exit 0 with no diagnostics. The first, the third and the fourth are the spec's own examples.
 		- Cause: the class was written as the formatter's minimal output shape, but it is not that either - the formatter quotes `]` and `'` on output and both are inside the class, while `[` is outside it at every position although only a leading one means anything.
@@ -118,26 +102,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the grammar check's three whole-file rows assert nothing, since a rule for verbatim block content derives any text at all. Its two field-line rows are the ones that assert, and neither has a space or a colon in its value.
 		- Origin: new ground, no earlier round read the grammar against the tokenizer. The character class predates the grammar check, which arrived 2026-09-19. Confirmed.
 		- Sweep: any other rule whose character class was written from the formatter's output. Read at filing time there is none; the fence-label class is deliberately wide and has its own rows in the check.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 6 (F10): one comparison figure on the front page is two runs and a major old.
-		- Reproduced: the README and design.md both say SHCL reads 3.7 times slower than `tomllib` in Python, against 1.5 times slower than `toml` in Rust. The newest run in the results file gives 3.5 for the Python pair and 1.5 for the Rust pair. 3.7 is the ratio in the first of the four runs, taken against 1.2.0. No shape in the newest run comes to 3.7 either.
-		- Cause: the 2026-09-19 rerun refreshed the tables, the date and the Rust half of that sentence, and left the Python half.
-		- Effect: both documents point the reader at the results file for the Python tier, and the figure there is not the one they print.
-		- Probable fix: the figure the newest run gives.
-		- Checked: everything else in both places matches that run - all three README tables cell by cell, the two percentage claims, the memory and read-time comparison against the one other parser that keeps the file, and all four of design.md's result bullets.
-		- Probable pin: the docs check already reads the results file for the rerun date. It can take the two ratios from the newest run and compare them with the two figures in the sentence.
-		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
-		- Sweep: every other number in either document taken from the results file by hand. Checked at filing time; this is the only one that does not match.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 8 (F12): the spec has no table of contents.
-		- Reproduced: 758 lines and 37 headings below the title, with no contents block. The README, the design document and the AI guidelines all carry one, and the spec is longer than two of the three and has more headings than either.
-		- Effect: the README sends a new reader to the spec first, and there is nothing to jump by.
-		- Probable fix: generate one the way the other three are generated, covering h2 to h5.
-		- Checked: the three that exist are all current - every heading listed, in order, at the right depth, nothing left over. Nothing in the pipeline compares them.
-		- Note: the design document's title line is missing the ignore comment the other two titles carry. It changes no output, but it is the same pass.
-		- Origin: new ground, no earlier round read the documents for this. Confirmed. Nit.
 		- Opened: 20260920-055406
 
 	- 🔘 Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
@@ -561,6 +525,41 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Measured: the three checks add about a minute to a `--ci` run.
 		- Opened: 20260920-055406
 		- Closed: 20260920-083425
+
+	- ✅ Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
+		- Cause: a first attempt left in place when the grep form replaced it.
+		- Origin: new ground. Arrived with the block in `404de2d` (2026-09-03). Confirmed. Nit.
+		- Fixed: the line is gone. The grep under it was already the whole assertion, and `check-docs.bash` still passes.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084012
+
+	- ✅ Item 4 (F8): the profiler report's reads bucket names a function the reference no longer has.
+		- Reproduced: time in `scan_lookup` was reported as "other"; the same time under the old name `scan_path` was reported as "reads".
+		- Cause: the lookup scanner was renamed by `e58fe9f` and the bucket was not moved with it.
+		- Origin: new ground, no earlier round read this file. Confirmed. Nit.
+		- Fixed: the bucket keys on `scan_lookup`. The other five keys were checked and all still name something the reference defines.
+		- Swept: `flame-report.py` is the only report naming a reference function by string; `lint-report.bash` names none.
+		- Pinned by: `check-docs.bash` takes every name the buckets key on, drops the type prefix, and requires a matching `fn` in the reference. Watched to fail on `scan_path`.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084012
+
+	- ✅ Item 6 (F10): one comparison figure on the front page is two runs and a major old.
+		- Reproduced: the README and design.md both said SHCL reads 3.7 times slower than `tomllib` in Python. The newest run gives 3.5. 3.7 is the ratio in the first of the four runs, taken against 1.2.0.
+		- Cause: the 2026-09-19 rerun refreshed the tables, the date and the Rust half of that sentence, and left the Python half.
+		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
+		- Fixed: both documents print 3.5.
+		- Pinned by: `check-docs.bash` reads the newest run's four parse times out of `results.shcl` with the debug CLI, divides, rounds to one decimal, and matches each document's own wording. Watched to fail on 3.7 in both. It sits beside the rerun-date check, which was the only currency claim held to anything.
+		- Swept: every other number in either document was compared with that run at filing time and this was the only one adrift.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084031
+
+	- ✅ Item 8 (F12): the spec has no table of contents.
+		- Reproduced: 758 lines and 37 headings below the title, with no contents block, where the other three long documents all carry one.
+		- Origin: new ground, no earlier round read the documents for this. Confirmed. Nit.
+		- Fixed: a contents block over the spec's 37 h2-to-h5 headings, in the shape the extension generates, with the ignore comment on the title and on the contents heading. The design document's title got the ignore comment it was missing.
+		- Pinned by: `check-docs.bash` rebuilds each of the four documents' blocks from its own headings and compares, and reports two headings that would share an anchor. Both halves watched to fail. The generator was checked against the README's and the design document's live blocks first, which it reproduces exactly.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084031
 
 	- ✅ Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
 		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.

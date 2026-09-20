@@ -2,9 +2,55 @@
 <!-- markdownlint-disable MD010 -- No hard tabs -->
 <!-- markdownlint-disable MD033 -- No inline html -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- TOC ignore:true -->
 # SHCL specification
 
 Simple Hierarchical Config Language. This is the canonical language spec: terminology, lexical rules, structure, the read-time type/coercion model, raw blocks, the accessor and writer API, the canonical formatter, and the conformance strategy. The formal line/value grammar is in `grammar.abnf`; the raw by-example origin is in `../../notes.txt`; the settled decision log is in project memory.
+
+<!-- TOC ignore:true -->
+## Table of contents
+
+<!-- TOC -->
+
+- [Design goals (the north star)](#design-goals-the-north-star)
+- [Terminology](#terminology)
+- [Lexical structure](#lexical-structure)
+	- [Encoding and lines](#encoding-and-lines)
+	- [Comments](#comments)
+	- [Whitespace, quoting, and reserved characters](#whitespace-quoting-and-reserved-characters)
+	- [Escapes](#escapes)
+- [Structure and hierarchy](#structure-and-hierarchy)
+	- [Indentation (block form)](#indentation-block-form)
+	- [Dot and bracket (inline form)](#dot-and-bracket-inline-form)
+	- [Merging and instances](#merging-and-instances)
+- [Values and types](#values-and-types)
+	- [Strings](#strings)
+	- [Integers](#integers)
+	- [Floats](#floats)
+	- [Booleans](#booleans)
+	- [Dates and times](#dates-and-times)
+	- [Arrays](#arrays)
+	- [Coercion rules ("intelligent but safe")](#coercion-rules-intelligent-but-safe)
+- [Raw blocks](#raw-blocks)
+- [Consumer API](#consumer-api)
+	- [The core call](#the-core-call)
+	- [Ergonomic tiers](#ergonomic-tiers)
+	- [Status sentinels](#status-sentinels)
+	- [Lookup and traversal](#lookup-and-traversal)
+	- [Paths, selectors, and traversal](#paths-selectors-and-traversal)
+	- [Diagnostics and writing](#diagnostics-and-writing)
+	- [File tier](#file-tier)
+- [Canonical formatter](#canonical-formatter)
+- [Schema validation](#schema-validation)
+- [Layered loading](#layered-loading)
+- [Schema-driven generation](#schema-driven-generation)
+- [Error handling philosophy](#error-handling-philosophy)
+- [Strictness levels](#strictness-levels)
+- [Migrating from 2.x](#migrating-from-2x)
+- [Cross-language parity and conformance](#cross-language-parity-and-conformance)
+- [Resolved minor items](#resolved-minor-items)
+
+<!-- /TOC -->
 
 ## Design goals (the north star)
 

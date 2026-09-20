@@ -3,6 +3,7 @@
 <!-- markdownlint-disable MD033 -- No inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- TOC ignore:true -->
 # Design
 
 Design, requirements, and direction. The task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
@@ -596,7 +597,7 @@ What it found, at 64 MiB per shape (rerun on 2026-09-19; runs before it read the
 
 - SHCL loads fifth of seven in Rust and last in Python by aggregate, four to eight times behind `serde_json`. On memory it sits in the middle: below YAML on three shapes of four, below TOML on two, above JSON on all four, and below `toml_edit` on all four, about half of it on the records. `toml_edit` is the one other parser that keeps the file.
 
-- The Python tier puts SHCL 3.7x behind `tomllib`, the tier's one other pure-Python parser, against 1.5x behind `toml` in Rust, so part of the Python gap is the implementation rather than the format. The rest of the trade is the design working as intended rather than a defect.
+- The Python tier puts SHCL 3.5x behind `tomllib`, the tier's one other pure-Python parser, against 1.5x behind `toml` in Rust, so part of the Python gap is the implementation rather than the format. The rest of the trade is the design working as intended rather than a defect.
 
 - At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.04 ms and 7 ms.
 
