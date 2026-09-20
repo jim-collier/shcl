@@ -148,13 +148,9 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- 🔘 Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
 		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
 		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 4: on windows the C save refuses a device name only because the publish happens to fail.
-		- The pre-read check is a no-op there, and the save's windows arm tests only the directory attribute. A device name has no attributes, so it reads as "nothing is there yet" and the call goes on to create and publish. Go asks for the file's type and refuses on both platforms.
-		- Probable fix: an explicit file-type test in the windows arm, so the answer does not rest on the publish. The reference has the same shape and would move with it.
-		- Note: the batch on 2026-09-19 confirmed that device names refuse at exit 8 in all four on a real box, so this is about where the refusal comes from, not whether it happens.
-		- Origin: idea.
+		- Measured: three behaviors, not two. Repeating one option takes the last value silently (`--strictness`, `--on-bad`, `--default`). A combination with no meaning is a usage error whichever order it is given in (`--default` with `--on-bad=error`, `--array` with `--raw`). Two different type options are neither: `--raw --int` exits 0 printing the int, and `--int --raw` exits 4 on the same two flags in the other order, with nothing said either way. `--array` is a modifier on the chosen type, not a type.
+		- Decided 20260920: options that compete, for any reason, are a usage error. So two different type options join the combinations that already refuse, order-independent, exit 1, naming both. Repeating one option with the same value is not competing and stays allowed, and so do the ordered repeatables (`--layer`, `--set` and its siblings). 3.0 is the window, since after the cut it waits for 4.0.
+		- Sweep: the option parser in all four CLIs, the help, the man page, the CLI style guide, and any `cli-regress` row that pins the old answer.
 		- Opened: 20260920-055406
 
 ### Done
@@ -4512,6 +4508,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Cost: 1.4 s plain and 6.2 s under the sanitizers, from 0.2 s.
 		- Opened: 20260920-055406
 		- Closed: 20260920-131500
+
+	- ✅ Idea 4: on windows the C save refuses a device name only because the publish happens to fail.
+		- The pre-read check is a no-op there, and the save's windows arm tests only the directory attribute. A device name has no attributes, so it reads as "nothing is there yet" and the call goes on to create and publish. Go asks for the file's type and refuses on both platforms.
+		- Probable fix: an explicit file-type test in the windows arm, so the answer does not rest on the publish. The reference has the same shape and would move with it.
+		- Note: the batch on 2026-09-19 confirmed that device names refuse at exit 8 in all four on a real box, so this is about where the refusal comes from, not whether it happens.
+		- Origin: idea.
+		- Corrected, measured on windows 11 26200: a device is not attribute-less. `GetFileAttributes` answers `NUL` with the same ARCHIVE bit an ordinary file carries, so the save read it as a file and tried to replace it. `nul.shcl` is an ordinary file on this build, not the device, so a reserved-name test on the path text would be wrong here.
+		- Wider than filed. All four bindings rested on a later step for a reserved name with no device behind it: `COM1` on a box with no serial port is not there to stat, so Go and Python passed it through too. Go and Python were already right for `CON` and `NUL`, which they can stat.
+		- Worse than filed in one place: the C CLI did not return at all on `CON`. Its pre-read check was a no-op on windows, so it read the file before deciding it would not write it, and a read of the console device waits.
+		- Fixed: a device test in all four, at both sites - the library save, and the CLI's pre-read check, which has to answer before the read for the same reason a FIFO is not drained. The handle answers first, since it is the OS's own and it keeps a volume-prefixed real path out of the device case; where the open is refused outright (`CON` gives ERROR_INVALID_PARAMETER) the full path decides, because a reserved name resolves into the device namespace from whatever directory it is typed in.
+		- Measured on b29w and vm925w, all four bindings, before and after. Before: C did not return on `CON` and said `No such file or directory` for `NUL`; Rust said `Cannot create a file when that file already exists. (os error 183)` for all three; Go and Python said `not a regular file` for `CON` and `NUL` and leaked the publish error for `COM1`, Python's naming its own temp file. After: `CON`, `NUL` and `COM1` are exit 8 with `not a regular file` in all four, and an ordinary create and an ordinary rewrite are unchanged.
+		- Pinned by: a `win-runners.bash` row per binding, run under a timeout, since the defect it watches for is a read that waits on the console and a gate that hangs reports nothing.
+		- Opened: 20260920-055406
+		- Closed: 20260920-184500
 
 	- ✅ Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
 		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.

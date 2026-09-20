@@ -673,10 +673,22 @@ EXIT_IO = 8
 def write_target_ok(file):
 	# A --write FILE is a regular file or nothing yet. Asked before the read,
 	# since reading a FIFO takes what was written to it and the save would then
-	# refuse it anyway. A directory is left to the read, which names it.
+	# refuse it anyway, and since a read of windows CON waits on the console
+	# rather than returning. A directory is left to the read, which names it.
 	try:
 		st = os.stat(file)
 	except (OSError, ValueError):
+		# A windows reserved name with no device behind it is not there to
+		# stat, and it still cannot be written. It resolves into the device
+		# namespace from whatever directory it is typed in, which is what the
+		# full path shows.
+		if sys.platform == "win32":
+			try:
+				if os.path.abspath(file).startswith("\\\\.\\"):
+					sys.stderr.write(f"{file}: not a regular file\n")
+					return False
+			except (OSError, ValueError):
+				pass
 		return True
 	if not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode):
 		sys.stderr.write(f"{file}: not a regular file\n")

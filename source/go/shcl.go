@@ -3658,6 +3658,11 @@ func WriteFileAtomic(file, data string) error {
 		}
 		return fmt.Errorf("%s: not a regular file", file)
 	}
+	// os.Stat cannot see a reserved name with no device behind it; see
+	// notADiskFile.
+	if notADiskFile(target) {
+		return fmt.Errorf("%s: not a regular file", file)
+	}
 	born := os.FileMode(0o600)
 	if existErr != nil {
 		born = 0o666
@@ -3892,6 +3897,14 @@ var publishNewFile = func(tmp, target string) error {
 var carriedAttrs = func(os.FileInfo) uint32 { return 0 }
 
 var restoreAttrs = func(string, uint32) {}
+
+// notADiskFile says whether something is at the path and is not a disk file: a
+// windows device name. POSIX has no such thing at a path, so the default answers
+// false and the windows build swaps this out. os.Stat already reports a device
+// it can open, which covers CON and NUL, but a reserved name with no device
+// behind it - COM1 on a box with no serial port - is not there to stat, and a
+// save must still refuse it rather than leave the answer to the publish.
+var notADiskFile = func(string) bool { return false }
 
 // syncDir fsyncs the directory a save published into. The Sync on the file only
 // covered the file; the rename is a directory change, so without this a power

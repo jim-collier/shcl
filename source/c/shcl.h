@@ -6943,6 +6943,36 @@ static char *shcl_narrow(const wchar_t *w) {
 	else errno = n > 0 ? ENOMEM : EINVAL;
 	return s;
 }
+// Something is at the path and it is not a disk file: a device name such as
+// CON, NUL or COM1. An attribute test cannot see one - a device answers
+// GetFileAttributes with the same ARCHIVE bit an ordinary file does - so the
+// save read it as a file, tried to replace it, and the refusal came from
+// whichever later step happened to fail. Answers 0 for a path with nothing at
+// it, which is a save's ordinary create.
+static int shcl_not_a_disk_file(const char *path) {
+	wchar_t *w = shcl_widen(path);
+	if (!w) return 0;
+	// The handle first, since it is the OS's own answer and it keeps an exotic
+	// but real path (a volume-prefixed `\\.\C:\dir\file`) out of the device case.
+	HANDLE h = CreateFileW(w, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+	                       NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (h != INVALID_HANDLE_VALUE) {
+		DWORD type = GetFileType(h);
+		CloseHandle(h); free(w);
+		return type != FILE_TYPE_DISK;
+	}
+	// CON refuses that open outright (ERROR_INVALID_PARAMETER), and a serial
+	// port nobody has answers not-found, so a failed open cannot mean "nothing
+	// is there". A reserved name resolves into the device namespace from
+	// whatever directory it is typed in, and the full path is where that shows:
+	// `\\.\CON` against a drive path for an ordinary name. Long paths overflow
+	// the buffer and fall through to the create, which is what they did before.
+	wchar_t full[MAX_PATH];
+	DWORD n = GetFullPathNameW(w, MAX_PATH, full, NULL);
+	free(w);
+	return n > 0 && n < MAX_PATH
+	       && full[0] == L'\\' && full[1] == L'\\' && full[2] == L'.' && full[3] == L'\\';
+}
 static char *shcl_resolve_target(const char *file) {
 	wchar_t *w = shcl_widen(file);
 	if (!w) return NULL;
@@ -7206,6 +7236,13 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #else
 	if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
 		errno = EISDIR;
+		free(tmp); SHCL_FILE_CLEANUP(); return 0;
+	}
+	// The same rule as the POSIX arm above: only a regular file is replaced. The
+	// attribute test alone answers just "is it a directory", and a device has no
+	// attributes to test.
+	if (shcl_not_a_disk_file(target)) {
+		errno = EINVAL;
 		free(tmp); SHCL_FILE_CLEANUP(); return 0;
 	}
 #endif
