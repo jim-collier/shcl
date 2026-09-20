@@ -92,18 +92,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
 
-	- 🔘 Item 5 (F9): the grammar does not derive the most ordinary line in the language.
-		- Reproduced: the bare-value character class leaves out the space and the colon, so `field-line` derives none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` does not derive `* Bond James`. Every one of those loads at exit 0 with no diagnostics. The first, the third and the fourth are the spec's own examples.
-		- Cause: the class was written as the formatter's minimal output shape, but it is not that either - the formatter quotes `]` and `'` on output and both are inside the class, while `[` is outside it at every position although only a leading one means anything.
-		- Effect: the grammar is what an oracle generator is written against, and a generator written from it would never produce a line with a space in its value.
-		- Which side moves: the file. The reference's own tokenizer oracle draws its bare pieces from a set holding every character the grammar's class cuts out, spaces and colons included, so the code already knows the wider language.
-		- Note: the grammar's own comments cite `it's fine` and `C:\dir` as lines that load clean, and neither is derivable. The prose saying the parser is wider is in the file already; the rules do not follow it.
-		- Probable fix: a bare piece is every character but a newline, `#` and `,`, with the leading-quote and leading-`[` cases carved out as the prose already does. Keep the formatter's minimal shape as a separate rule nothing on the parse side reaches.
-		- Note: the grammar check's three whole-file rows assert nothing, since a rule for verbatim block content derives any text at all. Its two field-line rows are the ones that assert, and neither has a space or a colon in its value.
-		- Origin: new ground, no earlier round read the grammar against the tokenizer. The character class predates the grammar check, which arrived 2026-09-19. Confirmed.
-		- Sweep: any other rule whose character class was written from the formatter's output. Read at filing time there is none; the fence-label class is deliberately wide and has its own rows in the check.
-		- Opened: 20260920-055406
-
 	- 🔘 Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
 		- Reproduced: seventeen cases carry a strict load row. Sixteen expect a failure and every one of them has an error diagnostic, so each pins "an error fails a strict load". The seventeenth expects success and has no diagnostics at all. None asserts a strict load succeeding with a hint present.
 		- Effect: the spec calls the strictness table normative and says every level is corpus-pinned, so a binding cannot drift on any row. A binding that failed a strict load on a repeated-leaf hint would pass the whole corpus.
@@ -542,6 +530,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `check-docs.bash` takes every name the buckets key on, drops the type prefix, and requires a matching `fn` in the reference. Watched to fail on `scan_path`.
 		- Opened: 20260920-055406
 		- Closed: 20260920-084012
+
+	- ✅ Item 5 (F9): the grammar does not derive the most ordinary line in the language.
+		- Reproduced: the bare-value class left out the space and the colon, so `field-line` derived none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` did not derive `* Bond James`. All seven load at exit 0 with no diagnostics, checked against the CLI.
+		- Cause: the class was written as the formatter's minimal output shape, and it was not even that - it kept `]` and `'`, both of which the formatter quotes.
+		- Origin: new ground, no earlier round read the grammar against the tokenizer. Confirmed.
+		- Fixed: `bareword` is a first character, any run of characters that are not a newline, `#` or `,`, and a last character that is not a blank. The leading quote and leading `[` are out of the first-character class, which is where they mean anything. The formatter's shape is `fmt-bareword`, reached from nothing, with `'` and `]` out of it and `\` in, matching `needs_quotes`.
+		- Swept: no other rule was written from the formatter's output. The fence-label class is deliberately wide and has its own rows.
+		- Pinned by: `check-abnf.py` grew 22 rows - the seven lines above, four more bare shapes, the five a bare piece must not be, and five for the formatter's class. Every one of the old-class failures was watched.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084339
 
 	- ✅ Item 6 (F10): one comparison figure on the front page is two runs and a major old.
 		- Reproduced: the README and design.md both said SHCL reads 3.7 times slower than `tomllib` in Python. The newest run gives 3.5. 3.7 is the ratio in the first of the four runs, taken against 1.2.0.

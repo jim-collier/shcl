@@ -103,24 +103,43 @@ sqchar          = %x00-26 / %x28-10FFFF       ; anything but "'": single quotes 
                 ; and never closes it that way is read bare, quotes and all, and
                 ; reported (E017).
 
-bareword        = 1*bare-char
-                ; the minimally-quoted shape the FORMATTER emits. The PARSER is
-                ; wider: everything after the ":" up to an unquoted "#" is the
-                ; value, split on unquoted commas, each piece trimmed; a piece
-                ; is quoted only when it BEGINS with a quote char. So a bare
-                ; piece may carry mid-text spaces, ":", "'", "]", even '"',
-                ; verbatim ("q: needs no quotes" loads clean). Bare, only a
-                ; "#" (comment), "," (element split), a leading
-                ; quote, and a leading "[" (bracket-array spelling, refused)
-                ; keep their meaning. A "\" in bare text is a character.
-bare-char       = bare-plain
-bare-plain      = %x21 / %x24-2B / %x2D-39 / %x3B-5A / %x5C-10FFFF
-                ; excludes SP HTAB , : # " [
-                ; (0x20 0x09 0x2C 0x3A 0x23 0x22 0x5B).
-                ; "'" 0x27, "\" 0x5C and "]" 0x5D are IN the ranges on purpose:
-                ; the parser keeps all three bare (it's fine / C:\dir / a]b load
-                ; clean, verbatim on read), though the formatter still quotes
-                ; the first and last on output.
+bareword        = bare-first [ *bare-char bare-last ]
+                ; what the PARSER takes. Everything after the ":" up to an
+                ; unquoted "#" is the value, split on unquoted commas, each
+                ; piece trimmed at both edges. So a bare piece carries mid-text
+                ; spaces, ":", "'", "]", "[", "\", even '"', verbatim:
+                ; "q: needs no quotes", "p: C:\dir\file", "t: 12:30" and
+                ; "a: x[y]" all load clean. Only four things keep a meaning
+                ; bare - "#" (comment), "," (element split), a leading quote
+                ; and a leading "[" (bracket-array spelling, refused E019) -
+                ; and the first two are out of bare-char while the last two are
+                ; out of bare-first. A piece that opens a quote and never
+                ; closes it is read bare too, quotes and all, and reported
+                ; (E017); that one is not derived here.
+bare-char       = %x00-09 / %x0B-22 / %x24-2B / %x2D-10FFFF
+                ; any char but LF, "#" (0x23) and "," (0x2C).
+bare-last       = %x00-08 / %x0B-0C / %x0E-1F / %x21-22 / %x24-2B / %x2D-10FFFF
+                ; bare-char with no blank: the piece is trimmed, so neither end
+                ; is SP, HTAB or CR.
+bare-first      = %x00-08 / %x0B-0C / %x0E-1F / %x21 / %x24-26 / %x28-2B
+                / %x2D-5A / %x5C-10FFFF
+                ; bare-last without DQUOTE (0x22), "'" (0x27) and "[" (0x5B):
+                ; a quote in first position opens a quoted piece, and a "["
+                ; there is the bracket-array spelling.
+
+fmt-bareword    = 1*fmt-bare-char
+                ; the minimally-quoted shape the FORMATTER emits, reached from
+                ; nothing above. A value holding anything outside this class,
+                ; or whitespace at either edge, or a run that would read as a
+                ; fence, comes back quoted. It is written down because the two
+                ; shapes keep getting confused: this class WAS the parse-side
+                ; rule until 2026-09-20, which left the grammar unable to
+                ; derive "q: needs no quotes" - the most ordinary line there is.
+fmt-bare-char   = %x00-08 / %x0B-0C / %x0E-1F / %x21 / %x24-26 / %x28-2B
+                / %x2D-39 / %x3B-5A / %x5C / %x5E-10FFFF
+                ; excludes a blank, LF, "," ":" "#" DQUOTE "'" "[" "]"
+                ; (0x20 0x09 0x0D 0x0A 0x2C 0x3A 0x23 0x22 0x27 0x5B 0x5D).
+                ; "\" (0x5C) is in: the formatter leaves a backslash bare.
 
 escape          = "\" non-newline
                 ; inside double quotes only: \t \n \\ \" \' decode on read, and
@@ -162,8 +181,8 @@ info-string     = *blank 1*info-char *( *blank 1*info-char )
                                                ; the line's comment, in either spelling,
                                                ; so ```c# labels the block c
 info-char       = %x00-08 / %x0B-0C / %x0E-1F / %x21-22 / %x24-10FFFF
-                ; any char but a blank, LF and "#". Wider than bare-plain on
-                ; purpose: ":", ",", quotes and "[" are plain text in a label
+                ; any char but a blank, LF and "#". Wider than fmt-bare-char
+                ; on purpose: ":", ",", quotes and "[" are plain text in a label
                 ; (```sql:pg, "v" [x] reads back as written, and SetRaw writes it).
 raw-content-line= *non-newline                 ; verbatim; only while a fence is open
 ; fence-close (context): indent (N*"`" / N*"~") *blank   where char matches opener
