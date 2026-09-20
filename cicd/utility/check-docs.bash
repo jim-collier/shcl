@@ -416,6 +416,67 @@ if [[ -n "${help}" ]]; then
 			fBad "style-guide_ui-ux.md: an exit row names one subcommand's --check: ${row}"
 		fi
 	done <<<"${exitRows}"
+
+	##	20260920 idea 10: the man page is the third copy of the exit codes and
+	##	of the per-option subcommand lists, and it was held to neither. Both are
+	##	compared with the help, which cli-regress.bash holds to the CLI itself.
+	manCodes="$(sed -n '/^\.SH EXIT STATUS$/,/^\.SH /p' "${man}" | sed -n 's/^\.B \([0-9]\)$/\1/p' | sort -u)"
+	[[ -n "${manCodes}" ]] || fBad "shcl.1: no EXIT STATUS entries to compare with the help"
+	[[ "${helpCodes}" == "${manCodes}" ]] \
+		|| fBad "shcl.1: EXIT STATUS names $(tr '\n' ' ' <<<"${manCodes}")and the help names $(tr '\n' ' ' <<<"${helpCodes}")"
+
+	##	Both lists name subcommands in prose around them, so each is reduced to
+	##	the subcommand names it holds and the two sets are compared. The man
+	##	page spells an option with escaped hyphens and roff font macros around
+	##	the names, which come off first.
+	mapfile -t docCmds < <(printf '%s\n' "${help}" | { grep -oE '^  shcl [a-z]+' || true ;} \
+		| awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	fNames(){   ## fNames TEXT -> the subcommand names in it, sorted
+		local w out=""
+		for w in ${1//[^a-z]/ }; do
+			for c in "${docCmds[@]}"; do if [[ "${w}" == "${c}" ]]; then out+="${c} "; fi; done
+		done
+		tr ' ' '\n' <<<"${out}" | sort -u | xargs
+	}
+	##	"(same)", or no parentheses at all, carries the entry above, in the help
+	##	and in the man page alike.
+	declare -A helpScope=()
+	carried=""
+	while IFS=$'\t' read -r spell par; do
+		if [[ -n "${par}" && "${par}" != "(same"* ]]; then carried="$(fNames "${par}")"; fi
+		helpScope["${spell%%=*}"]="${carried}"
+	done < <(printf '%s\n' "${help}" | awk '
+		/^Options \(/ { on = 1; next }
+		on && /^[^ ]/ { on = 0 }
+		!on { next }
+		/^  --/ {
+			if (spell != "") print spell "\t" par
+			spell = $1; par = ""; inpar = 0
+			d = substr($0, 42)
+			if (substr(d, 1, 1) == "(") { inpar = 1 }
+			if (inpar) { par = d; if (index(d, ")")) { par = substr(d, 1, index(d, ")")); inpar = 0 } }
+			next
+		}
+		inpar {
+			d = substr($0, 42)
+			if (index(d, ")")) { par = par substr(d, 1, index(d, ")")); inpar = 0 } else { par = par d }
+		}
+		END { if (spell != "") print spell "\t" par }')
+	manOpts=0
+	manCarried=""
+	while IFS=$'\t' read -r opt par; do
+		[[ -v "helpScope[${opt}]" ]] || { fBad "shcl.1: ${opt} has no entry in the help's option list"; continue ;}
+		if [[ "${par}" != *"(same"* ]]; then manCarried="$(fNames "${par}")"; fi
+		manOpts=$((manOpts + 1))
+		[[ "${manCarried}" == "${helpScope[${opt}]}" ]] \
+			|| fBad "shcl.1: ${opt} belongs to (${manCarried}) here and (${helpScope[${opt}]}) in the help"
+	done < <(awk '
+		/^\.SH OPTIONS$/ { on = 1; next }
+		on && /^\.SH / { exit }
+		!on { next }
+		/^\.B[IR]? \\-\\-/ { spell = $2; sub(/=.*/, "", spell); gsub(/\\-/, "-", spell); next }
+		/^\.RB \(/ && spell != "" { print spell "\t" $0; spell = "" }' "${man}")
+	((manOpts >= 10)) || fBad "shcl.1: only ${manOpts} option(s) could be matched with the help's list"
 fi
 
 ##	Every subcommand that loads a document prints the load's diagnostics, so a
@@ -628,3 +689,5 @@ echo "check-docs: OK"
 ##		            note for every case.
 ##		2026-09-19  design.md's comparison rerun date matches the newest run in
 ##		            results.shcl.
+##		2026-09-20  The man page's exit codes and per-option subcommand lists are
+##		            compared with the help's.

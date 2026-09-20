@@ -157,28 +157,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: idea.
 		- Opened: 20260920-055406
 
-	- 🔘 Idea 6: the dev installer's tool stocktaking is reached by no gate.
-		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
-		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
-		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 9: the README check builds three of the five code examples and runs none of them.
-		- The Rust and Python blocks are built by nothing. No example is executed, and nothing compares the file the four leave behind against the README block that is meant to be exactly that.
-		- Checked: all four were built and run against the README's own config file, and all four leave it byte-identical to that block. Nothing is wrong today.
-		- Probable fix: the check already stands up a Go module and a C compile. A Rust one is a short manifest with a path dependency, and Python needs the module copied beside the block. Then run each and compare the file.
-		- Note: the same site has been fixed twice for this class already - a fragment that did not compile, and transcripts that drifted.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 10: two documents state the CLI's contract and nothing compares either with the CLI.
-		- The help's option parentheses are derived from the CLI and compared, and both completion files are held to it. The man page carries the same per-option subcommand lists and the same exit codes, compared with nothing; the CLI style guide carries a third copy of the exit codes, also compared with nothing.
-		- Checked: the man page's twelve option lists all match today. One of the guide's nine exit rows does not, which is bug item 7.
-		- Probable fix: the same derived comparison, run twice more in the docs check.
-		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
-		- Opened: 20260920-055406
-
 ### Done
 
 #### Done - Bugs
@@ -4553,6 +4531,40 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a `shell-regress.bash` row that lifts both lines out of the shipped file and runs them over a sums file holding a `.sha256` sidecar line above each asset. The old lines answer with the sidecar's hash for both.
 		- Opened: 20260920-055406
 		- Closed: 20260920-142000
+
+	- ✅ Idea 9: the README check builds three of the five code examples and runs none of them.
+		- The Rust and Python blocks are built by nothing. No example is executed, and nothing compares the file the four leave behind against the README block that is meant to be exactly that.
+		- Checked: all four were built and run against the README's own config file, and all four leave it byte-identical to that block. Nothing is wrong today.
+		- Probable fix: the check already stands up a Go module and a C compile. A Rust one is a short manifest with a path dependency, and Python needs the module copied beside the block. Then run each and compare the file.
+		- Note: the same site has been fixed twice for this class already - a fragment that did not compile, and transcripts that drifted.
+		- Origin: idea.
+		- Fixed: `check-readme.bash` builds all five and runs the four that save. Each gets its own directory and a fresh copy of the README's config block, and the file it leaves is compared with the "What saving does" block. Rust is a short manifest with a path dependency, carrying the tree's `rust-toolchain.toml` so the example is built with the toolchain the rest of the gate uses; Python is the block with `shcl.py` beside it. Nothing reaches the network.
+		- Pinned by: two injections. One number changed in the "What saving does" block, which all four report, and one changed in the Python example alone, which only Python reports.
+		- Cost: about 7 seconds for the whole check, the Rust build included.
+		- Opened: 20260920-055406
+		- Closed: 20260920-162000
+
+	- ✅ Idea 6: the dev installer's tool stocktaking is reached by no gate.
+		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
+		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
+		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
+		- Origin: idea.
+		- Fixed: the plan's cppcheck line names both numbers, `cppcheck 2.17.1 (pipx cppcheck==1.5.1, user-space)`, so it says what the install two blocks down will actually ask for.
+		- Pinned by: `check-install-dev.bash` runs the default path inside its throwaway clone with a fixture `cicd/config.bash` and every tool it would install stubbed on PATH, plus a scratch HOME, since the script puts `~/.cargo/bin` and the go bin dir ahead of PATH and would otherwise reach past the stubs. The fixture has one tool at its pin, one drifted, one missing, and a wheel version that is not the binary's. It reads back the plan, what the stub pipx was asked for, and the refusal when `CPPCHECK_WHEEL` is gone.
+		- Watched to fail three ways: the old plan line, an `at_pin` that always says no (which puts a tool already at its pin in the plan and installs it), and the config with the wheel line taken out.
+		- Opened: 20260920-055406
+		- Closed: 20260920-150000
+
+	- ✅ Idea 10: two documents state the CLI's contract and nothing compares either with the CLI.
+		- The help's option parentheses are derived from the CLI and compared, and both completion files are held to it. The man page carries the same per-option subcommand lists and the same exit codes, compared with nothing; the CLI style guide carries a third copy of the exit codes, also compared with nothing.
+		- Checked: the man page's twelve option lists all match today. One of the guide's nine exit rows does not, which is bug item 7.
+		- Probable fix: the same derived comparison, run twice more in the docs check.
+		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
+		- Note: the guide's exit table got its check with bug item 7 in the fix round, so what was left here was the man page's two copies.
+		- Fixed: `check-docs.bash` compares the man page's EXIT STATUS codes and its per-option subcommand lists with the help's. Not with the CLI directly: `cli-regress.bash` already holds the help's lists to what each CLI refuses, so the help is the one derived copy and everything else is compared with it. Both sides name subcommands in prose, so each is reduced to the subcommand names it holds; `(same)` and a missing list carry the entry above, in both documents.
+		- Pinned by: two injections, an exit row renumbered 8 to 9 and `--from-2x` moved to `fmt`. Each is reported with both sides spelled out.
+		- Opened: 20260920-055406
+		- Closed: 20260920-154500
 
 - Code review 20260918b:
 
