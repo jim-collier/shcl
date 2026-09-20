@@ -3,7 +3,7 @@
 .\"
 .\" Carries no version string on purpose: the release bump touches eight files
 .\" and this is not one of them. Keep it in step with HELP in the four CLIs.
-.TH SHCL 1 2026-09-19 shcl "User Commands"
+.TH SHCL 1 2026-09-20 shcl "User Commands"
 .SH NAME
 shcl \- read, edit, validate and format Simple Hierarchical Config Language files
 .SH SYNOPSIS
@@ -336,6 +336,11 @@ nothing in the file says which one wrote it.
 .RB ( fmt ", " migrate )
 Print nothing. Exit 6 when a rewrite would change the file and 0 when it would
 not, so a script can ask which files in a tree need formatting or migrating.
+A rewrite the matching
+.B \-\-write
+would refuse is exit 7 instead, since
+.B \-\-check
+asks the same save gate.
 .B migrate
 also names on stderr each line it would change, as
 .IR FILE : LINE .

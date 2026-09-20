@@ -191,11 +191,14 @@ def fAnalyze(total: int, frames: list[Frame], top: int) -> None:
 			cur = parent(cur)
 		##	Buckets keyed to shcl's hot subsystems (the cicd workload is `fmt`, so
 		##	parse + emit dominate; reads shows up if the workload ever adds gets).
+		##	The docs gate checks every name below against the reference: the lookup
+		##	scanner was renamed once and its whole bucket moved into `other` with
+		##	nothing saying so.
 		if any("Parser::parse" in a or "Document::parse" in a for a in anc):
 			parse += s
 		elif any("to_canonical" in a or "emit_node" in a for a in anc):
 			emit += s
-		elif any("scan_path" in a or "::read_" in a for a in anc):
+		elif any("scan_lookup" in a or "::read_" in a for a in anc):
 			reads += s
 		else:
 			other += s

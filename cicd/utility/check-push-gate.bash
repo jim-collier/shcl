@@ -245,7 +245,7 @@ BUILD_CMD=(true); BUILD_EXTRA=()
 LINT_CMD=(true); LINT_EXTRA=(); SHELLCHECK_TARGETS=()
 TEST_CMD=(true); TEST_QUICK_CMD=(true)
 TEST_EXTRA=('if [[ -n "${STUB_SKIP:-}" ]]; then echo stub >> "${SHCL_GATE_SKIPS}"; fi' 'echo "${GIT_DIR:-unset}" > "${STUB_GITDIR:-/dev/null}"')
-BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
+BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); CROSS_CHECKS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
 DOGFOOD_FIXED_DESTS=(); GIT_PUBLISH=(); RELEASE_NATIVE_CMD=()
 CFG
 { git -C "${eng}" add --all && git -C "${eng}" commit -q -m base; } || { echo "check-push-gate: engine repo commit failed" >&2; exit 2; }

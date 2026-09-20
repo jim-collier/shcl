@@ -320,7 +320,9 @@ CROSS_TARGETS=(
 ## Cross-compile checks that ship nothing: they exist so the non-Rust bindings'
 ## platform branches are compiled somewhere. The C header's Windows path had
 ## never been built here, which is how a regression in it reached dev. Same
-## "label|command" shape as CROSS_TARGETS, minus the artifact.
+## "label|command" shape as CROSS_TARGETS, minus the artifact. These run under
+## --ci as well, since they are checks rather than artifacts; ci.yml has to
+## carry whatever they need, which today means mingw's gcc.
 CROSS_CHECKS=(
 	"C library + CLI for Windows x86_64 (mingw)|wbin=\"\$(mktemp -u)\".exe; x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o \"\${wbin}\"; wrc=\$?; rm -f \"\${wbin}\"; ((wrc==0))"
 	"C library with file I/O compiled out|printf '#define SHCL_NO_FILE_IO\\n#define SHCL_IMPLEMENTATION\\n#include \"shcl.h\"\\n' | cc -x c -std=c11 -O2 -Wall -Wextra -Werror -Isource/c -c - -o /dev/null"

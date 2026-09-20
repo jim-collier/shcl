@@ -3,6 +3,7 @@
 <!-- markdownlint-disable MD033 -- No inline html -->
 <!-- markdownlint-disable MD055 -- Table pipe style [Expected: leading_and_trailing; Actual: leading_only; Missing trailing pipe] -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- TOC ignore:true -->
 # Design
 
 Design, requirements, and direction. The task list is in `backlog.md`. The full language definition is in `spec.md` (with `grammar.abnf`); this file stays high-level - the *why*, not the letter of the rules.
@@ -108,7 +109,7 @@ Other points
 	- What did not change: the comment rule is 2.x's, so a 2.x file's comments and values read the same before and after. Two edges do read differently, and `migrate` leaves both: a fence label holding a `#`, which 2.x ran to the end of the line and which has no quoting, and a carriage return at a piece's edge in the middle of a line, which 2.x kept and which is a blank now.
 	- Which rules wrote a file is not in the text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite and leaves those pieces as written, at exit 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes a second run a no-op rather than a second rewrite of the first one's output. The library never adds the whole block, since that would write bytes the document does not hold, and it does not stamp a file that never closes a raw block, since the line would land inside the block as content.
 	- `migrate` reports what it could not carry rather than exiting 0 over it: the pieces it could not decide between the two rule sets, and the one shape 2.x bound that nothing binds now, bracket text after the colon. Both are exit 7, and each has its own override - `--from-2x` for the first, `--lossy` for the second on a rewrite - because one is a question the text cannot answer and the other is a real loss.
-	- `migrate --check` compares the input and the migrated text line by line, in the CLI. The rewrite never adds or drops a line ahead of its stamp, so line N is line N on both sides, and the library needs nothing new. A line to rewrite is exit 6, the code `check` uses for a file with something to fix, and exit 7 still wins when `migrate` could not finish.
+	- `migrate --check` compares the input and the migrated text line by line, in the CLI. The rewrite never adds or drops a line ahead of its stamp, so line N is line N on both sides, and the library needs nothing new. A line to rewrite is exit 6, the code `check` uses for a file with something to fix, and exit 7 still wins when `migrate` could not finish or when the save gate would refuse the rewrite. `fmt --check` asks that gate the same way.
 
 - One tokenizer per binding is the only reader of a line's parts. It takes text and a separator and hands back spans: per segment a name and an optional selector body, each with how it was quoted; the separator; the value and its elements; the comment; or the fault that makes the line malformed. Nothing is copied. The parser's line dispatch, the path scanner behind every lookup and setter, `SetLiteral`, `SetRaw`'s info check and the CLI's `--set` split all read those spans, and the seven scanners they replaced are deleted rather than wrapped. A 2.x flag on the same tokenizer is what `migrate` reads with, so the old rules live in one place too.
 	- Pinned by a `tokens` subcommand on every CLI, compared four ways over the corpus and the fuzz soup, and by a generator in the reference that builds lines from the grammar with their spans known and asserts the tokenizer returns exactly those.
@@ -596,7 +597,7 @@ What it found, at 64 MiB per shape (rerun on 2026-09-19; runs before it read the
 
 - SHCL loads fifth of seven in Rust and last in Python by aggregate, four to eight times behind `serde_json`. On memory it sits in the middle: below YAML on three shapes of four, below TOML on two, above JSON on all four, and below `toml_edit` on all four, about half of it on the records. `toml_edit` is the one other parser that keeps the file.
 
-- The Python tier puts SHCL 3.7x behind `tomllib`, the tier's one other pure-Python parser, against 1.5x behind `toml` in Rust, so part of the Python gap is the implementation rather than the format. The rest of the trade is the design working as intended rather than a defect.
+- The Python tier puts SHCL 3.5x behind `tomllib`, the tier's one other pure-Python parser, against 1.5x behind `toml` in Rust, so part of the Python gap is the implementation rather than the format. The rest of the trade is the design working as intended rather than a defect.
 
 - At the two realistic sizes the size result holds and the speed result stops mattering: SHCL writes the smallest file of the five for both the config and the schema definition, and reads them in 0.04 ms and 7 ms.
 
@@ -605,6 +606,7 @@ What it found, at 64 MiB per shape (rerun on 2026-09-19; runs before it read the
 The responsibility is split rather than duplicate the pipeline:
 
 - The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on pushes to `main`, on pull requests, and by hand. Minimal permissions, cancels superseded runs, times out.
+	- The cross checks run there too. They build nothing anyone downloads - the C library and CLI for windows through mingw, the C library with file I/O compiled out, and the Go library for windows - so they belong with the other checks rather than with the release artifacts. They sat inside the release branch until 2026-09-20, where `--ci` never reached them. `--no-cross` turns them off with the cross targets.
 
 - `dev` is not gated, by the hook or by the hosted workflow. The pre-push hook runs `cicd.bash --ci` on a commit bound for `main`, and skips one whose tree a run already passed. Each run that gets through the tests stage records the tree it tested, unless it ran `--quick`, `--no-fmt` or `--no-lint`, or skipped a missing tool. Before this, one change to `dev` went through a full local run, then the same gate again in the hook, then about half an hour of hosted CI.
 	- A tree hash, not a commit hash. The publish stage commits after the tests run, and a `--no-ff` merge makes a new commit holding the same files.

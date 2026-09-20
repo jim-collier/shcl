@@ -90,94 +90,9 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Review document `20260920-055406`. The first Panoplia code review on this project, over the whole tree, split four ways and run one part at a time: the Rust reference and its CLI, the Go, Python, C and C++ bindings, the pipeline and gates and installers, and the documents and the conformance corpus. Aimed at what the four-way crosscheck cannot see: behavior that never reaches stdout, structural inputs the value-level fuzz never generates, and round-trip and fixpoint properties where the code reads back its own output.
 
-	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
+	- Each item named its finding id. All nine defects were fixed on 2026-09-20, in four chunks: the two `--check` arms and the style guide's exit table, the cross checks under `--ci`, the document and report nits, and the grammar's bare-value class with the corpus's hint row. Every fix carries a pin that was watched to fail.
 
-	- 🔘 Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
-		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
-		- Cause: both `--check` arms compare text and never ask the save gate the matching `--write` goes through.
-		- Probable fix: let the refusal win over 6, the way `migrate --check` already lets 7 win over its own two refusal counts.
-		- Origin: new ground, no earlier round read it. `fmt --check` reached dev 2026-09-19, `migrate --check` 2026-09-16. Confirmed.
-		- Sweep: the same two `--check` arms in the Go, Python and C CLIs.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
-		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one. Stage 6 of the `--ci` run prints "release builds skipped".
-		- Cause: the cross-check loop sits inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
-		- Effect: the mingw build of the C library and CLI for windows, the build with file I/O compiled out, and the `GOOS=windows` build, vet and staticcheck of the Go library are compiled by no gate that decides whether a commit reaches main. The windows job covers two of them partly, and only on a push to main.
-		- Probable fix: run the cross checks whenever correctness is gated, not only when a release binary is built.
-		- Note: `--quick`, the fast in-editor loop, runs all three; `--ci`, the gate, runs none. The `--help` line for `--ci` says "no cross/publish", which reads against `--no-cross` as the cross-compile targets rather than the checks.
-		- Origin: new ground, no earlier round read it. The checks and the loop arrived in `464b5df` (2026-08-18) inside a branch that was already unreachable under `--ci`. Confirmed.
-		- Sweep: anything else in the release stage that is a check rather than an artifact. Read at filing time there is nothing else.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
-		- Reproduced: the line prints 7,800 lines, all sent to `/dev/null`, and its result is never read. The check below it is the whole of that block's assertion.
-		- Cause: a first attempt left in place when the grep form replaced it.
-		- Probable fix: delete the line.
-		- Origin: new ground. Arrived with the block in `404de2d` (2026-09-03). Confirmed. Nit.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 4 (F8): the profiler report's reads bucket names a function the reference no longer has.
-		- Reproduced: two small fixture flamegraphs, alike but for the leaf's name. Time in `scan_lookup` is reported as "other"; the same time under the old name `scan_path` is reported as "reads".
-		- Cause: the lookup scanner was renamed by `e58fe9f` and the bucket was not moved with it. The only `scan_path` left is inside the packaged 1.0.0 and 1.1.0 copies under the build dir.
-		- Effect: the line reads "reads (lookup/coercion)" and the lookup half of it is counted elsewhere. The session startup asks for a prose read of exactly that attribution.
-		- Probable fix: the current name, and check the other three buckets' keys at the same time. All of those still exist.
-		- Origin: new ground, no earlier round read this file. Confirmed. Nit.
-		- Sweep: any other report that names a reference function by string.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 5 (F9): the grammar does not derive the most ordinary line in the language.
-		- Reproduced: the bare-value character class leaves out the space and the colon, so `field-line` derives none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` does not derive `* Bond James`. Every one of those loads at exit 0 with no diagnostics. The first, the third and the fourth are the spec's own examples.
-		- Cause: the class was written as the formatter's minimal output shape, but it is not that either - the formatter quotes `]` and `'` on output and both are inside the class, while `[` is outside it at every position although only a leading one means anything.
-		- Effect: the grammar is what an oracle generator is written against, and a generator written from it would never produce a line with a space in its value.
-		- Which side moves: the file. The reference's own tokenizer oracle draws its bare pieces from a set holding every character the grammar's class cuts out, spaces and colons included, so the code already knows the wider language.
-		- Note: the grammar's own comments cite `it's fine` and `C:\dir` as lines that load clean, and neither is derivable. The prose saying the parser is wider is in the file already; the rules do not follow it.
-		- Probable fix: a bare piece is every character but a newline, `#` and `,`, with the leading-quote and leading-`[` cases carved out as the prose already does. Keep the formatter's minimal shape as a separate rule nothing on the parse side reaches.
-		- Note: the grammar check's three whole-file rows assert nothing, since a rule for verbatim block content derives any text at all. Its two field-line rows are the ones that assert, and neither has a space or a colon in its value.
-		- Origin: new ground, no earlier round read the grammar against the tokenizer. The character class predates the grammar check, which arrived 2026-09-19. Confirmed.
-		- Sweep: any other rule whose character class was written from the formatter's output. Read at filing time there is none; the fence-label class is deliberately wide and has its own rows in the check.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 6 (F10): one comparison figure on the front page is two runs and a major old.
-		- Reproduced: the README and design.md both say SHCL reads 3.7 times slower than `tomllib` in Python, against 1.5 times slower than `toml` in Rust. The newest run in the results file gives 3.5 for the Python pair and 1.5 for the Rust pair. 3.7 is the ratio in the first of the four runs, taken against 1.2.0. No shape in the newest run comes to 3.7 either.
-		- Cause: the 2026-09-19 rerun refreshed the tables, the date and the Rust half of that sentence, and left the Python half.
-		- Effect: both documents point the reader at the results file for the Python tier, and the figure there is not the one they print.
-		- Probable fix: the figure the newest run gives.
-		- Checked: everything else in both places matches that run - all three README tables cell by cell, the two percentage claims, the memory and read-time comparison against the one other parser that keeps the file, and all four of design.md's result bullets.
-		- Probable pin: the docs check already reads the results file for the rerun date. It can take the two ratios from the newest run and compare them with the two figures in the sentence.
-		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
-		- Sweep: every other number in either document taken from the results file by hand. Checked at filing time; this is the only one that does not match.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
-		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
-		- Cause: the guide has one commit, from two days before `fmt --check` reached dev. The help's own exit sentence was generalized then and the guide was not.
-		- Effect: the guide says a CLI doing anything else is the bug, so a later pass could take the `fmt` arm for one.
-		- Note: the help, the man page and the spec all describe it correctly.
-		- Probable fix: name both arms, or `--check` generically as the other three do.
-		- Probable pin: the docs check already reads the help out of the debug binary. It can compare the guide's exit rows against the help's exit sentence.
-		- Origin: new ground, no earlier round read this file against the CLI. Confirmed. Nit.
-		- Sweep: every other claim in the file, since nothing holds any of it to the CLI. All driven at filing time and clean.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 8 (F12): the spec has no table of contents.
-		- Reproduced: 758 lines and 37 headings below the title, with no contents block. The README, the design document and the AI guidelines all carry one, and the spec is longer than two of the three and has more headings than either.
-		- Effect: the README sends a new reader to the spec first, and there is nothing to jump by.
-		- Probable fix: generate one the way the other three are generated, covering h2 to h5.
-		- Checked: the three that exist are all current - every heading listed, in order, at the right depth, nothing left over. Nothing in the pipeline compares them.
-		- Note: the design document's title line is missing the ignore comment the other two titles carry. It changes no output, but it is the same pass.
-		- Origin: new ground, no earlier round read the documents for this. Confirmed. Nit.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
-		- Reproduced: seventeen cases carry a strict load row. Sixteen expect a failure and every one of them has an error diagnostic, so each pins "an error fails a strict load". The seventeenth expects success and has no diagnostics at all. None asserts a strict load succeeding with a hint present.
-		- Effect: the spec calls the strictness table normative and says every level is corpus-pinned, so a binding cannot drift on any row. A binding that failed a strict load on a repeated-leaf hint would pass the whole corpus.
-		- Cause: the level column arrived with the cases that use it, and this row was never given one.
-		- Probable fix: one line added to a hint-only case, in the shape the clean strict case already uses. Sixteen hint-only cases to choose from; one for each hint code covers both.
-		- Note: watch it fail - make a hint fatal at strict in one binding and see the row go red. And any corpus change shifts the fuzz seeds, so expect a gate round with it.
-		- Origin: new ground, no earlier round read the corpus against the table this way. Confirmed.
-		- Sweep: the other six rows of the table. All pinned, checked at filing time. The colon-less repair's strict half is thin - it has no case of its own and rides the general rule.
-		- Opened: 20260920-055406
+	- Finished items are under Done - Bugs, in a bullet of the same name. The round's ten ideas are open under Features and enhancements; none was taken.
 
 - Code review 20260918b:
 
@@ -563,6 +478,98 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260920:
+
+	- Every defect the round filed. Its ideas are open under Features and enhancements.
+
+	- ✅ Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
+		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
+		- Cause: both `--check` arms compare text and never ask the save gate the matching `--write` goes through.
+		- Origin: new ground, no earlier round read it. `fmt --check` reached dev 2026-09-19, `migrate --check` 2026-09-16. Confirmed.
+		- Fixed: both arms ask the gate before they count, and report its refusal at 7. Rust `do_fmt` and `do_migrate`, Go `doFmt` and `doMigrate`, Python `do_fmt` and `do_migrate`, C `do_fmt` and `do_migrate`.
+		- Swept: all four CLIs, both arms. The four agree byte-for-byte on stderr and exit code.
+		- Pinned by: `cli-regress.bash` rows `fmt-check-refused` and `migrate-check-refused`, both watched to fail at exit 6 on the old code, with `migrate-write-refused-lost` beside them as the write half of the pair.
+		- Note: the help's `--check` line, the man page, `spec.md`, `design.md` and the changelog say the 7 case now. `--lossy` is a usage error with `--check`, so the override can never be in play, but the test spells the `--write` condition whole so the two cannot drift.
+		- Opened: 20260920-055406
+		- Closed: 20260920-082633
+
+	- ✅ Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
+		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one.
+		- Cause: the cross-check loop sat inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
+		- Origin: new ground, no earlier round read it. The checks and the loop arrived in `464b5df` (2026-08-18) inside a branch that was already unreachable under `--ci`. Confirmed.
+		- Fixed: the loop runs at the top of stage 6, outside the release branch. `--no-cross` now empties `CROSS_CHECKS` with `CROSS_TARGETS`, since a box without the cross toolchains has neither, and the `--ci` and `--no-cross` help lines say so. The preflight block reports the checks on their own line.
+		- Fixed: `ci.yml` installs `gcc-mingw-w64-x86-64`, which the ubuntu image does not carry and the first check needs.
+		- Swept: nothing else in the release stage is a check rather than an artifact.
+		- Pinned by: `shell-regress.bash` stands up the throwaway repo the round used - the real engine, a stub config, a cross check that touches a marker - and asserts three things: `--ci` runs it, a failing one aborts the run by name, and `--no-cross` skips it. All three watched to fail on the old engine.
+		- Measured: the three checks add about a minute to a `--ci` run.
+		- Note: the full gate then went red on `check-push-gate.bash`, whose throwaway repo runs the real engine over a stubbed config and has no C source to compile. Its stub empties `CROSS_CHECKS` now, beside the `CROSS_TARGETS` it already emptied.
+		- Opened: 20260920-055406
+		- Closed: 20260920-083425
+
+	- ✅ Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
+		- Cause: a first attempt left in place when the grep form replaced it.
+		- Origin: new ground. Arrived with the block in `404de2d` (2026-09-03). Confirmed. Nit.
+		- Fixed: the line is gone. The grep under it was already the whole assertion, and `check-docs.bash` still passes.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084012
+
+	- ✅ Item 4 (F8): the profiler report's reads bucket names a function the reference no longer has.
+		- Reproduced: time in `scan_lookup` was reported as "other"; the same time under the old name `scan_path` was reported as "reads".
+		- Cause: the lookup scanner was renamed by `e58fe9f` and the bucket was not moved with it.
+		- Origin: new ground, no earlier round read this file. Confirmed. Nit.
+		- Fixed: the bucket keys on `scan_lookup`. The other five keys were checked and all still name something the reference defines.
+		- Swept: `flame-report.py` is the only report naming a reference function by string; `lint-report.bash` names none.
+		- Pinned by: `check-docs.bash` takes every name the buckets key on, drops the type prefix, and requires a matching `fn` in the reference. Watched to fail on `scan_path`.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084012
+
+	- ✅ Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
+		- Reproduced: seventeen cases carried a strict load row. Sixteen expected a failure and each had an error diagnostic; the seventeenth expected success with no diagnostics at all. None asserted a strict load succeeding with a hint present, so a binding that failed one would still pass the whole corpus.
+		- Cause: the level column arrived with the cases that use it, and this row was never given one.
+		- Origin: new ground, no earlier round read the corpus against the table this way. Confirmed.
+		- Fixed: a strict `load ok` row on `035-merge-hint` (`H002`) and on `101-empty-name-hint` (`H001`), which covers both hint codes. The corpus README says what the pair is for.
+		- Pinned by: those two rows. Watched to fail with the reference's strict gate widened to any diagnostic, and each binding was shown to read the `101` row by flipping its expectation.
+		- Note: only `reads.tsv` changed, so the fuzz seed set, which is drawn from the case inputs, did not move.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084802
+
+	- ✅ Item 5 (F9): the grammar does not derive the most ordinary line in the language.
+		- Reproduced: the bare-value class left out the space and the colon, so `field-line` derived none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` did not derive `* Bond James`. All seven load at exit 0 with no diagnostics, checked against the CLI.
+		- Cause: the class was written as the formatter's minimal output shape, and it was not even that - it kept `]` and `'`, both of which the formatter quotes.
+		- Origin: new ground, no earlier round read the grammar against the tokenizer. Confirmed.
+		- Fixed: `bareword` is a first character, any run of characters that are not a newline, `#` or `,`, and a last character that is not a blank. The leading quote and leading `[` are out of the first-character class, which is where they mean anything. The formatter's shape is `fmt-bareword`, reached from nothing, with `'` and `]` out of it and `\` in, matching `needs_quotes`.
+		- Swept: no other rule was written from the formatter's output. The fence-label class is deliberately wide and has its own rows.
+		- Pinned by: `check-abnf.py` grew 22 rows - the seven lines above, four more bare shapes, the five a bare piece must not be, and five for the formatter's class. Every one of the old-class failures was watched.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084339
+
+	- ✅ Item 6 (F10): one comparison figure on the front page is two runs and a major old.
+		- Reproduced: the README and design.md both said SHCL reads 3.7 times slower than `tomllib` in Python. The newest run gives 3.5. 3.7 is the ratio in the first of the four runs, taken against 1.2.0.
+		- Cause: the 2026-09-19 rerun refreshed the tables, the date and the Rust half of that sentence, and left the Python half.
+		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
+		- Fixed: both documents print 3.5.
+		- Pinned by: `check-docs.bash` reads the newest run's four parse times out of `results.shcl` with the debug CLI, divides, rounds to one decimal, and matches each document's own wording. Watched to fail on 3.7 in both. It sits beside the rerun-date check, which was the only currency claim held to anything.
+		- Swept: every other number in either document was compared with that run at filing time and this was the only one adrift.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084031
+
+	- ✅ Item 8 (F12): the spec has no table of contents.
+		- Reproduced: 758 lines and 37 headings below the title, with no contents block, where the other three long documents all carry one.
+		- Origin: new ground, no earlier round read the documents for this. Confirmed. Nit.
+		- Fixed: a contents block over the spec's 37 h2-to-h5 headings, in the shape the extension generates, with the ignore comment on the title and on the contents heading. The design document's title got the ignore comment it was missing.
+		- Pinned by: `check-docs.bash` rebuilds each of the four documents' blocks from its own headings and compares, and reports two headings that would share an anchor. Both halves watched to fail. The generator was checked against the README's and the design document's live blocks first, which it reproduces exactly.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084031
+
+	- ✅ Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
+		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
+		- Cause: the guide has one commit, from two days before `fmt --check` reached dev. The help's own exit sentence was generalized then and the guide was not.
+		- Fixed: row 6 names `--check` generically, as the help does, and row 7 says a `--check` reports the refusal with the same code, which item 1 made true.
+		- Pinned by: `check-docs.bash` compares the guide's exit table with the help's code list, and refuses any exit row that pins a `--check` to one subcommand. Both halves watched to fail, on the old row-6 wording and on a dropped row.
+		- Note: holding the rest of the guide's prose to the CLI is idea 10, still open.
+		- Opened: 20260920-055406
+		- Closed: 20260920-082633
 
 - Code review 20260918b:
 

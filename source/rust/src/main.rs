@@ -144,7 +144,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          it those are left alone and migrate
                                          exits 7
   --check                                (fmt/migrate) print nothing and exit 6
-                                         when a rewrite would change the file;
+                                         when a rewrite would change the file,
+                                         or 7 when --write would refuse it;
                                          migrate names each line it would
                                          change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
@@ -1556,6 +1557,16 @@ fn do_fmt(o: &Opts) -> u8 {
 	// formatter has: print nothing, and say by the exit code whether a rewrite
 	// would change the file. It was `shcl fmt f | cmp -s - f` before.
 	if o.check {
+		// The save gate `--write` goes through is asked first, so 6 never
+		// promises a rewrite the same command would refuse to make.
+		if !o.lossy && doc.lost_count() != 0 {
+			errln!(
+				"{}: fmt --write would refuse: the load dropped {} line(s)/value(s) it would delete (--lossy overrides)",
+				file,
+				doc.lost_count()
+			);
+			return 7;
+		}
 		if doc.to_canonical() == read {
 			return 0;
 		}
@@ -1649,6 +1660,16 @@ fn do_migrate(o: &Opts) -> u8 {
 	if o.check {
 		for n in &rewritten {
 			errln!("{}:{}: migrate would rewrite this line", file, n);
+		}
+		// Same as `fmt --check`: the save gate `--write` goes through is asked
+		// before 6, so 6 never promises a rewrite that would be refused.
+		if rc == 0 && !o.lossy && doc.lost_count() != 0 {
+			errln!(
+				"{}: migrate --write would refuse: the migrated text drops {} line(s)/value(s) on load (--lossy overrides)",
+				file,
+				doc.lost_count()
+			);
+			rc = 7;
 		}
 		if rc == 0 && !rewritten.is_empty() {
 			rc = 6;

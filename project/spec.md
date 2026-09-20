@@ -2,9 +2,55 @@
 <!-- markdownlint-disable MD010 -- No hard tabs -->
 <!-- markdownlint-disable MD033 -- No inline html -->
 <!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- TOC ignore:true -->
 # SHCL specification
 
 Simple Hierarchical Config Language. This is the canonical language spec: terminology, lexical rules, structure, the read-time type/coercion model, raw blocks, the accessor and writer API, the canonical formatter, and the conformance strategy. The formal line/value grammar is in `grammar.abnf`; the raw by-example origin is in `../../notes.txt`; the settled decision log is in project memory.
+
+<!-- TOC ignore:true -->
+## Table of contents
+
+<!-- TOC -->
+
+- [Design goals (the north star)](#design-goals-the-north-star)
+- [Terminology](#terminology)
+- [Lexical structure](#lexical-structure)
+	- [Encoding and lines](#encoding-and-lines)
+	- [Comments](#comments)
+	- [Whitespace, quoting, and reserved characters](#whitespace-quoting-and-reserved-characters)
+	- [Escapes](#escapes)
+- [Structure and hierarchy](#structure-and-hierarchy)
+	- [Indentation (block form)](#indentation-block-form)
+	- [Dot and bracket (inline form)](#dot-and-bracket-inline-form)
+	- [Merging and instances](#merging-and-instances)
+- [Values and types](#values-and-types)
+	- [Strings](#strings)
+	- [Integers](#integers)
+	- [Floats](#floats)
+	- [Booleans](#booleans)
+	- [Dates and times](#dates-and-times)
+	- [Arrays](#arrays)
+	- [Coercion rules ("intelligent but safe")](#coercion-rules-intelligent-but-safe)
+- [Raw blocks](#raw-blocks)
+- [Consumer API](#consumer-api)
+	- [The core call](#the-core-call)
+	- [Ergonomic tiers](#ergonomic-tiers)
+	- [Status sentinels](#status-sentinels)
+	- [Lookup and traversal](#lookup-and-traversal)
+	- [Paths, selectors, and traversal](#paths-selectors-and-traversal)
+	- [Diagnostics and writing](#diagnostics-and-writing)
+	- [File tier](#file-tier)
+- [Canonical formatter](#canonical-formatter)
+- [Schema validation](#schema-validation)
+- [Layered loading](#layered-loading)
+- [Schema-driven generation](#schema-driven-generation)
+- [Error handling philosophy](#error-handling-philosophy)
+- [Strictness levels](#strictness-levels)
+- [Migrating from 2.x](#migrating-from-2x)
+- [Cross-language parity and conformance](#cross-language-parity-and-conformance)
+- [Resolved minor items](#resolved-minor-items)
+
+<!-- /TOC -->
 
 ## Design goals (the north star)
 
@@ -492,7 +538,7 @@ Every consumer that persists a config re-implements the same load/save dance, an
 
 ## Canonical formatter
 
-The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). Two normalizations to know about: field names are case-insensitive, and the canonical spelling is the folded (ASCII-lowercase) one - `Max-Upload-MB:` comes back `max-upload-mb:` from `fmt`, matching how every read and merge already treats the name; and a blank line an author put between bindings survives (one blank; runs collapse), so grouped configs stay grouped through `fmt --write`. It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result). `fmt --check` prints nothing and exits 6 when a rewrite would change the file, 0 when it would not, so a tree can be checked for non-canonical files without diffing each one; it cannot be combined with `--write`.
+The formatter normalizes structure only - it cannot know value types, so it never rewrites value text (no `.5` -> `0.5`). Two normalizations to know about: field names are case-insensitive, and the canonical spelling is the folded (ASCII-lowercase) one - `Max-Upload-MB:` comes back `max-upload-mb:` from `fmt`, matching how every read and merge already treats the name; and a blank line an author put between bindings survives (one blank; runs collapse), so grouped configs stay grouped through `fmt --write`. It loads at the requested strictness like every other operation; a strict-failing document formats nothing (the load failure is the result). `fmt --check` prints nothing and exits 6 when a rewrite would change the file, 0 when it would not, so a tree can be checked for non-canonical files without diffing each one; it cannot be combined with `--write`. It asks the save gate first, so a file whose load dropped a line exits 7 the way `fmt --write` does, rather than promising a rewrite that would be refused.
 
 - Block (indented) form, tabs for indentation.
 
@@ -699,7 +745,7 @@ Notes:
 
 ## Migrating from 2.x
 
-The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read differently under them. `migrate FILE` rewrites such a file so the current parser reads the tree 2.x read. It touches only the spellings the two rule sets disagree on, and comments, blank lines, raw bodies and layout come through as written. `--write` puts the result back in place through the same save gate `fmt --write` uses, and says how many lines it rewrote. `--check` prints nothing, names each line a rewrite would change as `FILE:LINE`, and exits 6 when there is one, so a directory of files can be checked without diffing each one.
+The 3.0 lexical rules are smaller than 2.x's, so a file written for 2.x can read differently under them. `migrate FILE` rewrites such a file so the current parser reads the tree 2.x read. It touches only the spellings the two rule sets disagree on, and comments, blank lines, raw bodies and layout come through as written. `--write` puts the result back in place through the same save gate `fmt --write` uses, and says how many lines it rewrote. `--check` prints nothing, names each line a rewrite would change as `FILE:LINE`, and exits 6 when there is one, so a directory of files can be checked without diffing each one. It asks the save gate first, so a file `--write` would refuse is exit 7 rather than 6.
 
 Most of the change is loud. A quote that never closes is `E017`, bracket text after a colon is `E019`, and a line the current rules cannot read at all is a malformed line. A file carrying one of those says so the first time it is loaded.
 

@@ -146,6 +146,10 @@ printf 'base:[Boston]\n\tlat: 42\n' > "${tmpDir}/sugar.shcl"
 ## guesses damages whichever file it guessed wrong about. Copied fresh for the
 ## rows that rewrite, the way the sugar file is.
 printf 'p: %s\n' "'C:\temp'" > "${tmpDir}/bsrc.shcl"
+## An escaped comma 2.x folded into one element, so migrate re-spells the line,
+## plus an empty element the load drops. The rewrite is refused, which is what
+## --check has to say rather than counting the line it would have changed.
+printf 'list: a\\,b, c\nother:\n  * \n' > "${tmpDir}/mlost.shcl"
 ## The bracket array again, for the rows that rewrite it. %BA% is shared, and a
 ## migrate that stamps the file would leave the next binding nothing to do.
 printf 'ports: [80, 443]\n' > "${tmpDir}/brsrc.shcl"
@@ -224,6 +228,7 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 ##	the bracket array, %V3% a file that already names its format,
 ##	%V3B% the same behind a BOM, %V03% an older Format line and then the
 ##	current one, %FB% a Format line of five thousand digits, %RF2%/%RF3% a raw body holding a Format line,
+##	%ML% a 2.x file migrate rewrites whose migrated text still drops a line,
 ##	%SB%/%SC% a last-segment selector whose default contradicts it and one
 ##	whose default names it, %SD%/%SE% an optional field's bad default and
 ##	optional lines that each pass alone, %SH% an optional field whose default
@@ -455,6 +460,11 @@ rows=(
 	'fmt-check-noncanonical|fmt --check %NC%|-|6||noncanon\.shcl: not canonical; fmt --write would rewrite it'
 	'fmt-check-canonical|fmt --check %F%|-|0||!.'
 	'fmt-check-write|fmt --check --write %NC%|-|1|-|--check cannot be combined with --write'
+	## 20260920 item 1: --check promised a rewrite --write then refused. The
+	## sugar file's --write row two dozen lines up is the other half of the pair.
+	'fmt-check-refused|fmt --check %W%|-|7||fmt --write would refuse: the load dropped 1 line'
+	'migrate-check-refused|migrate --check %ML%|-|7||migrate --write would refuse: the migrated text drops 1 line'
+	'migrate-write-refused-lost|migrate --write %ML%|-|7|-|refusing to rewrite: the migrated text drops 1 line'
 	## 20260918b item 55: a created file says so, since nothing else does.
 	'create-says|set --write --no-banner %C% --set=a=1|-|0|-|created\.shcl: created|a: 1\n'
 	'write-existing-quiet|fmt --write %W%|-|7|-|!created'
@@ -681,6 +691,7 @@ for row in "${rows[@]}"; do
 	argv="${argv//%FB%/${tmpDir}/bigfmt.shcl}"
 	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
 	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
+	argv="${argv//%ML%/${tmpDir}/mlost.shcl}"
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1

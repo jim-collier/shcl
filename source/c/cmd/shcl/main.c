@@ -128,7 +128,8 @@ static const char *HELP =
 	"                                         it those are left alone and migrate\n"
 	"                                         exits 7\n"
 	"  --check                                (fmt/migrate) print nothing and exit 6\n"
-	"                                         when a rewrite would change the file;\n"
+	"                                         when a rewrite would change the file,\n"
+	"                                         or 7 when --write would refuse it;\n"
 	"                                         migrate names each line it would\n"
 	"                                         change on stderr\n"
 	"  --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/\n"
@@ -894,12 +895,19 @@ static int do_fmt(Opts *o) {
 	// formatter has: print nothing, and say by the exit code whether a rewrite
 	// would change the file. It was `shcl fmt f | cmp -s - f` before.
 	if (o->check) {
-		shcl_str c = shcl_to_canonical(L.doc);
-		const char *was = L.texts[L.ntexts - 1];
-		if (c.n == L.base_len && (c.n == 0 || memcmp(c.p, was, c.n) == 0)) rc = 0;
-		else {
-			fprintf(stderr, "%s: not canonical; fmt --write would rewrite it\n", file);
-			rc = 6;
+		// The save gate --write goes through is asked first, so 6 never
+		// promises a rewrite the same command would refuse to make.
+		if (!o->lossy && shcl_lost_count(L.doc) != 0) {
+			fprintf(stderr, "%s: fmt --write would refuse: the load dropped %zu line(s)/value(s) it would delete (--lossy overrides)\n", file, shcl_lost_count(L.doc));
+			rc = 7;
+		} else {
+			shcl_str c = shcl_to_canonical(L.doc);
+			const char *was = L.texts[L.ntexts - 1];
+			if (c.n == L.base_len && (c.n == 0 || memcmp(c.p, was, c.n) == 0)) rc = 0;
+			else {
+				fprintf(stderr, "%s: not canonical; fmt --write would rewrite it\n", file);
+				rc = 6;
+			}
 		}
 	} else if (o->write) {
 		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len);
@@ -970,6 +978,12 @@ static int do_migrate(const Opts *o) {
 	}
 	size_t rewritten = rewritten_lines(o->check ? file : NULL, text, len, m.text, m.len);
 	if (o->check) {
+		// Same as fmt --check: the save gate --write goes through is asked
+		// before 6, so 6 never promises a rewrite that would be refused.
+		if (rc == 0 && !o->lossy && shcl_lost_count(d) != 0) {
+			fprintf(stderr, "%s: migrate --write would refuse: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
+			rc = 7;
+		}
 		if (rc == 0 && rewritten) rc = 6;
 	} else if (o->write) {
 		if (rc) {

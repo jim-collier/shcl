@@ -152,7 +152,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          it those are left alone and migrate
                                          exits 7
   --check                                (fmt/migrate) print nothing and exit 6
-                                         when a rewrite would change the file;
+                                         when a rewrite would change the file,
+                                         or 7 when --write would refuse it;
                                          migrate names each line it would
                                          change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
@@ -1622,6 +1623,13 @@ func doFmt(o *opts) int {
 	// formatter has: print nothing, and say by the exit code whether a rewrite
 	// would change the file. It was `shcl fmt f | cmp -s - f` before.
 	if o.check {
+		// The save gate --write goes through is asked first, so 6 never
+		// promises a rewrite the same command would refuse to make.
+		if !o.lossy && doc.LostCount() != 0 {
+			fmt.Fprintf(os.Stderr, "%s: fmt --write would refuse: the load dropped %d line(s)/value(s) "+
+				"it would delete (--lossy overrides)\n", file, doc.LostCount())
+			return 7
+		}
 		if doc.ToCanonical() == read {
 			return 0
 		}
@@ -1706,6 +1714,13 @@ func doMigrate(o *opts) int {
 	if o.check {
 		for _, n := range rewritten {
 			fmt.Fprintf(os.Stderr, "%s:%d: migrate would rewrite this line\n", file, n)
+		}
+		// Same as fmt --check: the save gate --write goes through is asked
+		// before 6, so 6 never promises a rewrite that would be refused.
+		if rc == 0 && !o.lossy && doc.LostCount() != 0 {
+			fmt.Fprintf(os.Stderr, "%s: migrate --write would refuse: the migrated text drops %d line(s)/value(s) "+
+				"on load (--lossy overrides)\n", file, doc.LostCount())
+			rc = 7
 		}
 		if rc == 0 && len(rewritten) != 0 {
 			rc = 6

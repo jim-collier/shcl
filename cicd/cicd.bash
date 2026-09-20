@@ -26,7 +26,8 @@
 ##	  cicd/cicd.bash [options]
 ##	  Options:
 ##	   --ci                correctness gate only: format check (no rewrite), build,
-##	                       lint, tests; non-interactive, no cross/publish. This is
+##	                       lint, tests, cross checks; non-interactive, no
+##	                       cross-compiled release artifacts and no publish. This is
 ##	                       what the GitHub workflow runs - one definition of "passing".
 ##	   --quick             skip the slow stages: large-document gate, cross-compile,
 ##	                       profiler, demo gif; tests run at the shorter fuzz depth
@@ -40,7 +41,8 @@
 ##	   --no-sync           skip the remote sync stage
 ##	   --no-fmt            skip the formatter stage
 ##	   --no-lint           skip the lint stage
-##	   --no-cross          skip the cross-compile targets (native release still builds)
+##	   --no-cross          skip the cross-compile targets and the cross checks
+##	                       (native release still builds)
 ##	   --no-package        skip building installer packages (.deb/.rpm/NSIS setup)
 ##	   --no-largedoc       skip the large-document gate in the tests stage
 ##	   --no-profile        skip the profiler stage
@@ -110,7 +112,7 @@ while (($#)); do case "$1" in
 	--no-sync)                sync_enable=0; shift ;;
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); gate_partial=1; shift ;;
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); gate_partial=1; shift ;;
-	--no-cross)               CROSS_TARGETS=(); shift ;;
+	--no-cross)               CROSS_TARGETS=(); CROSS_CHECKS=(); shift ;;
 	--no-package)             PACKAGE_ENABLE=0; shift ;;
 	--no-largedoc)            LARGEDOC_MIB=0; shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
@@ -224,10 +226,11 @@ if ((! quiet)); then
 	fEcho_Clean "Tests ..........: ${TEST_CMD[*]:-(none configured)}$( ((${#TEST_EXTRA[@]})) && echo "  (+ ${#TEST_EXTRA[@]} extra)" )  + crosscheck: ${#BINDING_CLIS[@]} binding(s)$( ((LARGEDOC_MIB)) && echo "  + large doc: ${LARGEDOC_MIB} MiB" )"
 	fEcho_Clean "Profiler .......: $( ((PROFILE_ENABLE)) && echo "${PROFILE_SECS}s run -> flamegraph SVG -> ${PROFILE_OUT_DIR}/" || echo '(skipped)')"
 	if ((${#RELEASE_NATIVE_CMD[@]})); then
-		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) + ${#CROSS_CHECKS[@]} cross check(s) -> ${RELEASE_ARTIFACT_DIR}/"
+		fEcho_Clean "Release ........: native + ${#CROSS_TARGETS[@]} cross target(s) -> ${RELEASE_ARTIFACT_DIR}/"
 	else
 		fEcho_Clean "Release ........: (skipped)"
 	fi
+	fEcho_Clean "Cross checks ...: $( ((${#CROSS_CHECKS[@]})) && echo "${#CROSS_CHECKS[@]} (no artifact; run whether or not a release is built)" || echo '(skipped)')"
 	fEcho_Clean "Packages .......: $( ((PACKAGE_ENABLE)) && echo '.deb/.rpm + NSIS setup (per built binary)' || echo '(skipped)')"
 	fEcho_Clean "Dogfood ........: $( if ((${#DOGFOOD_FIXED_DESTS[@]})); then _dfd="$(fFirstWritableDir "${DOGFOOD_FIXED_DESTS[@]}")"; [[ -n "$_dfd" ]] && echo "${_dfd}/${EXE_NAME}" || echo '(no writable dest; will skip)'; else echo '(skipped)'; fi )"
 	fEcho_Clean "Demo gif .......: $( ((GIF_ENABLE)) && echo "${GIF_OUT}" || echo '(skipped)')"
@@ -457,6 +460,19 @@ fi
 ## Naming (stable; download links depend on it): <exe>-<version>-<os-arch>[.exe]
 fSection "6/9  Release builds"
 built_arts=()   ## <os-arch>|<path> per built binary; stage 7 dogfoods off it too
+## Cross-compile checks that produce no artifact: the other bindings' own
+## platform branches. Without these the C header's Windows path is never
+## compiled here at all, which is exactly how a build-breaking regression in it
+## reached dev unnoticed. They are checks, not builds, so they run whenever
+## correctness is gated - they sat inside the release branch below for a month,
+## which meant --ci, the one run that decides whether a commit reaches main,
+## compiled none of them.
+for c in "${CROSS_CHECKS[@]}"; do
+	c_label="${c%%|*}"; c_cmd="${c#*|}"
+	fEcho "cross check: ${c_label}"
+	eval "${c_cmd}" || fDie "cross check failed: ${c_label}"
+	fEcho "OK: ${c_label}"
+done
 if ((${#RELEASE_NATIVE_CMD[@]})); then
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
@@ -469,16 +485,6 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		[[ -f "${t_art}" ]] || fDie "missing artifact for ${t_label}: ${t_art}"
 		fEcho "OK: ${t_label}: ${t_art} ($(du -h "${t_art}" | cut -f1))"
 		built_arts+=("${t_osarch}|${t_art}")
-	done
-	## Cross-compile checks that produce no artifact: the other bindings' own
-	## platform branches. Without these the C header's Windows path is never
-	## compiled here at all, which is exactly how a build-breaking regression in
-	## it reached dev unnoticed.
-	for c in "${CROSS_CHECKS[@]}"; do
-		c_label="${c%%|*}"; c_cmd="${c#*|}"
-		fEcho "cross check: ${c_label}"
-		eval "${c_cmd}" || fDie "cross check failed: ${c_label}"
-		fEcho "OK: ${c_label}"
 	done
 	if [[ -n "${RELEASE_ARTIFACT_DIR:-}" ]]; then
 		ver="$(fVersion)"

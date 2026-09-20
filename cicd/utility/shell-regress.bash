@@ -1370,6 +1370,55 @@ out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "quiet|${tmpDir}
 out="$(bash "${repoDir}/cicd/utility/perf-gate.bash" --keys 500 "wrong|${tmpDir}/stubs/wrong" 2>&1 || true)"
 [[ "${out}" == *"did not do the work"* ]] || fBad "perf-gate accepted a CLI that exited wrong: $(tail -n 2 <<<"${out}")"
 
+##	20260920 item 2: the cross checks sat inside the release-build branch, and
+##	--ci empties the release command, so the one run that decides whether a
+##	commit reaches main compiled none of them for a month. Driven rather than
+##	grepped: a throwaway repo holding the real engine, a config with every stage
+##	empty, and a cross check that touches a marker file.
+stubDir="${tmpDir}/cicd-stub"
+mkdir -p "${stubDir}/cicd/utility/include"
+cp "${repoDir}/cicd/cicd.bash" "${stubDir}/cicd/"
+cp "${repoDir}/cicd/utility/include/gfs-rotate.bash" "${stubDir}/cicd/utility/include/"
+cp "${repoDir}/cicd/utility/green-tree.bash" "${stubDir}/cicd/utility/"
+cat > "${stubDir}/cicd/config.bash" <<'EOF'
+APP_NAME="stub"; EXE_NAME="stub"; VERSION_MANIFEST="Cargo.toml"; LINT_LOG_DIR=""
+FMT_CMD=(); FMT_CHECK_CMD=(); BUILD_CMD=(); LINT_CMD=(); TEST_CMD=()
+SHELLCHECK_TARGETS=(); BINDING_CLIS=(); LARGEDOC_MIB=0
+PROFILE_ENABLE=0; GIF_ENABLE=0; GIT_PUBLISH=(); DOGFOOD_FIXED_DESTS=()
+RELEASE_NATIVE_CMD=(); RELEASE_NATIVE_BIN=""; RELEASE_NATIVE_OSARCH="x"
+CROSS_TARGETS=(); RELEASE_ARTIFACT_DIR=""
+CROSS_CHECKS=( "marker|touch \"${SHCL_STUB_MARKER}\"${SHCL_STUB_FAIL:+; false}" )
+EOF
+(
+	cd "${stubDir}"
+	git init -q .
+	printf 'x\n' > f
+	git add -A
+	git -c user.email=stub@example.invalid -c user.name=stub commit -qm stub
+) || fBad "could not stand up the cicd stub repo"
+export SHCL_STUB_MARKER="${stubDir}/marker"
+##	The gate run has to compile them.
+rm -f "${SHCL_STUB_MARKER}"
+if ( cd "${stubDir}" && bash cicd/cicd.bash --ci ) > "${tmpDir}/stub-ci.log" 2>&1; then
+	[[ -f "${SHCL_STUB_MARKER}" ]] || fBad "cicd.bash --ci ran no cross check"
+else
+	fBad "cicd.bash --ci failed on the stub repo: $(tail -n 3 "${tmpDir}/stub-ci.log")"
+fi
+##	And a failing one has to stop the run, or running them buys nothing.
+rm -f "${SHCL_STUB_MARKER}"
+if ( export SHCL_STUB_FAIL=1; cd "${stubDir}" && bash cicd/cicd.bash --ci ) > "${tmpDir}/stub-fail.log" 2>&1; then
+	fBad "cicd.bash --ci passed with a failing cross check"
+fi
+grep -q 'cross check failed: marker' "${tmpDir}/stub-fail.log" \
+	|| fBad "cicd.bash did not name the cross check that failed"
+##	--no-cross drops the checks with the targets: it is what a box without the
+##	cross toolchains passes, and mingw is one of them.
+rm -f "${SHCL_STUB_MARKER}"
+( cd "${stubDir}" && bash cicd/cicd.bash --ci --no-cross ) > "${tmpDir}/stub-nocross.log" 2>&1 \
+	|| fBad "cicd.bash --ci --no-cross failed on the stub repo"
+if [[ -f "${SHCL_STUB_MARKER}" ]]; then fBad "--no-cross ran a cross check anyway"; fi
+unset SHCL_STUB_MARKER
+
 ##	20260904 item 26: the installers ship from main, so cicd.bash compares them
 ##	against origin/main after a dev publish. The line has to be there.
 grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"

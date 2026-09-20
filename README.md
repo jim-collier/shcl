@@ -196,7 +196,7 @@ Far past anything anyone edits by hand: one array of 302,230 records.
 
 `toml_edit` is the only other parser here that keeps the file contents (e.g. comments), and SHCL uses half the memory - but at a third more read time.
 
-Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.7 times slower than `tomllib`; in Rust, 1.5 times slower than `toml`. Two languages, two separate implementations, and SHCL is behind in both.
+Every number above comes from one Rust library per format. A slow library and a slow format are not the same thing, so the same files are read again in Python. Most Python parsers are C underneath (`json`, `ElementTree` and PyYAML all are), while SHCL's Python binding is pure Python. That leaves `tomllib`, also pure Python, as the only fair match. In Python, SHCL reads 3.5 times slower than `tomllib`; in Rust, 1.5 times slower than `toml`. Two languages, two separate implementations, and SHCL is behind in both.
 
 TLDR: If you are moving a lot of machine-generated data over a high-bandwidth connection, use JSON. If you want to save developer time, and respect end-user sanity, use SHCL.
 
