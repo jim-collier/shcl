@@ -6,7 +6,8 @@
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
 //! Every other binding mirrors this file's structure on purpose (parity over
-//! idiom - see style-guide.md), so restructuring here means restructuring all.
+//! idiom - see project/style-guide_code.md), so restructuring here means
+//! restructuring all.
 
 use std::collections::{HashMap, HashSet};
 
@@ -4985,12 +4986,41 @@ impl Document {
 			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
 			_ => Vec::new(),
 		};
+		// Mark first, rebuild each touched child list once. Dropping one target
+		// at a time rebuilt the same list once per target, which is quadratic
+		// when a path matches many siblings.
+		let mut pairs: Vec<(usize, usize)> = Vec::with_capacity(targets.len());
 		for &t in &targets {
 			let p = self.arena[t].parent;
-			self.arena[p].children.retain(|&c| c != t);
+			// A node already marked would carry DEAD into the rebuild below as
+			// an index, so skip it rather than trust resolve never to name one
+			// twice.
+			if p == DEAD {
+				continue;
+			}
 			if let Some(ix) = self.index.get_mut() {
 				ix.unlink(name_key(p, &self.arena[t].name), t);
 			}
+			self.arena[t].parent = DEAD;
+			pairs.push((t, p));
+		}
+		// Rebuilding a list puts back the parent of every node it drops, so a
+		// mark still standing is also the answer to "has this parent been done
+		// yet" - no separate pass to dedupe the parents.
+		for &(t, p) in &pairs {
+			if self.arena[t].parent != DEAD {
+				continue;
+			}
+			let kids = std::mem::take(&mut self.arena[p].children);
+			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
+			for c in kids {
+				if self.arena[c].parent == DEAD {
+					self.arena[c].parent = p;
+				} else {
+					keep.push(c);
+				}
+			}
+			self.arena[p].children = keep;
 		}
 		targets.len()
 	}

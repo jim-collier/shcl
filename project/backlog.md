@@ -104,15 +104,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a bare `#` in a write path cutting the path there, a fence run on an `E014` line (declined in the 20260918 round), and `allowed` on a datetime telling `13:00` from `13:00:00`.
 
-	- ✅ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
-		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
-		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
-		- Probable fix: the full path under `$SYSDIR`.
-		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
-		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
-		- Verified on B29W in a sandbox, 2026-09-19, with a marker program named `powershell.exe` beside the setup in an empty folder. The old setup ran the marker, and so did the old uninstaller with the marker in the install dir. The new setup does not, adds itself to the machine PATH and runs; the new uninstaller does not, and takes the PATH entry back off. So the item is Confirmed, not Plausible.
-		- Note: a silent uninstall from a script needs `uninstall.exe /S _?=<dir>`. Plain `/S` returned 0 and removed nothing, which is the relaunched copy of an NSIS uninstaller asking to elevate with nobody there to say yes. Interactive removal is unaffected.
-		- Opened: 20260918-193000
+	- Finished items are under Done - Bugs, and the eleven enhancements under Done - Features and enhancements, each in a bullet of the same name.
 
 - Code review 20260918:
 
@@ -153,22 +145,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's ideas. The defects are under Bugs, and the round bullet there says what was covered.
 
-	- 🔘 Idea 1: a `remove` that matches many instances is quadratic in the sibling count.
-		- Measured: removing every instance of one top-level name takes 0.95 s at 10,000 siblings, 3.33 s at 20,000 and 12.17 s at 40,000, where the parse of the same file is 0.30 s. Four times the work for twice the input.
-		- Cause: the parent's child list is rebuilt once per removed node, and the name index chain is walked from its head each time.
-		- Probable fix: one pass per parent over a set of targets, and drop the name index the way a merge already does.
-		- Note: reads, `fmt` and `paths` on the same files are linear. Nothing states a bound on `remove`, so this is an idea, not a defect.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
 	- 🔘 Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
 		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 3: the C OOM test sweeps a validate eight allocations deep and a parse four hundred.
-		- Eight budgets all fail in the opening moves of building the schema, so the recovery arm that gives back the per-level arena pool and the half-built name index never runs.
-		- Probable fix: the same loop bound the parse and load sweeps use. The widened version was built and run under the address and undefined-behavior sanitizers with leak detection and still passes, so it can go in as it stands.
 		- Origin: idea.
 		- Opened: 20260920-055406
 
@@ -179,55 +157,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: idea.
 		- Opened: 20260920-055406
 
-	- 🔘 Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
-		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.
-		- Probable fix: the same derived comparison the shell list already gets, once per kind. The Python side has two lists, one in the pipeline config and one in the binding's own project file.
-		- Note: the shell list drifted this way once and got its check on 2026-09-19.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 6: the dev installer's tool stocktaking is reached by no gate.
-		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
-		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
-		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 7: the completions gate's own fixture is built by replaces that nothing checks applied.
-		- The row adds an option-less subcommand to a copy of the CLI and both completion files by literal string replace. A replace whose anchor has moved is silent, so one broken anchor makes the row fail for the wrong reason and all of them broken makes it compare the real files with each other and pass.
-		- Checked: all six apply today, so the row does assert.
-		- Probable fix: assert each replaced text changed, and name the anchor that did not.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 8: the two installers read the same signed checksums file by different rules.
-		- The Linux one anchors the asset name at the end of the line, which it has to, or the package lines would match too. The Windows one matches anywhere in the line and takes the first hit. No asset name a cut produces contains another, so nothing is wrong today.
-		- Probable fix: match the whole line on the Windows side as well.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 9: the README check builds three of the five code examples and runs none of them.
-		- The Rust and Python blocks are built by nothing. No example is executed, and nothing compares the file the four leave behind against the README block that is meant to be exactly that.
-		- Checked: all four were built and run against the README's own config file, and all four leave it byte-identical to that block. Nothing is wrong today.
-		- Probable fix: the check already stands up a Go module and a C compile. A Rust one is a short manifest with a path dependency, and Python needs the module copied beside the block. Then run each and compare the file.
-		- Note: the same site has been fixed twice for this class already - a fragment that did not compile, and transcripts that drifted.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 10: two documents state the CLI's contract and nothing compares either with the CLI.
-		- The help's option parentheses are derived from the CLI and compared, and both completion files are held to it. The man page carries the same per-option subcommand lists and the same exit codes, compared with nothing; the CLI style guide carries a third copy of the exit codes, also compared with nothing.
-		- Checked: the man page's twelve option lists all match today. One of the guide's nine exit rows does not, which is bug item 7.
-		- Probable fix: the same derived comparison, run twice more in the docs check.
-		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
-		- Opened: 20260920-055406
-
-- Code review 20260918b:
-
-	- The round's eleven enhancements. The defects are under Bugs, and the round bullet there says what was covered. With fifty-three defects open, none of these should be taken in the fix round.
-
 ### Done
 
 #### Done - Bugs
+
+- ✅ `check-migrate` diverged on a 2.x file whose indentation the current parser places nowhere.
+	- 2.x read both elements of a list whose second line is indented with a space before its tab. The current parser reports `E012` and keeps only the first, so the migrated text reads one element short and the gate calls that a divergence. The document came into the fuzz seed set when corpus case `129-remove-many` shifted it.
+	- Not a migrate defect. `migrate` rewrites value spellings and not layout, and the rule it runs into is the spec's own: a decrease returns to the exact column of an ancestor. 2.x compared indentation more loosely, so a tab followed by a space and a tab, or by two spaces, bound there and does not here.
+	- Nothing is damaged quietly: `check` exits 6, and `migrate --write` and `fmt --write` refuse at exit 7 because the load dropped the line.
+	- Fixed: the gate takes the line out before comparing, the way it already does for a fence label holding a `#` and for a mid-line carriage return. Asked of the current parser rather than matched on the text, since what counts is the column the indent lands on and not which characters spell it.
+	- The third edge is named where the other two are: `spec.md`'s Migrating section, `design.md`, and the gate.
+	- Pinned by: the gate's own named-case block, against a document built there rather than a corpus case, since a new case shifts the fuzz seeds and costs another gate round. It checks that the exception fires, that 2.x reads both elements, and that a rewrite exits 7. Watched to fail three ways: with the exception taken out the original divergence comes back, and with the fixture flattened to plain tabs two of the three assertions go red.
+	- Opened: 20260920-171500
+	- Closed: 20260920-174500
 
 - ✅ The C save on windows eats a dangling symlink instead of writing through it.
 	- Reproduced on B29W, in a sandbox: `mklink l.shcl missing.shcl`, then `set --write --set a=1 l.shcl`. C exits 0 with `missing.shcl` never created and `l.shcl` now a regular file. Rust and Go create the target and keep the link.
@@ -573,7 +515,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260918b:
 
-	- Items closed so far. The rest of the round is open under Bugs.
+	- All fifty-three items. The round's eleven enhancements are under Done - Features and enhancements, and the round's own notes are under Bugs.
 
 	- ✅ Item 1: both Windows install one-liners in the README fail to parse, so nothing installs.
 		- Reproduced: pwsh 7.6.6 against the live main URL. `irm` keeps the file's byte-order mark as the first character, PowerShell does not take it for whitespace, and `param` is then no longer the first statement. Three parse errors, before a line runs. Every version of the file since the first has it. Running with `-File` is not affected, which is how every Windows test so far ran.
@@ -980,6 +922,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a `shell-regress.bash` row with two local https listeners on a throwaway certificate, the first redirecting downloads to the second under another host name. It lifts install.bash's own fetch lines for each tool and checks that a download reaches neither host with the token, and that both API calls carry it. On the old script, wget's download hands the token to the second host, both downloads send it to the first, and the wget status call sends none. Each of the three was also put back alone and failed alone.
 		- Opened: 20260918-193000
 		- Closed: 20260919-102859
+
+	- ✅ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
+		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
+		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
+		- Probable fix: the full path under `$SYSDIR`.
+		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
+		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
+		- Verified on B29W in a sandbox, 2026-09-19, with a marker program named `powershell.exe` beside the setup in an empty folder. The old setup ran the marker, and so did the old uninstaller with the marker in the install dir. The new setup does not, adds itself to the machine PATH and runs; the new uninstaller does not, and takes the PATH entry back off. So the item is Confirmed, not Plausible.
+		- Note: a silent uninstall from a script needs `uninstall.exe /S _?=<dir>`. Plain `/S` returned 0 and removed nothing, which is the relaunched copy of an NSIS uninstaller asking to elevate with nobody there to say yes. Interactive removal is unaffected.
+		- Opened: 20260918-193000
+		- Closed: 20260919-170410
 
 	- ✅ Item 39: the .deb puts the zsh completion where Debian's zsh does not look.
 		- Reproduced: on Debian 13, `$fpath` has `vendor-completions` and no `/usr/share/zsh/site-functions`, where the package puts `_shcl`. The README says completion works with nothing to configure. The rpm's path is right for Fedora.
@@ -4532,9 +4485,100 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Opened: n/a
 	- Closed: 20260713-065600
 
+- Code review 20260920:
+
+	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 1: a `remove` that matches many instances is quadratic in the sibling count.
+		- Measured: removing every instance of one top-level name takes 0.95 s at 10,000 siblings, 3.33 s at 20,000 and 12.17 s at 40,000, where the parse of the same file is 0.30 s. Four times the work for twice the input.
+		- Cause: the parent's child list is rebuilt once per removed node, and the name index chain is walked from its head each time.
+		- Probable fix: one pass per parent over a set of targets, and drop the name index the way a merge already does.
+		- Note: reads, `fmt` and `paths` on the same files are linear. Nothing states a bound on `remove`, so this is an idea, not a defect.
+		- Origin: idea.
+		- Fixed: every target is marked, then each touched child list is rebuilt once. The mark is the node's parent link set to DEAD, and a rebuild puts the link back on each node it drops, so a mark still standing also answers "has this parent been done yet" and nothing has to dedupe the parents. All four bindings; C spells the one vector of pairs as two parallel vectors.
+		- Left alone: the name index. Its chain is walked once per target, but resolve hands the targets back in file order, which is chain order, so every unlink takes the head and costs nothing. Dropping the index instead would rebuild it on the next lookup, which makes a script of single removes the quadratic that was just taken out.
+		- Measured: 40,000 instances of one name among 80,000 top-level nodes, release Rust: 839 ms before, 93 ms after, against a 77 ms parse of the same file. The other three move the same way.
+		- Pinned by: the `removes` workload in `perf-gate.bash`, watched to fail in all four (rust 12713 ms against a 1014 ms budget, go 1086 against 309, python 15463 against 2178, c 396 against 288). Its document is half again the key count, because C's budget is the baseline-plus-250 floor and at the plain key count the old code cleared it by only 40 percent. Corpus case `129-remove-many` pins the semantics four ways.
+		- Opened: 20260920-055406
+		- Closed: 20260920-113000
+
+	- ✅ Idea 3: the C OOM test sweeps a validate eight allocations deep and a parse four hundred.
+		- Eight budgets all fail in the opening moves of building the schema, so the recovery arm that gives back the per-level arena pool and the half-built name index never runs.
+		- Probable fix: the same loop bound the parse and load sweeps use. The widened version was built and run under the address and undefined-behavior sanitizers with leak detection and still passes, so it can go in as it stands.
+		- Origin: idea.
+		- Corrected: the eight budgets did reach the level pool and the recovery arm, which an injected leak of each proves. What they never reached was a validate that finished, since the whole call cost exactly eight allocations, so nothing on the completed path was under the swapped allocator at all.
+		- Fixed: the bound is 400, like its two siblings, and the sweep now asserts that a budget loose enough to finish is in it. The schema is 200 fields with a constraint on each, half the document's keys, so a budget can run out in the check walk and in the unknown-key sweep rather than only in a one-field schema build.
+		- Pinned by: the test itself. With `shcl_validation_free` leaving the validation arena behind, the old sweep is clean and the new one reports 375 MB leaked in 5321 allocations under the sanitizers.
+		- Cost: 1.4 s plain and 6.2 s under the sanitizers, from 0.2 s.
+		- Opened: 20260920-055406
+		- Closed: 20260920-131500
+
+	- ✅ Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
+		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.
+		- Probable fix: the same derived comparison the shell list already gets, once per kind. The Python side has two lists, one in the pipeline config and one in the binding's own project file.
+		- Note: the shell list drifted this way once and got its check on 2026-09-19.
+		- Origin: idea.
+		- Fixed: `shell-regress.bash` compares both lists with the tracked files, both ways, beside the shellcheck one. PowerShell is one `Invoke-ScriptAnalyzer` line per file. Python is two lists read as one: the binding's own files from `[tool.mypy] files` in its project file, everything else from the pipeline's ruff line. Ruff inside `source/python` is pointed at the whole directory and needs no list.
+		- Pinned by: three injections. A new `.ps1` and a new `.py` that no list names, a dropped analyzer line, and a mypy entry renamed to a file that does not exist. Each is reported by name, and the renamed one is reported from both sides at once.
+		- Opened: 20260920-055406
+		- Closed: 20260920-134500
+
+	- ✅ Idea 7: the completions gate's own fixture is built by replaces that nothing checks applied.
+		- The row adds an option-less subcommand to a copy of the CLI and both completion files by literal string replace. A replace whose anchor has moved is silent, so one broken anchor makes the row fail for the wrong reason and all of them broken makes it compare the real files with each other and pass.
+		- Checked: all six apply today, so the row does assert.
+		- Probable fix: assert each replaced text changed, and name the anchor that did not.
+		- Origin: idea.
+		- Fixed: the six replaces go through one helper that stops on a replace that changed nothing and says which anchor it wanted.
+		- Pinned by: itself. With the dispatch anchor spelled `do_pathsX`, the row reports `anchor not found: main.rs: the paths line of the dispatch` instead of building a fixture that tests nothing.
+		- Opened: 20260920-055406
+		- Closed: 20260920-142000
+
+	- ✅ Idea 8: the two installers read the same signed checksums file by different rules.
+		- The Linux one anchors the asset name at the end of the line, which it has to, or the package lines would match too. The Windows one matches anywhere in the line and takes the first hit. No asset name a cut produces contains another, so nothing is wrong today.
+		- Probable fix: match the whole line on the Windows side as well.
+		- Origin: idea.
+		- Fixed: both `Where-Object` filters in `install.ps1` anchor the name the way `install.bash` greps it, leading whitespace to end of line, and match case-sensitively.
+		- Pinned by: a `shell-regress.bash` row that lifts both lines out of the shipped file and runs them over a sums file holding a `.sha256` sidecar line above each asset. The old lines answer with the sidecar's hash for both.
+		- Opened: 20260920-055406
+		- Closed: 20260920-142000
+
+	- ✅ Idea 9: the README check builds three of the five code examples and runs none of them.
+		- The Rust and Python blocks are built by nothing. No example is executed, and nothing compares the file the four leave behind against the README block that is meant to be exactly that.
+		- Checked: all four were built and run against the README's own config file, and all four leave it byte-identical to that block. Nothing is wrong today.
+		- Probable fix: the check already stands up a Go module and a C compile. A Rust one is a short manifest with a path dependency, and Python needs the module copied beside the block. Then run each and compare the file.
+		- Note: the same site has been fixed twice for this class already - a fragment that did not compile, and transcripts that drifted.
+		- Origin: idea.
+		- Fixed: `check-readme.bash` builds all five and runs the four that save. Each gets its own directory and a fresh copy of the README's config block, and the file it leaves is compared with the "What saving does" block. Rust is a short manifest with a path dependency, carrying the tree's `rust-toolchain.toml` so the example is built with the toolchain the rest of the gate uses; Python is the block with `shcl.py` beside it. Nothing reaches the network.
+		- Pinned by: two injections. One number changed in the "What saving does" block, which all four report, and one changed in the Python example alone, which only Python reports.
+		- Cost: about 7 seconds for the whole check, the Rust build included.
+		- Opened: 20260920-055406
+		- Closed: 20260920-162000
+
+	- ✅ Idea 6: the dev installer's tool stocktaking is reached by no gate.
+		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
+		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
+		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
+		- Origin: idea.
+		- Fixed: the plan's cppcheck line names both numbers, `cppcheck 2.17.1 (pipx cppcheck==1.5.1, user-space)`, so it says what the install two blocks down will actually ask for.
+		- Pinned by: `check-install-dev.bash` runs the default path inside its throwaway clone with a fixture `cicd/config.bash` and every tool it would install stubbed on PATH, plus a scratch HOME, since the script puts `~/.cargo/bin` and the go bin dir ahead of PATH and would otherwise reach past the stubs. The fixture has one tool at its pin, one drifted, one missing, and a wheel version that is not the binary's. It reads back the plan, what the stub pipx was asked for, and the refusal when `CPPCHECK_WHEEL` is gone.
+		- Watched to fail three ways: the old plan line, an `at_pin` that always says no (which puts a tool already at its pin in the plan and installs it), and the config with the wheel line taken out.
+		- Opened: 20260920-055406
+		- Closed: 20260920-150000
+
+	- ✅ Idea 10: two documents state the CLI's contract and nothing compares either with the CLI.
+		- The help's option parentheses are derived from the CLI and compared, and both completion files are held to it. The man page carries the same per-option subcommand lists and the same exit codes, compared with nothing; the CLI style guide carries a third copy of the exit codes, also compared with nothing.
+		- Checked: the man page's twelve option lists all match today. One of the guide's nine exit rows does not, which is bug item 7.
+		- Probable fix: the same derived comparison, run twice more in the docs check.
+		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
+		- Note: the guide's exit table got its check with bug item 7 in the fix round, so what was left here was the man page's two copies.
+		- Fixed: `check-docs.bash` compares the man page's EXIT STATUS codes and its per-option subcommand lists with the help's. Not with the CLI directly: `cli-regress.bash` already holds the help's lists to what each CLI refuses, so the help is the one derived copy and everything else is compared with it. Both sides name subcommands in prose, so each is reduced to the subcommand names it holds; `(same)` and a missing list carry the entry above, in both documents.
+		- Pinned by: two injections, an exit row renumbered 8 to 9 and `--from-2x` moved to `fmt`. Each is reported with both sides spelled out.
+		- Opened: 20260920-055406
+		- Closed: 20260920-154500
+
 - Code review 20260918b:
 
-	- Items closed so far. The rest of the round is open under Features and enhancements.
+	- The round's eleven enhancements. The defects are under Done - Bugs.
 
 	- ✅ Item 54: `fmt --check`.
 		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.

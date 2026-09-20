@@ -769,11 +769,13 @@ What `migrate` promises, and what it does not:
 
 Exit codes: 0 when the file needed nothing or was rewritten, 6 from `--check` when a line would change, 7 when a spelling needs `--from-2x` to settle or a line 2.x bound has nowhere to go, and 8 when the file cannot be read or written.
 
-Two edges read differently, and `migrate` leaves both as written:
+Three edges read differently, and `migrate` leaves all three as written:
 
 - A fence label holding a `#` ran to the end of the line in 2.x. It ends at the `#` now, and the rest is the line's comment. A label has no quoting, so rename it.
 
 - A carriage return in the middle of a line, at the edge of a piece, was content in 2.x. It is trimmed now.
+
+- An indent that lands on no open level's column. 2.x placed a line by a looser comparison, so a tab followed by a space and a tab, or by two spaces, bound then and is `E012` now. `migrate` rewrites spellings and not layout, so a file like that has to be re-indented by hand. Nothing goes quietly: the line counts as dropped, so an in-place write refuses at exit 7.
 
 ## Cross-language parity and conformance
 

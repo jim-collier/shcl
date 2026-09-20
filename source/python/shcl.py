@@ -8,7 +8,8 @@ Behavior tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
 conformance corpus in project/conformance/ pins every behavior here, and the
 cicd cross-binding check compares this against the reference on every run.
 Structure deliberately mirrors the reference over Python idiom, so a fix there
-ports here by mechanical diff (parity over idiom - see style-guide.md).
+ports here by mechanical diff (parity over idiom - see
+project/style-guide_code.md).
 """
 
 # The type gate, turned on here rather than left at its default: without this the
@@ -3492,11 +3493,34 @@ class Document:
 			targets = [n for n in r[1] if isinstance(n, int)]
 		else:
 			targets = []
+		# Mark first, rebuild each touched child list once. Dropping one target
+		# at a time rebuilt the same list once per target, which is quadratic
+		# when a path matches many siblings.
+		pairs: list[tuple[int, int]] = []
 		for t in targets:
 			p = self.arena[t].parent
-			self.arena[p].children = [c for c in self.arena[p].children if c != t]
+			# A node already marked would carry DEAD into the rebuild below as
+			# an index, so skip it rather than trust resolve never to name one
+			# twice.
+			if p == DEAD:
+				continue
 			if self._index is not None:
 				self._index.unlink(_name_key(p, self.arena[t].name), t)
+			self.arena[t].parent = DEAD
+			pairs.append((t, p))
+		# Rebuilding a list puts back the parent of every node it drops, so a
+		# mark still standing is also the answer to "has this parent been done
+		# yet" - no separate pass to dedupe the parents.
+		for t, p in pairs:
+			if self.arena[t].parent != DEAD:
+				continue
+			keep: list[int] = []
+			for c in self.arena[p].children:
+				if self.arena[c].parent == DEAD:
+					self.arena[c].parent = p
+				else:
+					keep.append(c)
+			self.arena[p].children = keep
 		return len(targets)
 
 	def set_comment(self, path: str, text: str) -> bool:

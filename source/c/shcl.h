@@ -9,7 +9,8 @@
 // cross-binding check compares CLI stdout + exit codes across every binding.
 // The language spec lives in project/spec.md; project/conformance/ pins behavior.
 // Structure deliberately mirrors the reference over C-local shortcuts, so a fix
-// there ports here by mechanical diff (parity over idiom - see style-guide.md).
+// there ports here by mechanical diff (parity over idiom - see
+// project/style-guide_code.md).
 //
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.
@@ -56,7 +57,7 @@
 // binary passes there. A NULL frame makes longjmp restore the context without
 // unwinding at all, and a C recovery point needs nothing more, since nothing in
 // between has a destructor or a __finally. Include <setjmp.h> before using it.
-// The full shape is in style-guide.md under the C deviations.
+// The full shape is in project/style-guide_code.md under the C deviations.
 //
 // What it costs an embedder, on mingw x86_64 only: the jump skips the unwind,
 // so a C++ frame between the recovery point and the failed allocation does not
@@ -4213,13 +4214,34 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 	if (r.kind == R_ONE) ShclVecSize_push(a, &targets, r.one);
 	else if (r.kind == R_MANY) targets = r.many;
 	else if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) ShclVecSize_push(a, &targets, r.slots.data[i].idx);
+	// Mark first, rebuild each touched child list once. Dropping one target at
+	// a time rebuilt the same list once per target, which is quadratic when a
+	// path matches many siblings. The pair of vectors is one vector of (node,
+	// parent) pairs in the other three.
+	ShclVecSize marked = {0}, parents = {0};
 	for (size_t i = 0; i < targets.len; i++) {
 		size_t t = targets.data[i]; size_t pn = NODE(d, t).parent;
+		// A node already marked would carry DEAD into the rebuild below as an
+		// index, so skip it rather than trust resolve never to name one twice.
+		if (pn == DEAD) continue;
+		if (d->index_built == 1) index_unlink(d, name_key(pn, NODE(d, t).name), t);
+		NODE(d, t).parent = DEAD;
+		ShclVecSize_push(a, &marked, t); ShclVecSize_push(a, &parents, pn);
+	}
+	// Rebuilding a list puts back the parent of every node it drops, so a mark
+	// still standing is also the answer to "has this parent been done yet" -
+	// no separate pass to dedupe the parents.
+	for (size_t i = 0; i < marked.len; i++) {
+		if (NODE(d, marked.data[i]).parent != DEAD) continue;
+		size_t pn = parents.data[i];
 		ShclVecSize *kids = &NODE(d, pn).children;
 		size_t w = 0;
-		for (size_t k = 0; k < kids->len; k++) if (kids->data[k] != t) kids->data[w++] = kids->data[k];
+		for (size_t k = 0; k < kids->len; k++) {
+			size_t c = kids->data[k];
+			if (NODE(d, c).parent == DEAD) NODE(d, c).parent = pn;
+			else kids->data[w++] = c;
+		}
 		kids->len = w;
-		if (d->index_built == 1) index_unlink(d, name_key(pn, NODE(d, t).name), t);
 	}
 	return targets.len;
 }

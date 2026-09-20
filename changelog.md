@@ -184,6 +184,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A rewrite carries the file's group, best effort, along with its mode. A `root:www-data 0640` config came back with the saver's own group, so the service lost its read. The owner is still not carried, which a save that is not root cannot do anyway; the spec said "ownership" where it meant the owner.
 
+- Removing many nodes with one path is no longer quadratic in the sibling count. Every match rebuilt its parent's whole child list on its own: taking 40,000 same-named instances out of a document of 80,000 top-level lines took 0.84 s in the release build against a 0.08 s parse of the same file, and now takes 0.09 s.
+
 - Merging two documents that name the same leaves is no longer quadratic in the number of names. Collecting a replaced leaf's comments scanned every child of the base parent once per name: 32,000 overridden leaves took 2.9 s in C and 13.2 s in the Rust debug build, and now take 0.05 s and 0.70 s.
 
 - Python's `ShclDateTime` compares by value and prints its fields. Two parses of one datetime compared unequal, and it printed as an object address.

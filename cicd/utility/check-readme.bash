@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Compile the README's C, Go and Zig examples the way a reader would: each
-##		block verbatim, wrapped in whatever a reader has to add around it, and
-##		built with the line the README itself gives.
+##		Build the README's five code examples the way a reader would: each block
+##		verbatim, wrapped in whatever a reader has to add around it, and built
+##		with the line the README itself gives. The four that end in a save are
+##		then run against the config file the README shows, and the file they
+##		leave is compared with the block that says what the save does.
 ##
 ##		These are the first thing a consumer copies, and nothing else in the
 ##		pipeline builds them. The C one also carries a build order that is easy
@@ -35,6 +37,32 @@ header="${2:-${repoDir}/source/c/shcl.h}"
 tmpDir="$(mktemp -d)"; trap 'rm -rf "${tmpDir}"' EXIT
 cp "${header}" "${tmpDir}/"
 
+##	The config the examples read, and the file the README says the save leaves.
+##	Every example but Zig's ends in a save, and until 2026-09-20 nothing ran any
+##	of them, so the shown result and the code that produces it could drift apart.
+awk '/^## What a .shcl file looks like/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tmpDir}/server-in.shcl"
+awk '/^### What saving does/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tmpDir}/expected.shcl"
+[[ -s "${tmpDir}/server-in.shcl" && -s "${tmpDir}/expected.shcl" ]] \
+	|| { echo "check-readme: the config block or the 'What saving does' block is gone from ${readme}" >&2; exit 2 ;}
+
+##	Run an example in its own directory, on a fresh copy of the config, and
+##	compare what it saved.
+fRunExample(){   ## fRunExample NAME DIR CMD...
+	local name="$1" dir="$2"; shift 2
+	cp "${tmpDir}/server-in.shcl" "${dir}/server.shcl"
+	if ! ( cd "${dir}" && "$@" ) > "${dir}/run.out" 2>&1; then
+		echo "check-readme: the README's ${name} example does not run:" >&2
+		head -n 20 "${dir}/run.out" >&2
+		exit 1
+	fi
+	if ! diff -u "${tmpDir}/expected.shcl" "${dir}/server.shcl" > "${dir}/run.diff"; then
+		echo "check-readme: the ${name} example saves a file the README's 'What saving does' block does not show:" >&2
+		head -n 20 "${dir}/run.diff" >&2
+		exit 1
+	fi
+	echo "check-readme: the ${name} example builds, runs, and saves the file the README shows"
+}
+
 ##	The C example is the fenced ```c block; the file has exactly one.
 awk '/^```c$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.c"
 [[ -s "${tmpDir}/block.c" ]] || { echo "check-readme: no c example found in ${readme}" >&2; exit 2 ;}
@@ -59,7 +87,7 @@ if ! cc -std=c11 -O2 -Wall -Wextra -Werror -I"${tmpDir}" "${tmpDir}/example.c" -
 	head -n 20 "${tmpDir}/cc.err" >&2
 	exit 1
 fi
-echo "check-readme: the C example builds as written"
+fRunExample C "${tmpDir}" ./example
 
 ##	Go. The fragment is statements plus the import line it already shows, so a
 ##	reader adds a package clause, a main() and the two standard imports the
@@ -90,12 +118,57 @@ mkdir -p "${tmpDir}/goex"
 	echo
 	echo "replace github.com/jim-collier/shcl/source/go/v2 => ${repoDir}/source/go"
 } > "${tmpDir}/goex/go.mod"
-if ! ( cd "${tmpDir}/goex" && GOFLAGS=-mod=mod go build -o /dev/null . ) 2> "${tmpDir}/go.err"; then
+if ! ( cd "${tmpDir}/goex" && GOFLAGS=-mod=mod go build -o goex . ) 2> "${tmpDir}/go.err"; then
 	echo "check-readme: the README's Go example does not build:" >&2
 	head -n 20 "${tmpDir}/go.err" >&2
 	exit 1
 fi
-echo "check-readme: the Go example builds as written"
+fRunExample Go "${tmpDir}/goex" ./goex
+
+##	Python. The block is a whole script already, so the only thing a reader adds
+##	is the module on the import path - which for the published package is what
+##	pip put there, and here is the tree's own copy.
+mkdir -p "${tmpDir}/pyex"
+awk '/^```python$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/pyex/example.py"
+[[ -s "${tmpDir}/pyex/example.py" ]] || { echo "check-readme: no python example found in ${readme}" >&2; exit 2 ;}
+cp "${repoDir}/source/python/shcl.py" "${tmpDir}/pyex/"
+fRunExample Python "${tmpDir}/pyex" python3 example.py
+
+##	Rust. The block is statements plus its own use line, so a reader adds a
+##	main(); the `?` on the save makes that main return the save's error type.
+##	The dependency is a path rather than the README's `shcl = "2"`, since the
+##	gate must not need crates.io - what is being checked is the code, and the
+##	crate it resolves to is this tree's.
+mkdir -p "${tmpDir}/rsex/src"
+awk '/^```rust$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.rs"
+[[ -s "${tmpDir}/block.rs" ]] || { echo "check-readme: no rust example found in ${readme}" >&2; exit 2 ;}
+{
+	sed -n '/^use /p' "${tmpDir}/block.rs"
+	echo
+	echo 'fn main() -> Result<(), shcl::SaveError> {'
+	sed '/^use /d' "${tmpDir}/block.rs"
+	echo '	Ok(())'
+	echo '}'
+} > "${tmpDir}/rsex/src/main.rs"
+{
+	echo '[package]'
+	echo 'name = "readme-example"'
+	echo 'version = "0.0.0"'
+	echo 'edition = "2021"'
+	echo
+	echo '[dependencies]'
+	echo "shcl = { path = \"${repoDir}/source/rust\" }"
+} > "${tmpDir}/rsex/Cargo.toml"
+##	The toolchain the rest of the gate uses. Without it the example resolves to
+##	whatever rustc comes first on PATH, which on a box with a distribution rustc
+##	ahead of rustup is not the one anything else here builds with.
+cp "${repoDir}/rust-toolchain.toml" "${tmpDir}/rsex/"
+if ! ( cd "${tmpDir}/rsex" && CARGO_NET_OFFLINE=true CARGO_TARGET_DIR="${tmpDir}/rstarget" cargo build -q ) 2> "${tmpDir}/rs.err"; then
+	echo "check-readme: the README's Rust example does not build:" >&2
+	head -n 20 "${tmpDir}/rs.err" >&2
+	exit 1
+fi
+fRunExample Rust "${tmpDir}/rsex" "${tmpDir}/rstarget/debug/readme-example"
 
 ##	Zig. The block is helper functions and then statements, so the statements
 ##	go in a main(); everything else is verbatim, including the two-line impl.c
@@ -194,3 +267,5 @@ echo "check-readme: OK"
 ##		            recorded as having run everything.
 ##		2026-09-18  The console transcripts are run and compared, after a new
 ##		            line of output reached none of them for the second time.
+##		2026-09-20  The Rust and Python examples build too, and all four that
+##		            save are run and their file compared with the README's.

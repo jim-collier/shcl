@@ -161,7 +161,7 @@ done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" 
 while IFS= read -r hit; do
 	fBad "states a withdrawn lexical rule: ${hit}"
 done < <(grep -nHiE 'behind a blank|a `#` anywhere else|swallowing the trailing comment|comma hides inside the open quote' \
-	"${repoDir}/README.md" "${repoDir}/style-guide.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
+	"${repoDir}/README.md" "${repoDir}/project/style-guide_code.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
 	"${repoDir}/project/conformance/README.md" "${repoDir}/source/man/shcl.1" 2>/dev/null | sed "s|^${repoDir}/||" || true)
 
 ##	contributing.md says the corpus README carries a note per case, and 58
@@ -416,6 +416,67 @@ if [[ -n "${help}" ]]; then
 			fBad "style-guide_ui-ux.md: an exit row names one subcommand's --check: ${row}"
 		fi
 	done <<<"${exitRows}"
+
+	##	20260920 idea 10: the man page is the third copy of the exit codes and
+	##	of the per-option subcommand lists, and it was held to neither. Both are
+	##	compared with the help, which cli-regress.bash holds to the CLI itself.
+	manCodes="$(sed -n '/^\.SH EXIT STATUS$/,/^\.SH /p' "${man}" | sed -n 's/^\.B \([0-9]\)$/\1/p' | sort -u)"
+	[[ -n "${manCodes}" ]] || fBad "shcl.1: no EXIT STATUS entries to compare with the help"
+	[[ "${helpCodes}" == "${manCodes}" ]] \
+		|| fBad "shcl.1: EXIT STATUS names $(tr '\n' ' ' <<<"${manCodes}")and the help names $(tr '\n' ' ' <<<"${helpCodes}")"
+
+	##	Both lists name subcommands in prose around them, so each is reduced to
+	##	the subcommand names it holds and the two sets are compared. The man
+	##	page spells an option with escaped hyphens and roff font macros around
+	##	the names, which come off first.
+	mapfile -t docCmds < <(printf '%s\n' "${help}" | { grep -oE '^  shcl [a-z]+' || true ;} \
+		| awk '{print $2}' | { grep -vxE 'help|about' || true ;} | sort -u)
+	fNames(){   ## fNames TEXT -> the subcommand names in it, sorted
+		local w out=""
+		for w in ${1//[^a-z]/ }; do
+			for c in "${docCmds[@]}"; do if [[ "${w}" == "${c}" ]]; then out+="${c} "; fi; done
+		done
+		tr ' ' '\n' <<<"${out}" | sort -u | xargs
+	}
+	##	"(same)", or no parentheses at all, carries the entry above, in the help
+	##	and in the man page alike.
+	declare -A helpScope=()
+	carried=""
+	while IFS=$'\t' read -r spell par; do
+		if [[ -n "${par}" && "${par}" != "(same"* ]]; then carried="$(fNames "${par}")"; fi
+		helpScope["${spell%%=*}"]="${carried}"
+	done < <(printf '%s\n' "${help}" | awk '
+		/^Options \(/ { on = 1; next }
+		on && /^[^ ]/ { on = 0 }
+		!on { next }
+		/^  --/ {
+			if (spell != "") print spell "\t" par
+			spell = $1; par = ""; inpar = 0
+			d = substr($0, 42)
+			if (substr(d, 1, 1) == "(") { inpar = 1 }
+			if (inpar) { par = d; if (index(d, ")")) { par = substr(d, 1, index(d, ")")); inpar = 0 } }
+			next
+		}
+		inpar {
+			d = substr($0, 42)
+			if (index(d, ")")) { par = par substr(d, 1, index(d, ")")); inpar = 0 } else { par = par d }
+		}
+		END { if (spell != "") print spell "\t" par }')
+	manOpts=0
+	manCarried=""
+	while IFS=$'\t' read -r opt par; do
+		[[ -v "helpScope[${opt}]" ]] || { fBad "shcl.1: ${opt} has no entry in the help's option list"; continue ;}
+		if [[ "${par}" != *"(same"* ]]; then manCarried="$(fNames "${par}")"; fi
+		manOpts=$((manOpts + 1))
+		[[ "${manCarried}" == "${helpScope[${opt}]}" ]] \
+			|| fBad "shcl.1: ${opt} belongs to (${manCarried}) here and (${helpScope[${opt}]}) in the help"
+	done < <(awk '
+		/^\.SH OPTIONS$/ { on = 1; next }
+		on && /^\.SH / { exit }
+		!on { next }
+		/^\.B[IR]? \\-\\-/ { spell = $2; sub(/=.*/, "", spell); gsub(/\\-/, "-", spell); next }
+		/^\.RB \(/ && spell != "" { print spell "\t" $0; spell = "" }' "${man}")
+	((manOpts >= 10)) || fBad "shcl.1: only ${manOpts} option(s) could be matched with the help's list"
 fi
 
 ##	Every subcommand that loads a document prints the load's diagnostics, so a
@@ -466,9 +527,9 @@ for phrase in "The output is its own fixpoint" "It is not a formatter" \
 done
 ##	20260901b item 45: the Python section owns the iterative-walk deviation and
 ##	its reason; it sat under the C heading once.
-pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/style-guide.md")"
-grep -qF 'emit, overlay and clone walks are iterative' <<<"${pySection}" || fBad "style-guide.md: the Python section does not list the iterative walks"
-grep -qF 'recursion limit' <<<"${pySection}" || fBad "style-guide.md: the Python section does not say why the walks are iterative"
+pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/project/style-guide_code.md")"
+grep -qF 'emit, overlay and clone walks are iterative' <<<"${pySection}" || fBad "style-guide_code.md: the Python section does not list the iterative walks"
+grep -qF 'recursion limit' <<<"${pySection}" || fBad "style-guide_code.md: the Python section does not say why the walks are iterative"
 for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source/c/shcl.h; do
 	grep -q 'fold is not associative' "${repoDir}/${src}" \
 		|| fBad "${src}: the merge doc comment does not say the fold is not associative"
@@ -562,15 +623,15 @@ grep -q 'The field is dropped' "${repoDir}/changelog.md" \
 ##	The style guide names the tokenizer as the one place the lexical rules
 ##	live, and the reference's section header says the same. Both sentences
 ##	are what a reader is told to rely on, so neither may drift or go.
-grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/style-guide.md" \
-	|| fBad "style-guide.md: the tokenizer sentence is gone"
+grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/project/style-guide_code.md" \
+	|| fBad "style-guide_code.md: the tokenizer sentence is gone"
 grep -qF '// Tokenizer - the one place the lexical rules live' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the tokenizer section header is gone"
 
 ##	Same for the write side: the setters' one rule is a sentence a reader is
 ##	told to rely on, and the reference's section header repeats it.
-grep -qF 'A setter writes only what reads back.' "${repoDir}/style-guide.md" \
-	|| fBad "style-guide.md: the setter read-back sentence is gone"
+grep -qF 'A setter writes only what reads back.' "${repoDir}/project/style-guide_code.md" \
+	|| fBad "style-guide_code.md: the setter read-back sentence is gone"
 grep -qF '// The write side'"'"'s one rule: what is written has to read back' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the write-side section header is gone"
 
@@ -628,3 +689,5 @@ echo "check-docs: OK"
 ##		            note for every case.
 ##		2026-09-19  design.md's comparison rerun date matches the newest run in
 ##		            results.shcl.
+##		2026-09-20  The man page's exit codes and per-option subcommand lists are
+##		            compared with the help's.

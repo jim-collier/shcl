@@ -7,7 +7,8 @@
 // project/conformance/ plus the cicd cross-binding differential check keep the
 // two byte-for-byte identical, so any divergence here is a bug by definition.
 // Structure deliberately mirrors the reference over Go idiom, so a fix there
-// ports here by mechanical diff (parity over idiom - see style-guide.md).
+// ports here by mechanical diff (parity over idiom - see
+// project/style-guide_code.md).
 //
 // Writing a mapper - the shape of a real consumer that walks a document into
 // its own model (the surface is 60+ methods, but a mapper needs about six):
@@ -5051,18 +5052,40 @@ func (d *Document) Remove(path string) int {
 			}
 		}
 	}
+	// Mark first, rebuild each touched child list once. Dropping one target at
+	// a time rebuilt the same list once per target, which is quadratic when a
+	// path matches many siblings.
+	type pair struct{ node, parent int }
+	pairs := make([]pair, 0, len(targets))
 	for _, t := range targets {
 		p := d.arena[t].parent
-		kids := d.arena[p].children[:0]
-		for _, c := range d.arena[p].children {
-			if c != t {
-				kids = append(kids, c)
-			}
+		// A node already marked would carry dead into the rebuild below as an
+		// index, so skip it rather than trust resolve never to name one twice.
+		if p == dead {
+			continue
 		}
-		d.arena[p].children = kids
 		if ix := d.index.Load(); ix != nil {
 			ix.unlink(nameKey(p, d.arena[t].name), t)
 		}
+		d.arena[t].parent = dead
+		pairs = append(pairs, pair{t, p})
+	}
+	// Rebuilding a list puts back the parent of every node it drops, so a mark
+	// still standing is also the answer to "has this parent been done yet" -
+	// no separate pass to dedupe the parents.
+	for _, pr := range pairs {
+		if d.arena[pr.node].parent != dead {
+			continue
+		}
+		kids := d.arena[pr.parent].children[:0]
+		for _, c := range d.arena[pr.parent].children {
+			if d.arena[c].parent == dead {
+				d.arena[c].parent = pr.parent
+			} else {
+				kids = append(kids, c)
+			}
+		}
+		d.arena[pr.parent].children = kids
 	}
 	return len(targets)
 }

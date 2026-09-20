@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
 ##	Purpose:
-##		Run install-dev.bash --hooks-only against a throwaway clone and check
-##		what it leaves behind. The hook setup was the one piece of that script
-##		nothing exercised: the toolchain installs in front of it cannot run in
-##		a gate, so a regression there would only be found by the next person
-##		setting up a box. --hooks-only skips the installs, which makes the tail
-##		runnable here - against the shipped script, not a copy of its logic.
+##		Run install-dev.bash against a throwaway clone and check what it leaves
+##		behind. --hooks-only covers the tail. The stocktaking and the plan in
+##		front of it run too, against a fixture config with every tool they would
+##		install stubbed on PATH, so no install and no fetch happens here. Both
+##		halves run the shipped script, not a copy of its logic.
 ##	Syntax:
 ##		check-install-dev.bash
 ##	Exit: 0 = all checks pass, 1 = a check failed (named), 2 = cannot set up.
@@ -97,10 +96,74 @@ if ( cd "${work}" && bash "${script}" --yes --dir stuff >"${work}/out" 2>&1 </de
 fi
 grep -qF "is not an shcl clone" "${work}/out" || fail "the default path did not refuse a non-empty directory up front"
 
-(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone; the default path refuses one too"
+## 20260920 idea 6: everything between the option parse and the hook setup ran
+## in no gate - reading the pins, deciding what is already at its pin, and
+## building the plan. Run the default path inside the throwaway clone against a
+## fixture config, with every tool it would install stubbed on PATH, so nothing
+## is installed and nothing is fetched.
+## A scratch HOME too: the script puts ~/.cargo/bin and the go bin dir in front
+## of PATH, which would reach past the stubs to the real tools, and an install
+## that got through would land in the real home.
+mkdir -p "${work}/home"
+stub="${work}/stub"; mkdir -p "${stub}"
+# shellcheck disable=SC2016  ## the stub's own text, expanded when the stub runs
+fStub(){ printf '#!/bin/sh\necho "STUB $(basename "$0") $*" >> "%s/stub.log"\n%s\n' "${work}" "$2" > "${stub}/$1"; chmod +x "${stub}/$1"; }
+fStub pipx            'exit 0'
+fStub npm             'exit 0'
+fStub pwsh            'exit 0'
+fStub ruff            'echo "ruff 9.9.9"'
+fStub mypy            'echo "mypy 0.0.1"'
+fStub cppcheck        'exit 1'
+fStub pyproject-build 'echo 9.9.9'
+fStub markdownlint-cli2 'echo 9.9.9'
+fStub staticcheck     'echo 9.9.9'
+fStub govulncheck     'echo 9.9.9'
+fStub cargo           'echo 9.9.9'
+# shellcheck disable=SC2016  ## same, and ${work} is spliced in on purpose
+fStub go              'if [ "$1" = env ]; then echo "'"${work}"'/gopath"; else echo 9.9.9; fi'
+
+## One pin at the fixture version, one drifted, one missing, and a cppcheck
+## wheel version that is not the binary's - which is the pair the plan has to
+## keep straight.
+cat > "${work}/clone/cicd/config.bash" <<'CFGEOF'
+TOOL_PINS=(
+	"ruff|9.9.9|ruff --version"
+	"mypy|9.9.9|mypy --version"
+	"cppcheck|9.9.9|cppcheck --version"
+	"build|9.9.9|pyproject-build --version"
+	"markdownlint-cli2|9.9.9|markdownlint-cli2 --help"
+	"staticcheck|9.9.9|staticcheck -version"
+	"govulncheck|9.9.9|govulncheck -version"
+	"cargo-deny|9.9.9|cargo deny --version"
+)
+CPPCHECK_WHEEL="7.7.7"
+CFGEOF
+
+( cd "${work}/clone" && HOME="${work}/home" PATH="${stub}:${PATH}" bash "${script}" --yes >"${work}/plan" 2>&1 </dev/null ) \
+	|| fail "the default path failed inside a clone with every install stubbed: $(tail -n 3 "${work}/plan")"
+grep -qF 'cppcheck 9.9.9 (pipx cppcheck==7.7.7, user-space)' "${work}/plan" \
+	|| fail "the plan does not name both cppcheck versions: $(grep -i cppcheck "${work}/plan" | tr '\n' ' ')"
+grep -qF 'mypy 9.9.9 (pipx, user-space)' "${work}/plan" || fail "the plan leaves out a tool whose version drifted off its pin"
+grep -qF 'ruff 9.9.9' "${work}/plan" && fail "the plan offers to install a tool already at its pin"
+grep -qF 'STUB pipx install --force cppcheck==7.7.7' "${work}/stub.log" \
+	|| fail "the cppcheck install did not ask for the wheel version"
+grep -qF 'STUB pipx install --force ruff' "${work}/stub.log" && fail "a tool already at its pin was installed anyway"
+
+## The wheel version is read out of the config, not carried in the script: with
+## the line gone the run refuses rather than installing whatever pipx has.
+grep -v '^CPPCHECK_WHEEL=' "${work}/clone/cicd/config.bash" > "${work}/cfg.nowheel"
+cp "${work}/cfg.nowheel" "${work}/clone/cicd/config.bash"
+if ( cd "${work}/clone" && HOME="${work}/home" PATH="${stub}:${PATH}" bash "${script}" --yes >"${work}/plan2" 2>&1 </dev/null ); then
+	fail "the plan was built with no CPPCHECK_WHEEL in the config"
+fi
+grep -qF "no CPPCHECK_WHEEL" "${work}/plan2" || fail "a missing CPPCHECK_WHEEL is not named: $(tail -n 2 "${work}/plan2")"
+
+(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone; the default path refuses one too, and builds its plan off the config's pins"
 exit "${rc}"
 
 
 ##	History:
 ##		- 2026-09-01 JC: Created.
 ##		- 2026-09-19 JC: Clears git's local environment first.
+##		- 2026-09-20 JC: The pin reader, the at-pin test and the plan, against a
+##		                 fixture config with stubbed tools.
