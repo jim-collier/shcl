@@ -1276,10 +1276,80 @@ fn unchanged_since_read(file: &str, before: &str) -> bool {
 /// do with the remedy for a usage error, which keeps 1.
 const EXIT_IO: u8 = 8;
 
+/// Something is at the path and it is not a disk file: a device name such as
+/// CON, NUL or COM1. `std::fs::metadata` cannot see one - a device answers with
+/// the same ARCHIVE bit an ordinary file does. The library has the same call
+/// for its own save; this is a second copy because it is private there and the
+/// CLI has to answer before it reads FILE, not after.
+#[cfg(windows)]
+fn not_a_disk_file(file: &str) -> bool {
+	use std::os::windows::ffi::OsStrExt;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn CreateFileW(
+			name: *const u16,
+			access: u32,
+			share: u32,
+			sa: *const u8,
+			disp: u32,
+			flags: u32,
+			tmpl: isize,
+		) -> isize;
+		fn GetFileType(handle: isize) -> u32;
+		fn CloseHandle(handle: isize) -> i32;
+		fn GetFullPathNameW(name: *const u16, len: u32, buf: *mut u16, part: *mut *mut u16) -> u32;
+	}
+	const FILE_TYPE_DISK: u32 = 0x1;
+	const FILE_READ_ATTRIBUTES: u32 = 0x80;
+	const FILE_SHARE_ALL: u32 = 0x7;
+	const OPEN_EXISTING: u32 = 3;
+	const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+	const MAX_PATH: usize = 260;
+	let wide: Vec<u16> = std::ffi::OsStr::new(file)
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	unsafe {
+		let handle = CreateFileW(
+			wide.as_ptr(),
+			FILE_READ_ATTRIBUTES,
+			FILE_SHARE_ALL,
+			std::ptr::null(),
+			OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS,
+			0,
+		);
+		if handle != -1 {
+			let kind = GetFileType(handle);
+			CloseHandle(handle);
+			return kind != FILE_TYPE_DISK;
+		}
+		let mut full = [0u16; MAX_PATH];
+		let n = GetFullPathNameW(
+			wide.as_ptr(),
+			MAX_PATH as u32,
+			full.as_mut_ptr(),
+			std::ptr::null_mut(),
+		) as usize;
+		n > 0
+			&& n < MAX_PATH
+			&& full[0] == u16::from(b'\\')
+			&& full[1] == u16::from(b'\\')
+			&& full[2] == u16::from(b'.')
+			&& full[3] == u16::from(b'\\')
+	}
+}
+
 /// A `--write` FILE is a regular file or nothing yet. Asked before the read,
 /// since reading a FIFO takes what was written to it and the save would then
-/// refuse it anyway. A directory is left to the read, which names it.
+/// refuse it anyway, and since a read of windows CON waits on the console
+/// rather than returning. A directory is left to the read, which names it.
 fn write_target_ok(file: &str) -> bool {
+	#[cfg(windows)]
+	if !std::path::Path::new(file).is_dir() && not_a_disk_file(file) {
+		errln!("{}: not a regular file", file);
+		return false;
+	}
 	match std::fs::metadata(file) {
 		Ok(m) if !m.is_file() && !m.is_dir() => {
 			errln!("{}: not a regular file", file);

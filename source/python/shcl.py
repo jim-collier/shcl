@@ -4730,6 +4730,28 @@ def read_file(path: str | os.PathLike[str], max_bytes: int = 0) -> tuple[str | N
 		return None, FileStatus.Unreadable
 
 
+def _not_a_disk_file(path):
+	# Something is at the path and is not a disk file: a windows device name.
+	# POSIX has no such thing at a path, so this answers False there. os.stat
+	# reports a device it can open, which covers CON and NUL, but a reserved
+	# name with no device behind it - COM1 on a box with no serial port - is not
+	# there to stat, and a save must still refuse it rather than leave the
+	# answer to the publish. A reserved name resolves into the device namespace
+	# from whatever directory it is typed in, and the full path is where that
+	# shows: abspath goes through GetFullPathName, so `\\.\COM1` against a drive
+	# path for an ordinary name.
+	if sys.platform != "win32":
+		return False
+	try:
+		st = os.stat(path)
+	except (OSError, ValueError):
+		try:
+			return os.path.abspath(path).startswith("\\\\.\\")
+		except (OSError, ValueError):
+			return False
+	return not stat.S_ISREG(st.st_mode) and not stat.S_ISDIR(st.st_mode)
+
+
 def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# The file tier's write mechanism (also what the CLI's --write uses): a
 	# temp file in the same dir, then a rename over the target,
@@ -4796,6 +4818,9 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# rule for what a save does with each thing it can find at the path.
 	if existing is not None and not stat.S_ISREG(existing.st_mode):
 		return f"{file}: is a directory" if stat.S_ISDIR(existing.st_mode) else f"{file}: not a regular file"
+	# os.stat cannot see a reserved name with no device behind it.
+	if _not_a_disk_file(target):
+		return f"{file}: not a regular file"
 	# Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	# be removed after a failure, so the attribute comes off the target for the
 	# publish and goes back on the new file after it - the same outcome as

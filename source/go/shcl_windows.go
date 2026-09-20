@@ -12,6 +12,7 @@ package shcl
 
 import (
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -21,6 +22,32 @@ func init() {
 	publishNewFile = windowsPublishNewFile
 	carriedAttrs = windowsCarriedAttrs
 	restoreAttrs = windowsRestoreAttrs
+	notADiskFile = windowsNotADiskFile
+}
+
+// A device carries the same ARCHIVE bit an ordinary file does, so an attribute
+// test cannot tell them apart. The handle is the OS's own answer, and it keeps
+// an exotic but real path (a volume-prefixed `\\.\C:\dir\file`) out of the
+// device case. CON refuses that open outright (ERROR_INVALID_PARAMETER) and a
+// serial port nobody has answers not-found, so a failed open cannot mean
+// "nothing is there": a reserved name resolves into the device namespace from
+// whatever directory it is typed in, and the full path is where that shows.
+func windowsNotADiskFile(path string) bool {
+	const fileReadAttributes = 0x80
+	p, perr := syscall.UTF16PtrFromString(path)
+	if perr != nil {
+		return false
+	}
+	h, herr := syscall.CreateFile(p, fileReadAttributes,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
+		nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if herr == nil {
+		kind, kerr := syscall.GetFileType(h)
+		syscall.CloseHandle(h)
+		return kerr == nil && kind != syscall.FILE_TYPE_DISK
+	}
+	full, ferr := syscall.FullPath(path)
+	return ferr == nil && strings.HasPrefix(full, `\\.\`)
 }
 
 // A move without MOVEFILE_REPLACE_EXISTING refuses a target that exists, which

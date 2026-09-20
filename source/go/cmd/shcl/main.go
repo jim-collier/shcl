@@ -1212,8 +1212,18 @@ func writeTargetOK(file string) bool {
 		fmt.Fprintf(os.Stderr, "%s: not a regular file\n", file)
 		return false
 	}
+	// A windows reserved name with no device behind it is not there to stat.
+	if notADiskFile(file) {
+		fmt.Fprintf(os.Stderr, "%s: not a regular file\n", file)
+		return false
+	}
 	return true
 }
+
+// notADiskFile is the windows device test; the windows build swaps it in
+// (main_windows.go), the same way the library does it. POSIX has no device name
+// at a path, so the default answers false.
+var notADiskFile = func(string) bool { return false }
 
 // No stream on the other end at all, as opposed to one that failed part way
 // through. POSIX says EBADF; windows has no single answer - a handle a shell

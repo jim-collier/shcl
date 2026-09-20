@@ -452,7 +452,8 @@ static int is_a_directory(const char *file) {
 // A --write FILE is a regular file or nothing yet. Asked before the read,
 // since reading a FIFO takes what was written to it and the save would then
 // refuse it anyway. A directory is left to the read, which names it. Windows
-// has no FIFO at a path; the save itself answers for a device name there.
+// has no FIFO at a path but it has device names, and a read of CON there waits
+// on the console rather than returning, so the answer has to come first.
 static int write_target_ok(const char *file) {
 #ifndef _WIN32
 	struct stat st;
@@ -461,7 +462,10 @@ static int write_target_ok(const char *file) {
 		return 0;
 	}
 #else
-	(void)file;
+	if (!is_a_directory(file) && shcl_not_a_disk_file(file)) {
+		fprintf(stderr, "%s: not a regular file\n", file);
+		return 0;
+	}
 #endif
 	return 1;
 }

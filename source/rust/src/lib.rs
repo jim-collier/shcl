@@ -3798,6 +3798,11 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		};
 		return Err(format!("{}: {}", file, what));
 	}
+	// The test above cannot see a windows device name; see not_a_disk_file.
+	#[cfg(windows)]
+	if not_a_disk_file(&target) {
+		return Err(format!("{}: not a regular file", file));
+	}
 	// Windows: a read-only file cannot be replaced, and a read-only temp cannot
 	// be removed after a failure, so the attribute comes off the target for the
 	// publish and goes back on the new file after it - the same outcome as
@@ -3947,6 +3952,84 @@ fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 		}
 		_ => p,
 	})
+}
+
+#[cfg(windows)]
+const FILE_TYPE_DISK: u32 = 0x1;
+
+/// Something is at the path and it is not a disk file: a device name such as
+/// CON, NUL or COM1. `std::fs::metadata` cannot see one - a device answers with
+/// the same ARCHIVE bit an ordinary file does - so a save read it as a file,
+/// tried to replace it, and the refusal came from whichever later step happened
+/// to fail. False for a path with nothing at it, which is a save's ordinary
+/// create.
+#[cfg(windows)]
+fn not_a_disk_file(path: &std::path::Path) -> bool {
+	use std::os::windows::ffi::OsStrExt;
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn CreateFileW(
+			name: *const u16,
+			access: u32,
+			share: u32,
+			sa: *const u8,
+			disp: u32,
+			flags: u32,
+			tmpl: isize,
+		) -> isize;
+		fn GetFileType(handle: isize) -> u32;
+		fn CloseHandle(handle: isize) -> i32;
+		fn GetFullPathNameW(name: *const u16, len: u32, buf: *mut u16, part: *mut *mut u16) -> u32;
+	}
+	const FILE_READ_ATTRIBUTES: u32 = 0x80;
+	const FILE_SHARE_ALL: u32 = 0x7;
+	const OPEN_EXISTING: u32 = 3;
+	const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+	const MAX_PATH: usize = 260;
+	let wide: Vec<u16> = path
+		.as_os_str()
+		.encode_wide()
+		.chain(std::iter::once(0))
+		.collect();
+	unsafe {
+		// The handle first, since it is the OS's own answer and it keeps an
+		// exotic but real path (a volume-prefixed `\\.\C:\dir\file`) out of the
+		// device case.
+		let handle = CreateFileW(
+			wide.as_ptr(),
+			FILE_READ_ATTRIBUTES,
+			FILE_SHARE_ALL,
+			std::ptr::null(),
+			OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS,
+			0,
+		);
+		if handle != -1 {
+			let kind = GetFileType(handle);
+			CloseHandle(handle);
+			return kind != FILE_TYPE_DISK;
+		}
+		// CON refuses that open outright (ERROR_INVALID_PARAMETER), and a serial
+		// port nobody has answers not-found, so a failed open cannot mean
+		// "nothing is there". A reserved name resolves into the device namespace
+		// from whatever directory it is typed in, and the full path is where that
+		// shows: `\\.\CON` against a drive path for an ordinary name. A long path
+		// overflows the buffer and falls through to the create, which is what it
+		// did before.
+		let mut full = [0u16; MAX_PATH];
+		let n = GetFullPathNameW(
+			wide.as_ptr(),
+			MAX_PATH as u32,
+			full.as_mut_ptr(),
+			std::ptr::null_mut(),
+		) as usize;
+		n > 0
+			&& n < MAX_PATH
+			&& full[0] == u16::from(b'\\')
+			&& full[1] == u16::from(b'\\')
+			&& full[2] == u16::from(b'.')
+			&& full[3] == u16::from(b'\\')
+	}
 }
 
 #[cfg(windows)]

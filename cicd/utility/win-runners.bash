@@ -234,6 +234,51 @@ fRunWinpathSandbox() {
 
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
+##	A windows device name is not something a save may replace, and until
+##	2026-09-20 every binding refused one only because a later step happened to
+##	fail: the C CLI did not return at all on CON, and the other three printed
+##	whatever the OS said about the publish. The names are reserved whether or
+##	not a device sits behind them, so COM1 belongs in the list on a box with no
+##	serial port. Run under a timeout, since the defect this watches for is a
+##	read that waits on the console - a gate that hangs reports nothing.
+fCheckDevices() {   ## fCheckDevices CLI [ARG ...]
+	local d out rc
+	for d in CON NUL COM1; do
+		rc=0
+		out="$(timeout 20 "$@" set --write --set a=1 "${d}" 2>&1 </dev/null)" || rc=$?
+		((rc == 8)) || { echo "win-runners: devices: ${d} exited ${rc}, wanted 8: ${out@Q}" >&2; return 1; }
+		[[ "${out}" == *"not a regular file"* ]] \
+			|| { echo "win-runners: devices: ${d} said ${out@Q}" >&2; return 1; }
+	done
+	##	An ordinary create still works, or the test above would pass on a CLI
+	##	that refuses everything.
+	rm -f "${work}/dev-ok.shcl"
+	rc=0
+	timeout 20 "$@" set --write --set a=1 "${work}/dev-ok.shcl" >/dev/null 2>&1 </dev/null || rc=$?
+	((rc == 0)) || { echo "win-runners: devices: an ordinary create exited ${rc}" >&2; return 1; }
+	grep -q '^a: 1$' "${work}/dev-ok.shcl"
+}
+
+fDevicesC() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/cmd/shcl/main.c -o "${work}/shcl-dev-c${exe}" -lm || return 1
+	fCheckDevices "${work}/shcl-dev-c${exe}"
+}
+
+fDevicesRust() {
+	cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
+	fCheckDevices "source/rust/target/debug/shcl${exe}"
+}
+
+fDevicesGo() {
+	( cd source/go/cmd && go build -o "${work}/shcl-dev-go${exe}" ./shcl ) || return 1
+	fCheckDevices "${work}/shcl-dev-go${exe}"
+}
+
+fDevicesPython() {
+	fCheckDevices "${py}" source/python/cmd/shcl/main.py
+}
+
 fRun "rust"        "cargo"          cargo test --manifest-path source/rust/Cargo.toml
 fRun "go library"  "go"             go -C source/go test -count=1 ./...
 fRun "go cli"      "go"             go -C source/go/cmd test -count=1 ./...
@@ -247,6 +292,10 @@ fRun "c cli argv"  "${cc}"          fRunCcli
 fRun "closed stdin" "${cc}"         fRunClosedStdin
 fRun "c long path" "${cc}"          fRunLongPath
 fRun "cli regress"  "${cc}"         fRunCliRegress
+fRun "devices c"   "${cc}"          fDevicesC
+fRun "devices rust" "cargo"         fDevicesRust
+fRun "devices go"  "go"             fDevicesGo
+fRun "devices python" "${py}"       fDevicesPython
 ## The installers' PATH handling needs a real registry, which only exists here.
 ## It overwrites the machine PATH for the length of the run - fine on a throwaway
 ## runner, not on a workstation, so a developer box gets the same test inside a
@@ -270,6 +319,8 @@ fi
 
 
 ##	Script history:
+##		- 20260920: A device-name row per binding: CON, NUL and COM1 refuse at
+##		            exit 8 saying so, and an ordinary create still works.
 ##		- 20260821: Created. Nothing in the pipeline ran any binding on windows,
 ##		  where the file tier's publish step is a different code path in all four.
 ##		- 20260901: The installers' PATH handling joins, windows hosts only - it
