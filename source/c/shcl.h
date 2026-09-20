@@ -7216,7 +7216,10 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	// Best effort like the mode: a caller who is not in the old group keeps its
 	// own, which is what it had before this. The owner is not carried - see the
 	// file tier in spec.md.
-	if (ok && have_st) (void)fchown(fileno(f), (uid_t)-1, st.st_gid);
+	// The result goes into a variable rather than a (void) cast: glibc marks
+	// fchown warn_unused_result, and a cast does not silence that everywhere
+	// (gcc 13 on the hosted runner refuses it, gcc 14 here does not).
+	if (ok && have_st) { int chown_rc = fchown(fileno(f), (uid_t)-1, st.st_gid); (void)chown_rc; }
 	if (ok && have_st) (void)fchmod(fileno(f), st.st_mode & 07777);
 #endif
 	ok = (fclose(f) == 0) && ok;
