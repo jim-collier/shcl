@@ -605,6 +605,7 @@ What it found, at 64 MiB per shape (rerun on 2026-09-19; runs before it read the
 The responsibility is split rather than duplicate the pipeline:
 
 - The GitHub workflow (`.github/workflows/ci.yml`) is a correctness gate only - format check, build, lint, tests on pushes to `main`, on pull requests, and by hand. Minimal permissions, cancels superseded runs, times out.
+	- The cross checks run there too. They build nothing anyone downloads - the C library and CLI for windows through mingw, the C library with file I/O compiled out, and the Go library for windows - so they belong with the other checks rather than with the release artifacts. They sat inside the release branch until 2026-09-20, where `--ci` never reached them. `--no-cross` turns them off with the cross targets.
 
 - `dev` is not gated, by the hook or by the hosted workflow. The pre-push hook runs `cicd.bash --ci` on a commit bound for `main`, and skips one whose tree a run already passed. Each run that gets through the tests stage records the tree it tested, unless it ran `--quick`, `--no-fmt` or `--no-lint`, or skipped a missing tool. Before this, one change to `dev` went through a full local run, then the same gate again in the hook, then about half an hour of hosted CI.
 	- A tree hash, not a commit hash. The publish stage commits after the tests run, and a `--no-ff` merge makes a new commit holding the same files.

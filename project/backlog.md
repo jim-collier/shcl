@@ -92,16 +92,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
 
-	- 🔘 Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
-		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one. Stage 6 of the `--ci` run prints "release builds skipped".
-		- Cause: the cross-check loop sits inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
-		- Effect: the mingw build of the C library and CLI for windows, the build with file I/O compiled out, and the `GOOS=windows` build, vet and staticcheck of the Go library are compiled by no gate that decides whether a commit reaches main. The windows job covers two of them partly, and only on a push to main.
-		- Probable fix: run the cross checks whenever correctness is gated, not only when a release binary is built.
-		- Note: `--quick`, the fast in-editor loop, runs all three; `--ci`, the gate, runs none. The `--help` line for `--ci` says "no cross/publish", which reads against `--no-cross` as the cross-compile targets rather than the checks.
-		- Origin: new ground, no earlier round read it. The checks and the loop arrived in `464b5df` (2026-08-18) inside a branch that was already unreachable under `--ci`. Confirmed.
-		- Sweep: anything else in the release stage that is a check rather than an artifact. Read at filing time there is nothing else.
-		- Opened: 20260920-055406
-
 	- 🔘 Item 3 (F7): a discarded `sed` in `check-docs.bash` reads the whole C header to `/dev/null`.
 		- Reproduced: the line prints 7,800 lines, all sent to `/dev/null`, and its result is never read. The check below it is the whole of that block's assertion.
 		- Cause: a first attempt left in place when the grep form replaced it.
@@ -559,6 +549,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the help's `--check` line, the man page, `spec.md`, `design.md` and the changelog say the 7 case now. `--lossy` is a usage error with `--check`, so the override can never be in play, but the test spells the `--write` condition whole so the two cannot drift.
 		- Opened: 20260920-055406
 		- Closed: 20260920-082633
+
+	- ✅ Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
+		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one.
+		- Cause: the cross-check loop sat inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
+		- Origin: new ground, no earlier round read it. The checks and the loop arrived in `464b5df` (2026-08-18) inside a branch that was already unreachable under `--ci`. Confirmed.
+		- Fixed: the loop runs at the top of stage 6, outside the release branch. `--no-cross` now empties `CROSS_CHECKS` with `CROSS_TARGETS`, since a box without the cross toolchains has neither, and the `--ci` and `--no-cross` help lines say so. The preflight block reports the checks on their own line.
+		- Fixed: `ci.yml` installs `gcc-mingw-w64-x86-64`, which the ubuntu image does not carry and the first check needs.
+		- Swept: nothing else in the release stage is a check rather than an artifact.
+		- Pinned by: `shell-regress.bash` stands up the throwaway repo the round used - the real engine, a stub config, a cross check that touches a marker - and asserts three things: `--ci` runs it, a failing one aborts the run by name, and `--no-cross` skips it. All three watched to fail on the old engine.
+		- Measured: the three checks add about a minute to a `--ci` run.
+		- Opened: 20260920-055406
+		- Closed: 20260920-083425
 
 	- ✅ Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
 		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
