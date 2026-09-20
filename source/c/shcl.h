@@ -9,7 +9,8 @@
 // cross-binding check compares CLI stdout + exit codes across every binding.
 // The language spec lives in project/spec.md; project/conformance/ pins behavior.
 // Structure deliberately mirrors the reference over C-local shortcuts, so a fix
-// there ports here by mechanical diff (parity over idiom - see style-guide.md).
+// there ports here by mechanical diff (parity over idiom - see
+// project/style-guide_code.md).
 //
 // A companion C++ typed veneer (get<int64_t>() etc.) sits in shcl.hpp; it wraps
 // this core, it is not a second parser.
@@ -56,7 +57,7 @@
 // binary passes there. A NULL frame makes longjmp restore the context without
 // unwinding at all, and a C recovery point needs nothing more, since nothing in
 // between has a destructor or a __finally. Include <setjmp.h> before using it.
-// The full shape is in style-guide.md under the C deviations.
+// The full shape is in project/style-guide_code.md under the C deviations.
 //
 // What it costs an embedder, on mingw x86_64 only: the jump skips the unwind,
 // so a C++ frame between the recovery point and the failed allocation does not

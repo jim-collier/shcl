@@ -104,15 +104,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a bare `#` in a write path cutting the path there, a fence run on an `E014` line (declined in the 20260918 round), and `allowed` on a datetime telling `13:00` from `13:00:00`.
 
-	- ✅ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
-		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
-		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
-		- Probable fix: the full path under `$SYSDIR`.
-		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
-		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
-		- Verified on B29W in a sandbox, 2026-09-19, with a marker program named `powershell.exe` beside the setup in an empty folder. The old setup ran the marker, and so did the old uninstaller with the marker in the install dir. The new setup does not, adds itself to the machine PATH and runs; the new uninstaller does not, and takes the PATH entry back off. So the item is Confirmed, not Plausible.
-		- Note: a silent uninstall from a script needs `uninstall.exe /S _?=<dir>`. Plain `/S` returned 0 and removed nothing, which is the relaunched copy of an NSIS uninstaller asking to elevate with nobody there to say yes. Interactive removal is unaffected.
-		- Opened: 20260918-193000
+	- Finished items are under Done - Bugs, and the eleven enhancements under Done - Features and enhancements, each in a bullet of the same name.
 
 - Code review 20260918:
 
@@ -212,10 +204,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable fix: the same derived comparison, run twice more in the docs check.
 		- Origin: idea. Same class as idea 5, a comparison derived at one site and kept by hand at its siblings.
 		- Opened: 20260920-055406
-
-- Code review 20260918b:
-
-	- The round's eleven enhancements. The defects are under Bugs, and the round bullet there says what was covered. With fifty-three defects open, none of these should be taken in the fix round.
 
 ### Done
 
@@ -565,7 +553,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260918b:
 
-	- Items closed so far. The rest of the round is open under Bugs.
+	- All fifty-three items. The round's eleven enhancements are under Done - Features and enhancements, and the round's own notes are under Bugs.
 
 	- ✅ Item 1: both Windows install one-liners in the README fail to parse, so nothing installs.
 		- Reproduced: pwsh 7.6.6 against the live main URL. `irm` keeps the file's byte-order mark as the first character, PowerShell does not take it for whitespace, and `param` is then no longer the first statement. Three parse errors, before a line runs. Every version of the file since the first has it. Running with `-File` is not affected, which is how every Windows test so far ran.
@@ -972,6 +960,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a `shell-regress.bash` row with two local https listeners on a throwaway certificate, the first redirecting downloads to the second under another host name. It lifts install.bash's own fetch lines for each tool and checks that a download reaches neither host with the token, and that both API calls carry it. On the old script, wget's download hands the token to the second host, both downloads send it to the first, and the wget status call sends none. Each of the three was also put back alone and failed alone.
 		- Opened: 20260918-193000
 		- Closed: 20260919-102859
+
+	- ✅ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
+		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
+		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
+		- Probable fix: the full path under `$SYSDIR`.
+		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
+		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
+		- Verified on B29W in a sandbox, 2026-09-19, with a marker program named `powershell.exe` beside the setup in an empty folder. The old setup ran the marker, and so did the old uninstaller with the marker in the install dir. The new setup does not, adds itself to the machine PATH and runs; the new uninstaller does not, and takes the PATH entry back off. So the item is Confirmed, not Plausible.
+		- Note: a silent uninstall from a script needs `uninstall.exe /S _?=<dir>`. Plain `/S` returned 0 and removed nothing, which is the relaunched copy of an NSIS uninstaller asking to elevate with nobody there to say yes. Interactive removal is unaffected.
+		- Opened: 20260918-193000
+		- Closed: 20260919-170410
 
 	- ✅ Item 39: the .deb puts the zsh completion where Debian's zsh does not look.
 		- Reproduced: on Debian 13, `$fpath` has `vendor-completions` and no `/usr/share/zsh/site-functions`, where the package puts `_shcl`. The README says completion works with nothing to configure. The rpm's path is right for Fedora.
@@ -4543,7 +4542,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260918b:
 
-	- Items closed so far. The rest of the round is open under Features and enhancements.
+	- The round's eleven enhancements. The defects are under Done - Bugs.
 
 	- ✅ Item 54: `fmt --check`.
 		- `migrate --check` exists and `fmt --check` is "not valid for fmt". rustfmt, gofmt, black, prettier and taplo all have one, and a CI user will type it. Today it takes `shcl fmt f | cmp -s - f`. Exit 6 is there to reuse.

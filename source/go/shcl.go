@@ -7,7 +7,8 @@
 // project/conformance/ plus the cicd cross-binding differential check keep the
 // two byte-for-byte identical, so any divergence here is a bug by definition.
 // Structure deliberately mirrors the reference over Go idiom, so a fix there
-// ports here by mechanical diff (parity over idiom - see style-guide.md).
+// ports here by mechanical diff (parity over idiom - see
+// project/style-guide_code.md).
 //
 // Writing a mapper - the shape of a real consumer that walks a document into
 // its own model (the surface is 60+ methods, but a mapper needs about six):

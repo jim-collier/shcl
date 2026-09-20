@@ -161,7 +161,7 @@ done < <(grep -nE '(^|[^a-z])go (-C [^ ]+ )?test' "${repoDir}/cicd/config.bash" 
 while IFS= read -r hit; do
 	fBad "states a withdrawn lexical rule: ${hit}"
 done < <(grep -nHiE 'behind a blank|a `#` anywhere else|swallowing the trailing comment|comma hides inside the open quote' \
-	"${repoDir}/README.md" "${repoDir}/style-guide.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
+	"${repoDir}/README.md" "${repoDir}/project/style-guide_code.md" "${repoDir}/project/spec.md" "${repoDir}/project/design.md" \
 	"${repoDir}/project/conformance/README.md" "${repoDir}/source/man/shcl.1" 2>/dev/null | sed "s|^${repoDir}/||" || true)
 
 ##	contributing.md says the corpus README carries a note per case, and 58
@@ -466,9 +466,9 @@ for phrase in "The output is its own fixpoint" "It is not a formatter" \
 done
 ##	20260901b item 45: the Python section owns the iterative-walk deviation and
 ##	its reason; it sat under the C heading once.
-pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/style-guide.md")"
-grep -qF 'emit, overlay and clone walks are iterative' <<<"${pySection}" || fBad "style-guide.md: the Python section does not list the iterative walks"
-grep -qF 'recursion limit' <<<"${pySection}" || fBad "style-guide.md: the Python section does not say why the walks are iterative"
+pySection="$(sed -n '/^### Python/,/^### C/p' "${repoDir}/project/style-guide_code.md")"
+grep -qF 'emit, overlay and clone walks are iterative' <<<"${pySection}" || fBad "style-guide_code.md: the Python section does not list the iterative walks"
+grep -qF 'recursion limit' <<<"${pySection}" || fBad "style-guide_code.md: the Python section does not say why the walks are iterative"
 for src in source/rust/src/lib.rs source/go/shcl.go source/python/shcl.py source/c/shcl.h; do
 	grep -q 'fold is not associative' "${repoDir}/${src}" \
 		|| fBad "${src}: the merge doc comment does not say the fold is not associative"
@@ -562,15 +562,15 @@ grep -q 'The field is dropped' "${repoDir}/changelog.md" \
 ##	The style guide names the tokenizer as the one place the lexical rules
 ##	live, and the reference's section header says the same. Both sentences
 ##	are what a reader is told to rely on, so neither may drift or go.
-grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/style-guide.md" \
-	|| fBad "style-guide.md: the tokenizer sentence is gone"
+grep -qF 'The tokenizer is the one place the lexical rules live.' "${repoDir}/project/style-guide_code.md" \
+	|| fBad "style-guide_code.md: the tokenizer sentence is gone"
 grep -qF '// Tokenizer - the one place the lexical rules live' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the tokenizer section header is gone"
 
 ##	Same for the write side: the setters' one rule is a sentence a reader is
 ##	told to rely on, and the reference's section header repeats it.
-grep -qF 'A setter writes only what reads back.' "${repoDir}/style-guide.md" \
-	|| fBad "style-guide.md: the setter read-back sentence is gone"
+grep -qF 'A setter writes only what reads back.' "${repoDir}/project/style-guide_code.md" \
+	|| fBad "style-guide_code.md: the setter read-back sentence is gone"
 grep -qF '// The write side'"'"'s one rule: what is written has to read back' "${repoDir}/source/rust/src/lib.rs" \
 	|| fBad "lib.rs: the write-side section header is gone"
 

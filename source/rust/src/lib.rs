@@ -6,7 +6,8 @@
 //! The language spec lives in project/spec.md; the conformance corpus in
 //! project/conformance/ pins every behavior here.
 //! Every other binding mirrors this file's structure on purpose (parity over
-//! idiom - see style-guide.md), so restructuring here means restructuring all.
+//! idiom - see project/style-guide_code.md), so restructuring here means
+//! restructuring all.
 
 use std::collections::{HashMap, HashSet};
 

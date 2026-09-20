@@ -218,7 +218,7 @@ Behavior the corpus cannot see, because it is not stdout, belongs in `cicd/utili
 
 ### Style
 
-The full rules live in [`style-guide.md`](style-guide.md) - read it before touching a binding. The single most important rule there: every binding deliberately mirrors the Rust reference's structure, function-for-function, even where the host language would idiomatically do it differently. That is what keeps the bindings byte-for-byte identical and a fix portable by mechanical diff. Quick basics:
+The full rules live in [`project/style-guide_code.md`](project/style-guide_code.md) - read it before touching a binding. The single most important rule there: every binding deliberately mirrors the Rust reference's structure, function-for-function, even where the host language would idiomatically do it differently. That is what keeps the bindings byte-for-byte identical and a fix portable by mechanical diff. Quick basics:
 
 - Tabs for indentation, spaces for alignment.
 

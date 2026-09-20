@@ -8,7 +8,8 @@ Behavior tracks the Rust reference (source/rust/src/lib.rs) byte for byte; the
 conformance corpus in project/conformance/ pins every behavior here, and the
 cicd cross-binding check compares this against the reference on every run.
 Structure deliberately mirrors the reference over Python idiom, so a fix there
-ports here by mechanical diff (parity over idiom - see style-guide.md).
+ports here by mechanical diff (parity over idiom - see
+project/style-guide_code.md).
 """
 
 # The type gate, turned on here rather than left at its default: without this the
