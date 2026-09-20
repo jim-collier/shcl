@@ -380,7 +380,10 @@ file. Nothing unverified is installed.
 			Exit-Install 'signature check failed on sha256sums - refusing to install'
 		}
 
-		$want = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($asset) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+		## Anchored on the name, the way install.bash greps it: the sums file has a
+		## line per binary and per package, and an unanchored match would take
+		## whichever of those came first once one asset name contains another.
+		$want = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($asset) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
 		$got = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
 		if (-not $want -or $got -ne $want.ToLower()) { Exit-Install "sha256 mismatch on $asset" }
 
@@ -389,7 +392,7 @@ file. Nothing unverified is installed.
 		## generated source zipball, which carries neither a signature nor a
 		## checksum. Releases predating the asset install the binary alone.
 		$dropins = "shcl-$version-dropins.tar.gz"
-		$wantSrc = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -match [regex]::Escape($dropins) } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+		$wantSrc = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($dropins) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
 		$haveDropins = $false
 		$srcroot = $null
 		if ($wantSrc) {

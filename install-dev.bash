@@ -209,7 +209,12 @@ have python3    || hints+=("python3     - ${pkg_hint} python3")
 have cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gcc-c++)")
 have shellcheck || hints+=("shellcheck  - ${pkg_hint} shellcheck")
 if have pipx; then
-	for t in ruff mypy cppcheck build; do at_pin "$t" || todo+=("${t} ${pin_ver} (pipx, user-space)"); done
+	for t in ruff mypy build; do at_pin "$t" || todo+=("${t} ${pin_ver} (pipx, user-space)"); done
+	## Both versions, because they are different numbers for one tool: the pin
+	## is the binary's version and the install asks pipx for the wheel's. The
+	## plan used to name the binary's and the install two blocks down fetched
+	## the other, so the two lines disagreed about what was about to happen.
+	at_pin cppcheck || { cppcheck_wheel; todo+=("cppcheck ${pin_ver} (pipx cppcheck==${cppcheck_wheel}, user-space)"); }
 else
 	hints+=("pipx        - ${pkg_hint} pipx  (then re-run for ruff/mypy/cppcheck/build)")
 fi
