@@ -90,17 +90,9 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Review document `20260920-055406`. The first Panoplia code review on this project, over the whole tree, split four ways and run one part at a time: the Rust reference and its CLI, the Go, Python, C and C++ bindings, the pipeline and gates and installers, and the documents and the conformance corpus. Aimed at what the four-way crosscheck cannot see: behavior that never reaches stdout, structural inputs the value-level fuzz never generates, and round-trip and fixpoint properties where the code reads back its own output.
 
-	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
+	- Each item named its finding id. All nine defects were fixed on 2026-09-20, in four chunks: the two `--check` arms and the style guide's exit table, the cross checks under `--ci`, the document and report nits, and the grammar's bare-value class with the corpus's hint row. Every fix carries a pin that was watched to fail.
 
-	- 🔘 Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
-		- Reproduced: seventeen cases carry a strict load row. Sixteen expect a failure and every one of them has an error diagnostic, so each pins "an error fails a strict load". The seventeenth expects success and has no diagnostics at all. None asserts a strict load succeeding with a hint present.
-		- Effect: the spec calls the strictness table normative and says every level is corpus-pinned, so a binding cannot drift on any row. A binding that failed a strict load on a repeated-leaf hint would pass the whole corpus.
-		- Cause: the level column arrived with the cases that use it, and this row was never given one.
-		- Probable fix: one line added to a hint-only case, in the shape the clean strict case already uses. Sixteen hint-only cases to choose from; one for each hint code covers both.
-		- Note: watch it fail - make a hint fatal at strict in one binding and see the row go red. And any corpus change shifts the fuzz seeds, so expect a gate round with it.
-		- Origin: new ground, no earlier round read the corpus against the table this way. Confirmed.
-		- Sweep: the other six rows of the table. All pinned, checked at filing time. The colon-less repair's strict half is thin - it has no case of its own and rides the general rule.
-		- Opened: 20260920-055406
+	- Finished items are under Done - Bugs, in a bullet of the same name. The round's ten ideas are open under Features and enhancements; none was taken.
 
 - Code review 20260918b:
 
@@ -489,7 +481,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260920:
 
-	- Items closed so far. The rest of the round is open under Bugs.
+	- Every defect the round filed. Its ideas are open under Features and enhancements.
 
 	- ✅ Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
 		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
@@ -530,6 +522,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `check-docs.bash` takes every name the buckets key on, drops the type prefix, and requires a matching `fn` in the reference. Watched to fail on `scan_path`.
 		- Opened: 20260920-055406
 		- Closed: 20260920-084012
+
+	- ✅ Item 9 (F13): the one strictness row that says a load must succeed is pinned by no corpus case.
+		- Reproduced: seventeen cases carried a strict load row. Sixteen expected a failure and each had an error diagnostic; the seventeenth expected success with no diagnostics at all. None asserted a strict load succeeding with a hint present, so a binding that failed one would still pass the whole corpus.
+		- Cause: the level column arrived with the cases that use it, and this row was never given one.
+		- Origin: new ground, no earlier round read the corpus against the table this way. Confirmed.
+		- Fixed: a strict `load ok` row on `035-merge-hint` (`H002`) and on `101-empty-name-hint` (`H001`), which covers both hint codes. The corpus README says what the pair is for.
+		- Pinned by: those two rows. Watched to fail with the reference's strict gate widened to any diagnostic, and each binding was shown to read the `101` row by flipping its expectation.
+		- Note: only `reads.tsv` changed, so the fuzz seed set, which is drawn from the case inputs, did not move.
+		- Opened: 20260920-055406
+		- Closed: 20260920-084802
 
 	- ✅ Item 5 (F9): the grammar does not derive the most ordinary line in the language.
 		- Reproduced: the bare-value class left out the space and the colon, so `field-line` derived none of `q: needs no quotes`, `c: say "hi" there`, `p: C:\dir\file`, `url: http://h/#frag`, `a: x[y]` or `t: 12:30`, and `array-elem-line` did not derive `* Bond James`. All seven load at exit 0 with no diagnostics, checked against the CLI.

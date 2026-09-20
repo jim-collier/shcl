@@ -87,7 +87,7 @@ Case `037` pins the name wildcard in lookups: `*` slots across children of any n
 
 Case `036` pins schema-declared repeat suppression: with `--schema`, an `H001` whose field declares a repeat upper bound above 1 is dropped (repetition is that field's instance mechanism by declaration) while an undeclared repeat keeps its hint; the plain `check` goldens keep both.
 
-Case `035` pins the `H002` merge hint: a binding that merges with a non-adjacent earlier one is hinted at the later line. Adjacent re-mentions and dotted redundant-path re-opens stay silent.
+Case `035` pins the `H002` merge hint: a binding that merges with a non-adjacent earlier one is hinted at the later line. Adjacent re-mentions and dotted redundant-path re-opens stay silent. Its strict `load ok` row is one of the two that pin the strictness table's hint row - a hint never fails a load at any level.
 
 Case `034` pins comment placement fidelity: a comment run written deeper than the next binding hangs on the block it sits in (re-emitted after that block's last child, at the block's indent), an over-deep comment normalizes to its block's level, and end-of-file comment regions keep the blank lines between them.
 
@@ -223,7 +223,7 @@ Case `099` pins `literal` on text that only looks like syntax: a fence opener an
 
 Case `100` pins integers past the i64 range: hex, decimal and quoted-thousands spellings read as floats and are `BadType` as ints.
 
-Case `101` pins an empty name: two `""` leaves are a repeated leaf (`H001`), and a schema declaring `repeat: 1, 5` on the field drops the hint.
+Case `101` pins an empty name: two `""` leaves are a repeated leaf (`H001`), and a schema declaring `repeat: 1, 5` on the field drops the hint. It carries the `H001` half of the strict `load ok` pair described under case `035`.
 
 Case `102` pins one field spelled twice in a schema (`w` and `w[*]`): `init` writes one line.
 
