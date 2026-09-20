@@ -146,7 +146,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          it those are left alone and migrate
                                          exits 7
   --check                                (fmt/migrate) print nothing and exit 6
-                                         when a rewrite would change the file;
+                                         when a rewrite would change the file,
+                                         or 7 when --write would refuse it;
                                          migrate names each line it would
                                          change on stderr
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
@@ -1190,6 +1191,11 @@ def do_fmt(o):
 	# formatter has: print nothing, and say by the exit code whether a rewrite
 	# would change the file. It was `shcl fmt f | cmp -s - f` before.
 	if o.check:
+		# The save gate --write goes through is asked first, so 6 never
+		# promises a rewrite the same command would refuse to make.
+		if not o.lossy and doc.lost_count() != 0:
+			sys.stderr.write(f"{file}: fmt --write would refuse: the load dropped {doc.lost_count()} line(s)/value(s) it would delete (--lossy overrides)\n")
+			return 7
 		if doc.to_canonical() == read:
 			return 0
 		sys.stderr.write(f"{file}: not canonical; fmt --write would rewrite it\n")
@@ -1252,6 +1258,11 @@ def do_migrate(o):
 	if o.check:
 		for n in rewritten:
 			sys.stderr.write(f"{file}:{n}: migrate would rewrite this line\n")
+		# Same as fmt --check: the save gate --write goes through is asked
+		# before 6, so 6 never promises a rewrite that would be refused.
+		if rc == 0 and not o.lossy and doc.lost_count() != 0:
+			sys.stderr.write(f"{file}: migrate --write would refuse: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
+			rc = 7
 		if rc == 0 and rewritten:
 			rc = 6
 		return rc

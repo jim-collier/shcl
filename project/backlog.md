@@ -92,14 +92,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Each item below names its finding id. Ideas from the round are under Features and enhancements.
 
-	- 🔘 Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
-		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
-		- Cause: both `--check` arms compare text and never ask the save gate the matching `--write` goes through.
-		- Probable fix: let the refusal win over 6, the way `migrate --check` already lets 7 win over its own two refusal counts.
-		- Origin: new ground, no earlier round read it. `fmt --check` reached dev 2026-09-19, `migrate --check` 2026-09-16. Confirmed.
-		- Sweep: the same two `--check` arms in the Go, Python and C CLIs.
-		- Opened: 20260920-055406
-
 	- 🔘 Item 2 (F6): the three cross checks never run under `--ci`, so the pre-push gate and hosted CI compile none of them.
 		- Reproduced: a throwaway repo with the engine, the config and every stage stubbed, and a cross check that touches a marker file. `--ci` leaves no marker; `--quick` and a full run both write one. Stage 6 of the `--ci` run prints "release builds skipped".
 		- Cause: the cross-check loop sits inside the release-build branch, and `--ci` empties the release command. The checks build nothing and publish nothing, so nothing about them needs the release stage.
@@ -147,17 +139,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable pin: the docs check already reads the results file for the rerun date. It can take the two ratios from the newest run and compare them with the two figures in the sentence.
 		- Origin: new ground, no earlier round read the prose figures against the results file. Confirmed.
 		- Sweep: every other number in either document taken from the results file by hand. Checked at filing time; this is the only one that does not match.
-		- Opened: 20260920-055406
-
-	- 🔘 Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
-		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
-		- Cause: the guide has one commit, from two days before `fmt --check` reached dev. The help's own exit sentence was generalized then and the guide was not.
-		- Effect: the guide says a CLI doing anything else is the bug, so a later pass could take the `fmt` arm for one.
-		- Note: the help, the man page and the spec all describe it correctly.
-		- Probable fix: name both arms, or `--check` generically as the other three do.
-		- Probable pin: the docs check already reads the help out of the debug binary. It can compare the guide's exit rows against the help's exit sentence.
-		- Origin: new ground, no earlier round read this file against the CLI. Confirmed. Nit.
-		- Sweep: every other claim in the file, since nothing holds any of it to the CLI. All driven at filing time and clean.
 		- Opened: 20260920-055406
 
 	- 🔘 Item 8 (F12): the spec has no table of contents.
@@ -563,6 +544,30 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260920:
+
+	- Items closed so far. The rest of the round is open under Bugs.
+
+	- ✅ Item 1 (F5): `--check` promises a rewrite the same command would refuse to make.
+		- Reproduced: a file whose load drops a line. `fmt --check` exits 6 saying `fmt --write would rewrite it`, and `fmt --write` then exits 7 and changes nothing. `migrate --check` does the same by another route.
+		- Cause: both `--check` arms compare text and never ask the save gate the matching `--write` goes through.
+		- Origin: new ground, no earlier round read it. `fmt --check` reached dev 2026-09-19, `migrate --check` 2026-09-16. Confirmed.
+		- Fixed: both arms ask the gate before they count, and report its refusal at 7. Rust `do_fmt` and `do_migrate`, Go `doFmt` and `doMigrate`, Python `do_fmt` and `do_migrate`, C `do_fmt` and `do_migrate`.
+		- Swept: all four CLIs, both arms. The four agree byte-for-byte on stderr and exit code.
+		- Pinned by: `cli-regress.bash` rows `fmt-check-refused` and `migrate-check-refused`, both watched to fail at exit 6 on the old code, with `migrate-write-refused-lost` beside them as the write half of the pair.
+		- Note: the help's `--check` line, the man page, `spec.md`, `design.md` and the changelog say the 7 case now. `--lossy` is a usage error with `--check`, so the override can never be in play, but the test spells the `--write` condition whole so the two cannot drift.
+		- Opened: 20260920-055406
+		- Closed: 20260920-082633
+
+	- ✅ Item 7 (F11): the CLI style guide's exit-code table names one of the two `--check` arms that exit 6.
+		- Reproduced: `fmt --check` exits 6 on a file that is not canonical and 0 on one that is. The guide's row for 6 names `migrate --check` only.
+		- Cause: the guide has one commit, from two days before `fmt --check` reached dev. The help's own exit sentence was generalized then and the guide was not.
+		- Fixed: row 6 names `--check` generically, as the help does, and row 7 says a `--check` reports the refusal with the same code, which item 1 made true.
+		- Pinned by: `check-docs.bash` compares the guide's exit table with the help's code list, and refuses any exit row that pins a `--check` to one subcommand. Both halves watched to fail, on the old row-6 wording and on a dropped row.
+		- Note: holding the rest of the guide's prose to the CLI is idea 10, still open.
+		- Opened: 20260920-055406
+		- Closed: 20260920-082633
 
 - Code review 20260918b:
 

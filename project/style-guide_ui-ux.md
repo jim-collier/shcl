@@ -84,8 +84,8 @@ There are four CLIs, one per binding. Only the Rust one ships. The Go, Python an
 | 3    | Nothing at the path.
 | 4    | The value is the wrong type.
 | 5    | The path matches more than one instance.
-| 6    | `check` found an error, a strict load failed, `init`'s schema has faults, or `migrate --check` found a line to rewrite.
-| 7    | An in-place write was refused, or `migrate` left something behind.
+| 6    | `check` found an error, a strict load failed, `init`'s schema has faults, or a `--check` found a rewrite to make.
+| 7    | An in-place write was refused, or `migrate` left something behind. A `--check` reports the refusal with the same code.
 | 8    | A file or stream could not be read or written.
 
 A new failure reuses one of these where one fits.

@@ -336,6 +336,11 @@ nothing in the file says which one wrote it.
 .RB ( fmt ", " migrate )
 Print nothing. Exit 6 when a rewrite would change the file and 0 when it would
 not, so a script can ask which files in a tree need formatting or migrating.
+A rewrite the matching
+.B \-\-write
+would refuse is exit 7 instead, since
+.B \-\-check
+asks the same save gate.
 .B migrate
 also names on stderr each line it would change, as
 .IR FILE : LINE .

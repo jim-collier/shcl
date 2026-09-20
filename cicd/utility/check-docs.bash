@@ -359,6 +359,30 @@ if [[ -n "${help}" ]]; then
 	rm -f "${tmpErr}"
 fi
 
+##	The CLI style guide carries its own copy of the exit codes, and nothing held
+##	it to the CLI: its row for 6 named migrate --check for two days after fmt
+##	got one, so the guide called the fmt arm a bug. Two things are checked. The
+##	help's code list and the guide's table have to name the same codes, and no
+##	guide row may pin a --check to one subcommand, since both fmt and migrate
+##	have one and naming either makes the other read wrong.
+if [[ -n "${help}" ]]; then
+	guide="${repoDir}/project/style-guide_ui-ux.md"
+	exitRows="$(sed -n '/^## Exit codes$/,/^## /p' "${guide}" | { grep -E '^\| [0-9]' || true ;})"
+	[[ -n "${exitRows}" ]] || fBad "style-guide_ui-ux.md: no exit-code table to compare with the help"
+	helpCodes="$(sed -n '/^Exit codes:/,$p' <<<"${help}" | sed 's/^Exit codes: //' \
+		| { grep -oE '(^|, )[0-9] ' || true ;} | tr -dc '0-9\n' | sort -u)"
+	[[ -n "${helpCodes}" ]] || fBad "the help has no 'Exit codes:' paragraph to read the codes out of"
+	guideCodes="$(awk '{ print $2 }' <<<"${exitRows}" | sort -u)"
+	[[ "${helpCodes}" == "${guideCodes}" ]] \
+		|| fBad "style-guide_ui-ux.md: the exit table names $(tr '\n' ' ' <<<"${guideCodes}")and the help names $(tr '\n' ' ' <<<"${helpCodes}")"
+	while IFS= read -r row; do
+		#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+		if grep -qE '`(fmt|migrate|check|set|init|get) --check`' <<<"${row}"; then
+			fBad "style-guide_ui-ux.md: an exit row names one subcommand's --check: ${row}"
+		fi
+	done <<<"${exitRows}"
+fi
+
 ##	Every subcommand that loads a document prints the load's diagnostics, so a
 ##	README transcript reading a damaged file has to show them - the get example
 ##	sat under a check example that showed the same file's diagnostic and said
