@@ -148,6 +148,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
 - ✅ The C save on windows eats a dangling symlink instead of writing through it.
 	- Reproduced on B29W, in a sandbox: `mklink l.shcl missing.shcl`, then `set --write --set a=1 l.shcl`. C exits 0 with `missing.shcl` never created and `l.shcl` now a regular file. Rust and Go create the target and keep the link.
 	- Cause: `shcl_resolve_target`'s windows arm opens the path to resolve it, and a dangling link cannot be opened, so it fell through to the full-path spelling, which names the link. The POSIX arm walks the link by hand; the windows arm had nothing.
@@ -166,7 +167,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: also from the area-d read, filed as Plausible pending the batch.
 	- Opened: 20260919-165000
 	- Closed: 20260919-170000
-
 
 - ✅ Under an element cap, a `*` line reported `E021` where the open parse drops it as `E008`.
 	- Reproduced: through `parse_limited` at element cap 1 on the nine lines the fuzz built. The open parse binds a field under the element's field (`E001`) and refuses the element after it as `E008`; the capped parse refuses the field line as `E021`, so the element would join the list and the cap refuses it too.
