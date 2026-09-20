@@ -153,14 +153,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's ideas. The defects are under Bugs, and the round bullet there says what was covered.
 
-	- 🔘 Idea 1: a `remove` that matches many instances is quadratic in the sibling count.
-		- Measured: removing every instance of one top-level name takes 0.95 s at 10,000 siblings, 3.33 s at 20,000 and 12.17 s at 40,000, where the parse of the same file is 0.30 s. Four times the work for twice the input.
-		- Cause: the parent's child list is rebuilt once per removed node, and the name index chain is walked from its head each time.
-		- Probable fix: one pass per parent over a set of targets, and drop the name index the way a merge already does.
-		- Note: reads, `fmt` and `paths` on the same files are linear. Nothing states a bound on `remove`, so this is an idea, not a defect.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
 	- 🔘 Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
 		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
 		- Origin: idea.
@@ -4531,6 +4523,23 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260920:
+
+	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 1: a `remove` that matches many instances is quadratic in the sibling count.
+		- Measured: removing every instance of one top-level name takes 0.95 s at 10,000 siblings, 3.33 s at 20,000 and 12.17 s at 40,000, where the parse of the same file is 0.30 s. Four times the work for twice the input.
+		- Cause: the parent's child list is rebuilt once per removed node, and the name index chain is walked from its head each time.
+		- Probable fix: one pass per parent over a set of targets, and drop the name index the way a merge already does.
+		- Note: reads, `fmt` and `paths` on the same files are linear. Nothing states a bound on `remove`, so this is an idea, not a defect.
+		- Origin: idea.
+		- Fixed: every target is marked, then each touched child list is rebuilt once. The mark is the node's parent link set to DEAD, and a rebuild puts the link back on each node it drops, so a mark still standing also answers "has this parent been done yet" and nothing has to dedupe the parents. All four bindings; C spells the one vector of pairs as two parallel vectors.
+		- Left alone: the name index. Its chain is walked once per target, but resolve hands the targets back in file order, which is chain order, so every unlink takes the head and costs nothing. Dropping the index instead would rebuild it on the next lookup, which makes a script of single removes the quadratic that was just taken out.
+		- Measured: 40,000 instances of one name among 80,000 top-level nodes, release Rust: 839 ms before, 93 ms after, against a 77 ms parse of the same file. The other three move the same way.
+		- Pinned by: the `removes` workload in `perf-gate.bash`, watched to fail in all four (rust 12713 ms against a 1014 ms budget, go 1086 against 309, python 15463 against 2178, c 396 against 288). Its document is half again the key count, because C's budget is the baseline-plus-250 floor and at the plain key count the old code cleared it by only 40 percent. Corpus case `129-remove-many` pins the semantics four ways.
+		- Opened: 20260920-055406
+		- Closed: 20260920-113000
 
 - Code review 20260918b:
 

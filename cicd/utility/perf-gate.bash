@@ -124,6 +124,18 @@ awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 
 awk 'function nm(   s, k) { s = ""; for (k = 0; k < 8; k++) { x = (x * 16807) % 2147483647; s = s sprintf("%c", 97 + x % 26) } return s }
 	BEGIN { x = 7; for (i = 0; i < 4000; i++) printf "%s: 1\n", nm() }' > "${unkDoc}"
 
+## Every child of one parent taken out by a single `*` path. Each target was
+## dropped on its own, rebuilding the parent's whole child list once per target,
+## so the cost was the target count times the sibling count and both of those
+## are the document. The second group is what survives, so the run has something
+## to print. Half again the key count: C's budget is the baseline-plus-250 floor
+## rather than the 3x, and at the plain key count the old code cleared it by only
+## 40 percent, which a faster machine would erase. At half again it is 3x over.
+rmDoc="${tmpDir}/rm.shcl"
+awk -v n="$((keys + keys / 2))" 'BEGIN{ print "grp:"; for (i = 0; i < n; i++) printf "\tf%d: %d\n", i, i
+	print "keep:"; for (j = 0; j < 4; j++) printf "\tz%d: 1\n", j }' > "${rmDoc}"
+printf 'remove\tgrp.*\n' > "${tmpDir}/removes.ops"
+
 ## Two flat documents of the same names, so every name in the higher layer
 ## overrides a leaf below. Collecting the replaced leaf's comments scanned every
 ## base child once per overridden name, which is quadratic when the two files
@@ -173,6 +185,8 @@ fTimeMs(){
 			fRun "${cli}" check --schema "${unkSchema}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == merge ]]; then
 			fRun "${cli}" fmt --layer "${mergeBase}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == removes ]]; then
+			fRun "${cli}" set "${input}" < "${tmpDir}/removes.ops" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			fRun "${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -241,7 +255,7 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns merge; do
+	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns merge removes; do
 		if [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
@@ -260,6 +274,8 @@ for b in "${bindings[@]}"; do
 			ms="$(fTimeMs "${cli}" "${unkDoc}" unknowns 4000)"
 		elif [[ "${w}" == merge ]]; then
 			ms="$(fTimeMs "${cli}" "${mergeOver}" merge "$((keys / 2))")"
+		elif [[ "${w}" == removes ]]; then
+			ms="$(fTimeMs "${cli}" "${rmDoc}" removes 6)"
 		else
 			ms="$(fTimeMs "${cli}" "${tmpDir}/${w}.ops" set "${keys}")"
 		fi
@@ -303,3 +319,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            every sibling, one copy per schema field.
 ##		2026-09-19  Every run is capped at five minutes, so a binding that stops
 ##		            terminating fails this gate instead of hanging it.
+##		2026-09-20  removes workload: every child of one parent taken out by one
+##		            path, which rebuilt that child list once per target.
