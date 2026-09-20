@@ -96,13 +96,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a bare `#` in a write path cutting the path there, a fence run on an `E014` line (declined in the 20260918 round), and `allowed` on a datetime telling `13:00` from `13:00:00`.
 
-	- 🛠️ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
+	- ✅ Item 38: the NSIS setup runs `powershell` by bare name while elevated.
 		- A program's own directory is searched first, which for a downloaded setup is the Downloads folder. A `powershell.exe` beside the setup would run as administrator. The uninstaller has the same call.
 		- Origin: `ff9cd6b` (2026-07-25). Plausible. The test is in the Windows batch.
 		- Probable fix: the full path under `$SYSDIR`.
 		- Fixed: both `nsExec` calls in `shcl.nsi` run `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"`, in the setup and in the uninstaller. The setup compiles with makensis.
 		- Not pinned on Linux: 7-Zip cannot decompile this NSIS 3 header (`BadCmd=13`), and a grep of the .nsi would not be a pin. The item stays Plausible until the Windows run.
-		- Windows step left (sandbox on B29W, under the lock): copy a marker program named `powershell.exe` beside `shcl-<ver>-windows-x86_64-setup.exe` in an empty folder, run the setup `/S` from a `schtasks /RL HIGHEST` task, and look for the marker's file. Run it with the old setup first to confirm, then the new one, where the file must not appear and the machine PATH must gain the install dir. Then uninstall the same way and check the PATH entry is gone.
+		- Verified on B29W in a sandbox, 2026-09-19, with a marker program named `powershell.exe` beside the setup in an empty folder. The old setup ran the marker, and so did the old uninstaller with the marker in the install dir. The new setup does not, adds itself to the machine PATH and runs; the new uninstaller does not, and takes the PATH entry back off. So the item is Confirmed, not Plausible.
+		- Note: a silent uninstall from a script needs `uninstall.exe /S _?=<dir>`. Plain `/S` returned 0 and removed nothing, which is the relaunched copy of an NSIS uninstaller asking to elevate with nobody there to say yes. Interactive removal is unaffected.
 		- Opened: 20260918-193000
 
 - Code review 20260918:
@@ -147,6 +148,25 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ The C save on windows eats a dangling symlink instead of writing through it.
+	- Reproduced on B29W, in a sandbox: `mklink l.shcl missing.shcl`, then `set --write --set a=1 l.shcl`. C exits 0 with `missing.shcl` never created and `l.shcl` now a regular file. Rust and Go create the target and keep the link.
+	- Cause: `shcl_resolve_target`'s windows arm opens the path to resolve it, and a dangling link cannot be opened, so it fell through to the full-path spelling, which names the link. The POSIX arm walks the link by hand; the windows arm had nothing.
+	- Fixed: when the open fails and the path is a reparse point, create through it (windows follows a link on create), read the real path off that handle, take the probe file away again and publish there. A link the create cannot resolve is an error, not a fall-through, since the fall-through is what ate the link.
+	- Verified on B29W: the link survives and `missing.shcl` holds the write, matching Rust and Go. A link to an existing file, a link to a directory and a link cycle all answer as they did, and as the other two do.
+	- Pinned by: nothing automated yet. `win-runners.bash` has no sandbox row for links, and `mklink` needs an administrator, so the check is by hand for now. Noted under the Windows batch.
+	- Note: found by the 20260918b area-d read, which filed it as Plausible pending the batch. The batch confirmed it.
+	- Opened: 20260919-165000
+	- Closed: 20260919-170000
+
+- ✅ The C save on windows cannot write to a path given with a `\\?\` prefix.
+	- Reproduced on B29W: a 222-character directory and `set --write --set a=1 "\\?\C:\...\new.shcl"`. C exits 8 with "cannot create temporary file"; Rust and Go write the file.
+	- Cause: `shcl_resolve_target` prefixed an already-prefixed path again and built `\\?\UNC\?\C:\...`. Under MAX_PATH the strip at the end undid that, so only a long path, which is where a caller needs the prefix, showed it.
+	- Fixed: a path that already carries `\\?\` or `\\.\` is taken as it is.
+	- Pinned by: `win-runners.bash` row `c long path`, which builds a 256-character path and saves through it. Watched to fail on B29W with the old binary and pass with the new one.
+	- Note: also from the area-d read, filed as Plausible pending the batch.
+	- Opened: 20260919-165000
+	- Closed: 20260919-170000
 
 - ✅ Under an element cap, a `*` line reported `E021` where the open parse drops it as `E008`.
 	- Reproduced: through `parse_limited` at element cap 1 on the nine lines the fuzz built. The open parse binds a field under the element's field (`E001`) and refuses the element after it as `E008`; the capped parse refuses the field line as `E021`, so the element would join the list and the cap refuses it too.
@@ -391,7 +411,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Decided: `install.ps1` stays ASCII with no byte-order mark. Its copyright line takes the plain `(C)` form with no ID, as the windres strings do, and its two section rules are ASCII. The other `.ps1` files are read from disk and keep their mark, which 5.1 needs.
 		- Fixed: the mark, the ID and the two rule lines are gone from `install.ps1`. The README lines are unchanged.
 		- Pinned by: `check-docs.bash` refuses a mark or any non-ASCII byte in `install.ps1`, and parses the file from its raw bytes, the way `irm` hands them over. On the old file it failed all three, with the same three parse errors, and it passes on the new one.
-		- Note: the 5.1 half still wants the Windows batch line for item 1. Nothing is left on the file for it to find.
+		- Verified on B29W, 2026-09-19: the live `irm` of main's `install.ps1` gives `#` as its first character on Windows PowerShell 5.1 and on pwsh 7, parses with no errors on both, and the scriptblock one-liner runs `-Help`.
 		- Opened: 20260918-193000
 		- Closed: 20260919-084501
 
@@ -418,7 +438,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: only a regular file is replaced. A directory is refused as one, anything else as "not a regular file", in `write_file_atomic` (Rust, Python), `WriteFileAtomic` (Go) and `shcl_write_file_atomic` (C, `EINVAL`, since POSIX has no errno for it). The four CLIs ask before they read a `--write` FILE (`write_target_ok`, `writeTargetOK` in Go), so a FIFO is not drained, and say "not a regular file" at exit 8.
 		- Pinned by: the `save-targets` cases in `cli-regress.bash`, one per row of the table, run through every CLI in a fresh directory. On the old code the FIFO cases hung in all four and were cut off by the timeout. A library fixture in all four runners (`save_replaces_only_a_regular_file`, `TestSaveReplacesOnlyARegularFile`, and the Python and C POSIX blocks) saves onto a FIFO directly, since the CLI's check hides the library's. All four failed on the old library.
 		- Swept: the four sites the item names. The device half is the `device` case, a link to `/dev/null`, which needs no root.
-		- Left alone: Windows device names such as `NUL`. That waits on the Windows batch.
+		- Left alone: Windows device names such as `NUL`. Checked on B29W, 2026-09-19: `set --write --set a=1 NUL`, and the same with `\\.\NUL`, is exit 8 in all four. The wording differs there - Go and Python name the rule, Rust and C report what the OS said - which is the per-binding stderr voice the gates already allow.
 		- Opened: 20260918-193000
 		- Closed: 20260919-122956
 
@@ -449,8 +469,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a `shell-regress.bash` row that runs the function under the script's strict mode over the three answers the bash twin has (none, ours, someone else's first). With the old statement put back in the function body it fails on "none" with the `Source` property error. The old source grep is commented out with the reason, since it passed while the check threw.
 		- Swept: every member read in `install.ps1` off a value that can be empty. Two were unguarded, this one and item 36's `.Response`. Guarded already: `$rel.tag_name` (after `-not $rel`), `$want.ToLower()` and `$wantSrc.ToLower()` (after an emptiness test), `$srcroot.FullName` (only with the drop-ins), `$smoke.Out` (a hashtable key), `.Hash` off `Get-FileHash` (throws rather than returning nothing), `$principal.IsInRole`, `$tag.TrimStart`.
 		- Left alone: `Select-ReleaseTag` reads `.tag_name`, `.draft` and `.prerelease` off each release object. An empty JSON array comes back as an empty `Object[]` on pwsh 7 and does not reach them. `$envKey` in `Update-ShclPath` is null only when HKCU\Environment or the machine Environment key is missing, which a working Windows does not have.
-		- Windows step left: in the batch, with shcl off the session PATH, `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Target user -Yes; $LASTEXITCODE` on 5.1 and pwsh 7. Expect the receipt and 0. Then `-Uninstall -Target user -Yes` and put the user PATH's trailing `;` back.
-		- Note: the 5.1 end-to-end run is the Windows batch's.
+		- Verified on B29W, 2026-09-19, on 5.1 with shcl off the session PATH: a first install and a second one over it both print the receipt and exit 0, where the second is the case that used to end in the `Source` property error. The user PATH was put back, trailing `;` and all.
 		- Opened: 20260918-193000
 		- Closed: 20260919-102859
 
@@ -517,7 +536,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `21ec21d` (2026-08-18), where `-Uninstall` first appeared, already below the lookup. Confirmed.
 		- Fixed: the destination and uninstall blocks come before the architecture check, the TLS setup and the release lookup. A comment at the site says why.
 		- Pinned by: a `shell-regress.bash` row that runs the real script with only its three-line Windows refusal cut out (the row checks the cut is exactly that block), every request sent to a proxy that is not there, a scratch LOCALAPPDATA holding `shcl.exe` and `code\lib.rs`, and `-Uninstall -Target user -Yes`. On the old script it stops at the API with nothing removed; now it prints "removing shcl:" and both files are gone. The PATH edit after that fails for want of a registry, which the row does not look at.
-		- Windows step left: in the batch, with `$env:HTTPS_PROXY='http://127.0.0.1:9'` on pwsh 7 (or the network off on 5.1), `-Uninstall -Target user -Yes` on an installed copy removes it.
+		- Verified on B29W, 2026-09-19, on 5.1 in a sandbox with networking off: `-Uninstall -Target user -Yes` removes the install and the PATH entry at exit 0. A proxy variable is no test here, since .NET ignores it; the sandbox is the only real block.
 		- Opened: 20260918-193000
 		- Closed: 20260919-102859
 
@@ -737,6 +756,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: each of the fifteen typed helpers forwards pipeline input the way `shcl` does, testing `$MyInvocation.ExpectingInput` and piping `$input`. Piping it unconditionally would hand the binary an empty stdin where the console's is what a `-` FILE should read, so the test is part of the fix.
 		- Pinned by: five `shell-regress.bash` rows that build the pipeline inside PowerShell (`shcl_fmt`, `shcl_int`, `shcl_array`, `shcl_check`, `shcl_count`) and hold each against the binary with the same text on stdin. All five differ on the old wrapper: the fmt row printed nothing at exit 0.
 		- Note: the wrapper matrix pipes into the script, where the binary inherits the process's stdin, so it could not see this. The new rows are the first to reach a helper from a pipeline.
+		- Verified on B29W, 2026-09-19, dot-sourced on Windows PowerShell 5.1 and pwsh 7: `shcl_fmt`, `shcl_int` and `shcl_count` all read what is piped into them.
 		- Opened: 20260918-193000
 		- Closed: 20260919-142211
 
@@ -766,6 +786,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `86b9d9e` (2026-09-05). Confirmed.
 		- Fixed: the wrapper's header note names both differences PowerShell's own argument parsing makes in dot-sourced use, the bare `--` and the unquoted comma, each with the quoted spelling that works. That is what 20260904 item 16 decided for the first one.
 		- Pinned by: two `shell-regress.bash` checks beside the `--` pair: the unquoted comma spelling is a usage error, and the quoted one writes `ports: 80, 443`. A PowerShell release that changes either shows up there, as it does for `--`.
+		- Verified on B29W, 2026-09-19, on 5.1 as well as pwsh 7: the bare comma is a usage error and the quoted spelling writes `ports: 80, 443`.
 		- Opened: 20260918-193000
 		- Closed: 20260919-142211
 
@@ -774,8 +795,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `d63feb2` (2026-09-03), the fix for 20260901b item 41, whose pin covers the bash side only. Confirmed on 7, Plausible on 5.1.
 		- Fixed: `Get-HttpStatus` reads the status through `PSObject.Properties['Response']` and gives 0 when there is no response at all, so a DNS failure, a refused port or a proxy error prints the network-down message rather than a property error.
 		- Pinned by: two `shell-regress.bash` rows. One runs the function over a real refused request (0) and a local listener answering 403 (403); with the old read put back in the function body the refused request throws the `Response` property error. The other is item 11's end-to-end harness without `-Uninstall`: it has to print "cannot fetch the dev release (none published yet, or network down)", and on the old script it prints the property error.
-		- Windows step left: 5.1, where the exception is a `WebException` with a null `Response`. In the batch, `powershell -File install.ps1 -Target user -Yes` with DNS or the network blocked prints the network-down text.
-		- Note: confirmed and fixed on pwsh 7. The 5.1 half is the Windows batch's.
+		- Verified on B29W, 2026-09-19, on 5.1 in a sandbox with networking off: the install prints "cannot fetch the dev release (none published yet, or network down)" and exits 1, so the text is reachable where the response is null.
 		- Opened: 20260918-193000
 		- Closed: 20260919-102859
 
