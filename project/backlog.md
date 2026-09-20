@@ -150,12 +150,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: idea.
 		- Opened: 20260920-055406
 
-	- 🔘 Idea 3: the C OOM test sweeps a validate eight allocations deep and a parse four hundred.
-		- Eight budgets all fail in the opening moves of building the schema, so the recovery arm that gives back the per-level arena pool and the half-built name index never runs.
-		- Probable fix: the same loop bound the parse and load sweeps use. The widened version was built and run under the address and undefined-behavior sanitizers with leak detection and still passes, so it can go in as it stands.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
 	- 🔘 Idea 4: on windows the C save refuses a device name only because the publish happens to fail.
 		- The pre-read check is a no-op there, and the save's windows arm tests only the directory attribute. A device name has no attributes, so it reads as "nothing is there yet" and the call goes on to create and publish. Go asks for the file's type and refuses on both platforms.
 		- Probable fix: an explicit file-type test in the windows arm, so the answer does not rest on the publish. The reference has the same shape and would move with it.
@@ -163,30 +157,10 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: idea.
 		- Opened: 20260920-055406
 
-	- 🔘 Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
-		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.
-		- Probable fix: the same derived comparison the shell list already gets, once per kind. The Python side has two lists, one in the pipeline config and one in the binding's own project file.
-		- Note: the shell list drifted this way once and got its check on 2026-09-19.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
 	- 🔘 Idea 6: the dev installer's tool stocktaking is reached by no gate.
 		- Its hook setup has one because the toolchain installs walled the rest of the script off. Everything between the option parse and the hook setup still runs nowhere: reading the pins, deciding what is already at its pin, and building the plan.
 		- The plan names cppcheck by its binary version, and the install two blocks down fetches the wheel version, so the two lines name different versions of one tool.
 		- Probable fix: drive the pin reader and the plan against a fixture config, with the installs stubbed. No network needed.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 7: the completions gate's own fixture is built by replaces that nothing checks applied.
-		- The row adds an option-less subcommand to a copy of the CLI and both completion files by literal string replace. A replace whose anchor has moved is silent, so one broken anchor makes the row fail for the wrong reason and all of them broken makes it compare the real files with each other and pass.
-		- Checked: all six apply today, so the row does assert.
-		- Probable fix: assert each replaced text changed, and name the anchor that did not.
-		- Origin: idea.
-		- Opened: 20260920-055406
-
-	- 🔘 Idea 8: the two installers read the same signed checksums file by different rules.
-		- The Linux one anchors the asset name at the end of the line, which it has to, or the package lines would match too. The Windows one matches anywhere in the line and takes the first hit. No asset name a cut produces contains another, so nothing is wrong today.
-		- Probable fix: match the whole line on the Windows side as well.
 		- Origin: idea.
 		- Opened: 20260920-055406
 
@@ -4539,6 +4513,46 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: the `removes` workload in `perf-gate.bash`, watched to fail in all four (rust 12713 ms against a 1014 ms budget, go 1086 against 309, python 15463 against 2178, c 396 against 288). Its document is half again the key count, because C's budget is the baseline-plus-250 floor and at the plain key count the old code cleared it by only 40 percent. Corpus case `129-remove-many` pins the semantics four ways.
 		- Opened: 20260920-055406
 		- Closed: 20260920-113000
+
+	- ✅ Idea 3: the C OOM test sweeps a validate eight allocations deep and a parse four hundred.
+		- Eight budgets all fail in the opening moves of building the schema, so the recovery arm that gives back the per-level arena pool and the half-built name index never runs.
+		- Probable fix: the same loop bound the parse and load sweeps use. The widened version was built and run under the address and undefined-behavior sanitizers with leak detection and still passes, so it can go in as it stands.
+		- Origin: idea.
+		- Corrected: the eight budgets did reach the level pool and the recovery arm, which an injected leak of each proves. What they never reached was a validate that finished, since the whole call cost exactly eight allocations, so nothing on the completed path was under the swapped allocator at all.
+		- Fixed: the bound is 400, like its two siblings, and the sweep now asserts that a budget loose enough to finish is in it. The schema is 200 fields with a constraint on each, half the document's keys, so a budget can run out in the check walk and in the unknown-key sweep rather than only in a one-field schema build.
+		- Pinned by: the test itself. With `shcl_validation_free` leaving the validation arena behind, the old sweep is clean and the new one reports 375 MB leaked in 5321 allocations under the sanitizers.
+		- Cost: 1.4 s plain and 6.2 s under the sanitizers, from 0.2 s.
+		- Opened: 20260920-055406
+		- Closed: 20260920-131500
+
+	- ✅ Idea 5: the PowerShell and Python lint lists are kept by hand, where the shellcheck one is derived.
+		- Every tracked `.ps1` and `.py` file is covered today. Nothing holds the lists to the tracked files, so a new one of either kind would be linted by nothing and no gate would say so.
+		- Probable fix: the same derived comparison the shell list already gets, once per kind. The Python side has two lists, one in the pipeline config and one in the binding's own project file.
+		- Note: the shell list drifted this way once and got its check on 2026-09-19.
+		- Origin: idea.
+		- Fixed: `shell-regress.bash` compares both lists with the tracked files, both ways, beside the shellcheck one. PowerShell is one `Invoke-ScriptAnalyzer` line per file. Python is two lists read as one: the binding's own files from `[tool.mypy] files` in its project file, everything else from the pipeline's ruff line. Ruff inside `source/python` is pointed at the whole directory and needs no list.
+		- Pinned by: three injections. A new `.ps1` and a new `.py` that no list names, a dropped analyzer line, and a mypy entry renamed to a file that does not exist. Each is reported by name, and the renamed one is reported from both sides at once.
+		- Opened: 20260920-055406
+		- Closed: 20260920-134500
+
+	- ✅ Idea 7: the completions gate's own fixture is built by replaces that nothing checks applied.
+		- The row adds an option-less subcommand to a copy of the CLI and both completion files by literal string replace. A replace whose anchor has moved is silent, so one broken anchor makes the row fail for the wrong reason and all of them broken makes it compare the real files with each other and pass.
+		- Checked: all six apply today, so the row does assert.
+		- Probable fix: assert each replaced text changed, and name the anchor that did not.
+		- Origin: idea.
+		- Fixed: the six replaces go through one helper that stops on a replace that changed nothing and says which anchor it wanted.
+		- Pinned by: itself. With the dispatch anchor spelled `do_pathsX`, the row reports `anchor not found: main.rs: the paths line of the dispatch` instead of building a fixture that tests nothing.
+		- Opened: 20260920-055406
+		- Closed: 20260920-142000
+
+	- ✅ Idea 8: the two installers read the same signed checksums file by different rules.
+		- The Linux one anchors the asset name at the end of the line, which it has to, or the package lines would match too. The Windows one matches anywhere in the line and takes the first hit. No asset name a cut produces contains another, so nothing is wrong today.
+		- Probable fix: match the whole line on the Windows side as well.
+		- Origin: idea.
+		- Fixed: both `Where-Object` filters in `install.ps1` anchor the name the way `install.bash` greps it, leading whitespace to end of line, and match case-sensitively.
+		- Pinned by: a `shell-regress.bash` row that lifts both lines out of the shipped file and runs them over a sums file holding a `.sha256` sidecar line above each asset. The old lines answer with the sidecar's hash for both.
+		- Opened: 20260920-055406
+		- Closed: 20260920-142000
 
 - Code review 20260918b:
 

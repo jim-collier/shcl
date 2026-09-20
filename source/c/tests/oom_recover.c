@@ -45,6 +45,20 @@ static char *sample(size_t *len) {
 	return t;
 }
 
+// A schema for half of it, with a constraint on every field it names. Half so
+// the unknown-key sweep at the end of a validate has work to do as well. The
+// one-field schema this replaced took eight allocations end to end, so the
+// walk a budget could run out in was one field long.
+static char *schema(size_t *len) {
+	size_t cap = 64 * 1024;
+	char *t = (char *)malloc(cap);
+	size_t n = 0;
+	for (int i = 0; i < 200; i++)
+		n += (size_t)snprintf(t + n, cap - n, "field: group.key%d\n\ttype: string\n\trequired: yes\n\tmin: 1\n\tmax: 100\n", i);
+	*len = n;
+	return t;
+}
+
 int main(void) {
 	size_t len; char *text = sample(&len);
 
@@ -92,21 +106,28 @@ int main(void) {
 
 	// Validation reports the same way its parse does.
 	{
-		const char *sch = "field: group.key0\n\ttype: string\n\trequired: yes\n";
+		size_t slen; char *sch = schema(&slen);
 		shcl_doc *d = shcl_parse(text, len);
-		shcl_doc *s = shcl_parse(sch, strlen(sch));
+		shcl_doc *s = shcl_parse(sch, slen);
 		if (!d || !s) fail("the unbudgeted parses failed");
 		else {
-			int sawNullV = 0;
-			for (long b = 0; b < 8; b++) {
+			// The same bound the parse and load sweeps use. It is well past
+			// what a validate costs, which is the point: a budget that runs
+			// out anywhere must come back NULL, and one loose enough to finish
+			// must be in the sweep, or the tight ones prove nothing about a
+			// path the call otherwise takes.
+			int sawNullV = 0, sawVal = 0;
+			for (long b = 0; b < 400; b++) {
 				budget = b;
 				shcl_validation *v = shcl_validate(d, s);
 				budget = 1L << 30;
-				if (!v) sawNullV = 1; else shcl_validation_free(v);
+				if (!v) sawNullV = 1; else { sawVal = 1; shcl_validation_free(v); }
 			}
 			if (!sawNullV) fail("no budget was tight enough to fail a validate");
+			if (!sawVal) fail("no budget was loose enough to finish a validate");
 		}
 		shcl_free(s); shcl_free(d);
+		free(sch);
 	}
 
 	free(text);

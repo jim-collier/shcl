@@ -793,6 +793,30 @@ SRVEOF
 	kill "${tokenPid}" 2>/dev/null || true
 fi
 
+##	20260920 idea 8: install.ps1 matched the asset name anywhere in a sums line
+##	and took the first hit, where install.bash anchors it at the end. No name a
+##	cut produces today contains another, but a per-asset sidecar would, and the
+##	answer would then be a hash off the wrong line. Both lines are lifted from
+##	the shipped file so the check cannot drift from it.
+if fHave pwsh; then
+	sdir="${tmpDir}/psums"; mkdir -p "${sdir}"
+	{
+		printf '%064d  shcl-9.9.9-windows-x86_64.exe.sha256\n' 1
+		printf '%064d  shcl-9.9.9-windows-x86_64.exe\n' 2
+		printf '%064d  shcl-9.9.9-dropins.tar.gz.sha256\n' 3
+		printf '%064d  shcl-9.9.9-dropins.tar.gz\n' 4
+	} > "${sdir}/sums.txt"
+	# shellcheck disable=SC2016  ## PowerShell variable names, matched literally
+	sumLines="$(sed -n '/\$want = (Get-Content/p;/\$wantSrc = (Get-Content/p' "${repoDir}/install.ps1")"
+	sumCount="$(grep -c . <<<"${sumLines}" || true)"
+	[[ "${sumCount}" == 2 ]] || fBad "install.ps1's two sums lines could not be lifted: got ${sumCount}"
+	out="$(pwsh -NoProfile -Command "\$tmp = '${sdir}'; \$asset = 'shcl-9.9.9-windows-x86_64.exe'; \$dropins = 'shcl-9.9.9-dropins.tar.gz'
+${sumLines}
+Write-Output \"\$want \$wantSrc\"" 2>&1 || true)"
+	[[ "${out}" == "$(printf '%064d %064d' 2 4)" ]] \
+		|| fBad "install.ps1 takes a checksum off a sums line that merely contains the asset name: ${out@Q}"
+fi
+
 ##	20260918b item 42: the publish script matched -h and -v anywhere in its
 ##	joined arguments, so `--message "pass -v through to rar"` printed the
 ##	banner and exited 0 having published nothing. Run from a directory that is
@@ -1660,30 +1684,44 @@ gate="${repoDir}/cicd/utility/check-completions.bash"
 if [[ -x "${gate}" ]]; then
 	fix="${tmpDir}/optless"
 	mkdir -p "${fix}/source/rust/src" "${fix}/source/completions"
-	python3 - "${repoDir}" "${fix}" <<'PYEOF'
+	##	20260920 idea 7: a replace whose anchor has moved does nothing and says
+	##	nothing. One broken anchor leaves the row failing for the wrong reason,
+	##	and all six broken leaves it comparing the real files with each other
+	##	and passing. Every replace is checked and names the anchor it wanted.
+	fixRc=0
+	python3 - "${repoDir}" "${fix}" > "${tmpDir}/optless.log" 2>&1 <<'PYEOF' || fixRc=$?
 import sys
 repo, fix = sys.argv[1], sys.argv[2]
 TAB = chr(9)
 NL = chr(10)
+
+def sub(text, old, new, what):
+    out = text.replace(old, new, 1)
+    if out == text:
+        sys.exit("anchor not found: " + what)
+    return out
+
 s = open(repo + "/source/rust/src/main.rs").read()
 arm = TAB * 2 + '"count" | "instances" | "children" | "paths" => &['
-s = s.replace(arm, TAB * 2 + '"ping" => &[],' + NL + arm, 1)
-s = s.replace(TAB + '"explain",' + NL + "];", TAB + '"explain",' + NL + TAB + '"ping",' + NL + "];", 1)
+s = sub(s, arm, TAB * 2 + '"ping" => &[],' + NL + arm, "main.rs: the option-less arm of allowed_opts")
+s = sub(s, TAB + '"explain",' + NL + "];", TAB + '"explain",' + NL + TAB + '"ping",' + NL + "];", "main.rs: the end of COMMANDS")
 disp = TAB * 2 + '"paths" => do_paths(o),'
-s = s.replace(disp, disp + NL + TAB * 2 + '"ping" => 0,', 1)
+s = sub(s, disp, disp + NL + TAB * 2 + '"ping" => 0,', "main.rs: the paths line of the dispatch")
 open(fix + "/source/rust/src/main.rs", "w").write(s)
 for name in ("shcl.bash", "_shcl"):
     c = open(repo + "/source/completions/" + name).read()
     row = TAB * 2 + "count|instances|children|paths) echo '--strictness"
-    c = c.replace(row, TAB * 2 + "ping)            echo '' ;;" + NL + row, 1)
+    c = sub(c, row, TAB * 2 + "ping)            echo '' ;;" + NL + row, name + ": the option row for count")
     if name == "shcl.bash":
-        c = c.replace("paths migrate tokens explain help", "paths migrate tokens explain ping help", 1)
+        c = sub(c, "paths migrate tokens explain help", "paths migrate tokens explain ping help", name + ": the command list")
     else:
         pl = TAB * 2 + "'paths:every field path in the document'"
-        c = c.replace(pl, pl + NL + TAB * 2 + "'ping:say nothing'", 1)
+        c = sub(c, pl, pl + NL + TAB * 2 + "'ping:say nothing'", name + ": the paths description")
     open(fix + "/source/completions/" + name, "w").write(c)
 PYEOF
-	if ! out="$("${gate}" "${fix}" 2>&1)"; then
+	if ((fixRc != 0)); then
+		fBad "the check-completions fixture did not build: $(cat "${tmpDir}/optless.log")"
+	elif ! out="$("${gate}" "${fix}" 2>&1)"; then
 		fBad "check-completions rejects an option-less subcommand the completions spell correctly: ${out}"
 	fi
 fi
@@ -1959,6 +1997,40 @@ while IFS= read -r f; do
 done < <(LC_ALL=C comm -13 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))
 ((${#shFiles} > 0 && ${#scTargets} > 0)) || fBad "the shellcheck list comparison read an empty side"
 
+##	20260920 idea 5: the list above is derived and its two siblings were not, so
+##	a new `.ps1` or `.py` would be linted by nothing and no gate would say so.
+##	The same comparison, once per kind.
+# shellcheck source=/dev/null
+lintExtra="$( set +u; source "${repoDir}/cicd/config.bash"; printf '%s\n' "${LINT_EXTRA[@]}" )"
+
+##	PowerShell: one PSScriptAnalyzer line per tracked file, both ways.
+psTargets="$(grep -oE 'Invoke-ScriptAnalyzer -Path [^ ]+' <<<"${lintExtra}" | awk '{print $3}' | LC_ALL=C sort -u || true)"
+psFiles="$(git -C "${repoDir}" ls-files --cached --others --exclude-standard -- '*.ps1' | LC_ALL=C sort -u)"
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: a PowerShell script the lint stage does not analyze; add a line to LINT_EXTRA"; fi
+done < <(LC_ALL=C comm -23 <(printf '%s\n' "${psFiles}") <(printf '%s\n' "${psTargets}"))
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: analyzed by LINT_EXTRA and not a tracked PowerShell script"; fi
+done < <(LC_ALL=C comm -13 <(printf '%s\n' "${psFiles}") <(printf '%s\n' "${psTargets}"))
+((${#psFiles} > 0 && ${#psTargets} > 0)) || fBad "the PowerShell list comparison read an empty side"
+
+##	Python has two lists. The binding's own files are named in its project file,
+##	which is what mypy reads; ruff there is pointed at the whole directory, so it
+##	needs no list. Everything else is on the pipeline's own ruff line.
+pyMypy="$(sed -n 's/^files = \[\(.*\)\]$/\1/p' "${repoDir}/source/python/pyproject.toml" \
+	| tr ',' '\n' | tr -d ' "' | sed '/^$/d' | sed 's|^|source/python/|' | LC_ALL=C sort -u)"
+pyRuffLine="$(grep -F 'ruff check' <<<"${lintExtra}" | grep -vF 'cd source/python' || true)"
+pyRuff="$(grep -oE '[^ ]+\.py' <<<"${pyRuffLine}" | LC_ALL=C sort -u || true)"
+pyTargets="$(printf '%s\n%s\n' "${pyMypy}" "${pyRuff}" | sed '/^$/d' | LC_ALL=C sort -u)"
+pyFiles="$(git -C "${repoDir}" ls-files --cached --others --exclude-standard -- '*.py' | LC_ALL=C sort -u)"
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: a Python file no lint list names; add it to the pipeline's ruff line or to source/python/pyproject.toml"; fi
+done < <(LC_ALL=C comm -23 <(printf '%s\n' "${pyFiles}") <(printf '%s\n' "${pyTargets}"))
+while IFS= read -r f; do
+	if [[ -n "${f}" ]]; then fBad "${f}: named by a lint list and not a tracked Python file"; fi
+done < <(LC_ALL=C comm -13 <(printf '%s\n' "${pyFiles}") <(printf '%s\n' "${pyTargets}"))
+((${#pyMypy} > 0 && ${#pyRuff} > 0)) || fBad "the Python list comparison read an empty side"
+
 ##	20260902 item 18: the two corpus replays split a reads.tsv row with
 ##	`IFS=$'\t' read`, which drops a leading or doubled tab because tab is IFS
 ##	whitespace whatever IFS is set to - so the top-level `children` row arrived
@@ -2012,3 +2084,4 @@ echo "shell-regress: OK: wrappers, one-liner scope, packaging, installers, compa
 ##		            is here. The lint-report rows cover an unfinished run.
 ##		2026-09-19  The shellcheck list is compared with the tracked shell files.
 ##		2026-09-19  check-pins: an empty pip family, and a pip line read blind.
+##		2026-09-20  The PowerShell and Python lint lists get the same comparison.
