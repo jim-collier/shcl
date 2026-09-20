@@ -176,6 +176,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- On Windows, the C binding's save no longer replaces a dangling symlink with a regular file. It creates the file the link points at and leaves the link, which is what Rust and Go already did. A path given with the `\\?\` prefix works too: it was prefixed a second time, so a save past `MAX_PATH` - the length that needs the prefix - failed outright.
+
 - A `--write` that has nothing to write no longer rewrites the file. What the save would publish is compared with the bytes read back first, so a canonical file keeps its inode, its mtime and its hard links, an idempotent `--set-default` in a provisioning script stops reporting a change on every run, and a canonical file in a read-only directory stops failing at exit 8. A load that dropped content still refuses the write before any of this.
 
 - A `--write` that creates FILE says `FILE: created` on stderr. A typo in the name exited 0 with an empty stderr and a new file nobody asked for.

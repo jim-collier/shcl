@@ -140,6 +140,29 @@ fRunCcli() {
 	grep -q '^x: 1$' "${dir}/ā.shcl" || { echo "win-runners: c cli: ā.shcl was not written" >&2; return 1; }
 }
 
+## A path past MAX_PATH, which needs the `\\?\` prefix a caller has to spell
+## itself. The C save prefixed an already-prefixed path again and built
+## `\\?\UNC\?\C:\...`, which no create opens; under MAX_PATH the strip that
+## follows undid it, so only a long path showed it. Nothing on linux has the
+## limit and nothing under wine reaches this code, so the row lives here.
+fRunLongPath() {
+	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	## Two segments of 100, so the whole path is past 260 with room for the
+	## temp file's own suffix.
+	local deep
+	deep="${work}/$(printf 'd%.0s' {1..100})/$(printf 'e%.0s' {1..100})"
+	mkdir -p "${deep}" || return 1
+	local win
+	win="$(cygpath -w "${deep}" 2>/dev/null)" || return 1
+	## cygpath gives the prefix back on a path this long; the test is about the
+	## prefixed spelling, so put it on either way.
+	[[ "${win:0:4}" == "\\\\?\\" ]] || win="\\\\?\\${win}"
+	"${work}/shcl-c${exe}" set --write --set a=1 "${win}\\new.shcl" || return 1
+	[[ -f "${deep}/new.shcl" ]] || { echo "win-runners: long path: the file was not written" >&2; return 1; }
+	grep -q '^a: 1$' "${deep}/new.shcl"
+}
+
 ## A stdin nothing is attached to reads as an empty document, exit 0. POSIX
 ## reports that as EOF and every binding already agreed there; windows answers
 ## with an invalid handle or an invalid function instead, which each runtime
@@ -222,6 +245,7 @@ fRun "c oom recover" "${cc}"        fRunOomSweep oom_recover
 fRun "c mem bounds" "${cc}"         fRunMemBounds
 fRun "c cli argv"  "${cc}"          fRunCcli
 fRun "closed stdin" "${cc}"         fRunClosedStdin
+fRun "c long path" "${cc}"          fRunLongPath
 fRun "cli regress"  "${cc}"         fRunCliRegress
 ## The installers' PATH handling needs a real registry, which only exists here.
 ## It overwrites the machine PATH for the length of the run - fine on a throwaway

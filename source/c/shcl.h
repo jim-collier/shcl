@@ -6822,6 +6822,10 @@ static int shcl_errno_from_win32(DWORD e) {
 	case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return ENOSPC;
 	case ERROR_BUSY: return EBUSY;
 	case ERROR_DIRECTORY: return ENOTDIR;
+	// A link that points at itself. Without this the message read "Invalid
+	// argument" where the other three say "too many levels of symbolic links",
+	// which is the wording the Save outcomes table carries.
+	case ERROR_CANT_RESOLVE_FILENAME: return ELOOP;
 	default: return EIO;
 	}
 }
@@ -6932,6 +6936,38 @@ static char *shcl_resolve_target(const char *file) {
 		CloseHandle(h);
 	}
 	if (!full) {
+		// A dangling link: the open above follows links, so it failed, and the
+		// full-path fallback below would name the link itself - so the save
+		// would put a regular file where the link was. Windows follows a link
+		// on create, so creating through it names the file the link points at;
+		// the probe file comes away again and the save publishes there. A link
+		// this cannot resolve (it points at a directory, or it cycles) is an
+		// error rather than a fall-through, since falling through is what ate
+		// the link. Rust and Go create through the link and keep it, and the
+		// Save outcomes table in design.md says that is the rule.
+		WIN32_FIND_DATAW fd;
+		HANDLE fh = FindFirstFileW(w, &fd);
+		int is_link = 0;
+		if (fh != INVALID_HANDLE_VALUE) {
+			is_link = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+			          && (fd.dwReserved0 == IO_REPARSE_TAG_SYMLINK || fd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
+			FindClose(fh);
+		}
+		if (is_link) {
+			HANDLE ch = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			                        NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+			if (ch == INVALID_HANDLE_VALUE) { DWORD e = GetLastError(); free(w); errno = shcl_errno_from_win32(e); return NULL; }
+			DWORD need = GetFinalPathNameByHandleW(ch, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+			if (need && (full = (wchar_t *)malloc((size_t)need * sizeof *full))
+			    && !GetFinalPathNameByHandleW(ch, full, need, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)) {
+				free(full); full = NULL;
+			}
+			CloseHandle(ch);
+			if (!full) { free(w); errno = EIO; return NULL; }
+			DeleteFileW(full);
+			free(w);
+			goto narrow;
+		}
 		// Not there yet (or not openable): build the long-path spelling from
 		// the full path instead. \\server\share becomes \\?\UNC\server\share.
 		DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
@@ -6942,14 +6978,24 @@ static char *shcl_resolve_target(const char *file) {
 			DWORD e = GetLastError();
 			free(fp); free(w); errno = shcl_errno_from_win32(e); return NULL;
 		}
-		int unc = fp[0] == L'\\' && fp[1] == L'\\';
+		// Already prefixed (`\\?\` or `\\.\`): it is the spelling a caller
+		// reaches for past MAX_PATH, and prefixing it again built
+		// `\\?\UNC\?\C:\...`, which no create can open. Under MAX_PATH the
+		// strip below happened to undo that, so it bit only long paths.
+		int pref = fp[0] == L'\\' && fp[1] == L'\\' && (fp[2] == L'?' || fp[2] == L'.') && fp[3] == L'\\';
+		int unc = !pref && fp[0] == L'\\' && fp[1] == L'\\';
 		full = (wchar_t *)malloc((wcslen(fp) + 10) * sizeof *full);
 		if (!full) { free(fp); free(w); errno = ENOMEM; return NULL; }
-		wcscpy(full, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
-		wcscat(full, unc ? fp + 1 : fp);
+		if (pref) wcscpy(full, fp);
+		else {
+			wcscpy(full, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
+			wcscat(full, unc ? fp + 1 : fp);
+		}
 		free(fp);
 	}
 	free(w);
+narrow:
+	;
 	char *out = shcl_narrow(full);
 	free(full);
 	if (!out) return NULL;
