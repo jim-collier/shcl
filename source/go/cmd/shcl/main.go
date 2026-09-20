@@ -198,7 +198,11 @@ refused: --write with --layer; --write with --set outside 'set'; --write with a
 FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
 --check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
 --default with --on-bad=error or --on-bad=flag; '-' named more than once across
-FILE, --layer and --schema.
+FILE, --layer and --schema. Two options that ask for different answers are a
+usage error whichever order they came in, and both are named: two different type
+options, or one value option given two different values. Repeating an option
+with the same value is allowed, and --layer and --set are ordered lists, so they
+repeat.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -516,17 +520,34 @@ const (
 )
 
 type opts struct {
-	kind  kind
-	array bool
-	slots bool
-	def   string
-	onBad onBad
+	kind kind
+	// Which type option was given, if any. kind cannot answer that, since it
+	// starts at the default type.
+	kindSet  bool
+	kindOpt  kind
+	kindText string // as it was typed, for the competing-pair message
+	// The first competing pair the line held. Two options that ask for different
+	// answers are a usage error whichever order they came in, so the pair is
+	// recorded here rather than refused on the spot and the "not valid for this
+	// subcommand" answer still comes first. clashOpt is set when the pair is one
+	// option repeated with a different value, in which case a and b are the two
+	// values; otherwise a and b are whole option spellings.
+	clash    bool
+	clashOpt string
+	clashA   string
+	clashB   string
+	array    bool
+	slots    bool
+	def      string
+	onBad    onBad
 	// What an explicit --on-bad asked for, whatever the order. --default sets
 	// onBad too, so without this the two options silently overwrote each other
 	// and which one survived depended on which came last.
 	onBadSet    bool
 	onBadWanted onBad
+	onBadText   string
 	strictness  shcl.Strictness
+	strictText  string
 	write       bool
 	lossy       bool
 	from2x      bool
@@ -623,33 +644,56 @@ func asciiLower(s string) string {
 	return string(b)
 }
 
+// Record the first competing pair. Only the first is kept: the line is already
+// a usage error, and a second pair would just change which one gets named.
+func (o *opts) noteClash(opt, a, b string) {
+	if !o.clash {
+		o.clash, o.clashOpt, o.clashA, o.clashB = true, opt, a, b
+	}
+}
+
 func setValueOpt(o *opts, name, v string) error {
 	switch name {
 	case "--default":
+		if o.was("--default") && o.def != v {
+			o.noteClash("--default", o.def, v)
+		}
 		o.def = v
 		o.onBad = onBadDefault
 		o.seen = append(o.seen, "--default")
 	case "--on-bad":
+		var mode onBad
 		switch asciiLower(v) {
 		case "error":
-			o.onBad = onBadError
+			mode = onBadError
 		case "default":
-			o.onBad = onBadDefault
+			mode = onBadDefault
 		case "flag":
-			o.onBad = onBadFlag
+			mode = onBadFlag
 		default:
 			return fmt.Errorf("bad --on-bad value: %s (see --help)", v)
 		}
+		if o.onBadSet && o.onBadWanted != mode {
+			o.noteClash("--on-bad", o.onBadText, v)
+		}
+		o.onBad = mode
 		o.seen = append(o.seen, "--on-bad")
-		o.onBadSet, o.onBadWanted = true, o.onBad
+		o.onBadSet, o.onBadWanted, o.onBadText = true, mode, v
 	case "--strictness":
 		s, ok := shcl.StrictnessFromArg(v)
 		if !ok {
 			return fmt.Errorf("bad --strictness value: %s (see --help)", v)
 		}
+		if o.was("--strictness") && o.strictness != s {
+			o.noteClash("--strictness", o.strictText, v)
+		}
 		o.strictness = s
+		o.strictText = v
 		o.seen = append(o.seen, "--strictness")
 	case "--schema":
+		if o.schemaSet && o.schema != v {
+			o.noteClash("--schema", o.schema, v)
+		}
 		o.schema = v
 		o.schemaSet = true
 		o.seen = append(o.seen, "--schema")
@@ -812,7 +856,11 @@ func parseOpts(argv []string) (*opts, error) {
 			return o, nil
 		}
 		if k, ok := kindFromOpt(a); ok {
+			if o.kindSet && o.kindOpt != k {
+				o.noteClash("", o.kindText, a)
+			}
 			o.kind = k
+			o.kindSet, o.kindOpt, o.kindText = true, k, a
 			o.seen = append(o.seen, "--<type>")
 			continue
 		}
@@ -1072,6 +1120,20 @@ func checkOpts(cmd string, o *opts) int {
 			}
 			return 1
 		}
+	}
+	// Options that ask for different answers used to resolve last-wins with
+	// nothing said, so which answer you got depended on typing order. Two type
+	// options are one case, one value option given two values the other.
+	// Repeating an option with the same value competes with nothing and stays
+	// allowed, and so do --layer and --set, which are ordered lists.
+	if o.clash {
+		if o.clashOpt != "" {
+			fmt.Fprintf(os.Stderr, "%s=%s cannot be combined with %s=%s (see --help)\n",
+				o.clashOpt, o.clashA, o.clashOpt, o.clashB)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s cannot be combined with %s (see --help)\n", o.clashA, o.clashB)
+		}
+		return 1
 	}
 	// Writing back the merged document would fold the lower layers permanently
 	// into the top file, which is the opposite of what layering is for. On 'set'

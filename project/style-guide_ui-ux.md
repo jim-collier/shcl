@@ -34,7 +34,9 @@ There are four CLIs, one per binding. Only the Rust one ships. The Go, Python an
 
 - A combination that makes no sense is refused, and the help lists every refused combination.
 
-- Repeatable options apply in the order given.
+- Two options that compete are a usage error, whichever order they were typed in, and the message names both. Nothing is ever resolved by last-wins, since that makes the answer depend on typing order and says nothing about it. Two different type options on `get` are the example.
+
+- Repeating one option is not competing. The same value twice is a no-op, a different value takes the last one, and a repeatable option applies in the order given.
 
 ## Help text
 

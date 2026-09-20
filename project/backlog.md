@@ -92,7 +92,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Each item named its finding id. All nine defects were fixed on 2026-09-20, in four chunks: the two `--check` arms and the style guide's exit table, the cross checks under `--ci`, the document and report nits, and the grammar's bare-value class with the corpus's hint row. Every fix carries a pin that was watched to fail.
 
-	- Finished items are under Done - Bugs, in a bullet of the same name. The round's ten ideas are open under Features and enhancements; none was taken.
+	- Finished items are under Done - Bugs, and the ideas that were taken under Done - Features and enhancements, each in a bullet of the same name. The round is whole: nine of the ten ideas were taken on the day, and idea 2 on 2026-09-20 evening.
 
 - Code review 20260918b:
 
@@ -140,18 +140,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
 	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
 	- Opened: 20260914-184244
-
-- Code review 20260920:
-
-	- The round's ideas. The defects are under Bugs, and the round bullet there says what was covered.
-
-	- 🔘 Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
-		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
-		- Origin: idea.
-		- Measured: three behaviors, not two. Repeating one option takes the last value silently (`--strictness`, `--on-bad`, `--default`). A combination with no meaning is a usage error whichever order it is given in (`--default` with `--on-bad=error`, `--array` with `--raw`). Two different type options are neither: `--raw --int` exits 0 printing the int, and `--int --raw` exits 4 on the same two flags in the other order, with nothing said either way. `--array` is a modifier on the chosen type, not a type.
-		- Decided 20260920: options that compete, for any reason, are a usage error. So two different type options join the combinations that already refuse, order-independent, exit 1, naming both. Repeating one option with the same value is not competing and stays allowed, and so do the ordered repeatables (`--layer`, `--set` and its siblings). 3.0 is the window, since after the cut it waits for 4.0.
-		- Sweep: the option parser in all four CLIs, the help, the man page, the CLI style guide, and any `cli-regress` row that pins the old answer.
-		- Opened: 20260920-055406
 
 ### Done
 
@@ -4585,6 +4573,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: two injections, an exit row renumbered 8 to 9 and `--from-2x` moved to `fmt`. Each is reported with both sides spelled out.
 		- Opened: 20260920-055406
 		- Closed: 20260920-154500
+
+	- ✅ Idea 2: `get` refuses one pair of conflicting options and silently drops the other.
+		- `get --array --raw` is a usage error, while `get --raw --int` takes the last type flag and says nothing. Last-wins is applied consistently across the value options, so this is a least-surprise call.
+		- Origin: idea.
+		- Measured: three behaviors, not two. Repeating one option takes the last value silently (`--strictness`, `--on-bad`, `--default`). A combination with no meaning is a usage error whichever order it is given in (`--default` with `--on-bad=error`, `--array` with `--raw`). Two different type options are neither: `--raw --int` exits 0 printing the int, and `--int --raw` exits 4 on the same two flags in the other order, with nothing said either way. `--array` is a modifier on the chosen type, not a type.
+		- Decided 20260920: options that compete, for any reason, are a usage error. So two different type options join the combinations that already refuse, order-independent, exit 1, naming both. Repeating one option with the same value is not competing and stays allowed, and so do the ordered repeatables (`--layer`, `--set` and its siblings). 3.0 is the window, since after the cut it waits for 4.0.
+		- Sweep: the option parser in all four CLIs, the help, the man page, the CLI style guide, and any `cli-regress` row that pins the old answer.
+		- Read wider than the title: the decision says a repeat with the SAME value is what stays allowed, so a value option given two different values competes too. `--strictness`, `--on-bad`, `--default` and `--schema` all refuse now. `--layer` and `--set` are ordered lists and are untouched.
+		- Fixed: one recorder, `note_clash`, keeps the first competing pair the line held, and `check_opts` reports it. It sits after the per-subcommand check, so `check --int --raw` still says type options are not valid for check. The message is `A cannot be combined with B (see --help)` in the sentence the existing refusals use, naming both in the order typed. A repeat compares the resolved value, not the text, so `--strictness=1 --strictness=loose` and `--on-bad=ERROR --on-bad=error` go through.
+		- Where: `parse_opts` and `set_value_opt` in Rust and C, `_set_value_opt` in Python, `setValueOpt` in Go, plus the help's refused list, the man page, `spec.md`, `design.md` and the CLI style guide. `--array` with `--raw` is left where it was, in the read, since `--array` is a modifier and not a type.
+		- Pinned by: fourteen `cli-regress.bash` rows. The seven refusals were watched to fail in all four bindings with the recorder neutered, and the seven allowed rows stay green there, so they pin the old answer rather than the new one.
+		- Opened: 20260920-055406
+		- Closed: 20260920-193000
 
 - Code review 20260918b:
 

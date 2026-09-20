@@ -557,6 +557,24 @@ rows=(
 	'onbad-vs-default|get --int --on-bad=error --default=7 %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
 	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7|-'
 	'default-alone|get --int --default=7 %F% nope|-|0|7|-'
+	## 20260920 idea 2, the same disease one step wider: two options asking for
+	## different answers resolved last-wins and said nothing, so the answer
+	## depended on typing order. Both orders refuse, and a repeat with the same
+	## value still goes through.
+	'type-clash|get --int --raw %F% a|-|1|-|^--int cannot be combined with --raw \(see --help\)$'
+	'type-clash-other-order|get --raw --int %F% a|-|1|-|^--raw cannot be combined with --int \(see --help\)$'
+	'type-clash-first-pair-named|get --float --float --bool %F% a|-|1|-|^--float cannot be combined with --bool \(see --help\)$'
+	'type-repeat-ok|get --int --int %F% a|-|0|1|-'
+	'type-clash-after-cmd-refusal|check --int --raw %F%|-|1|-|^type options are not valid for check \(see --help\)$'
+	'strictness-clash|get --int --strictness=1 --strictness=3 %F% a|-|1|-|^--strictness=1 cannot be combined with --strictness=3 \(see --help\)$'
+	'strictness-same-level-ok|get --int --strictness=1 --strictness=loose %F% a|-|0|1|-'
+	'onbad-clash|get --int --on-bad=error --on-bad=flag %F% nope|-|1|-|^--on-bad=error cannot be combined with --on-bad=flag \(see --help\)$'
+	'onbad-same-mode-ok|get --int --on-bad=ERROR --on-bad=error %F% nope|-|3|-|no value at that path'
+	'default-clash|get --int --default=7 --default=8 %F% nope|-|1|-|^--default=7 cannot be combined with --default=8 \(see --help\)$'
+	'default-repeat-ok|get --int --default=7 --default=7 %F% nope|-|0|7|-'
+	'schema-clash|check --schema=%S% --schema=%S2% %F%|-|1|-|^--schema=.* cannot be combined with --schema=.* \(see --help\)$'
+	'layer-repeats|get --int --layer=%F% --layer=%F% %F% a|-|0|1|-'
+	'set-repeats-last-wins|get --int --set=a=1 --set=a=2 %F% a|-|0|2|-'
 	## 20260902 item 15: a refused edit returned before the load's diagnostics
 	## were printed, so a damaged file said nothing about the damage.
 	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
