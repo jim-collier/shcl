@@ -161,6 +161,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Bugs
 
+- ✅ `check-migrate` diverged on a 2.x file whose indentation the current parser places nowhere.
+	- 2.x read both elements of a list whose second line is indented with a space before its tab. The current parser reports `E012` and keeps only the first, so the migrated text reads one element short and the gate calls that a divergence. The document came into the fuzz seed set when corpus case `129-remove-many` shifted it.
+	- Not a migrate defect. `migrate` rewrites value spellings and not layout, and the rule it runs into is the spec's own: a decrease returns to the exact column of an ancestor. 2.x compared indentation more loosely, so a tab followed by a space and a tab, or by two spaces, bound there and does not here.
+	- Nothing is damaged quietly: `check` exits 6, and `migrate --write` and `fmt --write` refuse at exit 7 because the load dropped the line.
+	- Fixed: the gate takes the line out before comparing, the way it already does for a fence label holding a `#` and for a mid-line carriage return. Asked of the current parser rather than matched on the text, since what counts is the column the indent lands on and not which characters spell it.
+	- The third edge is named where the other two are: `spec.md`'s Migrating section, `design.md`, and the gate.
+	- Pinned by: the gate's own named-case block, against a document built there rather than a corpus case, since a new case shifts the fuzz seeds and costs another gate round. It checks that the exception fires, that 2.x reads both elements, and that a rewrite exits 7. Watched to fail three ways: with the exception taken out the original divergence comes back, and with the fixture flattened to plain tabs two of the three assertions go red.
+	- Opened: 20260920-171500
+	- Closed: 20260920-174500
+
 - ✅ The C save on windows eats a dangling symlink instead of writing through it.
 	- Reproduced on B29W, in a sandbox: `mklink l.shcl missing.shcl`, then `set --write --set a=1 l.shcl`. C exits 0 with `missing.shcl` never created and `l.shcl` now a regular file. Rust and Go create the target and keep the link.
 	- Cause: `shcl_resolve_target`'s windows arm opens the path to resolve it, and a dangling link cannot be opened, so it fell through to the full-path spelling, which names the link. The POSIX arm walks the link by hand; the windows arm had nothing.

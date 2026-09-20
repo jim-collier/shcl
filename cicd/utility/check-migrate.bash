@@ -165,6 +165,18 @@ fInfoHashLabel(){ grep -qE '(```|~~~)[^#]*#' "$1"; }
 ##	same either way, and the corpus pins that, so matching loosely costs little.
 fCrMidLine(){ grep -q $'\r[^\r]' "$1"; }
 
+##	An indent 2.x placed and the current rules do not. A decrease has to return
+##	to the exact column of an ancestor now, so a tab followed by a space-tab, or
+##	by two spaces, bound in 2.x and is `E012` here. `migrate` rewrites spellings
+##	and not layout, so the line is left as written and the reading differs by
+##	design. Nothing is damaged quietly: a load that dropped the line makes
+##	`migrate --write` and `fmt --write` refuse at exit 7. Asked of the current
+##	parser rather than matched on the text, since what counts is the column the
+##	indent lands on and not which characters spell it.
+fUnplaced(){
+	{ "${newCli}" check "$1" 2>/dev/null || true; } | awk '$1 == "line" && $4 == "E012" { sub(/:$/, "", $2); print $2 }'
+}
+
 ##	Takes out every line above, until 2.x reads what is left cleanly. Fails
 ##	when nothing is left, or when taking lines out keeps turning up more.
 fTrim(){
@@ -172,6 +184,7 @@ fTrim(){
 	cp "${src}" "${dst}"
 	for _ in 1 2 3 4; do
 		lines="$( { fUnclean2x "${dst}"
+			fUnplaced "${dst}"
 			grep -anE '(```|~~~)[^#]*#' "${dst}" | cut -d: -f1
 			grep -an $'\r[^\r]' "${dst}" | cut -d: -f1; } | sort -un)"
 		if [[ -z "${lines}" ]]; then [[ -s "${dst}" ]]; return; fi
@@ -234,6 +247,19 @@ fInfoHashLabel "${corpus}/068-info-hash-spellings/input.shcl" 2>/dev/null \
 	|| { echo "check-migrate: 068-info-hash-spellings no longer carries a fence label holding a #" >&2; nBad+=1; }
 fCrMidLine "${corpus}/094-unicode-space/input.shcl" 2>/dev/null \
 	|| { echo "check-migrate: 094-unicode-space no longer carries a mid-line carriage return" >&2; nBad+=1; }
+##	The third has no corpus case - a new one shifts the fuzz seed set, which
+##	costs a gate round - so it is checked against a document built here: 2.x
+##	reads both elements, the current parser places only the first, and the write
+##	half refuses rather than dropping the second quietly.
+printf 'list:\n\t* one\n \t* two\n' > "${tmpDir}/indent.shcl"
+[[ "$(fUnplaced "${tmpDir}/indent.shcl")" == 3 ]] \
+	|| { echo "check-migrate: the loose-indent exception no longer fires on a space before a tab" >&2; nBad+=1; }
+[[ "$("${oldCli}" get --string --array "${tmpDir}/indent.shcl" list 2>/dev/null | wc -l)" == 2 ]] \
+	|| { echo "check-migrate: 2.x no longer reads both elements of the loose-indent document" >&2; nBad+=1; }
+indentRc=0
+"${newCli}" migrate --from-2x --write "${tmpDir}/indent.shcl" >/dev/null 2>&1 || indentRc=$?
+((indentRc == 7)) \
+	|| { echo "check-migrate: a rewrite of the loose-indent document exited ${indentRc}, not the refusal 7" >&2; nBad+=1; }
 if ((nCompared < minCompared || nCorpus < minCorpus || nCompared - nCorpus < minFuzz)); then
 	echo "check-migrate: only ${nCompared} document(s) compared, ${nCorpus} of them corpus cases and $((nCompared - nCorpus)) fuzz-dumped; need ${minCompared}, ${minCorpus} and ${minFuzz} (${nSkipped} skipped)" >&2
 	exit 2
@@ -251,3 +277,5 @@ echo "check-migrate: OK: ${nCompared} document(s) migrate to the tree 2.x read, 
 ##		            document; exit code, lost count and a corpus floor checked.
 ##		2026-09-18  A floor for the fuzz half and an empty dump refused, after a
 ##		            dump that wrote nothing passed on the corpus alone.
+##		2026-09-20  An indent the current parser places nowhere comes out too, and
+##		            the exception is checked against a document built here.
