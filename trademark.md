@@ -90,7 +90,7 @@ When using the Marks under Section 4:
 
 **We may revoke permission for any use that damages the Marks or misleads users**. In practice, a good-faith implementation that turns out to fail a corpus case is a bug report, not a dispute - tell us, or fix it, and nothing further is needed. Enforcement is aimed at claims that stay wrong.
 
-We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to <shcl@ubx9.com>.
+We may revise this policy at any time; the current version lives at <https://github.com/jim-collier/shcl/>. Requests for permission, and reports of misuse, go to shclⒶyottacore.com.
 
 ---
 

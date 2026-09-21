@@ -4430,7 +4430,10 @@ func (d *Document) childrenNamed(parent int, name string) []int {
 	return out
 }
 
-func (d *Document) resolveFrom(start []int, segs []segment) resolved {
+// group: a sub-path landing on several nodes joins the slot list instead of
+// becoming one ambiguous slot. Reads want the slot per instance, so they leave
+// it off; Remove and Exists want every node behind the wildcard.
+func (d *Document) resolveFrom(start []int, segs []segment, group bool) resolved {
 	cur := append([]int(nil), start...)
 	for i := range segs {
 		seg := &segs[i]
@@ -4451,17 +4454,19 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, inst)
 					continue
 				}
-				r := d.resolveFrom([]int{inst}, rest)
-				switch r.kind {
-				case resOne:
+				r := d.resolveFrom([]int{inst}, rest, group)
+				switch {
+				case r.kind == resOne:
 					slots = append(slots, r.one)
-				case resNone:
+				case r.kind == resNone:
 					slots = append(slots, -1)
-				case resSlots:
+				case r.kind == resSlots:
 					// A wildcard after a wildcard: the inner slots join the
 					// outer list, so the two compose into one flat run of
 					// leaves rather than one unreadable slot.
 					slots = append(slots, r.slots...)
+				case r.kind == resMany && group:
+					slots = append(slots, r.many...)
 				default:
 					slots = append(slots, -2)
 				}
@@ -4495,17 +4500,19 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 					slots = append(slots, inst)
 					continue
 				}
-				r := d.resolveFrom([]int{inst}, rest)
-				switch r.kind {
-				case resOne:
+				r := d.resolveFrom([]int{inst}, rest, group)
+				switch {
+				case r.kind == resOne:
 					slots = append(slots, r.one)
-				case resNone:
+				case r.kind == resNone:
 					slots = append(slots, -1)
-				case resSlots:
+				case r.kind == resSlots:
 					// A wildcard after a wildcard: the inner slots join the
 					// outer list, so the two compose into one flat run of
 					// leaves rather than one unreadable slot.
 					slots = append(slots, r.slots...)
+				case r.kind == resMany && group:
+					slots = append(slots, r.many...)
 				default:
 					slots = append(slots, -2)
 				}
@@ -4523,11 +4530,22 @@ func (d *Document) resolveFrom(start []int, segs []segment) resolved {
 }
 
 func (d *Document) resolve(path string) (resolved, bool) {
+	return d.resolveMode(path, false)
+}
+
+// resolveGroup is resolve with every node behind a wildcard slot in the list,
+// for the callers that act on the whole match rather than read one value per
+// instance.
+func (d *Document) resolveGroup(path string) (resolved, bool) {
+	return d.resolveMode(path, true)
+}
+
+func (d *Document) resolveMode(path string, group bool) (resolved, bool) {
 	scan, err := scanLookup(path)
 	if err != nil || scan.valueText != nil {
 		return resolved{}, false // a query has no value part
 	}
-	return d.resolveFrom([]int{root}, scan.segments), true
+	return d.resolveFrom([]int{root}, scan.segments, group), true
 }
 
 // Count returns the instance count at a path (0 when nothing matches).
@@ -5028,7 +5046,7 @@ func (d *Document) foldDupsBelow(start int) {
 
 // Exists is true when the path resolves to at least one real node.
 func (d *Document) Exists(path string) bool {
-	r, ok := d.resolve(path)
+	r, ok := d.resolveGroup(path)
 	if !ok {
 		return false
 	}
@@ -5048,7 +5066,7 @@ func (d *Document) Exists(path string) bool {
 // Remove deletes the node(s) at a path (with their subtrees); returns how many.
 // A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
 func (d *Document) Remove(path string) int {
-	r, ok := d.resolve(path)
+	r, ok := d.resolveGroup(path)
 	if !ok {
 		return 0
 	}
@@ -6833,6 +6851,9 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 				vdiag(&faults, node.line, "V094", "bad schema fragment")
 				continue
 			}
+			// Two `fragment` blocks of one name never reach here: the parse
+			// merges them into one node and reports H002. Kept as a guard in
+			// case that changes, which is why no case pins it.
 			if _, dup := frags[name]; dup {
 				vdiag(&faults, node.line, "V094", fmt.Sprintf("bad schema fragment '%s': duplicate", diagName(name)))
 				continue
@@ -7203,9 +7224,12 @@ func allowedJoin(a *allowedSet) string {
 // genAnnotation is the `# type, ...` line summarizing a constraint, ASCII only.
 func genAnnotation(c *constraint, tyname string) string {
 	parts := []string{tyname}
-	switch {
-	case c.allowed != nil:
+	if c.allowed != nil {
 		parts = append(parts, "one of: "+allowedJoin(c.allowed))
+	}
+	// The bounds are their own part of the annotation line, not an alternative
+	// to `allowed`. A field can carry both, and the validator enforces both.
+	switch {
 	case c.minI != nil || c.maxI != nil:
 		switch {
 		case c.minI != nil && c.maxI != nil:
@@ -7819,6 +7843,13 @@ func genSelectorText(v string) (string, bool) {
 // reads back as a value selector for text, quoted or bare as asked.
 func selectorReadsBack(body, text string, quoted bool) bool {
 	line := "x[" + body + "]:"
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if strings.ContainsAny(line, "\n\r") {
+		return false
+	}
 	var tok Tokens
 	Tokenize(line, ':', false, RulesCurrent, &tok)
 	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
@@ -7837,6 +7868,13 @@ func selectorReadsBack(body, text string, quoted bool) bool {
 // not.
 func pathReadsBack(path string, segs []segment) bool {
 	line := path + ":"
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if strings.ContainsAny(line, "\n\r") {
+		return false
+	}
 	var tok Tokens
 	Tokenize(line, ':', false, RulesCurrent, &tok)
 	if selectorOpenQuote(&tok) || tok.Comment >= 0 {

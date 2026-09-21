@@ -2490,50 +2490,48 @@ func doCheck(o *opts) int {
 		fmt.Fprintln(os.Stderr, err)
 		return exitIO
 	}
-	var diags []shcl.Diagnostic
-	strictFailed := false
-	if doc, perr := shcl.ParseWith(text, o.strictness); perr != nil {
-		if le, ok := perr.(*shcl.LoadError); ok {
-			diags = le.Diagnostics
+	// A strict load fails and still hands back the document it recovered, which
+	// is what the library's one-shot Validate walks. So the schema half runs
+	// either way: at strict a user was getting less out of check than at
+	// standard on the same file, and check writes nothing, so fmt's refusal to
+	// rewrite a strict-failing document does not carry over.
+	doc, perr := shcl.ParseWith(text, o.strictness)
+	strictFailed := perr != nil
+	diags := doc.Diagnostics()
+	// --schema: append validation diagnostics under the same contract. The
+	// schema itself always loads at Standard (a program artifact); one that
+	// does not load cleanly is a single V099 schema fault.
+	if o.schemaSet {
+		stext, serr := readInput(o.schema)
+		if serr != nil {
+			fmt.Fprintln(os.Stderr, serr)
+			return exitIO
 		}
-		strictFailed = true
-	} else {
-		diags = doc.Diagnostics()
-		// --schema: append validation diagnostics under the same contract. The
-		// schema itself always loads at Standard (a program artifact); one that
-		// does not load cleanly is a single V099 schema fault.
-		if o.schemaSet {
-			stext, serr := readInput(o.schema)
-			if serr != nil {
-				fmt.Fprintln(os.Stderr, serr)
-				return exitIO
+		sdoc := shcl.Parse(stext)
+		bad := false
+		for _, sd := range sdoc.Diagnostics() {
+			if sd.Severity == shcl.SeverityError {
+				bad = true
 			}
-			sdoc := shcl.Parse(stext)
-			bad := false
+		}
+		if bad {
 			for _, sd := range sdoc.Diagnostics() {
-				if sd.Severity == shcl.SeverityError {
-					bad = true
-				}
+				fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
 			}
-			if bad {
-				for _, sd := range sdoc.Diagnostics() {
-					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
-				}
-				diags = append(diags, shcl.Diagnostic{
-					Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099",
-				})
-			} else {
-				// The schema's own load has something to say too: an H001 on a
-				// repeated `allowed` is what explains the V092 below it. On
-				// stderr with the schema's own line numbers, the way a V099's
-				// are - stdout is the code contract.
-				for _, sd := range sdoc.Diagnostics() {
-					fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
-				}
-				diags = append(diags, doc.Validate(sdoc)...)
-				diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
-				diags = shcl.SuppressDeclaredReopens(sdoc, diags)
+			diags = append(diags, shcl.Diagnostic{
+				Line: 0, Severity: shcl.SeverityError, Message: "schema failed to load", Code: "V099",
+			})
+		} else {
+			// The schema's own load has something to say too: an H001 on a
+			// repeated `allowed` is what explains the V092 below it. On
+			// stderr with the schema's own line numbers, the way a V099's
+			// are - stdout is the code contract.
+			for _, sd := range sdoc.Diagnostics() {
+				fmt.Fprintf(os.Stderr, "schema line %d: %s: %s %s\n", sd.Line, sd.Severity, sd.Code, sd.Message)
 			}
+			diags = append(diags, doc.Validate(sdoc)...)
+			diags = shcl.SuppressDeclaredRepeats(sdoc, diags)
+			diags = shcl.SuppressDeclaredReopens(sdoc, diags)
 		}
 	}
 	// stdout carries the stable codes - the cross-binding contract. The prose is
@@ -2608,6 +2606,37 @@ func doInit(o *opts) int {
 	return 0
 }
 
+// oneLine renders a value for a one-per-line listing. `instances` promises one
+// line per instance, and a value holding a line break broke that, so a caller
+// splitting on newlines counted more instances than `count` reports. Only such
+// a value changes: anything else comes out as it is. The escaped spelling is
+// the one genDefaultText writes for the same reason.
+func oneLine(v string) string {
+	if !strings.ContainsAny(v, "\n\r") {
+		return v
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, ch := range v {
+		switch ch {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteRune(ch)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 func doEnum(o *opts, wantCount bool) int {
 	if len(o.args) != 2 {
 		name := "instances"
@@ -2626,7 +2655,7 @@ func doEnum(o *opts, wantCount bool) int {
 		outln(doc.Count(path))
 	} else {
 		for _, v := range doc.Instances(path) {
-			outln(v)
+			outln(oneLine(v))
 		}
 	}
 	return 0

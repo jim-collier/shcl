@@ -1780,37 +1780,45 @@ def do_check(o):
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
+	# A strict load fails and still hands back the document it recovered, which
+	# is what the library's one-shot validate walks. So the schema half runs
+	# either way: at strict a user was getting less out of check than at
+	# standard on the same file, and check writes nothing, so fmt's refusal to
+	# rewrite a strict-failing document does not carry over.
 	strict_failed = False
 	try:
 		doc = shcl.Document.parse_with(text, o.strictness)
-		diags = list(doc.diagnostics())
-		# --schema: append validation diagnostics under the same contract. The
-		# schema itself always loads at Standard (a program artifact); one that
-		# does not load cleanly is a single V099 schema fault.
-		if o.schema is not None:
-			try:
-				stext = read_input(o.schema)
-			except (OSError, ValueError) as e:
-				sys.stderr.write(str(e) + "\n")
-				return EXIT_IO
-			sdoc = shcl.Document.parse(stext)
-			if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
-				for sd in sdoc.diagnostics():
-					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
-				diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
-			else:
-				# The schema's own load has something to say too: an H001 on a
-				# repeated `allowed` is what explains the V092 below it. On
-				# stderr with the schema's own line numbers, the way a V099's
-				# are - stdout is the code contract.
-				for sd in sdoc.diagnostics():
-					sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
-				diags.extend(doc.validate(sdoc))
-				shcl.suppress_declared_repeats(sdoc, diags)
-				shcl.suppress_declared_reopens(sdoc, diags)
 	except shcl.LoadError as le:
-		diags = le.diagnostics
+		# The library always attaches the recovered document; the type allows
+		# None for a caller building one by hand, so fall back to an empty
+		# document rather than carry an assert into the CLI.
+		doc = le.document if le.document is not None else shcl.Document.parse("")
 		strict_failed = True
+	diags = list(doc.diagnostics())
+	# --schema: append validation diagnostics under the same contract. The
+	# schema itself always loads at Standard (a program artifact); one that
+	# does not load cleanly is a single V099 schema fault.
+	if o.schema is not None:
+		try:
+			stext = read_input(o.schema)
+		except (OSError, ValueError) as e:
+			sys.stderr.write(str(e) + "\n")
+			return EXIT_IO
+		sdoc = shcl.Document.parse(stext)
+		if any(sd.severity == shcl.Severity.Error for sd in sdoc.diagnostics()):
+			for sd in sdoc.diagnostics():
+				sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
+			diags.append(shcl.Diagnostic(0, shcl.Severity.Error, "schema failed to load", "V099"))
+		else:
+			# The schema's own load has something to say too: an H001 on a
+			# repeated `allowed` is what explains the V092 below it. On
+			# stderr with the schema's own line numbers, the way a V099's
+			# are - stdout is the code contract.
+			for sd in sdoc.diagnostics():
+				sys.stderr.write(f"schema line {sd.line}: {sd.severity.name}: {sd.code} {sd.message}\n")
+			diags.extend(doc.validate(sdoc))
+			shcl.suppress_declared_repeats(sdoc, diags)
+			shcl.suppress_declared_reopens(sdoc, diags)
 	# stdout carries the stable codes - the cross-binding contract. The prose is
 	# per-binding voice and goes to stderr (which the differential check drops).
 	# A V090-V093 line number is a SCHEMA line (the code table says so); the
@@ -1864,6 +1872,31 @@ def do_init(o):
 	return 0
 
 
+def one_line(v):
+	"""A value for a one-per-line listing. instances promises one line per
+	instance, and a value holding a line break broke that, so a caller splitting
+	on newlines counted more instances than count reports. Only such a value
+	changes. The escaped spelling is the one _gen_default_text writes."""
+	if "\n" not in v and "\r" not in v:
+		return v
+	out = ['"']
+	for ch in v:
+		if ch == "\\":
+			out.append("\\\\")
+		elif ch == '"':
+			out.append('\\"')
+		elif ch == "\n":
+			out.append("\\n")
+		elif ch == "\r":
+			out.append("\\r")
+		elif ch == "\t":
+			out.append("\\t")
+		else:
+			out.append(ch)
+	out.append('"')
+	return "".join(out)
+
+
 def do_enum(o, want_count):
 	if len(o.args) != 2:
 		name = "count" if want_count else "instances"
@@ -1881,7 +1914,7 @@ def do_enum(o, want_count):
 		print(doc.count(path))
 	else:
 		for v in doc.instances(path):
-			print(v)
+			print(one_line(v))
 	return 0
 
 

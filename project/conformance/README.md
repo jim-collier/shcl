@@ -23,7 +23,7 @@ Each case is a directory `NNN-short-name/` containing:
 	- `raw<TAB>PATH<TAB>INFO<TAB>CONTENT` (and `raw-default`) - set a raw block; `INFO` may be empty. `INFO` is taken as written - the escape decode below is for `CONTENT` only.
 	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `remove<TAB>PATH`.
 	- `string` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. A `comment` value decodes them too, but a comment is one line, so a decoded `\n` only gets the op refused. The setters re-encode for storage, so a value read back equals the logical value it was set from.
-	- Op values are gated with the reference's grammar before any write: an int is an optional sign plus ASCII digits within i64 range; a float follows the Rust `f64` grammar (sign, `inf`/`infinity`/`nan` case-insensitive, or decimal digits with optional `.`/exponent - no underscores, hex, padding, or non-ASCII digits; overflow stores `inf`). A malformed value, a bad datetime, or an unusable path (wildcard, missing `[#N]`) rejects the op: the CLI exits 1 with empty stdout.
+	- Op values are gated with the reference's grammar before any write: an int is an optional sign plus ASCII digits within i64 range; a float follows the Rust `f64` grammar (sign, `inf`/`infinity`/`nan` case-insensitive, or decimal digits with optional `.`/exponent - no underscores, hex, padding, or non-ASCII digits, and a value that overflows to an infinity is refused with every other infinity and NaN). A malformed value, a bad datetime, or an unusable path (wildcard, missing `[#N]`) rejects the op: the CLI exits 1 with empty stdout.
 
 - `write-bad.ops` (optional) - the **bad-op** dimension. Each line (same grammar as `write.ops`; blank/`#` skipped), applied ALONE to a fresh parse of `input.shcl`, must be rejected and leave the document unchanged. The differential harness replays each line through every CLI's `set` and compares stdout and exit code.
 
@@ -61,7 +61,7 @@ Case `011` pins selector-vs-instance matching on the display form: `base[Boston,
 
 Case `012` pins raw-block identity: the info-string is part of a block's value, so equal bodies with `sql` and `python` infos are two instances (never a silent merge that drops an info).
 
-Cases `014`-`016` pin the **Writer**. `014` builds a document from an empty base (scalars, arrays, a comment above a later-set field, an empty section, and a `-default` that no-ops when the field already exists). `015` edits an existing document (overwrite the first instance of a leaf, `-default` that keeps the present value, `remove`, and a `[value]` selector that adds children under the matching instance). `016` pins the emit hazards: raw blocks (fence chosen so the content cannot close it early, info-string as identity), tricky strings (tab/quote/backslash and a fence-lookalike, minimally quoted so they read back verbatim), an explicit empty string (`""`, distinct from an empty value), and a bare 8-digit date stored canonically.
+Cases `014`-`016` pin the **Writer**. `014` builds a document from an empty base (scalars, arrays, a comment above a later-set field, an empty section, and a `-default` that no-ops when the field already exists). `015` edits an existing document (overwrite the first instance of a leaf, `-default` that keeps the present value, `remove`, and a `[value]` selector that adds children under the matching instance). `016` pins the emit hazards: raw blocks (info string as identity), a string that looks like a fence, tricky strings (tab/quote/backslash and a fence-lookalike, minimally quoted so they read back verbatim), an explicit empty string (`""`, distinct from an empty value), and a bare 8-digit date stored canonically.
 
 Case `013` pins comment preservation through `fmt`: a whole-line comment re-emits above the node bound by the next line (merged instances concatenate theirs), a trailing comment stays on its line (a second one from a merged instance moves above), comments among `*` elements ride the field line, a comment between a bare header and its fence attaches to that field, `#` inside a raw block stays content, and comments after the last binding line re-emit at the end. The older cases' expected files carry their inputs' comments too.
 
@@ -99,7 +99,7 @@ Case `031` pins the unterminated-quote diagnostic (`E017`): a value that opens a
 
 Case `030` pins the generator's edge handling: an `[#N]` path and an unmaterialized optional wildcard go in the trailing not-generated block (an emitted `#` would start a comment), and a newline smuggled through an `allowed` value or a `default` stays escaped (`\n` in the annotation; the quoted spelling on the value line) instead of injecting a line. The golden validates clean against its own schema like every generation golden.
 
-Case `029` pins the write-op value gates and unusable-path rejection: the good script covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign) and `write-bad.ops` covers what every binding must REJECT identically (hex, junk, trailing garbage, out-of-range, underscores, padding, non-ASCII digits, empty, malformed floats, a bad datetime, a wildcard path, a missing `[#N]`).
+Case `029` pins the write-op value gates and unusable-path rejection: the good script covers the boundary values every binding must ACCEPT (`.5`, `5.`, i64 min, a `+` sign) and `write-bad.ops` covers what every binding must REJECT identically (hex, junk, trailing garbage, out-of-range, underscores, padding, non-ASCII digits, empty, malformed floats, every infinity and NaN spelling including `1e400`, a bad datetime, a wildcard path, a missing `[#N]`).
 
 Case `043` pins the cost of a recursive schema: a shape mounted from two paths that both reach the same node is checked once, not once per path. Without that, a document a couple of dozen levels deep doubles the work per level and validation stops finishing, so a regression here shows up as a case that hangs rather than one that fails. The generator's own limits are pinned by a reference unit test instead - a schema long enough to reach them would be a corpus file nobody could read.
 
@@ -147,7 +147,7 @@ Case `060` pins the stacked-list errors: an element with no parent field (`E007`
 
 Case `061` pins `E012`: a dedent to a column that matches no open level is skipped, and the next line at a real level binds where it belongs.
 
-Case `062` pins a writer fold: `empty b` clears the value of `b: 1, 2`, which then merges with the `b` below it, leaving one `b` holding `a: 2`.
+Case `062` pins a writer fold: `empty b` clears the value of `b: 1, 2`, which then merges with the `b` below it. The `int b.c 5` before it names which `b` the setter picked, since the merged order differs by instance; the op it replaced set a value the `b` below already had, so the golden read the same either way.
 
 Case `063` pins `remove` followed by a `-default` on the same path: the default finds the path gone and writes it again, at the end.
 
@@ -181,7 +181,7 @@ Case `077` pins that a fragment mounted at one node by two schema paths (`srv` a
 
 Case `078` pins what a schema disavows: a `repeat` above 1 drops the `H001` hint for a field whose path carries an escaped quote, a `reopen: true` drops the `H002` hint, and a `repeat` or `reopen` that faults (`V092`) disavows nothing, so the hint stays beside the fault.
 
-Case `079` pins the order a merge appends in: unmatched higher-layer nodes keep that file's order (`c, a, b, a`) rather than regrouping by name, and a footer line the layer repeats itself is kept twice, while one the base already carries is carried over once. Merging onto an empty base is the identity.
+Case `079` pins the order a merge appends in: unmatched higher-layer nodes keep that file's order (`c, a, b, a`) rather than regrouping by name, and a footer line the layer repeats itself is kept twice, while one the base already carries is carried over once.
 
 Case `080` pins float spelling on the values where shortest-round-trip formatters are allowed to differ: powers of two, whose rounding interval is lopsided so the closest short spelling does not read back and the neighbor does, and exact ties between two spellings of the shortest length, which round to even. Every binding writes the same digits.
 
@@ -247,7 +247,7 @@ Case `111` pins a backslash in a bare selector body as a character: `p[C:\temp]`
 
 Case `112` pins three setters through the tokenizer: a comment's trailing blanks come off, a raw info string keeps its leading blank, and a quoted `#` given to `literal` stays in the value. A comment holding a line break is refused.
 
-Case `113` pins `init` spelling a line break in a by-value selector and in a name escaped, so neither starts a new line.
+Case `113` pins `init` spelling a line break in a by-value selector and in a name escaped, so neither starts a new line. It carries both schema spellings: the escaped one, and the real line break that `\n` inside a double-quoted schema value resolves to. The second used to be kept as written and generated two lines that the self-check then refused.
 
 Case `114` pins raw reads: an empty binding is `Empty` for `raw` and `rawinfo`, a value that is not a block is `BadType`, and a block reads its body and label.
 
@@ -274,6 +274,8 @@ Case `121` pins that a default form judges the value as well as the path. Its `w
 Case `125` pins an optional child of an optional valued field in `init`: the commented child selects the parent by its default (`# srv[web].port: 80`), so uncommenting both lines names one instance. The input is that output with both lines uncommented.
 
 Case `126` pins a skipped field line whose value opens a raw block, under a skipped parent (`E018`) and at an indent that matches no open level (`E012`). The body goes with the line. Read as lines, it bound its own `port` and `name`, and its closing fence opened a block that ran to the end of the file.
+
+Case `130` pins a wildcard remove over a leaf that repeats under one instance. A read calls such a slot ambiguous, and the remove used to skip it, leave the data and exit 0. Its reads still expect the ambiguous slot, so the two answers are pinned apart.
 
 Case `129` pins a remove that matches many nodes at once. One path takes every child of a parent, another takes several top-level instances, a third matches nothing, and a write after them shows the parent and the name index still answer. Each match used to be dropped on its own, rebuilding the parent's whole child list every time.
 

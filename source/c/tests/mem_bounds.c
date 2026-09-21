@@ -251,9 +251,14 @@ int main(void) {
 			   three times a sound build. A removed subtree keeps its own list,
 			   and the old walk indexed every dead child. */
 			if (churned) for (int i = 0; i < 50000; i++) { shcl_set_int(cd, "g.tmp.x", 7, i); shcl_remove(cd, "g.tmp", 5); }
+			/* A second document, as the other three runners use. Merging one
+			   onto itself returns before the index is dropped, so both sides
+			   built the index once and timed 1999 hash lookups. */
+			shcl_doc *ov = shcl_parse("g:\n\tk: 1\n", 9);
 			double c0 = wall_ms();
-			for (int i = 0; i < 2000; i++) { shcl_merge(cd, cd); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
+			for (int i = 0; i < 2000; i++) { shcl_merge(cd, ov); if (shcl_get_int_or(cd, "g.k", 3, -1) != 1) fail("index walk: wrong result"); }
 			t[churned] = wall_ms() - c0;
+			shcl_free(ov);
 			shcl_free(cd);
 		}
 		printf("mem_bounds: index rebuild: %.1f ms fresh, %.1f ms after 50k set+remove\n", t[0], t[1]);
@@ -263,14 +268,6 @@ int main(void) {
 #ifdef SHCL_UNDER_ASAN
 		printf("mem_bounds: index rebuild ratio not judged under a sanitizer\n");
 #else
-		/* A clock that cannot resolve the fresh side leaves the ratio resting on
-		   one or two ticks, and then the bound is an absolute figure on
-		   whatever machine is running - which is what it was written not to be.
-		   wall_ms resolves well under a millisecond on every runner; clock()
-		   on windows counted whole ones and left this unjudged there. */
-		if (t[0] < 0.02)
-			printf("mem_bounds: index rebuild ratio not judged (clock too coarse)\n");
-		else
 		/* A generous ratio on purpose: the chain array is still sized by the
 		   arena, which is a memset the walk cannot avoid. What the bound
 		   catches is the walk itself going over every dead node. Two thousand
@@ -278,8 +275,15 @@ int main(void) {
 		   needs. On windows the allocator hands a freed 800 KB block back to
 		   the system and faults it in again on the next rebuild, which the
 		   hosted runner measured at half a second over two thousand merges;
-		   the defect is seconds. */
-		if (t[1] > t[0] * 25 + 1000) fail("the index rebuild walks nodes the document no longer holds");
+		   the defect is seconds.
+		   A clock that cannot resolve the fresh side leaves the ratio with no
+		   denominator. That used to skip the judgment. The constant term alone
+		   is an absolute figure on whatever machine is running, so it gets
+		   room rather than being skipped. */
+		{
+			double bound = t[0] <= 0.0 ? 3000.0 : t[0] * 25 + 1000;
+			if (t[1] > bound) fail("the index rebuild walks nodes the document no longer holds");
+		}
 #endif
 	}
 

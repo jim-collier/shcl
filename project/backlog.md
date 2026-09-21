@@ -86,6 +86,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- 🔘 The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
+	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
+	- Cause: the hint's builder splices the values into its suggestion in display form. `diag_name` spells a NAME carrying a line break on one line (20260916 item 18); the suggestion's VALUE half goes around it.
+	- Note: found while testing 20260920b item 26, which fixed the same class in the CLI's `instances`. Not the same site: this is the library's diagnostic prose, which the crosscheck drops and `expected-diags.txt` records by code only, so nothing watches it.
+	- Note: the fix is the value half of what `diag_name` already does for names, in all four. Pinned in `cli-regress.bash` or nowhere.
+	- Opened: 20260921-0210
+
 - Code review 20260920b:
 
 	- A full adversarial pass over the whole tree, aimed first at the ground the 20260920 round recorded as unread: most of `design.md`, `style-guide_code.md` entirely, the schema and generation half of all four bindings, the corpus's write, merge, layer and init dimensions, the test files read for what they do not assert, and the pipeline files nobody had opened. A second part went at the code merged 2026-09-19 and 2026-09-20, which had no soak time, and at the siblings of each of those fixes. Twenty-six defects here and ten enhancements under Features and enhancements.
@@ -97,200 +104,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Where they come from. Eleven are stale claims in a document the code has moved past, spread over `design.md`, `spec.md`, `style-guide_ui-ux.md` and the corpus README, none of which any round had read in these sections. Five sit in the generation half, which no round had read in any binding. Four are in test and gate code. Item 11 was written by the same commit that made the code contradict it, which is the shortest path from fix to drift this project has recorded.
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
-
-	- 🔘 Item 1: `--remove` on a wildcard path skips a `Multiple` slot, leaves the data, and exits 0.
-		- Reproduced: three instances, one with a `port`, one with none, one with `port` twice. `set --write --remove='server[*].port'` removes the first instance's port, leaves both of the third's, prints only the `H001` hint and exits 0. `count 'server[*].port'` still answers 3 afterwards. The same path without the wildcard, `server[web3].port`, removes both.
-		- Cause: the slot list from a wildcard resolve carries a per-slot status, and every binding drops the ones that are not exactly one node instead of removing the group behind them. Rust `remove` `Resolved::Slots(s) => s.into_iter().filter_map(|r| r.ok())`, Go `Remove` `if s >= 0`, Python `remove` `isinstance(n, int)`, C `shcl_remove` `if (r.slots.data[i].present)`.
-		- Origin: `e71b2c45` (2026-07-21), the wildcard remove arm as first written. No earlier round read it. Confirmed in Rust by running; the other three by reading the same guard, which the crosscheck holds to the same behavior.
-		- Keep: 20260902 item 3, which decided a repeated leaf under one instance stays `Multiple` for a read. The status is not what this item is about.
-		- Against: nothing. `spec.md:449` says `Remove` on a wildcard path removes every resolved slot, and `design.md` says `count`, `instances`, the read and `Remove` all see the same list.
-		- Sweep: every other caller that walks a slot list and drops the not-exactly-one entries. The setters refuse a wildcard outright, so `remove` may be the only one, but the grep has to be run and named.
-		- Note: the fix has to decide what a partial remove reports. Removing the group is what the spec sentence says; refusing the whole call is the other reading. Silence at exit 0 is the one answer that is wrong either way.
-		- Opened: 20260920-b
-
-	- 🔘 Item 2: a generated annotation drops the numeric bounds whenever the field also has `allowed`, and the validator still enforces them.
-		- Reproduced: `type: int`, `min: 1`, `allowed: 0, 5` generates `## int, one of: 0, 5, required`. Feeding the starter's own `n: 0` back through `check --schema` is `V005 value below min 1 at 'n': 0` at exit 6. So the generated file documents a value its own validator refuses.
-		- Cause: the annotation builder tests `allowed` and the bounds as one exclusive chain rather than as the independent parts the spec's grammar has. Rust `gen_annotation` `if let Some(a) = &c.allowed { } else if c.min_i.is_some()`, Go `genAnnotation` `case c.allowed != nil:`, Python `_gen_annotation` `if c.allowed is not None:`, C by parity.
-		- Origin: `bbe81d33` (2026-07-24), the generator's first commit. No round had read the generation half in any binding. Confirmed.
-		- Against: nothing. `spec.md:691` gives the line as `## <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`, four independent optional parts, and calls it a byte-for-byte cross-binding contract.
-		- Sweep: the float bound arm has the same chain as the integer one, and `repeat` and `required` are appended unconditionally, so they are not affected. Name both numeric arms in all four.
-		- Note: a corpus case with both keys on one field pins this in all four at once, and there is none today.
-		- Opened: 20260920-b
-
-	- 🔘 Item 3: the C index-rebuild bound merges a document onto itself, which has been a no-op since 2026-09-19.
-		- Reproduced: by reading. `mem_bounds.c:255` runs `shcl_merge(cd, cd)` 2000 times, and `shcl.h:4678` returns at `if (over == d) return;` before `index_drop(d)`. So neither timing side ever drops the index, both build it once and do 1999 hash lookups, and the ratio the fixture exists to judge is measured over an empty loop.
-		- Cause: the fixture has merged onto itself since it was written. The early return that made that a no-op arrived with 20260918b item 19 and updated `conformance.c` and `veneer_smoke.cpp`, not this file.
-		- Origin: fixture `a6af12f` (2026-09-05); the early return `1427725` (2026-09-19). Confirmed by reading. The other three runners merge a second document.
-		- Note: this passes if the C rebuild walks every dead node again, since one walk over 50,000 dead subtrees is inside the 1000 ms constant. The `index walk: wrong result` check still holds, so the block prints a plausible timing and reports nothing. C's dead-node rebuild is the half of 20260918b item 19 that is now unwatched.
-		- Pinned by: nothing, which is the item. The fix merges a second document and is watched to fail against the pre-19 rebuild.
-		- Opened: 20260920-b
-
-	- 🔘 Item 4: `init` writes a path or selector holding a literal newline verbatim, so its own output fails its own self-check.
-		- Reproduced: a schema field named `"\"t\nu\""` generates two lines, and the self-check refuses with `V097 generated text does not load: E014 unterminated quote in a field name` twice and a third `V097` for the path then missing, at exit 6. A by-value selector holding a real newline (`field: "srv[\"a\nb\"].port"`) refuses the same way. The escaped spelling, which corpus 113 carries, generates correctly, which is why the pins never fired.
-		- Cause: `path_reads_back` tokenizes `path + ":"` as one line, and the tokenizer never sees a line end, so a name holding a real newline "reads back" and the schema's own two-line spelling is kept instead of going through the segment renderer that escapes it. Rust `lib.rs:7719`, used at `:7355`; Go `shcl.go:7838`, Python `shcl.py:6521`, C `shcl.h:7586`, same shape. `gen_selector_text` has the same trap.
-		- Origin: `e783c4c` (2026-09-19), the 20260918b "init reads back" fix, which added `path_reads_back` and the keep-own-spelling branch. Confirmed.
-		- Note: 20260902 item 19 closed on the reasoning that a literal newline in a schema path is unreachable, because a schema value holding one is an unterminated quote. It is reachable: `\n` inside a double-quoted schema value resolves to a real newline before the path is parsed, and `instances` prints the name across two lines. That reasoning is what needs correcting, not just the site.
-		- Note: the comment above the site still describes the route the condition no longer takes, in all four. `spec.md:697` says "a selector carrying a literal newline is left to the block", which the code stopped doing on 2026-09-08 and does not do now in either direction. The fix settles which of the two the document should say.
-		- Opened: 20260920-b
-
-	- 🔘 Item 5: `oom_recover.c`'s "read wrong" check compares a value against its own fallback, so it cannot fail.
-		- Reproduced: by reading. `oom_recover.c:74` asks `shcl_get_int_or(d, "group.key399", -1, -1) != -1`. `sample()` writes `key399: value number 399`, a string, so the answer is `-1` on a whole document (BadType) and `-1` on a truncated one (NotFound). The load sweep reads nothing at all.
-		- Cause: the probe reads a key whose type cannot produce an int, so the fallback is the only possible answer either way.
-		- Origin: `04541ec` (2026-08-31). The 20260920 round's C OOM sweep raised the budget bound to 400 and did not read this line. Confirmed by reading.
-		- Note: this passes if a budget-starved parse hands back a truncated document instead of NULL, which is the outcome the file exists to refuse. `oom_hook.c:56-66` is the shape to copy: it reads a value only a finished call can produce.
-		- Note: the third argument is the path length and is passed `-1`, which is `SIZE_MAX`. It passes under ASan in `sanitize-c.bash` because the scan stops early, and nothing at the site says so.
-		- Opened: 20260920-b
-
-	- 🔘 Item 6: the corpus README says case 029 accepts the float values the corpus and the spec both refuse.
-		- Reproduced: `README.md:102` says the good script "covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign)". `029-write-gate/write.ops` holds only `.5`, `5.`, i64 min and `+42`; `1e400`, `INF`, `nan`, `-inf`, `infinity` are all in `write-bad.ops`. `README.md:26` says "overflow stores `inf`" in the same breath. `spec.md:504` says `SetFloat` fails on an infinity or a NaN.
-		- Cause: `ac10c65` (2026-09-01, setters refuse unreadable values) moved those rows from the good script to the bad one and left both README sentences where they were.
-		- Origin: `279862a` (2026-07-25) wrote the sentences. Three rounds have read the corpus since and none read its README against its cases. Confirmed.
-		- Sweep: two other README claims are loose in the same way and want checking with the fix. Line 64 says case `016` chooses a fence "so the content cannot close it early" and neither of its raw bodies holds a fence run. Line 184 says case `079` pins merging onto an empty base and `079/layer1.shcl` is not empty.
-		- Opened: 20260920-b
-
-	- 🔘 Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
-		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` prints only the `E014` and `strict load failed: 1 diagnostic(s)`. At standard the `V003` appears.
-		- Cause: the CLI's strict arm takes the load error's diagnostics and stops; `lib.rs:3399` `load_and_validate` validates what the parse recovered.
-		- Origin: `592ba117` (2026-07-21). Confirmed.
-		- Note: this may be a spec wording fix rather than a code fix. `spec.md:561` says the one-shot never fails and that the CLI appends its diagnostics to `check`'s normal output, but `fmt` already has the precedent that a strict-failing document formats nothing. The call is which of the two `check` follows.
-		- Opened: 20260920-b
-
-	- 🔘 Item 8: three conformance runners discard the `merge.sets` setter result that the Rust runner asserts.
-		- Reproduced: by reading. `conformance.rs:606` asserts `doc.set_string(p, v)` came back true, with the message "merge.set did not apply". `shcl_test.go:1791`, `conformance.py:524` and `conformance.c:667` all discard it, and the C one additionally skips a line with no `=` where the other three abort.
-		- Cause: the merge test was ported from the Rust one and the assertion was left behind.
-		- Origin: Go `b4f05ab` (2026-07-24); the Rust assertion is `10a3124` (2026-08-18) and was never carried across. Confirmed by reading.
-		- Note: a `merge.sets` line the writer refuses is a hard failure in Rust and a silent no-op in the other three, caught there only if the golden happens to differ. With one row in one case (`025`) it does differ, so nothing is wrong today.
-		- Sweep: the golden-without-driver pairing is one-directional in the ports too. Rust panics on an `expected-write.shcl`, `expected-validate.txt` or `expected-init.shcl` with no driver file; the other three check only driver-without-golden. One runner catching it is enough for the gate, so name it and decide rather than fix by reflex.
-		- Opened: 20260920-b
-
-	- 🔘 Item 9: Go's element-cap test measures what the parse retains, not what it allocates.
-		- Reproduced: by reading. `mem_test.go:18` `heldBy` reads `HeapAlloc` after two GCs. Rust `mem_caps.rs` measures the peak, C `mem_bounds.c` the total allocated, Python the `tracemalloc` peak.
-		- Cause: `7a08de1` (2026-09-01) landed the test over `TotalAlloc`, which would see a built-then-dropped slice; `0fb2777` the same day swapped in `heldBy` for the diagnostic-cap test and the element-cap test inherited it. The comment still names the build-in-full defect.
-		- Origin: `0fb2777` (2026-09-01). Plausible: read, not watched to fail.
-		- Note: this passes if Go tokenizes all 200,000 elements into a slice and then refuses the line, because the slice is garbage by the time `HeapAlloc` is read. That is the defect the test is named for.
-		- Opened: 20260920-b
-
-	- 🔘 Item 10: the index-rebuild ratio is skipped without saying so in three of the four runners.
-		- Reproduced: by reading. Go `shcl_test.go:1476` reports through `t.Logf`, which is hidden because `config.bash:206` passes no `-v`. Rust `conformance.rs:1623` carries `ms[0] <= 0.0 ||` inside the assert. Python has `if ms[0] > 0 and`. Only C prints a "not judged" line.
-		- Cause: a guard against a coarse clock that suppresses the judgment instead of reporting it.
-		- Origin: the three guards came with their tests. Confirmed by reading.
-		- Note: this passes if the rebuild walks dead nodes on a box with a coarse clock, because the bound is never evaluated there. Go runs in the hosted windows job, where its own comment says the fresh side reads 0.0. So on the one platform the guard fires, the check is silent.
-		- Opened: 20260920-b
-
-	- 🔘 Item 11: the CLI style guide says a repeated value option takes the last value, two lines under the rule that nothing resolves last-wins.
-		- Reproduced: `style-guide_ui-ux.md:40` reads "The same value twice is a no-op, a different value takes the last one, and a repeatable option applies in the order given." The CLI refuses: `get --int --strictness=1 --strictness=3` exits 1 with `--strictness=1 cannot be combined with --strictness=3`.
-		- Cause: `37b88a9` (Competing options refuse), the commit that made the CLI refuse, rewrote this bullet and kept a last-wins clause the same commit removed from the code.
-		- Origin: `37b88a9` (2026-09-20). Confirmed.
-		- Note: the help, the man page, `spec.md` and `design.md` all say the new rule. This bullet is the only stale one, and no gate reads the guide's prose: the `check-docs.bash` pin added on 2026-09-20 compares the exit table alone.
-		- Opened: 20260920-b
-
-	- 🔘 Item 12: `design.md` records `ParseLimited` as taking two caps; every binding takes three.
-		- Reproduced: `design.md:154` says "`ParseLimited` takes a node cap and an array-element cap (0 = uncapped)", with sub-bullets for `E020` and `E021` only. `lib.rs:3346` is `parse_limited(text, strictness, max_nodes, max_elements, max_diags)`, and `shcl explain E022` describes the third. `spec.md:500` says "All three are parse-time caps."
-		- Cause: `0fb2777` (2026-09-01) added the diagnostics cap to the spec, all four bindings and the tests, and not to `design.md`.
-		- Origin: `0fb2777` (2026-09-01). Confirmed. `grep -n 'E022\|max_diags' project/design.md` finds nothing.
-		- Opened: 20260920-b
-
-	- 🔘 Item 13: `design.md` says `--set` writes its value as literal config text; it goes in as data.
-		- Reproduced: `design.md:191` and `:194` both say the value is written as literal text. `--set='x=80, 443'` stores the one string `x: "80, 443"`; `--set-literal='x=80, 443'` stores the array. The spec, the help and the section's own next bullet all say so.
-		- Cause: line 191 was written when `--set` did write literal text. The data reading and `--set-literal` arrived in `a369201` (2026-08-04) and the same day's design edit added line 194 without revising 191.
-		- Origin: `b4f05ab` (2026-07-24) for the sentence, `a369201` (2026-08-04) for the behavior change. Confirmed.
-		- Note: the type half of line 194 still holds. Only the literal-text half is wrong.
-		- Opened: 20260920-b
-
-	- 🔘 Item 14: `design.md` says the pre-push hook runs `cicd.bash --ci`; it runs `--ci --no-largedoc`.
-		- Reproduced: `design.md:614` against `cicd/hooks/pre-push:116`. The hook's own header says the large-document stage is left out.
-		- Cause: the flag was added to the hook and not to the sentence.
-		- Origin: `84a9b3b` (2026-09-16). Confirmed by reading. Project memory already records the hook as `--ci --no-largedoc`.
-		- Note: the Testing section presents the 100 MiB gate as part of the pipeline, so a reader takes a gated main push to include it. The record rule in the same paragraph is right.
-		- Opened: 20260920-b
-
-	- 🔘 Item 15: `spec.md` describes an indentation detection the parser does not have.
-		- Reproduced: `spec.md:183` describes indentation as detected, consistent within a subtree, and reset at each top-level ancestor. The parser has a prefix rule: `resolve_parent` treats an indent as a child when the open indent is a proper string prefix and a sibling when it is byte-equal, else `E012`. A file mixing a tab then two spaces inside one subtree loads clean with the nesting the prefix rule gives.
-		- Cause: original spec text that the parser never implemented in those terms.
-		- Origin: `c93db82` (2026-07-11). Confirmed.
-		- Note: what holds is the prefix rule, and `grammar.abnf:48` states it. "Consistent within a subtree" and "detection resets" describe nothing in the code. This is a wording fix unless the described behavior is wanted, which is a larger call.
-		- Opened: 20260920-b
-
-	- 🔘 Item 16: the `V094` row calls a duplicate `fragment` declaration a fault; the parser merges them first, so the case is unreachable.
-		- Reproduced: two `fragment: f` blocks give `schema line 5: Hint: H002 merged with 'fragment'`, both fields validate, and no `V094` appears.
-		- Cause: the parser merges duplicate declarations before the validator sees them, so the validator's duplicate arm has no input that reaches it.
-		- Origin: the row is `9ec35fee` (2026-08-02); the merging behavior `84ceff51` (2026-08-30). Confirmed.
-		- Note: either the row's wording goes, or the merge has to leave the duplicate for the validator. The first is the smaller change and matches what `H002` already tells the user.
-		- Opened: 20260920-b
-
-	- 🔘 Item 17: the comparison tool's Python tier accepts a partial parse where the Rust tier refuses one.
-		- Reproduced: a document holding `a: 1`, a bare `b`, and `c: 2`. The reference CLI gives `E015` at exit 6. `python3 pyworker.py shcl bad.shcl 1` prints a timing with `scalars=0` and exits 0. The built Rust tool refuses the same file with `failed=1 diagnostics, 0 lines lost`.
-		- Cause: `pyworker.py:65` returns a bare `shcl.Document.parse` and `run()` never asks for diagnostics or lost lines, where `bench.rs:176` refuses any of either. `verify()` in `main.rs:487` walks the Rust entries only, so no Python library is ever counted against the SHCL scalar count.
-		- Origin: the Rust guard came with the tool, `e1fb936` (2026-08-20); the Python port `e369499` (2026-08-30) never had it, and `b1840c8` (2026-09-17) reworked `run()` without adding it. The 20260920 round saw the `scalars=0` gap and left it unfiled. Confirmed.
-		- Note: no published number is wrong today. A full run reads the same generated files through both tiers, and the Rust guard holds on them. What escapes is a `--tier python` run alone, or a Python-binding parity defect, measured as a partial parse at exit 0.
-		- Note: `design.md` -> Format comparison says every library has to parse its own file and find the same number of scalar values in it. None of the seven Python libraries does.
-		- Opened: 20260920-b
-
-	- 🔘 Item 18: the publish helper rewrites every quote in a `--message` before committing it.
-		- Reproduced: `n8git_backup-and-publish:356`, in the `fParseArgs` GENERIC block, runs every argument through `thisStr="${thisStr//\"/″}"` and `thisStr="${thisStr//\'/′}"`. So `--message "it's done"` commits `it′s done` with U+2032.
-		- Cause: a stale block in the project copy. The canonical copy under the synced tree has the bare assignment with no substitution, so this is not a local customization anyone chose.
-		- Origin: `88d6a42b` (2026-07-12), untouched since. Confirmed for the substitution in isolation; the script was not run.
-		- Note: the pipeline passes its message through `GIT_AUTO_MESSAGE`, which is read before `fParseArgs`, so pipeline commits are unaffected. Only a hand `-m` run is.
-		- Sweep: the other project copies of this script were not inspected. The fix is a patch of the changed block, never an overwrite of the file.
-		- Opened: 20260920-b
-
-	- 🔘 Item 19: `winpath-sandbox.ps1` hands the sandbox an unquoted path under `%TEMP%`.
-		- Reproduced: not reproduced. `winpath-sandbox.ps1:79` is `Start-Process -FilePath $sandboxExe -ArgumentList $wsbPath`, with `$wsbPath` built under `[IO.Path]::GetTempPath()`.
-		- Cause: `Start-Process -ArgumentList` does not escape, which is a recorded PowerShell trap in this project.
-		- Origin: `4baa654` (2026-09-03). Plausible: it needs a Windows box whose profile path holds a space, and `wintest` on B29W has none, which is why item 38's batch did not see it.
-		- Note: the failure is quiet. The sandbox never starts, the script waits out its 420 second timeout, and the run reports that the test did not finish, which reads as a test failure rather than a setup fault.
-		- Note: this is the only `Start-Process` in any tracked `.ps1`. `n8runshcl.ps1:175` launches with `& $staged @Rest`.
-		- Opened: 20260920-b
-
-	- 🔘 Item 20: `main_windows.go` carries a retyped copyright marker.
-		- Reproduced: `source/go/cmd/shcl/main_windows.go:2` holds `341 202 243` (U+10A3) where all thirty other tracked copyright lines hold `341 203 243` (U+10E3).
-		- Cause: the marker was retyped rather than copied, which the tree root rule exists to prevent.
-		- Origin: `64ca57b` (2026-09-20), the file's first commit, which landed after the 20260920 round reported the marker sweep clean. Confirmed by `od -c`.
-		- Note: `check-docs.bash` only requires the word `Copyright` within the first 80 lines and checks no marker form, which is why nothing caught it. A byte comparison against the one canonical form is the cheaper fix than another reading pass.
-		- Opened: 20260920-b
-
-	- 🔘 Item 21: human-read contact addresses are in the plain form and on another domain.
-		- Reproduced: `contributing.md:30`, `contributing.md:75` and `trademark.md:93` all read `<shcl@ubx9.com>`. No tracked file uses the circled-A form anywhere. `code_of_conduct.md:58` is the same and is out of scope, being verbatim Contributor Covenant text.
-		- Cause: the files predate the address rule and nothing has swept for it since.
-		- Origin: `c93db82` (2026-07-11), `dd0790d` (2026-07-13), `15b0ce9` (2026-08-29). Confirmed.
-		- Note: the one machine-read field, `cicd/packaging/nfpm.yaml:11`, correctly keeps the noreply address, so only the human-read ones move.
-		- Opened: 20260920-b
-
-	- 🔘 Item 22: two C section dividers use spellings the style guide reserves for other things.
-		- Reproduced: `shcl.h:4964-4966` uses the three-line `// ----` / title / `// ----` form that the guide gives to Rust and Go, and `shcl.h:5446` opens the Validator section with a `// ====` line, which the guide reserves for the header and implementation split at `:604`.
-		- Cause: `:4964` was pasted in the reference's shape; `:5446` predates the rule.
-		- Origin: `e59dca5` (2026-09-08) and `4ed5f44` (2026-07-25); the rule is `c54c66d` (2026-08-03). Confirmed by `grep -n -E '^// (-{20,}|={20,})$'`.
-		- Note: nothing checks this rule. Rust and Go carry 32 dividers each, Python 22, and every one of them is the right form, so a check would have one shape per binding to hold.
-		- Opened: 20260920-b
-
-	- 🔘 Item 23: the public surface has gaps the style guide does not list as deviations.
-		- Reproduced: `parse_datetime` is public in Rust, Go and Python and is `static` in C, with no `shcl_parse_datetime` declared and no text-to-`Datetime` call in the veneer; the C CLI reaches the static one only because it compiles the implementation into its own translation unit. Python's `__all__` omits `Migration`, `GEN_BANNER`, `FORMAT_MAJOR`, `FORMAT_LINE_HEAD`, `FORMAT_LINE` and `MIGRATED_LINE`, all of which Rust and Go export and one of which the Python CLI already reads. `Migration.__init__` is unannotated where the guide asks for hints on every public method.
-		- Cause: the constants arrived after `__all__` was written and were not added to it; the C datetime parser was never promoted.
-		- Origin: `__all__` 2026-08-18; the constants `dd004f1` (2026-09-08) and `7040ab7` (2026-09-16). Confirmed by comparing the full inventory, 102 `pub fn` and 34 public types, against the three ports.
-		- Note: `check-veneer.bash` walks public declarations, so it cannot see a call that was never declared public. Every other inventory gap found is a deviation the guide already lists.
-		- Note: the float formatter is `format_f64` in Rust and C and `FormatFloat` / `format_float` in Go and Python, and the zone type has four spellings. Those are naming, not inventory, and want a decision rather than a fix.
-		- Opened: 20260920-b
-
-	- 🔘 Item 24: `contributing.md` names issue labels the repository does not have.
-		- Reproduced: lines 95 to 97 promise `needs-repro`, `needs-fix` and `critical`. `gh label list` returns only the nine GitHub defaults. The `label:bug` on line 60 exists.
-		- Cause: template text that was never reconciled with the repository.
-		- Origin: `c93db82` (2026-07-11). Confirmed.
-		- Note: either the labels get created or the sentences go. Creating them is the smaller change and matches what the document promises a reporter.
-		- Opened: 20260920-b
-
-	- 🔘 Item 25: case 062's first write op asserts nothing.
-		- Reproduced: `062-write-fold-deep/write.ops:1` is `int b.a 2`. Running `empty b` alone produces the golden byte for byte. With the first op, `a: 2` is created under the first `b` and the fold merges identical children; without it the emptied `b` merges into the one below. Same bytes either way.
-		- Cause: a filler op that the golden cannot distinguish.
-		- Origin: the case as written. Confirmed by replaying both scripts.
-		- Note: a setter that picked the wrong `b` instance would also pass this case. The other no-op ops in the corpus (`014`, `015`, `044`, `092`, `129`) are deliberate default-form pins and would fail if the form overwrote, so this is the only filler among the twenty write scripts.
-		- Opened: 20260920-b
-
-	- 🔘 Item 26: `instances` prints a value holding a newline across two lines.
-		- Reproduced: two `srv` fields whose values hold a real newline. `instances` prints four lines where `count` says 2. `children` and `paths` escape the names they print; `instances` prints the value raw.
-		- Cause: the value goes out in its display form with no one-line spelling applied.
-		- Origin: not blamed. Confirmed.
-		- Note: the help says "instance values at a path, one per line", which this breaks, so a consumer splitting on newlines miscounts. This wants a decision more than a fix: escaping the value changes what a caller reading a value out of `instances` gets back, and that is a contract.
-		- Opened: 20260920-b
 
 - Code review 20260920:
 
@@ -402,6 +215,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
 		- Note: nothing in this round's defects needs a Windows box to confirm except item 19, which is why the batch waits for the fix round rather than holding the filing.
 		- Opened: 20260920-b
+
+	- 🔘 Idea 11: the comparison tool's scalar count covers the rust tier only.
+		- Note: `verify()` walks `bench::ENTRIES`, and `pyworker.py` prints `scalars=0` for every library it runs. So the pre-flight equivalence check - every library parsing its own file and finding the same number of scalar values - says nothing about the seven python libraries.
+		- Note: item 17 closed the half that matters today, a partial parse measured as a timing. What is left is coverage: an escaping mistake in a python encoder would not be caught, and none of the encoders is python-side, so the exposure is small.
+		- Note: the work is a scalar walk per library shape - dict, list, scalar for json, yaml and toml, an element tree for xml - reported as `scalars=N`, and `verify()` running the python tier alongside the rust one. `design.md` says what the check covers today.
+		- Opened: 20260920-c
 
 ### Done
 
@@ -666,6 +485,232 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260920b:
+
+	- Every defect the round filed. Its ideas are open under Features and enhancements.
+
+	- ✅ Item 1: `--remove` on a wildcard path skips a `Multiple` slot, leaves the data, and exits 0.
+		- Reproduced: three instances, one with a `port`, one with none, one with `port` twice. `set --write --remove='server[*].port'` removes the first instance's port, leaves both of the third's, prints only the `H001` hint and exits 0. `count 'server[*].port'` still answers 3 afterwards. The same path without the wildcard, `server[web3].port`, removes both.
+		- Cause: the slot list from a wildcard resolve carries a per-slot status, and every binding drops the ones that are not exactly one node instead of removing the group behind them.
+		- Decided: remove the group. `spec.md` already says a wildcard remove takes every resolved slot, and `design.md` says `count`, `instances`, the read and `Remove` see the same list. Refusing the whole call would make a documented path unusable wherever one instance happens to repeat a leaf.
+		- Fixed: the resolve walk takes a `group` flag. Off, a sub-path landing on several nodes is still one `Multiple` slot, which is what the reads want; on, those nodes join the slot list. Rust `resolve_group` / `resolve_from`, Go `resolveGroup` / `resolveFrom`, Python `_resolve(path, True)` / `_resolve_slots`, C `resolve_group` / `resolve_from`.
+		- Swept: `exists` was the only other caller dropping the not-exactly-one entries, and it now reads the same list, so it cannot answer false where `remove` would take something. The reads keep the per-slot statuses and are unchanged. The setters refuse a wildcard before resolving, so there is nothing else.
+		- Pinned by: corpus case `130-remove-wild-group`, whose write op is the wildcard remove and whose reads still expect `Good|NotFound|Multiple`, so the two answers are held apart. Watched to fail: with the old arm back, the write dimension goes red in all four and the reads stay green.
+		- Note: `spec.md` and `design.md` both say what the two sides answer now.
+		- Opened: 20260920-b
+		- Closed: 20260920-2100
+
+	- ✅ Item 2: a generated annotation drops the numeric bounds whenever the field also has `allowed`, and the validator still enforces them.
+		- Reproduced: `type: int`, `min: 1`, `allowed: 0, 5` generates `## int, one of: 0, 5, required`. Feeding the starter's own `n: 0` back through `check --schema` is `V005 value below min 1 at 'n': 0` at exit 6. So the generated file documents a value its own validator refuses.
+		- Cause: the annotation builder tested `allowed` and the bounds as one exclusive chain rather than as the independent parts the spec's grammar has.
+		- Fixed: `allowed` is its own test, and the two numeric arms follow it. Rust `gen_annotation`, Go `genAnnotation`, Python `_gen_annotation`, C `v_gen_annotation`.
+		- Swept: the float arm had the same chain and is covered by the same change. `repeat` and `required` were already unconditional.
+		- Pinned by: two fields added to corpus case `026-init-schema`, one int and one float, each carrying `allowed` and a bound. Watched to fail: with the old chain back, the generation dimension goes red in all four.
+		- Opened: 20260920-b
+		- Closed: 20260920-2100
+
+	- ✅ Item 3: the C index-rebuild bound merges a document onto itself, which has been a no-op since 2026-09-19.
+		- Reproduced: by reading. `mem_bounds.c` ran `shcl_merge(cd, cd)` 2000 times, and `shcl.h` returns at `if (over == d) return;` before `index_drop(d)`. So neither timing side ever dropped the index, both built it once and did 1999 hash lookups, and the ratio the fixture exists to judge was measured over an empty loop.
+		- Cause: the fixture has merged onto itself since it was written. The early return that made that a no-op arrived with 20260918b item 19 and updated `conformance.c` and `veneer_smoke.cpp`, not this file.
+		- Fixed: it merges a second document, the way the other three runners do. The fixture now reads 1.4 ms fresh against 25.0 ms churned where both sides used to read 0.3 ms.
+		- Pinned by: itself, watched to fail. With a walk over every arena node put back in `name_index`, the fixture reports 5116 ms against a 1210 ms bound; with the old self-merge in front of the same injected walk it reports 0.3 ms both sides and passes. That is the item, shown two ways.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 5: `oom_recover.c`'s "read wrong" check compares a value against its own fallback, so it cannot fail.
+		- Reproduced: by reading, then by running. The probe asked `shcl_get_int_or(d, "group.key399", -1, -1) != -1` on a document whose `key399` holds a string, so the answer was the fallback on a whole document and on a truncated one alike. Measured side by side: whole and half-length parses both answer -1.
+		- Cause: the probe read a key whose type cannot produce an int, so the fallback was the only possible answer either way. The third argument, the path length, was `-1` as well.
+		- Fixed: it asks for `group`'s children and checks the count and the last name, which only a finished parse can produce. `oom_hook.c` already reads that way.
+		- Pinned by: itself. Against the same two documents the new probe answers 400 with `key399` last, and 205 with a truncated name last, so it tells the two apart where the old line could not.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 8: three conformance runners discard the `merge.sets` setter result that the Rust runner asserts.
+		- Reproduced: by reading. `conformance.rs` asserts `doc.set_string(p, v)` came back true; `shcl_test.go`, `conformance.py` and `conformance.c` all discarded it, and the C one skipped a line with no `=` where the other three abort.
+		- Cause: the merge test was ported from the Rust one and the assertion was left behind.
+		- Fixed: all three assert the setter, and the C one faults a line with no `=` instead of skipping it.
+		- Decided: the golden-without-driver check stays in Rust alone. Rust panics on an `expected-write.shcl`, `expected-validate.txt` or `expected-init.shcl` with no driver file; the other three check only driver-without-golden. One runner catching a corpus hygiene fault is enough for the gate, and four copies of it is four things to keep in step.
+		- Pinned by: a wildcard path added to `025-layered/merge.sets`, which no setter can write. All four runners go red on it, where three used to pass in silence. Taken back out after.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 9: Go's element-cap test measures what the parse retains, not what it allocates.
+		- Reproduced: by reading, then by injection. `heldBy` reads `HeapAlloc` after two collections, so a list built in full and then refused is garbage before the measurement. Rust measures the peak, C the total allocated, Python the `tracemalloc` peak.
+		- Cause: `heldBy` was written for the diagnostic-cap test, which wants retention, and the element-cap test inherited it.
+		- Fixed: `allocatedBy`, over `TotalAlloc`, for the element-cap test. The diagnostic-cap test keeps `heldBy`, which is the right metric there.
+		- Pinned by: itself, watched to fail. With the tokenizer made to scan the whole line before refusing it, the test reports 28,221,896 bytes against 600,012 of text; the same defect under `heldBy` passes.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 10: the index-rebuild ratio is skipped without saying so in three of the four runners.
+		- Reproduced: by reading. Go reported through `t.Logf`, which the gate hides because it passes no `-v`. Rust carried `ms[0] <= 0.0 ||` inside the assert. Python had `if ms[0] > 0 and`. Only C printed a "not judged" line, and only on stdout.
+		- Cause: a guard against a coarse clock that suppressed the judgment instead of reporting it. It fires on the hosted windows job, which is the one platform where the fresh side reads 0.0 - so the check was silent exactly where it mattered.
+		- Fixed: nothing is skipped. A fresh side the clock cannot resolve gives the bound its constant term alone, widened to 3000 ms because an absolute figure needs room: the healthy churned side has measured half a second on that runner, and the defect is tens of seconds. Same in all four.
+		- Pinned by: itself, watched to fail. With the fresh side forced to 0.0 and the churned side to 5000, all four report the bound as 3000 ms and go red, where three used to say nothing.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 25: case 062's first write op asserts nothing.
+		- Reproduced: `int b.a 2` set a value the `b` below already had, so running `empty b` alone produced the golden byte for byte.
+		- Cause: a filler op the golden cannot distinguish.
+		- Fixed: the op is `int b.c 5`, which lands under whichever `b` the setter picked and survives the fold in that order. `b.c` gives `b:` with `c: 5` then `a: 2`; `b[#1].c` gives the two the other way round, so a setter picking the wrong instance now fails the case.
+		- Left alone: the other no-op ops in the corpus (`014`, `015`, `044`, `092`, `129`) are deliberate default-form pins and would fail if the form overwrote.
+		- Pinned by: the case itself, with the two orders measured apart.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 6: the corpus README says case 029 accepts the float values the corpus and the spec both refuse.
+		- Reproduced: the good script holds only `.5`, `5.`, i64 min and `+42`; `1e400`, `INF`, `nan` and `-inf` are all in `write-bad.ops`. The same README also said "overflow stores `inf`", where `SetFloat` refuses an infinity.
+		- Cause: `ac10c65` (2026-09-01, setters refuse unreadable values) moved those rows from the good script to the bad one and left both sentences where they were.
+		- Fixed: both sentences say what the case holds. The ACCEPT list is the four values that are there, and the REJECT list names the infinity and NaN spellings.
+		- Swept: the two other loose claims went with it. Case `016` holds no raw body with a fence run, so the sentence now says what it does pin - the info string as identity, and a string that looks like a fence. Case `079`'s base layer is not empty, so the claim that it pins merging onto an empty base is out.
+		- Pinned by: nothing new. A README sentence against a case file is prose about data, and the round's idea 1 is the coverage gap case `016` actually has.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 11: the CLI style guide says a repeated value option takes the last value, two lines under the rule that nothing resolves last-wins.
+		- Reproduced: the guide read "a different value takes the last one". The CLI exits 1 with `--strictness=1 cannot be combined with --strictness=3`.
+		- Cause: `37b88a9` (Competing options refuse) rewrote the bullet and kept a clause the same commit removed from the code.
+		- Fixed: the bullet says a repeat with the same value is the no-op, and two different values are the competing case above.
+		- Pinned by: nothing. No gate reads the guide's prose, and a check that did would be reading English. The help, the man page, `spec.md` and `design.md` all say the rule and are pinned against the CLI.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 12: `design.md` records `ParseLimited` as taking two caps; every binding takes three.
+		- Reproduced: `design.md` said "a node cap and an array-element cap", with sub-bullets for `E020` and `E021` only. `spec.md` says all three are parse-time caps, and `shcl explain E022` describes the third.
+		- Cause: `0fb2777` (2026-09-01) added the diagnostics cap to the spec, all four bindings and the tests, and not to `design.md`.
+		- Fixed: the decision names three caps and a sub-bullet says what `E022` does and why the element cap alone cannot bound it.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 13: `design.md` says `--set` writes its value as literal config text; it goes in as data.
+		- Reproduced: `--set='x=80, 443'` stores the one string; `--set-literal` stores the array. Two `design.md` sentences said literal text.
+		- Cause: the sentences were written when `--set` did write literal text. The data reading and `--set-literal` arrived in `a369201` (2026-08-04) and the design edit that day added the second sentence without revising the first.
+		- Fixed: both say data, and the layers bullet now carries the `80, 443` example that tells the two options apart.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 14: `design.md` says the pre-push hook runs `cicd.bash --ci`; it runs `--ci --no-largedoc`.
+		- Reproduced: `design.md` against `cicd/hooks/pre-push`, whose own header says the large-document stage is left out.
+		- Fixed: the sentence names the flag.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 15: `spec.md` describes an indentation detection the parser does not have.
+		- Reproduced: the spec described indentation as detected, consistent within a subtree, and reset at each top-level ancestor. The parser compares the indent as text: a proper prefix of the open one is a child, byte-equal is a sibling, anything else is `E012`. A file mixing a tab and two spaces inside one subtree loads clean with the nesting that comparison gives.
+		- Cause: original spec text the parser never implemented in those terms.
+		- Decided: the wording moves, not the parser. The prefix rule is what `grammar.abnf` states and what every binding does, and detection would be a new rule to port four times for a file nobody writes on purpose.
+		- Fixed: the bullet states the prefix rule, says a mixed file can still load, and keeps the advice to stay uniform.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 16: the `V094` row calls a duplicate `fragment` declaration a fault; the parser merges them first, so the case is unreachable.
+		- Reproduced: two `fragment: f` blocks give `H002 merged with 'fragment'`, both fields validate, and no `V094` appears.
+		- Cause: the parser merges duplicate declarations before the validator sees them, so the validator's duplicate arm has no input that reaches it.
+		- Fixed: the code table row and the Faults sentence both drop the duplicate, and the sentence says what happens instead.
+		- Left alone: the duplicate arm stays in all four bindings, as a guard if the merge ever changes. Each site carries a comment saying it is unreachable today and why no case pins it, so the next round does not refile it as dead code.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 18: the publish helper rewrites every quote in a `--message` before committing it.
+		- Reproduced: the `fParseArgs` GENERIC block ran every argument through two substitutions, so `--message "it's done"` committed `it′s done`.
+		- Cause: a stale block in the project copy. The canonical copy under the synced tree has the bare assignment, so this was not a local customization anyone chose.
+		- Fixed: the two substitutions are out, matching the canonical copy. `--help` still runs and the script still parses.
+		- Left alone: the other project copies were not touched. The rule is a patch of the changed block per copy, and that needs a go-ahead for trees outside this one.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 19: `winpath-sandbox.ps1` hands the sandbox an unquoted path under `%TEMP%`.
+		- Reproduced: on pwsh here, with a path holding a space. `Start-Process -ArgumentList` hands the child two arguments; `ProcessStartInfo.ArgumentList` hands it one. That is the .NET behavior the recorded trap names, so the item is Confirmed without a windows box.
+		- Cause: `Start-Process -ArgumentList` does not quote. The failure was quiet: the sandbox never starts, the script waits out its 420 second timeout, and the run reads as a test failure rather than a setup fault.
+		- Fixed: `ProcessStartInfo` with `ArgumentList`, which quotes each argument itself.
+		- Swept: this was the only `Start-Process` in any tracked `.ps1`. `n8runshcl.ps1` launches with `& $staged @Rest`.
+		- Pinned by: nothing automated. The path it takes needs a sandbox and a profile path holding a space; the argument-splitting half is measured above and is what the fix turns on.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 20: `main_windows.go` carries a retyped copyright marker.
+		- Reproduced: the file held U+10A3 where all thirty other tracked copyright lines hold U+10E3.
+		- Cause: the marker was retyped rather than copied, which the tree root rule exists to prevent.
+		- Fixed: the line is the canonical bytes, copied from `shcl.go`.
+		- Pinned by: a `check-docs.bash` check comparing every tracked file's marker with the one canonical run of bytes, watched to fail with the old byte put back. `install.ps1` and `source/rust/build.rs` are named as the two sanctioned ASCII forms.
+		- Swept: every tracked copyright line was compared byte for byte. The only other forms are the Bubbles one in the shared `cicd/utility` scripts and the two ASCII exceptions.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 21: human-read contact addresses are in the plain form and on another domain.
+		- Reproduced: `contributing.md` twice and `trademark.md` once read `<shcl@ubx9.com>`. No tracked file used the circled-A form anywhere.
+		- Fixed: all three read `shclⒶyottacore.com`, with the angle brackets dropped, since it is no longer an address a reader should click.
+		- Left alone: `code_of_conduct.md` keeps its address as verbatim Contributor Covenant text, and `nfpm.yaml` keeps the noreply address a packaging tool reads as an email.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 22: two C section dividers use spellings the style guide reserves for other things.
+		- Reproduced: one three-line `// ----` form that the guide gives to Rust and Go, and one `// ====` opening the Validator section, which the guide reserves for the header and implementation split.
+		- Fixed: both are the C form, `// --- <title> ---` padded to 79 columns like the other dividers in the file. The one `// ====` left is the header and implementation split.
+		- Left alone: no check was added. Rust and Go carry 32 dividers each and Python 22, all already right, so a check would be four shapes to keep in step against a fault that has happened twice in a year.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 17: the comparison tool's Python tier accepts a partial parse where the Rust tier refuses one.
+		- Reproduced: a document holding `a: 1`, a bare `b`, and `c: 2`. The reference CLI gives `E015` at exit 6; `pyworker.py shcl bad.shcl 1` printed a timing and exited 0. The built Rust tool refuses the same file.
+		- Cause: `pyworker.py` returned a bare `shcl.Document.parse` and `run()` never asked for diagnostics or lost lines, where `bench.rs` refuses any of either.
+		- Fixed: a loader may hand back a fifth element saying why a parsed document is not whole, and the SHCL loader does. It runs after the first parse and outside the timed loop, the way the Rust guard sits before `measure`. The bad file now prints `failed=1 diagnostics, 0 lines lost`, in the Rust tier's own wording.
+		- Left alone: the scalar count. `verify()` walks the Rust entries and `pyworker.py` reports `scalars=0` for every library, so the pre-flight equivalence check has never covered the Python tier. That is coverage rather than a wrong answer - no encoder is Python-side - and it is filed as idea 11. `design.md` says what the check covers now instead of claiming every library.
+		- Pinned by: nothing automated. The comparison tool is outside the gate, since its Rust half is the one thing here with third-party crates. The two runs above are the check.
+		- Opened: 20260920-b
+		- Closed: 20260921-0010
+
+	- ✅ Item 4: `init` writes a path or selector holding a literal newline verbatim, so its own output fails its own self-check.
+		- Reproduced: a schema field named `"\"t\nu\""` and a by-value selector holding a real newline each generate two lines, and the self-check refuses with `V097 generated text does not load` twice and a third `V097` for the path then missing, at exit 6. The escaped spelling, which corpus 113 carries, generated correctly, which is why the pins never fired.
+		- Cause: `path_reads_back` and `selector_reads_back` tokenize the path as one line, and the tokenizer never sees a line end, so text holding a real newline "reads back" and the schema's own two-line spelling is kept instead of going through the segment renderer that escapes it.
+		- Decided: escaped inline, not the trailing block. The escaped spelling reads back as the same path and is what the escaped schema spelling already produced, so both routes now write one line. The alternative, leaving it to the trailing block, would make two spellings of one path generate differently.
+		- Fixed: both functions refuse a line holding a line break, before tokenizing. Rust `selector_reads_back` and `path_reads_back`, Go `selectorReadsBack` and `pathReadsBack`, Python `_selector_reads_back` and `_path_reads_back`, C `selector_reads_back` and `path_reads_back`. All four now write `srv["a\nb"].port: 8080` and `"t\nu": v`.
+		- Note: 20260902 item 19 closed on the reasoning that a literal newline in a schema path is unreachable, because a schema value holding one is an unterminated quote. That is wrong and this item is the correction: `\n` inside a double-quoted schema value resolves to a real newline before the path is parsed, so the path holds one with nothing malformed anywhere.
+		- Note: the comment above the caller, which says a name carrying a newline goes through the segment renderer, described a route the condition had stopped taking. The fix makes it true again rather than rewriting it.
+		- Fixed: `spec.md` drops the literal newline from the list of paths that cannot be written at all, and says a body or a name carrying one is written escaped.
+		- Pinned by: two fields added to corpus case `113-init-selector-newline`, one selector and one name, each spelled with a real line break beside the escaped twin already there. Watched to fail: with the guard taken out, the generation dimension reports `113-init-selector-newline: init schema has faults`.
+		- Opened: 20260920-b
+		- Closed: 20260921-0100
+
+	- ✅ Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
+		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` printed only the `E014`. At standard the `V003` appeared.
+		- Cause: the CLI's strict arm took the load error's diagnostics and stopped, where `load_and_validate` validates what the parse recovered.
+		- Decided: the CLI moves, not the spec. `check` writes nothing, so `fmt`'s refusal to rewrite a strict-failing document does not carry over, and a user was getting less out of `check` at strict than at standard on the same file.
+		- Fixed: the strict arm takes the recovered document out of the load error and the schema half runs either way, in all four CLIs. The summary line is still `strict load failed`, so the exit contract is unchanged. A schema that does not itself load is still one `V099` at strict.
+		- Fixed: `spec.md` says the one-shot's diagnostics reach `check` at strict too.
+		- Pinned by: `cli-regress.bash` row `check-strict-schema-validates`, watched to fail with the old strict guard put back.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 23: the public surface has gaps the style guide does not list as deviations.
+		- Reproduced: `parse_datetime` was public in Rust, Go and Python and `static` in C, with no `shcl_parse_datetime` and no text-to-`Datetime` call in the veneer. Python's `__all__` omitted `Migration`, `GEN_BANNER`, `FORMAT_MAJOR`, `FORMAT_LINE_HEAD`, `FORMAT_LINE` and `MIGRATED_LINE`, one of which the Python CLI already read. `Migration.__init__` was unannotated where the guide asks for hints on every public method.
+		- Decided: promote the C call, and unify the names. Checked first for churn - `git log -S` and the backlog find no earlier decision on either spelling, so nothing is being reversed. 3.0.0 is the cut that may break an API name, which is why the rename goes now rather than later.
+		- Fixed: `shcl_parse_datetime(text, len, out)` is declared and defined, with its own arena since a standalone caller has no document to lend one, and `shcl::parse_datetime` wraps it in the veneer with two smoke assertions. `check-veneer.bash` reads 103 public calls, all covered.
+		- Fixed: the float formatter is `format_float` everywhere. Rust's `format_f64` and C's `shcl_format_f64` are renamed, and `SHCL_F64_BUF` is `SHCL_FLOAT_BUF`. Rust's `ZoneSpec` is `Zone`, so all four say zone.
+		- Fixed: Python's `__all__` carries the six missing names, and `Migration.__init__` is annotated.
+		- Fixed, so it is not asked again: `project/style-guide_code.md` states the rule - one name per public call, cased per language - and lists the three exceptions with their reasons: Go's `DateTime`/`ParseDateTime`, Go's and C's extra zone types where the language has no payload-carrying enum, and Python's zone tuple. A later pass judges a name against that rule, and a new exception needs a line there.
+		- Pinned by: `check-veneer.bash` for the promoted call, the two `veneer_smoke.cpp` assertions, and `-Werror` builds in all four; `mypy` for the annotation. The renames are compile-time: nothing builds with the old names.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 24: `contributing.md` names issue labels the repository does not have.
+		- Reproduced: lines 95 to 97 promised `needs-repro`, `needs-fix` and `critical`. `gh label list` returns only the nine GitHub defaults. The `label:bug` on line 60 exists.
+		- Decided: the sentences go, and the repository is left alone. A label a one-person project never applies is a promise to a reporter that nothing keeps.
+		- Fixed: the two bullets say what actually happens - an issue waits until it reproduces, and then it is left to be implemented.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 26: `instances` prints a value holding a newline across two lines.
+		- Reproduced: two `srv` fields whose values hold a real newline. `instances` printed four lines where `count` said 2.
+		- Cause: the value went out in its display form with no one-line spelling applied, where `children` and `paths` escape the names they print.
+		- Decided: escape the value. The help promises one per line, a consumer splitting on newlines miscounts, and only a value holding a line break changes - everything else goes out as written, which is what keeps the contract for every caller that has one today.
+		- Fixed: a `one_line` helper in each CLI (`out_one_line` in C) writes the quoted escaped spelling when the value holds a line break. Not `quote_segment`, which is for path segments and would also quote a value holding a dot. The library still hands values back as they are, so `reads.tsv` and the conformance runners are untouched.
+		- Fixed: the man page and `spec.md` say the CLI escapes such a value and the library does not.
+		- Pinned by: `cli-regress.bash` rows `instances-one-per-line` and `instances-plain-unescaped`. Watched to fail: with the escape taken out the first goes red and the second stays green, which is what proves it pins the no-change half too.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
 
 - Code review 20260920:
 

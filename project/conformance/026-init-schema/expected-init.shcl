@@ -27,6 +27,12 @@ replicas:
 ## float, one of: 811212085039910.2, 1125899906842624.2
 # scale:
 
+## int, one of: 3, 7, 1-9
+# tier: 3
+
+## float, one of: 0.5, 1.5, >= 0.5
+# gain:
+
 ##
 ## This config file format is SHCL.
 ## "Simple Hierarchical Config Language"

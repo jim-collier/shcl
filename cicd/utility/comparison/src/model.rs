@@ -742,7 +742,7 @@ fn shcl_scalar(v: &Val) -> String {
 	match v {
 		Val::Str(s) => shcl_string(s),
 		Val::Int(i) => i.to_string(),
-		Val::Float(f) => shcl::format_f64(*f),
+		Val::Float(f) => shcl::format_float(*f),
 		Val::Bool(b) => b.to_string(),
 		Val::Arr(items) => items.iter().map(shcl_scalar).collect::<Vec<_>>().join(", "),
 		Val::Text(_) => unreachable!("text is fenced, not inline"),
@@ -803,7 +803,7 @@ fn json_scalar(v: &Val) -> String {
 	match v {
 		Val::Str(s) | Val::Text(s) => json_string(s),
 		Val::Int(i) => i.to_string(),
-		Val::Float(f) => shcl::format_f64(*f),
+		Val::Float(f) => shcl::format_float(*f),
 		Val::Bool(b) => b.to_string(),
 		Val::Arr(items) => format!(
 			"[{}]",
@@ -859,7 +859,7 @@ fn yaml_scalar(v: &Val) -> String {
 	match v {
 		Val::Str(s) => yaml_string(s),
 		Val::Int(i) => i.to_string(),
-		Val::Float(f) => shcl::format_f64(*f),
+		Val::Float(f) => shcl::format_float(*f),
 		Val::Bool(b) => b.to_string(),
 		// Flow style: YAML's own compact spelling for a short list of scalars.
 		Val::Arr(items) => format!(
@@ -926,7 +926,7 @@ fn toml_scalar(v: &Val) -> String {
 		Val::Str(s) => json_string(s), // TOML basic strings take JSON's escapes
 		Val::Int(i) => i.to_string(),
 		Val::Float(f) => {
-			let t = shcl::format_f64(*f);
+			let t = shcl::format_float(*f);
 			if t.contains('.') { t } else { format!("{t}.0") } // TOML floats need a point
 		}
 		Val::Bool(b) => b.to_string(),
@@ -974,7 +974,7 @@ fn xml_scalar(v: &Val) -> String {
 	match v {
 		Val::Str(s) => s.clone(),
 		Val::Int(i) => i.to_string(),
-		Val::Float(f) => shcl::format_f64(*f),
+		Val::Float(f) => shcl::format_float(*f),
 		Val::Bool(b) => b.to_string(),
 		Val::Arr(_) | Val::Text(_) => unreachable!("handled by the caller"),
 	}

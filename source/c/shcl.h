@@ -577,15 +577,20 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over);
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 
 // Format helpers matching the reference's textual output.
-// out must be at least SHCL_F64_BUF bytes; returns the byte length written.
-#define SHCL_F64_BUF 512
-size_t shcl_format_f64(double v, char *out);
+// out must be at least SHCL_FLOAT_BUF bytes; returns the byte length written.
+#define SHCL_FLOAT_BUF 512
+size_t shcl_format_float(double v, char *out);
 // Renders a datetime into out (>= SHCL_DT_BUF bytes); returns byte length. A
 // frac longer than 30 bytes is truncated, and the whole rendering is clamped to
 // SHCL_DT_BUF bytes, so a hand-built value cannot overrun the documented buffer
 // (parsed input never gets near either limit).
 #define SHCL_DT_BUF 64
 size_t shcl_datetime_str(const shcl_datetime *dt, char *out);
+// The reverse: text to a datetime, per the whitelist. Returns 1 on success and
+// leaves *out untouched on failure. The other three bindings export this, and
+// the C CLI reached the internal one only by compiling the implementation into
+// its own translation unit.
+int shcl_parse_datetime(const char *text, size_t tlen, shcl_datetime *out);
 // Status <-> the CLI exit code / textual name.
 int shcl_status_code(shcl_status s);
 const char *shcl_status_name(shcl_status s);
@@ -3642,7 +3647,10 @@ static void children_named(shcl_doc *d, ShclArena *a, size_t parent, ShclStr nam
 	}
 }
 
-static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart, ShclSegment *segs, size_t nsegs) {
+// `group`: a sub-path landing on several nodes joins the slot list instead of
+// becoming one SHCL_MULTIPLE slot. Reads want the slot per instance, so they
+// leave it off; remove and exists want every node behind the wildcard.
+static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart, ShclSegment *segs, size_t nsegs, int group) {
 	ShclArena *a = &d->scratch; // candidates, slots, compare strings: dead after the call
 	ShclVecSize cur = {0};
 	// cppcheck-suppress objectIndex  ## single-element callers pass nstart == 1, so start[i] stays at 0
@@ -3666,13 +3674,17 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				ShclSlot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
 				else {
-					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
+					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest, group);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
 					else if (r.kind == R_SLOTS) {
 						// A wildcard after a wildcard: the inner slots join the
 						// outer list, so the two compose into one flat run of
 						// leaves rather than one unreadable slot.
 						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
+					else if (r.kind == R_MANY && group) {
+						for (size_t j = 0; j < r.many.len; j++) { ShclSlot m; m.present = 1; m.idx = r.many.data[j]; m.miss = SHCL_GOOD; ShclVecSlot_push(a, &slots, m); }
 						continue;
 					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
@@ -3702,13 +3714,17 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				ShclSlot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
 				else {
-					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
+					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest, group);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
 					else if (r.kind == R_SLOTS) {
 						// A wildcard after a wildcard: the inner slots join the
 						// outer list, so the two compose into one flat run of
 						// leaves rather than one unreadable slot.
 						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
+					else if (r.kind == R_MANY && group) {
+						for (size_t j = 0; j < r.many.len; j++) { ShclSlot m; m.present = 1; m.idx = r.many.data[j]; m.miss = SHCL_GOOD; ShclVecSlot_push(a, &slots, m); }
 						continue;
 					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
@@ -3726,7 +3742,7 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 	else { R.kind = R_MANY; R.many = cur; }
 	return R;
 }
-static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) {
+static int resolve_mode(shcl_doc *d, ShclStr path, ShclResolved *out, int group) {
 	// Every public read/query funnels through here, so this reset is the
 	// scratch lifetime: the previous resolve's temporaries die now, and the
 	// ShclResolved this call fills stays usable until the next resolve.
@@ -3734,9 +3750,13 @@ static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) {
 	ShclPathScan ps = scan_lookup(&d->scratch, path);
 	if (!ps.ok || ps.has_value) return 0;
 	size_t root = ROOT;
-	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len);
+	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len, group);
 	return 1;
 }
+static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) { return resolve_mode(d, path, out, 0); }
+// resolve() with every node behind a wildcard slot in the list, for the callers
+// that act on the whole match rather than read one value per instance.
+static int resolve_group(shcl_doc *d, ShclStr path, ShclResolved *out) { return resolve_mode(d, path, out, 1); }
 static shcl_status value_at(shcl_doc *d, ShclStr path, ShclValue **out) {
 	ShclResolved r;
 	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
@@ -3939,7 +3959,7 @@ size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out)
 
 static ShclStr w_dupz(ShclArena *a, const char *p, size_t n) { ShclStr s; s.p = p; s.n = n; return s_dup(a, s); }
 static ShclStr w_int_text(ShclArena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
-static ShclStr w_float_text(ShclArena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
+static ShclStr w_float_text(ShclArena *a, double v) { char b[SHCL_FLOAT_BUF]; size_t n = shcl_format_float(v, b); return w_dupz(a, b, n); }
 static ShclStr w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
 static ShclStr w_dt_text(ShclArena *a, const shcl_datetime *dt) { char b[SHCL_DT_BUF]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
 /* Whether a datetime's canonical spelling reads back as the same value: the
@@ -4201,7 +4221,7 @@ shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
 
 int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 	ShclStr p; p.p = path; p.n = plen; ShclResolved r;
-	if (!resolve(d, p, &r)) return 0;
+	if (!resolve_group(d, p, &r)) return 0;
 	if (r.kind == R_ONE || r.kind == R_MANY) return 1;
 	if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) return 1;
 	return 0;
@@ -4209,7 +4229,7 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
-	if (!resolve(d, p, &r)) return 0;
+	if (!resolve_group(d, p, &r)) return 0;
 	ShclVecSize targets = {0};
 	if (r.kind == R_ONE) ShclVecSize_push(a, &targets, r.one);
 	else if (r.kind == R_MANY) targets = r.many;
@@ -4961,9 +4981,7 @@ static ShclStr diag_name(ShclArena *a, ShclStr name) {
 	return sb_S(&b);
 }
 
-// ---------------------------------------------------------------------------
-// The write side's one rule: what is written has to read back
-// ---------------------------------------------------------------------------
+// --- The write side's one rule: what is written has to read back ------------
 //
 // A setter builds its text through the emitter and reads it back with the
 // tokenizer before the document is touched. If the read does not give the
@@ -5291,7 +5309,7 @@ static int f64_neighbor(const char *tmp, const ShclF64Interval *iv, int delta, c
 	return f64_reads_back(out, iv);
 }
 
-size_t shcl_format_f64(double v, char *out) {
+size_t shcl_format_float(double v, char *out) {
 	if (isnan(v)) { memcpy(out, "NaN", 3); return 3; }
 	if (isinf(v)) { if (v < 0) { memcpy(out, "-inf", 4); return 4; } memcpy(out, "inf", 3); return 3; }
 	if (v == 0.0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
@@ -5365,6 +5383,19 @@ const char *shcl_status_name(shcl_status s) {
 	return "Good";
 }
 int shcl_status_ok(shcl_status s) { return s == SHCL_GOOD || s == SHCL_EMPTY; }
+int shcl_parse_datetime(const char *text, size_t tlen, shcl_datetime *out) {
+	/* Its own arena: the internal call splits the text into temporaries, and a
+	   standalone caller has no document to lend one. Freed before returning, so
+	   nothing here outlives the call. */
+	ShclArena a = {0, 0, 0, 0, 0};
+	ShclStr t; t.p = text; t.n = tlen;
+	shcl_datetime got;
+	int ok = parse_datetime(&a, t, &got);
+	arena_free(&a);
+	if (ok) *out = got;
+	return ok;
+}
+
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 	char buf[16]; if (n >= sizeof buf) return 0;
 	for (size_t i = 0; i < n; i++) { unsigned char c = (unsigned char)s[i]; buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c; }
@@ -5443,8 +5474,7 @@ shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
 const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
 
-// ===========================================================================
-// Validator: schema-as-SHCL
+// --- Validator: schema-as-SHCL ----------------------------------------------
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
@@ -5807,6 +5837,9 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 				v_diag(a, faults, node->line, "V094", v_msgz(a, "bad schema fragment"));
 				continue;
 			}
+			// Two `fragment` blocks of one name never reach here: the parse
+			// merges them into one node and reports H002. Kept as a guard in
+			// case that changes, which is why no case pins it.
 			if (v_frag_get(def, name)) {
 				v_diag(a, faults, node->line, "V094", v_msg3(a, "bad schema fragment '", diag_name(a, name), "': duplicate"));
 				continue;
@@ -6196,8 +6229,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->min_f, fb); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
-		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->max_f, fb); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
+		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { ShclStr b; char fb[SHCL_FLOAT_BUF]; b.p = fb; b.n = shcl_format_float(c->min_f, fb); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
+		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { ShclStr b; char fb[SHCL_FLOAT_BUF]; b.p = fb; b.n = shcl_format_float(c->max_f, fb); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
 	} else if (V_BASE_IS("bool")) {
 		int *vals = (int *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int));
 		for (size_t x = 0; x < nels; x++)
@@ -7445,7 +7478,7 @@ static ShclStr v_allowed_join(ShclArena *a, const ShclVCons *c) {
 		if (i) sb_puts(a, &s, ", ");
 		switch (c->akind) {
 			case ALLOW_INTS: { snprintf(nb, sizeof nb, "%" PRId64, c->a_ints[i]); sb_puts(a, &s, nb); break; }
-			case ALLOW_FLOATS: { char fb[SHCL_F64_BUF]; ShclStr f; f.p = fb; f.n = shcl_format_f64(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
+			case ALLOW_FLOATS: { char fb[SHCL_FLOAT_BUF]; ShclStr f; f.p = fb; f.n = shcl_format_float(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
 			case ALLOW_BOOLS: sb_puts(a, &s, c->a_bools[i] ? "true" : "false"); break;
 			case ALLOW_DATES: { char db[SHCL_DT_BUF]; ShclStr d; d.p = db; d.n = shcl_datetime_str(&c->a_dates[i], db); sb_putS(a, &s, d); break; }
 			case ALLOW_STRINGS: sb_putS(a, &s, c->a_strs[i]); break;
@@ -7461,22 +7494,25 @@ static ShclStr v_gen_annotation(ShclArena *a, const ShclVCons *c, ShclStr tyname
 	sb_putS(a, &s, tyname);
 	if (c->has_allowed) {
 		sb_puts(a, &s, ", one of: "); sb_putS(a, &s, v_allowed_join(a, c));
-	} else if (c->has_min_i || c->has_max_i) {
+	}
+	// The bounds are their own part of the annotation line, not an alternative
+	// to `allowed`. A field can carry both, and the validator enforces both.
+	if (c->has_min_i || c->has_max_i) {
 		if (c->has_min_i && c->has_max_i) snprintf(nb, sizeof nb, ", %" PRId64 "-%" PRId64, c->min_i, c->max_i);
 		else if (c->has_min_i) snprintf(nb, sizeof nb, ", >= %" PRId64, c->min_i);
 		else snprintf(nb, sizeof nb, ", <= %" PRId64, c->max_i);
 		sb_puts(a, &s, nb);
 	} else if (c->has_min_f || c->has_max_f) {
-		char fb[SHCL_F64_BUF];
+		char fb[SHCL_FLOAT_BUF];
 		sb_puts(a, &s, ", ");
 		if (c->has_min_f && c->has_max_f) {
-			ShclStr f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			ShclStr f; f.p = fb; f.n = shcl_format_float(c->min_f, fb); sb_putS(a, &s, f);
 			sb_putc(a, &s, '-');
-			ShclStr g; g.p = fb; g.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, g);
+			ShclStr g; g.p = fb; g.n = shcl_format_float(c->max_f, fb); sb_putS(a, &s, g);
 		} else if (c->has_min_f) {
-			sb_puts(a, &s, ">= "); ShclStr f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, ">= "); ShclStr f; f.p = fb; f.n = shcl_format_float(c->min_f, fb); sb_putS(a, &s, f);
 		} else {
-			sb_puts(a, &s, "<= "); ShclStr f; f.p = fb; f.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, "<= "); ShclStr f; f.p = fb; f.n = shcl_format_float(c->max_f, fb); sb_putS(a, &s, f);
 		}
 	}
 	if (c->has_repeat) {
@@ -7572,6 +7608,11 @@ static int selector_reads_back(ShclArena *a, ShclStr body, ShclStr text, int quo
 	ShclSB l = {0, 0, 0};
 	sb_puts(a, &l, "x["); sb_putS(a, &l, body); sb_puts(a, &l, "]:");
 	ShclStr line = sb_S(&l);
+	/* The tokenizer reads one line and never sees a line end, so text carrying a
+	   real line break would read back here and then be written across two lines,
+	   which is not the same path. A file line cannot hold one, so refuse and let
+	   the escaped spelling be tried instead. */
+	for (size_t k = 0; k < line.n; k++) if (line.p[k] == '\n' || line.p[k] == '\r') return 0;
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
 	if (selector_open_quote(&tok) || tok.has_comment) return 0;
@@ -7587,6 +7628,11 @@ static int path_reads_back(ShclArena *a, ShclStr path, const ShclVecSeg *segs) {
 	ShclSB l = {0, 0, 0};
 	sb_putS(a, &l, path); sb_putc(a, &l, ':');
 	ShclStr line = sb_S(&l);
+	/* The tokenizer reads one line and never sees a line end, so text carrying a
+	   real line break would read back here and then be written across two lines,
+	   which is not the same path. A file line cannot hold one, so refuse and let
+	   the escaped spelling be tried instead. */
+	for (size_t k = 0; k < line.n; k++) if (line.p[k] == '\n' || line.p[k] == '\r') return 0;
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
 	if (selector_open_quote(&tok) || tok.has_comment) return 0;

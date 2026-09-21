@@ -25,7 +25,7 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the [SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to <shcl@ubx9.com>.
+This project and everyone participating in it is governed by the [SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to shclⒶyottacore.com.
 
 ## I Have a Question
 
@@ -72,7 +72,7 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 <!-- omit in toc -->
 #### How Do I Submit a Good Bug Report?
 
-> You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to <shcl@ubx9.com>.
+> You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to shclⒶyottacore.com.
 
 We use GitHub issues to track bugs and errors. If you run into an issue with the project:
 
@@ -88,9 +88,9 @@ Once it's filed:
 
 - The project team will label the issue accordingly.
 
-- A team member will try to reproduce the issue with your provided steps. If there are no reproduction steps or no obvious way to reproduce the issue, the team will ask you for those steps and mark the issue as `needs-repro`. Bugs with the `needs-repro` tag will not be addressed until they are reproduced.
+- Someone will try to reproduce the issue from the steps given. Where there are no steps, or no obvious way to reproduce it, they will ask for them, and the issue waits until it reproduces.
 
-- If the team is able to reproduce the issue, it will be marked `needs-fix`, as well as possibly other tags (such as `critical`), and the issue will be left to be [implemented by someone](#how-to-develop).
+- Once it reproduces, the issue is left to be [implemented by someone](#how-to-develop).
 
 ### Suggesting Enhancements
 

@@ -76,7 +76,14 @@ $result = Join-Path $out 'result.txt'
 $failed = 0
 try {
 	Write-Output "winpath-sandbox: starting a sandbox on $root"
-	Start-Process -FilePath $sandboxExe -ArgumentList $wsbPath | Out-Null
+	# ProcessStartInfo.ArgumentList quotes each argument itself. Start-Process
+	# -ArgumentList does not, so a profile path holding a space arrived as two
+	# arguments, the sandbox never started, and the run waited out its timeout
+	# and reported the test as failed rather than the setup.
+	$psi = [Diagnostics.ProcessStartInfo]::new($sandboxExe)
+	$psi.ArgumentList.Add($wsbPath)
+	$psi.UseShellExecute = $false
+	[Diagnostics.Process]::Start($psi) | Out-Null
 	$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 	while (-not (Test-Path $marker) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
 	if (-not (Test-Path $marker)) {

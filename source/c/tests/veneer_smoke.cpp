@@ -108,7 +108,9 @@ int main() {
 	CHECK(shcl::status_code(shcl::Status::Good) == 0 && shcl::status_code(shcl::Status::Multiple) == 5);
 	CHECK(shcl::strictness_from_arg("STRICT") == shcl::Strictness::Strict && shcl::strictness_from_arg("1") == shcl::Strictness::Loose);
 	CHECK(!shcl::strictness_from_arg("4") && !shcl::strictness_from_arg(""));
-	CHECK(shcl::format_f64(0.1) == "0.1" && shcl::format_f64(-2.5) == "-2.5");
+	CHECK(shcl::format_float(0.1) == "0.1" && shcl::format_float(-2.5) == "-2.5");
+	CHECK(shcl::parse_datetime("2026-07-12T09:30Z")->str() == "2026-07-12T09:30Z");
+	CHECK(!shcl::parse_datetime("notadate") && !shcl::parse_datetime(""));
 
 	// The rest of the surface, item by item: strictness, strict_failed, paths,
 	// authored_name, the raw pair, the float/bool arrays, and the typed get
