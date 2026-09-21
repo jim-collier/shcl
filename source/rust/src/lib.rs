@@ -632,7 +632,8 @@ const ROOT: usize = 0;
 // re-parenting one level up.
 const DEAD: usize = usize::MAX;
 // Stack entry for a line whose indent matched no open level (E012): never a
-// level a sibling can bind at, but deeper lines are still under it.
+// level a sibling can bind at, but deeper lines are still under it. It sits
+// on top of the levels open before it without closing any of them.
 const UNOPENED: usize = usize::MAX - 1;
 
 /// Merge a later instance into an earlier one under the in-file merge rule:
@@ -2371,38 +2372,47 @@ impl Parser {
 		}
 	}
 
-	/// Resolve which open level this indent belongs to. Child only when the
-	/// current top's indent is a proper prefix; otherwise the indent must equal
-	/// an open level exactly (dedent), else it is a recoverable error.
+	/// Resolve which open level this indent belongs to, walking down from the
+	/// top. Equal to a level is its sibling. Deeper than a level is its child,
+	/// unless a level opened under that one is still open, in which case the
+	/// line falls between the two. Anything else is a recoverable error.
 	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
-		let Some((top_indent, top_node)) = self.stack.last() else {
-			return None; // sentinel invariant; degrade, never abort
-		};
-		if indent.len() > top_indent.len() && indent.starts_with(top_indent.as_str()) {
-			return Some(if *top_node == UNOPENED {
-				DEAD
-			} else {
-				*top_node
-			});
-		}
+		let mut hold = None;
 		for i in (0..self.stack.len()).rev() {
-			if self.stack[i].0 == indent && self.stack[i].1 != UNOPENED {
+			let (ind, node) = (&self.stack[i].0, self.stack[i].1);
+			if ind == indent {
+				if node == UNOPENED {
+					// Back at a skipped line's column: refused the same way.
+					self.stack.truncate(i + 1);
+					return None;
+				}
 				// Sibling of stack[i]: its parent is the entry below it.
 				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
 				// Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack.truncate(i.max(1));
 				return Some(if parent == UNOPENED { DEAD } else { parent });
 			}
-		}
-		// Skipped, but it still owns its indent: whatever is written deeper is
-		// skipped with it, and a sibling at the same bad indent is refused the
-		// same way instead of binding one level up.
-		while self.stack.len() > 1 {
-			let top = &self.stack[self.stack.len() - 1].0;
-			if indent.len() > top.len() && indent.starts_with(top.as_str()) {
-				break;
+			if indent.len() > ind.len() && indent.starts_with(ind.as_str()) {
+				// A skipped line's unopened level sits on top without opening
+				// anything, so it does not count as a level in between.
+				if self.stack.get(i + 1).is_some_and(|e| e.1 != UNOPENED) {
+					break;
+				}
+				self.stack.truncate(i + 1);
+				return Some(if node == UNOPENED { DEAD } else { node });
 			}
-			self.stack.pop();
+			if node == UNOPENED {
+				hold = Some(i);
+			}
+		}
+		// Skipped, but it holds its own column: whatever is written deeper is
+		// skipped with it, and a line back at it is refused the same way
+		// instead of binding one level up. It closes nothing, so a later line
+		// that matches a level open before it still binds there, as in 2.0.0.
+		// The hold ends at the first line neither under it nor at it, this one
+		// included, which keeps one on the stack at most.
+		if let Some(h) = hold {
+			self.stack.truncate(h);
 		}
 		self.stack.push((indent.to_string(), UNOPENED));
 		None

@@ -649,7 +649,8 @@ const dead = -1
 
 // unopened is the stack entry for a line whose indent matched no open level
 // (E012): never a level a sibling can bind at, but deeper lines are still
-// under it.
+// under it. It sits on top of the levels open before it without closing any
+// of them.
 const unopened = -2
 
 // foldNodeInto merges a later instance into an earlier one under the in-file
@@ -2434,19 +2435,20 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	}
 }
 
-// resolveParent resolves which open level this indent belongs to. Child only
-// when the current top's indent is a proper prefix; otherwise the indent must
-// equal an open level exactly (dedent), else it is a recoverable error.
+// resolveParent resolves which open level this indent belongs to, walking
+// down from the top. Equal to a level is its sibling. Deeper than a level is
+// its child, unless a level opened under that one is still open, in which case
+// the line falls between the two. Anything else is a recoverable error.
 func (p *parser) resolveParent(indent string) (int, bool) {
-	top := p.stack[len(p.stack)-1]
-	if len(indent) > len(top.indent) && strings.HasPrefix(indent, top.indent) {
-		if top.node == unopened {
-			return dead, true
-		}
-		return top.node, true
-	}
+	hold := -1
 	for i := len(p.stack) - 1; i >= 0; i-- {
-		if p.stack[i].indent == indent && p.stack[i].node != unopened {
+		ent := p.stack[i]
+		if ent.indent == indent {
+			if ent.node == unopened {
+				// Back at a skipped line's column: refused the same way.
+				p.stack = p.stack[:i+1]
+				return 0, false
+			}
 			// Sibling of stack[i]: its parent is the entry below it. Keep the
 			// sentinel; a top-level line resolves to root.
 			parent := root
@@ -2463,16 +2465,30 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 			}
 			return parent, true
 		}
-	}
-	// Skipped, but it still owns its indent: whatever is written deeper is
-	// skipped with it, and a sibling at the same bad indent is refused the
-	// same way instead of binding one level up.
-	for len(p.stack) > 1 {
-		topIndent := p.stack[len(p.stack)-1].indent
-		if len(indent) > len(topIndent) && strings.HasPrefix(indent, topIndent) {
-			break
+		if len(indent) > len(ent.indent) && strings.HasPrefix(indent, ent.indent) {
+			// A skipped line's unopened level sits on top without opening
+			// anything, so it does not count as a level in between.
+			if i+1 < len(p.stack) && p.stack[i+1].node != unopened {
+				break
+			}
+			p.stack = p.stack[:i+1]
+			if ent.node == unopened {
+				return dead, true
+			}
+			return ent.node, true
 		}
-		p.stack = p.stack[:len(p.stack)-1]
+		if ent.node == unopened {
+			hold = i
+		}
+	}
+	// Skipped, but it holds its own column: whatever is written deeper is
+	// skipped with it, and a line back at it is refused the same way instead
+	// of binding one level up. It closes nothing, so a later line that matches
+	// a level open before it still binds there, as in 2.0.0. The hold ends at
+	// the first line neither under it nor at it, this one included, which
+	// keeps one on the stack at most.
+	if hold >= 0 {
+		p.stack = p.stack[:hold]
 	}
 	p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
 	return 0, false

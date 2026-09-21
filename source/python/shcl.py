@@ -635,7 +635,8 @@ ROOT = 0
 # loudly rather than reading a real node.
 DEAD = sys.maxsize
 # Stack entry for a line whose indent matched no open level (E012): never a
-# level a sibling can bind at, but deeper lines are still under it.
+# level a sibling can bind at, but deeper lines are still under it. It sits
+# on top of the levels open before it without closing any of them.
 UNOPENED = sys.maxsize - 1
 # Ends a name-index chain (see _NameIndex).
 NIL = sys.maxsize
@@ -2092,27 +2093,40 @@ class _Parser:
 			self.pend_marks.append((len(self.pending), new_len))
 
 	def _resolve_parent(self, indent):
-		"""Resolve which open level this indent belongs to. Child only when the
-		current top's indent is a proper prefix; otherwise the indent must equal
-		an open level exactly (dedent), else it is a recoverable error."""
-		top_indent, top_node = self.stack[-1]
-		if len(indent) > len(top_indent) and indent.startswith(top_indent):
-			return DEAD if top_node == UNOPENED else top_node
+		"""Resolve which open level this indent belongs to, walking down from
+		the top. Equal to a level is its sibling. Deeper than a level is its
+		child, unless a level opened under that one is still open, in which case
+		the line falls between the two. Anything else is a recoverable error."""
+		hold = None
 		for i in range(len(self.stack) - 1, -1, -1):
-			if self.stack[i][0] == indent and self.stack[i][1] != UNOPENED:
+			ind, node = self.stack[i]
+			if ind == indent:
+				if node == UNOPENED:
+					# Back at a skipped line's column: refused the same way.
+					del self.stack[i + 1:]
+					return None
 				# Sibling of stack[i]: its parent is the entry below it.
 				parent = ROOT if i == 0 else self.stack[i - 1][1]
 				# Keep the sentinel; a top-level line resolves to ROOT.
-				self.stack = self.stack[:max(i, 1)]
+				del self.stack[max(i, 1):]
 				return DEAD if parent == UNOPENED else parent
-		# Skipped, but it still owns its indent: whatever is written deeper is
-		# skipped with it, and a sibling at the same bad indent is refused the
-		# same way instead of binding one level up.
-		while len(self.stack) > 1:
-			top = self.stack[-1][0]
-			if len(indent) > len(top) and indent.startswith(top):
-				break
-			self.stack.pop()
+			if len(indent) > len(ind) and indent.startswith(ind):
+				# A skipped line's unopened level sits on top without opening
+				# anything, so it does not count as a level in between.
+				if i + 1 < len(self.stack) and self.stack[i + 1][1] != UNOPENED:
+					break
+				del self.stack[i + 1:]
+				return DEAD if node == UNOPENED else node
+			if node == UNOPENED:
+				hold = i
+		# Skipped, but it holds its own column: whatever is written deeper is
+		# skipped with it, and a line back at it is refused the same way
+		# instead of binding one level up. It closes nothing, so a later line
+		# that matches a level open before it still binds there, as in 2.0.0.
+		# The hold ends at the first line neither under it nor at it, this one
+		# included, which keeps one on the stack at most.
+		if hold is not None:
+			del self.stack[hold:]
 		self.stack.append((indent, UNOPENED))
 		return None
 

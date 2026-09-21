@@ -86,6 +86,68 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- 🛠️ From the SilkTerm:
+
+	- Note: Tested against shcl `dev` at f85a0d2, the 3.0.0-beta.1 candidate, and against v2.0.0 for comparison. Linux box. SilkTerm builds against dev with no source changes. 810 of 813 tests pass, and all three failures come from report 1.
+
+	1. ✅ One badly indented line drops the correctly indented siblings after it
+
+		A silent wrong answer, and a regression from 2.0.0. Blocking for SilkTerm.
+
+		~~~sh
+		printf 'window:\n\topacity: 1.0\n    margin: 4\n\n\tcolumns: 160\n\trows: 48\n' > t.shcl
+		shcl get t.shcl window.columns
+		~~~
+
+		- Observed on dev: `no value at that path`, with E012 on lines 3, 5 and 6.
+
+		- Expected, and what 2.0.0 does: `160`, with E012 on line 3 only.
+
+		- `columns` and `rows` are not under the bad line. Their tab indent does not extend its four spaces, and it matches `opacity` exactly, so they are siblings under `window`. Lines that really are deeper than the bad line should still be skipped with it (E018), and that part is right.
+
+		- Cause: the E012 path at the end of `resolve_parent` pops every stack entry that is not a prefix of the bad indent before it pushes `UNOPENED`. That removes the open `\t` level, so no later line can match it.
+
+		- A trial fix that drops the pop loop and pushes `UNOPENED` unless the top is already that same unopened indent: shcl's own Rust tests pass, 2.0.0's answer comes back, and the E018 rule for lines deeper than the bad one still holds. It is on a local branch `trial-e012` in SilkTerm's clone, not pushed. The other bindings were not looked at.
+
+		- Why it matters: one stray line in a hand-edited config quietly turns off every setting after it in that block. A save then drops them all, since the gate only protects lines that are counted as lost.
+
+		- Origin: `ba2ca9c` (2026-09-02), which gave an `E012` line its hold and popped every level its indent did not extend.
+
+		- Fixed: the bad line holds only its own column and closes nothing. The resolve walks down from the top: equal to a level is a sibling, deeper than a level is a child unless a level opened under that one is still open, and the skipped line's unopened level does not count as one. The hold ends at the first line neither under it nor at it, so the stack carries one at most. `resolve_parent` in Rust and C, `resolveParent` in Go, `_resolve_parent` in Python.
+
+		- Note: the trial fix was not taken as it stood. It still refused the first child of a leaf written after the bad line, and every sibling of that child, since nothing was open at their column yet. Case `137` has that shape too.
+
+		- Pinned by: corpus case `137-e012-keeps-levels`, the report's input plus a deeper level and a leaf's first child after a bad line. The old C runner fails it 15 times. `075` still passes, so what is written under a bad line is still `E018`.
+
+		- Closed: 20260921-1357
+
+	2. A save reorders a commented-out block
+
+		Still open on dev. First drafted 2026-09-18 against 2.0.0.
+
+		~~~sh
+		printf 'a: 1\n# b:\n\t# c: true\nd: 2\n' > cm.shcl
+		shcl fmt cm.shcl
+		~~~
+
+		- Observed: `a: 1`, `	# c: true`, `# b:`, `d: 2`. The indented comment moves above the heading it sat under.
+
+		- Expected: the input back as written.
+
+		- Same inside a block: `wallpaper:`, `	opacity: 0.2`, `	# rotate:`, `		# enabled: true`, `	blur: 3` comes back with `# enabled: true` above `# rotate:`.
+
+		- A silent wrong answer one step removed. It bites when the lines are uncommented later: `enabled: true` then sits indented under `opacity: 0.2` and does nothing.
+
+	3. On Windows a failed save can delete the file it was saving
+
+		Still open on dev. First drafted 2026-09-11 against 2.0.0.
+
+		- `windows_replace_file` still passes a null backup name to `ReplaceFileW`. On error 1176 the replaced file no longer exists, and on 1177 it is left under a name the caller is not told. `publish_file` then falls back to a rename, and if that fails too, the temp file is removed. Nothing is left at the path.
+
+		- Suggested: pass a backup name made like the temp name, remove it after a good replace, never remove the temp while nothing is at the target, retry the rename a few times, and return an error naming whichever file still holds the text. `REPLACEFILE_WRITE_THROUGH` is documented as unsupported and could be 0.
+
+		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
+
 - Code review 20260921:
 
 	- A review against the directives' code style and performance sections. It was aimed at the code merged since the last pass over them (20260830b), about 35,000 lines, and at the C rules the directives gained on 2026-09-19. Six sweeps were started: Rust, Go, Python, C and C++, the shell and PowerShell scripts, and measured performance across the four bindings.
@@ -123,6 +185,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260921-132543
 
 	- 🔘 Item 4: pipeline scripts fork inside loops again, which the style guide says they are held to.
+		- Note: Fix what is reasonable to do so among these. There may be very legitimate cases where this forking inside Bash loops makes more sense than unrolling.
 		- Measured, each on a scratch copy of the section:
 			- `shell-regress.bash` `fShellFiles` runs `head` and `grep` per tracked file, about 790 files, and is called four times. That is about 2.9 s a run. A builtin read gives the same list in 0.04 s.
 			- `check-docs.bash`'s header loops fork three or four times per file: 1.33 s of its 2.31 s.

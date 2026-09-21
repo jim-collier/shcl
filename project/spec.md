@@ -178,7 +178,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - A line indented deeper than the previous line is its child. Indentation is **relative and stack-based**: any increase opens a level; a decrease must return to the exact column of an ancestor.
 
-- A dedent to a column that matches no open level is a (recoverable) error - the line is diagnosed and skipped, the rest of the file continues. Like any skipped line it holds its column: what is written deeper is skipped with it (`E018`), a fence line there takes its whole body with it, and another line at the same bad column is refused the same way rather than binding one level up.
+- A dedent to a column that matches no open level is a (recoverable) error - the line is diagnosed and skipped, the rest of the file continues. Like any skipped line it holds its column: what is written deeper is skipped with it (`E018`), a fence line there takes its whole body with it, and another line at the same bad column is refused the same way rather than binding one level up. It opens no level and closes none, so a later line that matches a level open before it binds there, as if the bad line were not there.
 
 - Indentation is tabs *or* spaces, and nothing detects which. A line's indent is compared with the open levels as text: a proper prefix of the open one is a child, byte-equal is a sibling, and anything else is `E012`. So a file that mixes the two inside one subtree can still load, with the nesting that comparison gives. Keep it uniform per file.
 

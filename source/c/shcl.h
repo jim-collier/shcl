@@ -1092,7 +1092,8 @@ static void doc_guard(shcl_doc *d, jmp_buf *panic) {
    re-parenting one level up. */
 #define DEAD ((size_t)-1)
 /* Stack entry for a line whose indent matched no open level (E012): never a
-   level a sibling can bind at, but deeper lines are still under it. */
+   level a sibling can bind at, but deeper lines are still under it. It sits on
+   top of the levels open before it without closing any of them. */
 #define UNOPENED ((size_t)-2)
 
 /* The node vector lives in malloc storage, not the bump arena: the arena
@@ -2833,26 +2834,44 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 	else { ShclPendMark m; m.end = w; m.indent_len = new_indent.n; ShclVecPendMark_push(P->tmp, &P->pend_marks, m); }
 }
 
+/* Which open level this indent belongs to, walking down from the top. Equal
+   to a level is its sibling. Deeper than a level is its child, unless a level
+   opened under that one is still open, in which case the line falls between
+   the two. Anything else is a recoverable error. */
 static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
-	size_t top = P->stack.len - 1;
-	ShclStr ti = P->stack.data[top].indent; size_t tn = P->stack.data[top].node;
-	if (indent.n > ti.n && (ti.n == 0 || memcmp(indent.p, ti.p, ti.n) == 0)) { *out = tn == UNOPENED ? DEAD : tn; return 1; }
+	size_t hold = 0; int held = 0;
 	for (size_t ii = P->stack.len; ii-- > 0;) {
-		if (s_eq(P->stack.data[ii].indent, indent) && P->stack.data[ii].node != UNOPENED) {
+		ShclStr ind = P->stack.data[ii].indent; size_t node = P->stack.data[ii].node;
+		if (s_eq(ind, indent)) {
+			if (node == UNOPENED) {
+				/* Back at a skipped line's column: refused the same way. */
+				P->stack.len = ii + 1;
+				return 0;
+			}
+			/* Sibling of stack[ii]: its parent is the entry below it. Keep the
+			   sentinel; a top-level line resolves to ROOT. */
 			size_t parent = (ii == 0) ? ROOT : P->stack.data[ii - 1].node;
 			*out = parent == UNOPENED ? DEAD : parent;
 			P->stack.len = ii ? ii : 1;
 			return 1;
 		}
+		if (indent.n > ind.n && (ind.n == 0 || memcmp(indent.p, ind.p, ind.n) == 0)) {
+			/* A skipped line's unopened level sits on top without opening
+			   anything, so it does not count as a level in between. */
+			if (ii + 1 < P->stack.len && P->stack.data[ii + 1].node != UNOPENED) break;
+			P->stack.len = ii + 1;
+			*out = node == UNOPENED ? DEAD : node;
+			return 1;
+		}
+		if (node == UNOPENED) { hold = ii; held = 1; }
 	}
-	/* Skipped, but it still owns its indent: whatever is written deeper is
-	   skipped with it, and a sibling at the same bad indent is refused the
-	   same way instead of binding one level up. */
-	while (P->stack.len > 1) {
-		ShclStr top_indent = P->stack.data[P->stack.len - 1].indent;
-		if (indent.n > top_indent.n && (top_indent.n == 0 || memcmp(indent.p, top_indent.p, top_indent.n) == 0)) break;
-		P->stack.len--;
-	}
+	/* Skipped, but it holds its own column: whatever is written deeper is
+	   skipped with it, and a line back at it is refused the same way instead
+	   of binding one level up. It closes nothing, so a later line that matches
+	   a level open before it still binds there, as in 2.0.0. The hold ends at
+	   the first line neither under it nor at it, this one included, which
+	   keeps one on the stack at most. */
+	if (held) P->stack.len = hold;
 	{ ShclStackEnt se; se.indent = indent; se.node = UNOPENED; ShclVecStack_push(P->tmp, &P->stack, se); }
 	return 0;
 }

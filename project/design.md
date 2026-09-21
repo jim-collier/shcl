@@ -470,6 +470,8 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.
 
+- The unopened level sits on top of the levels open before it and closes none of them. Until 2026-09-21 it popped every level its indent did not extend, so one stray space-indented line in a tab-indented block dropped every later sibling in that block, which 2.0.0 read fine. It holds until a line comes that is neither under it nor at its column, so the stack carries one at most.
+
 ### Lexical edges
 
 Where a byte sits decides whether it is content or trivia, and this table is the rule. The tokenizer, the emitter and every setter follow it; if any of them disagrees with a row, that code is wrong. Three positions cover everything: bare text (a name, a selector body, a value or element, a fence label, a comment - anything outside quotes), inside matching quotes (a piece that opens with a quote and closes with the same quote as its last character), and a raw body (the lines between fences).

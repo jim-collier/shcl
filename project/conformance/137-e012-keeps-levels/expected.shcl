@@ -1,0 +1,15 @@
+window:
+	opacity: 1.0
+
+	columns: 160
+	rows: 48
+font:
+	face:
+		size: 12
+		family: mono
+	hint:
+		first: 1
+		second: 2
+a:
+	b: 1
+z: 9
