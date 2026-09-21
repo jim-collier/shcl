@@ -98,28 +98,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
 
-	- 🔘 Item 3: the C index-rebuild bound merges a document onto itself, which has been a no-op since 2026-09-19.
-		- Reproduced: by reading. `mem_bounds.c:255` runs `shcl_merge(cd, cd)` 2000 times, and `shcl.h:4678` returns at `if (over == d) return;` before `index_drop(d)`. So neither timing side ever drops the index, both build it once and do 1999 hash lookups, and the ratio the fixture exists to judge is measured over an empty loop.
-		- Cause: the fixture has merged onto itself since it was written. The early return that made that a no-op arrived with 20260918b item 19 and updated `conformance.c` and `veneer_smoke.cpp`, not this file.
-		- Origin: fixture `a6af12f` (2026-09-05); the early return `1427725` (2026-09-19). Confirmed by reading. The other three runners merge a second document.
-		- Note: this passes if the C rebuild walks every dead node again, since one walk over 50,000 dead subtrees is inside the 1000 ms constant. The `index walk: wrong result` check still holds, so the block prints a plausible timing and reports nothing. C's dead-node rebuild is the half of 20260918b item 19 that is now unwatched.
-		- Pinned by: nothing, which is the item. The fix merges a second document and is watched to fail against the pre-19 rebuild.
-		- Opened: 20260920-b
-
 	- 🔘 Item 4: `init` writes a path or selector holding a literal newline verbatim, so its own output fails its own self-check.
 		- Reproduced: a schema field named `"\"t\nu\""` generates two lines, and the self-check refuses with `V097 generated text does not load: E014 unterminated quote in a field name` twice and a third `V097` for the path then missing, at exit 6. A by-value selector holding a real newline (`field: "srv[\"a\nb\"].port"`) refuses the same way. The escaped spelling, which corpus 113 carries, generates correctly, which is why the pins never fired.
 		- Cause: `path_reads_back` tokenizes `path + ":"` as one line, and the tokenizer never sees a line end, so a name holding a real newline "reads back" and the schema's own two-line spelling is kept instead of going through the segment renderer that escapes it. Rust `lib.rs:7719`, used at `:7355`; Go `shcl.go:7838`, Python `shcl.py:6521`, C `shcl.h:7586`, same shape. `gen_selector_text` has the same trap.
 		- Origin: `e783c4c` (2026-09-19), the 20260918b "init reads back" fix, which added `path_reads_back` and the keep-own-spelling branch. Confirmed.
 		- Note: 20260902 item 19 closed on the reasoning that a literal newline in a schema path is unreachable, because a schema value holding one is an unterminated quote. It is reachable: `\n` inside a double-quoted schema value resolves to a real newline before the path is parsed, and `instances` prints the name across two lines. That reasoning is what needs correcting, not just the site.
 		- Note: the comment above the site still describes the route the condition no longer takes, in all four. `spec.md:697` says "a selector carrying a literal newline is left to the block", which the code stopped doing on 2026-09-08 and does not do now in either direction. The fix settles which of the two the document should say.
-		- Opened: 20260920-b
-
-	- 🔘 Item 5: `oom_recover.c`'s "read wrong" check compares a value against its own fallback, so it cannot fail.
-		- Reproduced: by reading. `oom_recover.c:74` asks `shcl_get_int_or(d, "group.key399", -1, -1) != -1`. `sample()` writes `key399: value number 399`, a string, so the answer is `-1` on a whole document (BadType) and `-1` on a truncated one (NotFound). The load sweep reads nothing at all.
-		- Cause: the probe reads a key whose type cannot produce an int, so the fallback is the only possible answer either way.
-		- Origin: `04541ec` (2026-08-31). The 20260920 round's C OOM sweep raised the budget bound to 400 and did not read this line. Confirmed by reading.
-		- Note: this passes if a budget-starved parse hands back a truncated document instead of NULL, which is the outcome the file exists to refuse. `oom_hook.c:56-66` is the shape to copy: it reads a value only a finished call can produce.
-		- Note: the third argument is the path length and is passed `-1`, which is `SIZE_MAX`. It passes under ASan in `sanitize-c.bash` because the scan stops early, and nothing at the site says so.
 		- Opened: 20260920-b
 
 	- 🔘 Item 6: the corpus README says case 029 accepts the float values the corpus and the spec both refuse.
@@ -134,28 +118,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Cause: the CLI's strict arm takes the load error's diagnostics and stops; `lib.rs:3399` `load_and_validate` validates what the parse recovered.
 		- Origin: `592ba117` (2026-07-21). Confirmed.
 		- Note: this may be a spec wording fix rather than a code fix. `spec.md:561` says the one-shot never fails and that the CLI appends its diagnostics to `check`'s normal output, but `fmt` already has the precedent that a strict-failing document formats nothing. The call is which of the two `check` follows.
-		- Opened: 20260920-b
-
-	- 🔘 Item 8: three conformance runners discard the `merge.sets` setter result that the Rust runner asserts.
-		- Reproduced: by reading. `conformance.rs:606` asserts `doc.set_string(p, v)` came back true, with the message "merge.set did not apply". `shcl_test.go:1791`, `conformance.py:524` and `conformance.c:667` all discard it, and the C one additionally skips a line with no `=` where the other three abort.
-		- Cause: the merge test was ported from the Rust one and the assertion was left behind.
-		- Origin: Go `b4f05ab` (2026-07-24); the Rust assertion is `10a3124` (2026-08-18) and was never carried across. Confirmed by reading.
-		- Note: a `merge.sets` line the writer refuses is a hard failure in Rust and a silent no-op in the other three, caught there only if the golden happens to differ. With one row in one case (`025`) it does differ, so nothing is wrong today.
-		- Sweep: the golden-without-driver pairing is one-directional in the ports too. Rust panics on an `expected-write.shcl`, `expected-validate.txt` or `expected-init.shcl` with no driver file; the other three check only driver-without-golden. One runner catching it is enough for the gate, so name it and decide rather than fix by reflex.
-		- Opened: 20260920-b
-
-	- 🔘 Item 9: Go's element-cap test measures what the parse retains, not what it allocates.
-		- Reproduced: by reading. `mem_test.go:18` `heldBy` reads `HeapAlloc` after two GCs. Rust `mem_caps.rs` measures the peak, C `mem_bounds.c` the total allocated, Python the `tracemalloc` peak.
-		- Cause: `7a08de1` (2026-09-01) landed the test over `TotalAlloc`, which would see a built-then-dropped slice; `0fb2777` the same day swapped in `heldBy` for the diagnostic-cap test and the element-cap test inherited it. The comment still names the build-in-full defect.
-		- Origin: `0fb2777` (2026-09-01). Plausible: read, not watched to fail.
-		- Note: this passes if Go tokenizes all 200,000 elements into a slice and then refuses the line, because the slice is garbage by the time `HeapAlloc` is read. That is the defect the test is named for.
-		- Opened: 20260920-b
-
-	- 🔘 Item 10: the index-rebuild ratio is skipped without saying so in three of the four runners.
-		- Reproduced: by reading. Go `shcl_test.go:1476` reports through `t.Logf`, which is hidden because `config.bash:206` passes no `-v`. Rust `conformance.rs:1623` carries `ms[0] <= 0.0 ||` inside the assert. Python has `if ms[0] > 0 and`. Only C prints a "not judged" line.
-		- Cause: a guard against a coarse clock that suppresses the judgment instead of reporting it.
-		- Origin: the three guards came with their tests. Confirmed by reading.
-		- Note: this passes if the rebuild walks dead nodes on a box with a coarse clock, because the bound is never evaluated there. Go runs in the hosted windows job, where its own comment says the fresh side reads 0.0. So on the one platform the guard fires, the check is silent.
 		- Opened: 20260920-b
 
 	- 🔘 Item 11: the CLI style guide says a repeated value option takes the last value, two lines under the rule that nothing resolves last-wins.
@@ -257,13 +219,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Cause: template text that was never reconciled with the repository.
 		- Origin: `c93db82` (2026-07-11). Confirmed.
 		- Note: either the labels get created or the sentences go. Creating them is the smaller change and matches what the document promises a reporter.
-		- Opened: 20260920-b
-
-	- 🔘 Item 25: case 062's first write op asserts nothing.
-		- Reproduced: `062-write-fold-deep/write.ops:1` is `int b.a 2`. Running `empty b` alone produces the golden byte for byte. With the first op, `a: 2` is created under the first `b` and the fold merges identical children; without it the emptied `b` merges into the one below. Same bytes either way.
-		- Cause: a filler op that the golden cannot distinguish.
-		- Origin: the case as written. Confirmed by replaying both scripts.
-		- Note: a setter that picked the wrong `b` instance would also pass this case. The other no-op ops in the corpus (`014`, `015`, `044`, `092`, `129`) are deliberate default-form pins and would fail if the form overwrote, so this is the only filler among the twenty write scripts.
 		- Opened: 20260920-b
 
 	- 🔘 Item 26: `instances` prints a value holding a newline across two lines.
@@ -671,6 +626,56 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: two fields added to corpus case `026-init-schema`, one int and one float, each carrying `allowed` and a bound. Watched to fail: with the old chain back, the generation dimension goes red in all four.
 		- Opened: 20260920-b
 		- Closed: 20260920-2100
+
+	- ✅ Item 3: the C index-rebuild bound merges a document onto itself, which has been a no-op since 2026-09-19.
+		- Reproduced: by reading. `mem_bounds.c` ran `shcl_merge(cd, cd)` 2000 times, and `shcl.h` returns at `if (over == d) return;` before `index_drop(d)`. So neither timing side ever dropped the index, both built it once and did 1999 hash lookups, and the ratio the fixture exists to judge was measured over an empty loop.
+		- Cause: the fixture has merged onto itself since it was written. The early return that made that a no-op arrived with 20260918b item 19 and updated `conformance.c` and `veneer_smoke.cpp`, not this file.
+		- Fixed: it merges a second document, the way the other three runners do. The fixture now reads 1.4 ms fresh against 25.0 ms churned where both sides used to read 0.3 ms.
+		- Pinned by: itself, watched to fail. With a walk over every arena node put back in `name_index`, the fixture reports 5116 ms against a 1210 ms bound; with the old self-merge in front of the same injected walk it reports 0.3 ms both sides and passes. That is the item, shown two ways.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 5: `oom_recover.c`'s "read wrong" check compares a value against its own fallback, so it cannot fail.
+		- Reproduced: by reading, then by running. The probe asked `shcl_get_int_or(d, "group.key399", -1, -1) != -1` on a document whose `key399` holds a string, so the answer was the fallback on a whole document and on a truncated one alike. Measured side by side: whole and half-length parses both answer -1.
+		- Cause: the probe read a key whose type cannot produce an int, so the fallback was the only possible answer either way. The third argument, the path length, was `-1` as well.
+		- Fixed: it asks for `group`'s children and checks the count and the last name, which only a finished parse can produce. `oom_hook.c` already reads that way.
+		- Pinned by: itself. Against the same two documents the new probe answers 400 with `key399` last, and 205 with a truncated name last, so it tells the two apart where the old line could not.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 8: three conformance runners discard the `merge.sets` setter result that the Rust runner asserts.
+		- Reproduced: by reading. `conformance.rs` asserts `doc.set_string(p, v)` came back true; `shcl_test.go`, `conformance.py` and `conformance.c` all discarded it, and the C one skipped a line with no `=` where the other three abort.
+		- Cause: the merge test was ported from the Rust one and the assertion was left behind.
+		- Fixed: all three assert the setter, and the C one faults a line with no `=` instead of skipping it.
+		- Decided: the golden-without-driver check stays in Rust alone. Rust panics on an `expected-write.shcl`, `expected-validate.txt` or `expected-init.shcl` with no driver file; the other three check only driver-without-golden. One runner catching a corpus hygiene fault is enough for the gate, and four copies of it is four things to keep in step.
+		- Pinned by: a wildcard path added to `025-layered/merge.sets`, which no setter can write. All four runners go red on it, where three used to pass in silence. Taken back out after.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 9: Go's element-cap test measures what the parse retains, not what it allocates.
+		- Reproduced: by reading, then by injection. `heldBy` reads `HeapAlloc` after two collections, so a list built in full and then refused is garbage before the measurement. Rust measures the peak, C the total allocated, Python the `tracemalloc` peak.
+		- Cause: `heldBy` was written for the diagnostic-cap test, which wants retention, and the element-cap test inherited it.
+		- Fixed: `allocatedBy`, over `TotalAlloc`, for the element-cap test. The diagnostic-cap test keeps `heldBy`, which is the right metric there.
+		- Pinned by: itself, watched to fail. With the tokenizer made to scan the whole line before refusing it, the test reports 28,221,896 bytes against 600,012 of text; the same defect under `heldBy` passes.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 10: the index-rebuild ratio is skipped without saying so in three of the four runners.
+		- Reproduced: by reading. Go reported through `t.Logf`, which the gate hides because it passes no `-v`. Rust carried `ms[0] <= 0.0 ||` inside the assert. Python had `if ms[0] > 0 and`. Only C printed a "not judged" line, and only on stdout.
+		- Cause: a guard against a coarse clock that suppressed the judgment instead of reporting it. It fires on the hosted windows job, which is the one platform where the fresh side reads 0.0 - so the check was silent exactly where it mattered.
+		- Fixed: nothing is skipped. A fresh side the clock cannot resolve gives the bound its constant term alone, widened to 3000 ms because an absolute figure needs room: the healthy churned side has measured half a second on that runner, and the defect is tens of seconds. Same in all four.
+		- Pinned by: itself, watched to fail. With the fresh side forced to 0.0 and the churned side to 5000, all four report the bound as 3000 ms and go red, where three used to say nothing.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
+
+	- ✅ Item 25: case 062's first write op asserts nothing.
+		- Reproduced: `int b.a 2` set a value the `b` below already had, so running `empty b` alone produced the golden byte for byte.
+		- Cause: a filler op the golden cannot distinguish.
+		- Fixed: the op is `int b.c 5`, which lands under whichever `b` the setter picked and survives the fold in that order. `b.c` gives `b:` with `c: 5` then `a: 2`; `b[#1].c` gives the two the other way round, so a setter picking the wrong instance now fails the case.
+		- Left alone: the other no-op ops in the corpus (`014`, `015`, `044`, `092`, `129`) are deliberate default-form pins and would fail if the form overwrote.
+		- Pinned by: the case itself, with the two orders measured apart.
+		- Opened: 20260920-b
+		- Closed: 20260920-2230
 
 - Code review 20260920:
 

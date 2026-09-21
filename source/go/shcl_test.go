@@ -1469,14 +1469,19 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	// constant can absorb a slow machine. Two thousand merges put the defect
 	// at seconds to tens of seconds, well past that constant; at two hundred
 	// it could hide under it.
-	// A clock too coarse to see the fresh side leaves the ratio with a zero
-	// denominator, and then the bound is an absolute figure on whatever machine
-	// is running - which is what it was written not to be. Windows counts in
-	// whole milliseconds and reports 0.0 here.
+	// A clock too coarse to see the fresh side leaves the ratio with no
+	// denominator. That used to skip the judgment, and it skipped it silently -
+	// through t.Logf, which the gate does not pass -v to - on the one platform
+	// where it fires, this hosted windows job. The constant term alone is an
+	// absolute figure on whatever machine is running, so it gets room: the
+	// healthy churned side has measured half a second there, and the defect is
+	// tens of seconds.
+	bound := ms[0]*25 + 1000
 	if ms[0] <= 0 {
-		t.Logf("index rebuild ratio not judged: the clock cannot see the fresh side")
-	} else if ms[1] > ms[0]*25+1000 {
-		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh - it walks nodes the document no longer holds", ms[1], ms[0])
+		bound = 3000
+	}
+	if ms[1] > bound {
+		t.Errorf("index rebuild after churn %.1f ms against %.1f ms fresh (bound %.1f ms) - it walks nodes the document no longer holds", ms[1], ms[0], bound)
 	}
 }
 
@@ -1789,7 +1794,9 @@ func TestLayeredMergeMatchesExpected(t *testing.T) {
 			if eq < 0 {
 				t.Fatalf("%s: bad merge.sets line: %s", c.name, line)
 			}
-			doc.SetString(line[:eq], line[eq+1:])
+			if !doc.SetString(line[:eq], line[eq+1:]) {
+				t.Fatalf("%s: merge.set did not apply: %s", c.name, line)
+			}
 		}
 		got := doc.ToCanonical()
 		// Reads answered by the merged document itself, not just its text: a

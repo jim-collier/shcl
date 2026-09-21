@@ -665,7 +665,8 @@ int main(int argc, char **argv) {
 				for (size_t li = 0; li < nsl; li++) {
 					if (slines[li][0] == '\0' || slines[li][0] == '#') continue;
 					const char *eq = strchr(slines[li], '=');
-					if (eq) shcl_set_string(md, slines[li], (size_t)(eq - slines[li]), eq + 1, strlen(eq + 1));
+					if (!eq) { fail(names[ci], "bad merge.sets line"); continue; }
+					if (!shcl_set_string(md, slines[li], (size_t)(eq - slines[li]), eq + 1, strlen(eq + 1))) fail(names[ci], "merge.set did not apply");
 				}
 				free(slines); free(ms);
 			}

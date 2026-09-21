@@ -30,9 +30,24 @@ func heldBy(f func() any) uint64 {
 	return after.HeapAlloc - before.HeapAlloc
 }
 
+// allocatedBy returns the heap bytes f allocated in total, freed or not - what
+// the parse built on the way rather than what it kept. A line built in full and
+// then refused is garbage by the time heldBy reads the heap, which is exactly
+// the defect the element cap exists for. Rust measures the peak, C the total
+// allocated, Python the tracemalloc peak; this is Go's spelling of the same.
+func allocatedBy(f func() any) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	keep := f()
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(keep)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
 func TestElementCapBoundsTheParse(t *testing.T) {
 	text := "arr: " + strings.Repeat("1, ", 200000) + "\nok: 5\n"
-	capped := heldBy(func() any {
+	capped := allocatedBy(func() any {
 		doc, _ := ParseLimited(text, Standard, 0, 8, 0)
 		if doc.LostCount() != 1 {
 			t.Fatalf("lost %d", doc.LostCount())

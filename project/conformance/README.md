@@ -147,7 +147,7 @@ Case `060` pins the stacked-list errors: an element with no parent field (`E007`
 
 Case `061` pins `E012`: a dedent to a column that matches no open level is skipped, and the next line at a real level binds where it belongs.
 
-Case `062` pins a writer fold: `empty b` clears the value of `b: 1, 2`, which then merges with the `b` below it, leaving one `b` holding `a: 2`.
+Case `062` pins a writer fold: `empty b` clears the value of `b: 1, 2`, which then merges with the `b` below it. The `int b.c 5` before it names which `b` the setter picked, since the merged order differs by instance; the op it replaced set a value the `b` below already had, so the golden read the same either way.
 
 Case `063` pins `remove` followed by a `-default` on the same path: the default finds the path gone and writes it again, at the end.
 

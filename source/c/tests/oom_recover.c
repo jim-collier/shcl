@@ -71,7 +71,13 @@ int main(void) {
 		budget = 1L << 30;
 		if (!d) { sawNull = 1; continue; }
 		sawDoc = 1;
-		if (shcl_get_int_or(d, "group.key399", -1, -1) != -1) fail("a parse that finished read wrong");
+		// Read something only a finished parse can produce. An int read of a
+		// string field answers with its fallback on a whole document and on a
+		// truncated one alike, so it could not tell the two apart - which is
+		// what this line is here for.
+		shcl_str *kids = NULL;
+		size_t nk = shcl_children(d, "group", 5, &kids);
+		if (nk != 400 || kids[399].n != 6 || memcmp(kids[399].p, "key399", 6) != 0) fail("a parse that finished came back short");
 		shcl_free(d);
 	}
 	if (!sawNull) fail("no budget was tight enough to fail a parse");

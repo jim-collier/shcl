@@ -521,7 +521,8 @@ def main():
 			eq = line.find("=")
 			if eq < 0:
 				raise SystemExit(f"{case['name']}: bad merge.sets line: {line}")
-			doc.set_string(line[:eq], line[eq + 1:])
+			if not doc.set_string(line[:eq], line[eq + 1:]):
+				raise SystemExit(f"{case['name']}: merge.set did not apply: {line}")
 		got = doc.to_canonical()
 		# Reads answered by the merged document itself, not just its text: a
 		# merged arena holds dropped nodes, a rebuilt index and cloned child
@@ -990,11 +991,14 @@ def main():
 	# itself going over every dead node. Two thousand merges put that cost well
 	# past the constant term a shared runner needs; the smaller fixture this
 	# used to run could not fail on any machine.
-	# A clock too coarse to see the fresh side leaves the ratio with a zero
-	# denominator, and then the bound is an absolute figure on whatever machine
-	# is running - which is what it was written not to be.
-	if ms[0] > 0 and ms[1] > ms[0] * 25 + 1000:
-		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh")
+	# A clock too coarse to see the fresh side leaves the ratio with no
+	# denominator. That used to skip the judgment, and skip it silently. The
+	# constant term alone is an absolute figure on whatever machine is running,
+	# so it gets room: the healthy churned side has measured half a second on
+	# the hosted windows runner, and the defect is tens of seconds.
+	bound = 3000.0 if ms[0] <= 0 else ms[0] * 25 + 1000
+	if ms[1] > bound:
+		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh (bound {bound:.1f} ms)")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.

@@ -1616,14 +1616,23 @@ fn index_rebuild_ignores_removed_nodes() {
 	// walk itself going over every dead node, which is orders larger. Two
 	// thousand merges put that cost well past the constant term a shared
 	// runner needs; at two hundred the constant could absorb the defect.
-	// A clock too coarse to see the fresh side leaves the ratio with a zero
-	// denominator, and then the bound is an absolute figure on whatever machine
-	// is running - which is what it was written not to be.
+	// A clock too coarse to see the fresh side leaves the ratio with no
+	// denominator. That used to skip the judgment, and it skipped it silently
+	// on the one platform where it fires - the hosted windows job. The constant
+	// term alone is an absolute figure on whatever machine is running, so it
+	// gets room: the healthy churned side has measured half a second there, and
+	// the defect is tens of seconds.
+	let bound = if ms[0] <= 0.0 {
+		3000.0
+	} else {
+		ms[0] * 25.0 + 1000.0
+	};
 	assert!(
-		ms[0] <= 0.0 || ms[1] <= ms[0] * 25.0 + 1000.0,
-		"index rebuild after churn {:.1} ms against {:.1} ms fresh - it walks nodes the document no longer holds",
+		ms[1] <= bound,
+		"index rebuild after churn {:.1} ms against {:.1} ms fresh (bound {:.1} ms) - it walks nodes the document no longer holds",
 		ms[1],
-		ms[0]
+		ms[0],
+		bound
 	);
 }
 
