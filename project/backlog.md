@@ -86,6 +86,86 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260921:
+
+	- A review against the directives' code style and performance sections. It was aimed at the code merged since the last pass over them (20260830b), about 35,000 lines, and at the C rules the directives gained on 2026-09-19. Six sweeps were started: Rust, Go, Python, C and C++, the shell and PowerShell scripts, and measured performance across the four bindings.
+
+	- Cut short on 2026-09-21 for the SilkTerm reports. Only the Go sweep and the shell and PowerShell sweep finished. The Rust, Python, C and C++, and measurement sweeps were stopped before they reported anything. The next round starts there, with the C rules first, since no round has read the C binding against them.
+
+	- Nine defects here and nine ideas under Features and enhancements. None is a wrong answer at exit 0, so none holds the 3.0.0 cut. Item 1 is the one that could matter: a gate that may fail on the only machine that runs it.
+
+	- Two classes came back. Pipeline scripts fork inside loops again (item 4, after 20260829 item 48), and doc comments sit above the wrong declaration again (item 7, after 20260904 item 30). Item 3 is the sibling of 20260920b item 8, in another fixture.
+
+	- Measured before the stop: the Rust release CLI against 2.0.0 on the same inputs. No operation measured is slower, and the schema checks are far faster. Peak memory is about an eighth higher on the large-document runs. The numbers are in the round's private notes.
+
+	- Deferred: `gfs-rotate.bash` forks four times per archive file when it names one. It is a shared copy, so the fix belongs in the canonical one, and the trigger is the next time the helpers are brought in line. Two Go allocations on the tokenizer path, the selector piece and a segment slice per field line, wait for a Go profile, since reusing a buffer changes helper signatures in all four bindings.
+
+	- 🔘 Item 1: `winpath-sandbox.ps1` reads `ProcessStartInfo.ArgumentList`, which Windows PowerShell 5.1 does not have, and `win-runners.bash` runs it under 5.1.
+		- Reproduced: by reading only. `ArgumentList` arrived in .NET Core 2.1, and 5.1 runs on .NET Framework. The script sets strict mode, so reading the missing property throws, and the sandbox row would fail before any sandbox starts.
+		- Note: the hosted windows runner has no Windows Sandbox, so the script exits 2 at its install check and never reaches the line. No gate has run it the way `win-runners.bash` does.
+		- Note: 20260920b idea 10 saw the script pass on B29W, but does not say which PowerShell ran it.
+		- Probable fix: set `$psi.Arguments` to the quoted path, which 5.1 and 7 both have.
+		- Origin: `d5978c0` (2026-09-20), the fix for 20260920b item 19. The `Start-Process` line it replaced ran on 5.1. Plausible, and needs a Windows box.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 2: `cli-regress.bash` does not match stdout exactly, though its header says stdout is matched exactly.
+		- Reproduced: both sides of the stdout and created-file compares go through `$(...)`, which drops every trailing newline. A CLI that drops or doubles a final newline passes. `x="$(printf 'a\n\n')"` compares equal to `a`.
+		- Note: `crosscheck.bash` already reads its output in a way that keeps the newlines.
+		- Note: an exact compare may need some rows' expected text adjusted.
+		- Origin: `e5024383` (2026-08-30), when the row table was written. No earlier round saw it. Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 3: the index-rebuild fixture discards the setter result in Go, Python and C, where the Rust one asserts it.
+		- Reproduced: by reading. `conformance.rs` asserts `set_int("g.tmp.x", i)`. `shcl_test.go`, `conformance.py` and `mem_bounds.c` call it bare. A refused set builds no dead nodes, so both timings match and the bound passes while testing nothing.
+		- Note: the same class as 20260920b item 8, which fixed the `merge.sets` setter in the same three runners. This fixture was left as it was.
+		- Sweep: every other setter call in the three runners' timing and memory fixtures, and the `remove` count beside this one.
+		- Origin: `97995cb` (2026-09-17). Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 4: pipeline scripts fork inside loops again, which the style guide says they are held to.
+		- Measured, each on a scratch copy of the section:
+			- `shell-regress.bash` `fShellFiles` runs `head` and `grep` per tracked file, about 790 files, and is called four times. That is about 2.9 s a run. A builtin read gives the same list in 0.04 s.
+			- `check-docs.bash`'s header loops fork three or four times per file: 1.33 s of its 2.31 s.
+			- `crosscheck.bash` `fWriteState` and `fFixCase` fork about ten times per binding run, over about 2,500 runs. That is about 16 s, and one `find -printf` with builtin copies saves about 7 s of it.
+			- `cli-regress.bash` forks per probe, per width check and per row.
+			- `check-migrate.bash` runs the old CLI's `check` three times on the same bytes per document, over about 636 documents: about 7.7 s.
+		- Note: 20260829 item 48 closed this class. Every site here arrived after it, most as a loop that was small when written and grew with the corpus or the file list.
+		- Note: `fShellFiles` also ends on a failed `&&` list, the recorded bash trap. Harmless while every caller reads it through `< <(...)`.
+		- Sweep: every loop in `cicd/utility/*.bash` that runs per tracked file, per corpus case, per fuzz file or per row.
+		- Origin: `e5024383`, `e0b04437`, `15e6bd0e`, `fb0c885`, `b216ad2`, `7f4c359`, `833d8f1` and `d5978c0`, 2026-08-30 to 2026-09-20. Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 5: both wrapper headers still give the old meaning of exit 6.
+		- Reproduced: `source/bash/shcl.bash` and `source/powershell/shcl.ps1` say "migrate --check found a line to rewrite". The help and the man page say "--check found a rewrite to make", since `fmt --check` exits 6 too.
+		- Origin: `af1fd74` (2026-09-19) changed the help and the man page and not the wrappers. Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 6: Go's `Read.OK()` says it goes away at the next major, and nothing in the 3.0.0 steps takes it out.
+		- Note: 20260830 item 31 kept it as a deprecated alias of `Ok()`. 3.0.0 is that major. Either take it out at the cut or change the comment.
+		- Origin: `82bc14c9` (2026-08-30). Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 7: doc comments sit above the wrong declaration, eight times in Go and three in Rust.
+		- Reproduced in Go: `leadingWS`'s comment sits on `isWsp`, `dispKey`'s on `singleScalar`, `resolveTarget`'s on `namesADirectory` and `vContexts`' on `type vContext`. In the CLI, `setOpt`'s sits on `setKind`, `checkOpts`' on `allowedOpts` and `doTokens`' on `codeLine`. A `dtEqual` comment names a deleted function and now opens `sameMoment`'s. `writeBack` carries two stacked blocks.
+		- Note: plausible in Rust, read only: `lib.rs` near 3935, and `main.rs` near 378 and 1862.
+		- Note: 20260904 item 30 fixed this class once. Each one arrived as code inserted between a comment and its function.
+		- Sweep: Python and C, which no sweep reached.
+		- Origin: `a0f38d4`, `5cd50453`, `dd1330c`, `0f818d71`, `2f9aa1f9` and `c78d41d`, 2026-08-31 to 2026-09-17. `dispKey`'s is from `f459105b` (2026-08-17), which the 20260904 fix missed. Confirmed in Go.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 8: three pipeline comments no longer describe their code.
+		- `PSScriptAnalyzerSettings.psd1` says it covers three scripts, and the gate runs it over six.
+		- `config.bash` says PSScriptAnalyzer runs on the ps1 wrapper, and that the exhaustive cppcheck takes about 20 s. It gates six scripts, and cppcheck took 537 s here on 2026-09-15.
+		- `install.ps1` has `Test-ReleaseSignature`'s comment sitting above the PATH block. The function itself has none.
+		- Origin: `install.ps1`'s from `f3ff00e` (2026-08-30) and `618dd27` (2026-09-01), which put code between the comment and its function. The other two were right when written, and the script list grew past them. Confirmed.
+		- Opened: 20260921-132543
+
+	- 🔘 Item 9: the style guide's banner rule does not allow the `#===` frame `install.ps1` uses.
+		- Reproduced: the guide says shell keeps the `#•••` rule and "no other decorative comment forms". `install.ps1` switched to `#===` because it has to stay ASCII.
+		- Probable fix: name the exception in the guide, with its reason.
+		- Origin: `82c2a38` (2026-09-19). Confirmed.
+		- Opened: 20260921-132543
+
 - Code review 20260920b:
 
 	- A full adversarial pass over the whole tree, aimed first at the ground the 20260920 round recorded as unread: most of `design.md`, `style-guide_code.md` entirely, the schema and generation half of all four bindings, the corpus's write, merge, layer and init dimensions, the test files read for what they do not assert, and the pipeline files nobody had opened. A second part went at the code merged 2026-09-19 and 2026-09-20, which had no soak time, and at the siblings of each of those fixes. Twenty-six defects here and ten enhancements under Features and enhancements.
@@ -149,6 +229,53 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
+
+- Code review 20260921:
+
+	- The round's ideas. Its defects are under Bugs, in a bullet of the same name. Ideas 3 and 4 rest on the formatter-config rule the directives gained on 2026-09-07.
+
+	- 🔘 Idea 1: Go error handling falls short of the directive in a few places.
+		- Note: errors are dropped with no reason given at three `os.Remove(tmp)` calls in the save path, a `Chmod`, two `CloseHandle` calls and a `SetFileAttributes` on windows, and a few sites in the tests.
+		- Note: the one that matters most is the `os.Remove(tmp)` after a successful `os.Link`. If it fails, the temp name stays behind as a second hard link to the published file, and nothing says so.
+		- Note: the CLI's `readInput` formats its cause with `%s` at two sites, where the library uses `%w` everywhere.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 2: Go allocates on per-line and per-diagnostic paths where it need not. Unmeasured.
+		- Note: `oneLine` builds a `strings.Replacer` with a 6 KB table on every call, once per V004 to V006 diagnostic, even when there is nothing to escape. A package-level replacer is safe to share.
+		- Note: `pathScan.valueText` is a `*string`, so every value line moves a string to the heap. `cellOfTokens` grows its element list one append at a time though the count is known. The fold maps are created unsized. `hangDeeperPending` copies the pending tail on every commented binding line. `init` builds each names key twice.
+		- Note: all local, with no parity cost. Take them with a Go profile in hand.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 3: six Go sites fail staticcheck's doc-form and naming checks, which are off by default.
+		- Note: `Severity` and three `Read*` doc comments are not in the "Name does X" form, `statGid` should be `statGID`, and the windows file comment touches `package shcl`, which makes it the package doc on windows.
+		- Note: a `staticcheck.conf` turning on ST1020 and ST1021 would hold the form after the fix.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 4: turn on `PSUseConsistentIndentation` with tabs.
+		- Note: with pipeline indentation off, it flags five lines today, in `shcl.ps1`, `install.ps1` and `n8runshcl.ps1`. Fix those, then enable it.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 5: the PowerShell scripts fall short of the directive's PowerShell list in small ways.
+		- Note: five of the six have no comment-based help. Inner functions lack `[CmdletBinding()]`, and some parameters are untyped. `Join-Path` is called positionally 46 times. Two constant strings are double-quoted.
+		- Note: `cicd/packaging/shclpath.ps1` has no `Set-StrictMode` and carries a one-line copyright rather than the house block.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 6: `install.ps1 -Uninstall` hides a failed removal, then blames files it did not install.
+		- Note: plausible, read only. A running `shcl.exe` is locked, so its removal fails silently, and the message says the directory holds files the installer did not put there.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 7: two naming conventions inside one script.
+		- Note: `install-dev.bash` mixes `setup_hooks` and `have` with `fIsShcl` and `fOnPath`. `install.bash` mixes `fetch` and `die` with `fApiStatus`. `cicd.bash` has one camelCase variable among snake_case ones.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 8: `win-runners.bash` compiles the C CLI five times with the same flags.
+		- Note: a compile takes about 4.7 s here, so about 19 s per hosted windows run, likely more under mingw. Build it once and share it.
+		- Opened: 20260921-132543
+
+	- 🔘 Idea 9: the hosted run spends time it need not.
+		- Note: plausible, unmeasured. `staticcheck` and `govulncheck` are built from source on every run, and the Go build cache is off. The half-the-cores cap gives the 4-core runner two jobs, while the run takes about 39 of its 45 minutes.
+		- Note: the Rust cache holds only stale shcl artifacts, since the library has no dependencies. Low value.
+		- Opened: 20260921-132543
 
 ### Done
 
