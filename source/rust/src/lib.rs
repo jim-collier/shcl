@@ -7725,6 +7725,13 @@ fn gen_selector_text(v: &str) -> Option<String> {
 /// selector for `text`, quoted or bare as asked.
 fn selector_reads_back(body: &str, text: &str, quoted: bool) -> bool {
 	let line = format!("x[{}]:", body);
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if line.contains('\n') || line.contains('\r') {
+		return false;
+	}
 	let mut tok = Tokens::default();
 	tokenize(&line, b':', false, Rules::Current, &mut tok);
 	if selector_open_quote(&tok) || tok.comment.is_some() {
@@ -7740,6 +7747,13 @@ fn selector_reads_back(body: &str, text: &str, quoted: bool) -> bool {
 /// segments. A lookup path takes spellings a file line does not.
 fn path_reads_back(path: &str, segs: &[Segment]) -> bool {
 	let line = format!("{}:", path);
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if line.contains('\n') || line.contains('\r') {
+		return false;
+	}
 	let mut tok = Tokens::default();
 	tokenize(&line, b':', false, Rules::Current, &mut tok);
 	if selector_open_quote(&tok) || tok.comment.is_some() {

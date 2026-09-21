@@ -7590,6 +7590,11 @@ static int selector_reads_back(ShclArena *a, ShclStr body, ShclStr text, int quo
 	ShclSB l = {0, 0, 0};
 	sb_puts(a, &l, "x["); sb_putS(a, &l, body); sb_puts(a, &l, "]:");
 	ShclStr line = sb_S(&l);
+	/* The tokenizer reads one line and never sees a line end, so text carrying a
+	   real line break would read back here and then be written across two lines,
+	   which is not the same path. A file line cannot hold one, so refuse and let
+	   the escaped spelling be tried instead. */
+	for (size_t k = 0; k < line.n; k++) if (line.p[k] == '\n' || line.p[k] == '\r') return 0;
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
 	if (selector_open_quote(&tok) || tok.has_comment) return 0;
@@ -7605,6 +7610,11 @@ static int path_reads_back(ShclArena *a, ShclStr path, const ShclVecSeg *segs) {
 	ShclSB l = {0, 0, 0};
 	sb_putS(a, &l, path); sb_putc(a, &l, ':');
 	ShclStr line = sb_S(&l);
+	/* The tokenizer reads one line and never sees a line end, so text carrying a
+	   real line break would read back here and then be written across two lines,
+	   which is not the same path. A file line cannot hold one, so refuse and let
+	   the escaped spelling be tried instead. */
+	for (size_t k = 0; k < line.n; k++) if (line.p[k] == '\n' || line.p[k] == '\r') return 0;
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	tokenize(a, line, ':', 0, SHCL_RULES_CURRENT, &tok);
 	if (selector_open_quote(&tok) || tok.has_comment) return 0;

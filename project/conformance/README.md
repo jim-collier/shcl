@@ -247,7 +247,7 @@ Case `111` pins a backslash in a bare selector body as a character: `p[C:\temp]`
 
 Case `112` pins three setters through the tokenizer: a comment's trailing blanks come off, a raw info string keeps its leading blank, and a quoted `#` given to `literal` stays in the value. A comment holding a line break is refused.
 
-Case `113` pins `init` spelling a line break in a by-value selector and in a name escaped, so neither starts a new line.
+Case `113` pins `init` spelling a line break in a by-value selector and in a name escaped, so neither starts a new line. It carries both schema spellings: the escaped one, and the real line break that `\n` inside a double-quoted schema value resolves to. The second used to be kept as written and generated two lines that the self-check then refused.
 
 Case `114` pins raw reads: an empty binding is `Empty` for `raw` and `rawinfo`, a value that is not a block is `BadType`, and a block reads its body and label.
 

@@ -1,4 +1,5 @@
-# A newline in a name and in a by-value selector are both spelled escaped.
+# A newline in a name and in a by-value selector are both spelled escaped,
+# whether the schema wrote it escaped or as a real line break.
 field: "srv[\"a\\nb\"].port"
 	type: int
 	required: yes
@@ -6,3 +7,10 @@ field: "srv[\"a\\nb\"].port"
 field: "\"top\\nline\""
 	required: yes
 	default: v
+field: "lit[\"c\nd\"].port"
+	type: int
+	required: yes
+	default: 9090
+field: "\"raw\nname\""
+	required: yes
+	default: w

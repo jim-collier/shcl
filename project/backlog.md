@@ -98,14 +98,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
 
-	- 🔘 Item 4: `init` writes a path or selector holding a literal newline verbatim, so its own output fails its own self-check.
-		- Reproduced: a schema field named `"\"t\nu\""` generates two lines, and the self-check refuses with `V097 generated text does not load: E014 unterminated quote in a field name` twice and a third `V097` for the path then missing, at exit 6. A by-value selector holding a real newline (`field: "srv[\"a\nb\"].port"`) refuses the same way. The escaped spelling, which corpus 113 carries, generates correctly, which is why the pins never fired.
-		- Cause: `path_reads_back` tokenizes `path + ":"` as one line, and the tokenizer never sees a line end, so a name holding a real newline "reads back" and the schema's own two-line spelling is kept instead of going through the segment renderer that escapes it. Rust `lib.rs:7719`, used at `:7355`; Go `shcl.go:7838`, Python `shcl.py:6521`, C `shcl.h:7586`, same shape. `gen_selector_text` has the same trap.
-		- Origin: `e783c4c` (2026-09-19), the 20260918b "init reads back" fix, which added `path_reads_back` and the keep-own-spelling branch. Confirmed.
-		- Note: 20260902 item 19 closed on the reasoning that a literal newline in a schema path is unreachable, because a schema value holding one is an unterminated quote. It is reachable: `\n` inside a double-quoted schema value resolves to a real newline before the path is parsed, and `instances` prints the name across two lines. That reasoning is what needs correcting, not just the site.
-		- Note: the comment above the site still describes the route the condition no longer takes, in all four. `spec.md:697` says "a selector carrying a literal newline is left to the block", which the code stopped doing on 2026-09-08 and does not do now in either direction. The fix settles which of the two the document should say.
-		- Opened: 20260920-b
-
 	- 🔘 Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
 		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` prints only the `E014` and `strict load failed: 1 diagnostic(s)`. At standard the `V003` appears.
 		- Cause: the CLI's strict arm takes the load error's diagnostics and stops; `lib.rs:3399` `load_and_validate` validates what the parse recovered.
@@ -692,6 +684,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: nothing automated. The comparison tool is outside the gate, since its Rust half is the one thing here with third-party crates. The two runs above are the check.
 		- Opened: 20260920-b
 		- Closed: 20260921-0010
+
+	- ✅ Item 4: `init` writes a path or selector holding a literal newline verbatim, so its own output fails its own self-check.
+		- Reproduced: a schema field named `"\"t\nu\""` and a by-value selector holding a real newline each generate two lines, and the self-check refuses with `V097 generated text does not load` twice and a third `V097` for the path then missing, at exit 6. The escaped spelling, which corpus 113 carries, generated correctly, which is why the pins never fired.
+		- Cause: `path_reads_back` and `selector_reads_back` tokenize the path as one line, and the tokenizer never sees a line end, so text holding a real newline "reads back" and the schema's own two-line spelling is kept instead of going through the segment renderer that escapes it.
+		- Decided: escaped inline, not the trailing block. The escaped spelling reads back as the same path and is what the escaped schema spelling already produced, so both routes now write one line. The alternative, leaving it to the trailing block, would make two spellings of one path generate differently.
+		- Fixed: both functions refuse a line holding a line break, before tokenizing. Rust `selector_reads_back` and `path_reads_back`, Go `selectorReadsBack` and `pathReadsBack`, Python `_selector_reads_back` and `_path_reads_back`, C `selector_reads_back` and `path_reads_back`. All four now write `srv["a\nb"].port: 8080` and `"t\nu": v`.
+		- Note: 20260902 item 19 closed on the reasoning that a literal newline in a schema path is unreachable, because a schema value holding one is an unterminated quote. That is wrong and this item is the correction: `\n` inside a double-quoted schema value resolves to a real newline before the path is parsed, so the path holds one with nothing malformed anywhere.
+		- Note: the comment above the caller, which says a name carrying a newline goes through the segment renderer, described a route the condition had stopped taking. The fix makes it true again rather than rewriting it.
+		- Fixed: `spec.md` drops the literal newline from the list of paths that cannot be written at all, and says a body or a name carrying one is written escaped.
+		- Pinned by: two fields added to corpus case `113-init-selector-newline`, one selector and one name, each spelled with a real line break beside the escaped twin already there. Watched to fail: with the guard taken out, the generation dimension reports `113-init-selector-newline: init schema has faults`.
+		- Opened: 20260920-b
+		- Closed: 20260921-0100
 
 - Code review 20260920:
 

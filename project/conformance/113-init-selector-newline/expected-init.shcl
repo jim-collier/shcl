@@ -4,6 +4,12 @@ srv["a\nb"].port: 8080
 ## any, required
 "top\nline": v
 
+## int, required
+lit["c\nd"].port: 9090
+
+## any, required
+"raw\nname": w
+
 ##
 ## This config file format is SHCL.
 ## "Simple Hierarchical Config Language"

@@ -7843,6 +7843,13 @@ func genSelectorText(v string) (string, bool) {
 // reads back as a value selector for text, quoted or bare as asked.
 func selectorReadsBack(body, text string, quoted bool) bool {
 	line := "x[" + body + "]:"
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if strings.ContainsAny(line, "\n\r") {
+		return false
+	}
 	var tok Tokens
 	Tokenize(line, ':', false, RulesCurrent, &tok)
 	if selectorOpenQuote(&tok) || tok.Comment >= 0 {
@@ -7861,6 +7868,13 @@ func selectorReadsBack(body, text string, quoted bool) bool {
 // not.
 func pathReadsBack(path string, segs []segment) bool {
 	line := path + ":"
+	// The tokenizer reads one line and never sees a line end, so text carrying a
+	// real line break would read back here and then be written across two lines,
+	// which is not the same path. A file line cannot hold one, so refuse and let
+	// the escaped spelling be tried instead.
+	if strings.ContainsAny(line, "\n\r") {
+		return false
+	}
 	var tok Tokens
 	Tokenize(line, ':', false, RulesCurrent, &tok)
 	if selectorOpenQuote(&tok) || tok.Comment >= 0 {

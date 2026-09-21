@@ -6520,8 +6520,15 @@ def _gen_selector_text(v):
 def _selector_reads_back(body, text, quoted):
 	"""Whether body between brackets on a file line reads back as a value
 	selector for text, quoted or bare as asked."""
+	# The tokenizer reads one line and never sees a line end, so text carrying a
+	# real line break would read back here and then be written across two lines,
+	# which is not the same path. A file line cannot hold one, so refuse and let
+	# the escaped spelling be tried instead.
+	line = f"x[{body}]:"
+	if "\n" in line or "\r" in line:
+		return False
 	tok = Tokens()
-	tokenize(f"x[{body}]:", ":", False, Rules.CURRENT, tok)
+	tokenize(line, ":", False, Rules.CURRENT, tok)
 	if _selector_open_quote(tok) or tok.comment is not None:
 		return False
 	try:
@@ -6534,8 +6541,15 @@ def _selector_reads_back(body, text, quoted):
 def _path_reads_back(path, segs):
 	"""Whether a schema path written on a file line reads back as the same
 	segments. A lookup path takes spellings a file line does not."""
+	# The tokenizer reads one line and never sees a line end, so text carrying a
+	# real line break would read back here and then be written across two lines,
+	# which is not the same path. A file line cannot hold one, so refuse and let
+	# the escaped spelling be tried instead.
+	line = path + ":"
+	if "\n" in line or "\r" in line:
+		return False
 	tok = Tokens()
-	tokenize(path + ":", ":", False, Rules.CURRENT, tok)
+	tokenize(line, ":", False, Rules.CURRENT, tok)
 	if _selector_open_quote(tok) or tok.comment is not None:
 		return False
 	try:
