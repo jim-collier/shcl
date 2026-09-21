@@ -4019,12 +4019,6 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	Ok(())
 }
 
-/// The path a save actually rewrites. A symlink is followed so the write goes
-/// through it; canonicalize does that but needs the target to exist, so a
-/// dangling link is walked by hand and the file is created where it points.
-/// A path that is no link at all is a plain create at the path as given.
-/// A link cycle is an error: silently creating a regular file in its place
-/// would be the exact replacement the symlink walk exists to avoid.
 /// A path that names a directory rather than a file: it ends in a separator, or
 /// its last component is `.` or `..`. POSIX refuses to open such a path as a
 /// regular file, but a canonicalize drops the trailing separator first, so a
@@ -4041,6 +4035,12 @@ fn names_a_directory(file: &str) -> bool {
 	last == "." || last == ".."
 }
 
+/// The path a save actually rewrites. A symlink is followed so the write goes
+/// through it; canonicalize does that but needs the target to exist, so a
+/// dangling link is walked by hand and the file is created where it points.
+/// A path that is no link at all is a plain create at the path as given.
+/// A link cycle is an error: silently creating a regular file in its place
+/// would be the exact replacement the symlink walk exists to avoid.
 fn resolve_target(file: &str) -> Result<std::path::PathBuf, String> {
 	if let Ok(p) = std::fs::canonicalize(file) {
 		return Ok(p);

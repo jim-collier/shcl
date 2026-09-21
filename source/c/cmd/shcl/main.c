@@ -1723,9 +1723,6 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 	return 0;
 }
 
-// Every option must be meaningful for its subcommand; an option that would be
-// silently ignored (`set --write` before it existed, `--schema` on `get`) is a
-// usage error instead.
 // Child field names under a path, one per line, in file order and with
 // duplicates kept. PATH may be left out to enumerate the top level. Each name
 // comes out in the form a path accepts, so one holding a dot or a quote splices

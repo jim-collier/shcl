@@ -1622,7 +1622,7 @@ fn index_rebuild_ignores_removed_nodes() {
 			// and the old walk indexed every dead child.
 			for i in 0..50_000 {
 				assert!(d.set_int("g.tmp.x", i));
-				d.remove("g.tmp");
+				assert_eq!(d.remove("g.tmp"), 1);
 			}
 		}
 		let other = Document::parse("g:\n\tk: 1\n");

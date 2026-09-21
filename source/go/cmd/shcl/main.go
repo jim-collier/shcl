@@ -383,9 +383,6 @@ func statusCode(st shcl.Status) int {
 	return 0
 }
 
-// setOpt is one --set/--set-literal override. Both spellings share a list so
-// they apply in the order given, which is what decides the winner when two
-// target the same path.
 // setKind is which spelling produced one edit. They share a single ordered
 // list, so two options touching the same path resolve in the order given.
 type setKind int
@@ -398,6 +395,9 @@ const (
 	setRemove
 )
 
+// setOpt is one --set/--set-literal override. Both spellings share a list so
+// they apply in the order given, which is what decides the winner when two
+// target the same path.
 type setOpt struct {
 	path  string
 	value string
@@ -957,9 +957,6 @@ func parseOpts(argv []string) (*opts, error) {
 	return o, nil
 }
 
-// checkOpts: every option must be meaningful for its subcommand; an option that
-// would be silently ignored (`set --write` before it existed, `--schema` on
-// `get`) is a usage error instead.
 // allowedOpts is the options each subcommand takes. checkOpts judges against
 // it, the per-subcommand help is cut from the full help with it, and the shell
 // completions carry the same table (check-completions.bash diffs the two).
@@ -1367,8 +1364,8 @@ func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document,
 // though the command succeeded, and the save runs through the library's own
 // gate rather than a second copy of the rule - the CLI and a consumer program
 // cannot then disagree about which rewrites are safe.
-// writeBack saves the document over FILE. read is the bytes FILE held when the
-// command read it, and nil when this write is creating FILE.
+// read is the bytes FILE held when the command read it, and nil when this
+// write is creating FILE.
 func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
 	if read != nil && !unchangedSinceRead(file, *read) {
 		return exitIO
@@ -1823,12 +1820,6 @@ func doMigrate(o *opts) int {
 	return rc
 }
 
-// doTokens prints every line's spans, one line of output per input line: the
-// indent length, then each token as kind=start-end with a mark for how it
-// was quoted (', ", or ? for a quote that never closed), offsets counted
-// from the first character after the indent. A blank line and a comment
-// line say so; every other line is tokenized on its own, raw bodies
-// included, since this is the lexical view and not the parse.
 // codeLine is `CODE  severity  summary` - the one line both explain forms lead
 // with.
 func codeLine(head string) string {
@@ -1898,6 +1889,12 @@ func doExplain(o *opts) int {
 	return 0
 }
 
+// doTokens prints every line's spans, one line of output per input line: the
+// indent length, then each token as kind=start-end with a mark for how it
+// was quoted (', ", or ? for a quote that never closed), offsets counted
+// from the first character after the indent. A blank line and a comment
+// line say so; every other line is tokenized on its own, raw bodies
+// included, since this is the lexical view and not the parse.
 func doTokens(o *opts) int {
 	if len(o.args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: shcl tokens FILE (see --help)")

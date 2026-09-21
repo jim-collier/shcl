@@ -121,19 +121,38 @@ fCompare(){
 ##	Describe a tree so an in-place write can be compared by its side effects.
 ##	One sorted line per path: relative name, type, mode, link count, symlink
 ##	target, content. Anything the writer leaves behind (a stray temp file, a
-##	replaced symlink, a widened mode) shows up as a diff.
+##	replaced symlink, a widened mode) shows up as a diff. Into writeState, not
+##	stdout: this runs once per binding per write, and a stat and a tr per path
+##	plus the substitution around it were most of the write dimension's time.
+##	A NUL in a file shows as <NUL>, where a substitution used to drop it.
+writeState=""
 fWriteState(){
-	local root="$1" p rel
-	while IFS= read -r p; do
-		rel="${p#"${root}/"}"
-		if [[ -L "$p" ]]; then
-			printf '%s\tsymlink -> %s\n' "$rel" "$(readlink "$p")"
-		elif [[ -d "$p" ]]; then
-			printf '%s\t%s\n' "$rel" "$(stat -c '%F mode=%a' "$p")"
-		else
-			printf '%s\t%s\t%s\n' "$rel" "$(stat -c '%F mode=%a links=%h' "$p")" "$(tr '\n' '|' <"$p")"
-		fi
-	done < <(find "$root" -mindepth 1 | sort)
+	local root="$1" rel type mode links dest part content
+	writeState=""
+	while IFS=$'\t' read -r rel type mode links dest; do
+		case "$type" in
+			l) writeState+="${rel}"$'\t'"symlink -> ${dest}"$'\n' ;;
+			d) writeState+="${rel}"$'\t'"directory mode=${mode}"$'\n' ;;
+			f)
+				content="" part=""
+				while IFS= read -r -d '' part; do content+="${part}<NUL>"; done <"${root}/${rel}" || true
+				content+="${part}"
+				writeState+="${rel}"$'\t'"file mode=${mode} links=${links}"$'\t'"${content//$'\n'/|}"$'\n'
+				;;
+			*) writeState+="${rel}"$'\t'"type=${type} mode=${mode} links=${links}"$'\n' ;;
+		esac
+	done < <(find "$root" -mindepth 1 -printf '%P\t%y\t%m\t%n\t%l\n' | sort)
+}
+
+##	A fresh, empty root per binding per call, all made by one mkdir. The
+##	counter keeps them apart, so nothing has to be removed first.
+nRoots=0
+fMakeRoots(){
+	local kind="$1" b
+	nRoots=$((nRoots + 1))
+	roots=()
+	for b in "${bindings[@]}"; do roots+=("${tmpDir}/${kind}${nRoots}-${b%%|*}"); done
+	mkdir -p "${roots[@]}"
 }
 
 ##	Compare the filesystem side effects of an in-place write, not just stdout.
@@ -143,17 +162,16 @@ fWriteState(){
 ##	CLI; every binding gets its own identical copy.
 fCompareWrite(){
 	local what="$1" fixture="$2"; shift 2
-	local want got b name cli root target
-	root="${tmpDir}/write-${refName}"; rm -rf "$root"; mkdir -p "$root"
-	target="$("$fixture" "$root")"
+	local want got b name cli i=0
+	fMakeRoots write
+	"$fixture" "${roots[0]}"
 	# The exit code rides along: a write that refuses leaves the tree alone, so
 	# the state compare alone cannot tell a refusal from a no-op success.
-	fRun "$refCli" "$@" "$target"; want="${runOut}$(fWriteState "$root")"
+	fRun "$refCli" "$@" "$fixTarget"; fWriteState "${roots[0]}"; want="${runOut}${writeState}"
 	for b in "${bindings[@]:1}"; do
-		name="${b%%|*}"; cli="${b#*|}"
-		root="${tmpDir}/write-${name}"; rm -rf "$root"; mkdir -p "$root"
-		target="$("$fixture" "$root")"
-		fRun "$cli" "$@" "$target"; got="${runOut}$(fWriteState "$root")"
+		name="${b%%|*}"; cli="${b#*|}"; i=$((i + 1))
+		"$fixture" "${roots[i]}"
+		fRun "$cli" "$@" "$fixTarget"; fWriteState "${roots[i]}"; got="${runOut}${writeState}"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -178,17 +196,16 @@ fPlantRun(){
 
 fComparePlant(){
 	local what="$1"; shift
-	local want got b name cli root target
-	root="${tmpDir}/plant-${refName}"; rm -rf "$root"; mkdir -p "$root"
-	target="$(fFixMode "$root")"
-	fPlantRun "$root" "$refCli" "$@" "$target"
-	want="$(fWriteState "$root")"
+	local want got b name cli i=0
+	fMakeRoots plant
+	fFixMode "${roots[0]}"
+	fPlantRun "${roots[0]}" "$refCli" "$@" "$fixTarget"
+	fWriteState "${roots[0]}"; want="${writeState}"
 	for b in "${bindings[@]:1}"; do
-		name="${b%%|*}"; cli="${b#*|}"
-		root="${tmpDir}/plant-${name}"; rm -rf "$root"; mkdir -p "$root"
-		target="$(fFixMode "$root")"
-		fPlantRun "$root" "$cli" "$@" "$target"
-		got="$(fWriteState "$root")"
+		name="${b%%|*}"; cli="${b#*|}"; i=$((i + 1))
+		fFixMode "${roots[i]}"
+		fPlantRun "${roots[i]}" "$cli" "$@" "$fixTarget"
+		fWriteState "${roots[i]}"; got="${writeState}"
 		nCompared+=1
 		if [[ "$got" != "$want" ]]; then
 			nBad+=1
@@ -198,26 +215,28 @@ fComparePlant(){
 	done
 }
 
-##	Fixtures for fCompareWrite. Each builds its tree and echoes the path to hand
-##	the CLI. The unformatted spacing is deliberate: the write must actually
+##	Fixtures for fCompareWrite. Each builds its tree and sets fixTarget to the
+##	path to hand the CLI, rather than echoing it, which would cost a subshell
+##	per binding per write. The unformatted spacing is deliberate: the write must actually
 ##	rewrite the file, or the checks below prove nothing.
-fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
-fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
-fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; echo "$1/c.shcl"; }
+fixTarget=""
+fFixMode(){    printf 'a:  1\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; fixTarget="$1/c.shcl"; }
+fFixSymlink(){ mkdir -p "$1/real"; printf 'a:  1\n' >"$1/real/c.shcl"; ln -s real/c.shcl "$1/c.shcl"; fixTarget="$1/c.shcl"; }
+fFixHardlink(){ printf 'a:  1\n' >"$1/c.shcl"; ln "$1/c.shcl" "$1/other.shcl"; fixTarget="$1/c.shcl"; }
 ##	A link to a file that is not there yet: the write must create the target
 ##	behind the link, not turn the link into a file.
-fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; echo "$1/c.shcl"; }
+fFixDangling(){ mkdir -p "$1/real"; ln -s real/c.shcl "$1/c.shcl"; fixTarget="$1/c.shcl"; }
 ##	Nothing at the path at all - the create case. The tree it leaves behind is
 ##	the whole point, so the fixture deliberately builds nothing.
-fFixAbsent(){  echo "$1/c.shcl"; }
+fFixAbsent(){  fixTarget="$1/c.shcl"; }
 ##	The corpus case's own input, copied in so the write has something real to
 ##	refuse or rewrite. The fixture protocol takes only the root, so the source
 ##	arrives in caseSrc.
 caseSrc=""
-fFixCase(){    cp "$caseSrc" "$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
+fFixCase(){    install -m 600 "$caseSrc" "$1/c.shcl"; fixTarget="$1/c.shcl"; }
 ##	A load that dropped a line canonical output cannot re-emit (a BOM-led one),
 ##	so the in-place write is the destructive case the save gate exists for.
-fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; echo "$1/c.shcl"; }
+fFixLost(){    printf 'a:  1\n\xef\xbb\xbfb: 2\n' >"$1/c.shcl"; chmod 600 "$1/c.shcl"; fixTarget="$1/c.shcl"; }
 
 ##	Map one reads.tsv row to a CLI call. Columns: query, type, expected, status,
 ##	optional level. expected/status are the corpus contract (each binding's own

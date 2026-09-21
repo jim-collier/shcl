@@ -1793,17 +1793,25 @@ fi
 ##	pre-push hook and the publish script carry no extension, and both are
 ##	`set -e` scripts the scans below are about. Untracked-but-not-ignored files
 ##	are in, so a script written and not yet added is still scanned; build output
-##	is out, because it is ignored. Written once and reused.
+##	is out, because it is ignored. Built once, since it reads the start of every
+##	file in the tree. Read with builtins: a head and a grep per file were most
+##	of this script's time. Two bytes first, so a binary is never read as a line.
 fShellFiles(){
-	local f
+	local f magic line
 	while IFS= read -r f; do
 		case "${f}" in
 			*.bash) printf '%s\n' "${repoDir}/${f}" ;;
-			*)      [[ -f "${repoDir}/${f}" ]] && head -1 "${repoDir}/${f}" | grep -qE '^#!.*\b(bash|sh)\b' \
-			            && printf '%s\n' "${repoDir}/${f}" ;;
+			*)
+				[[ -f "${repoDir}/${f}" ]] || continue
+				magic=""; IFS= read -r -n 2 magic <"${repoDir}/${f}" || true
+				[[ "${magic}" == '#!' ]] || continue
+				line=""; IFS= read -r line <"${repoDir}/${f}" || true
+				if [[ "${line}" =~ [^[:alnum:]_](bash|sh)([^[:alnum:]_]|$) ]]; then printf '%s\n' "${repoDir}/${f}"; fi
+				;;
 		esac
 	done < <(git -C "${repoDir}" ls-files --cached --others --exclude-standard | sort -u)
 }
+mapfile -t shellFileList < <(fShellFiles)
 
 ##	The two static scans, as functions so the self-test below can run them over a
 ##	file holding every spelling they are meant to catch. Both were written for
@@ -1959,7 +1967,7 @@ while IFS= read -r f; do
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: loop body ends on a failed-test && list: ${h}"; done <<<"${hits}"
 	fi
-done < <(fShellFiles)
+done < <(printf '%s\n' "${shellFileList[@]}")
 
 ##	`\t` in a grep -E pattern. POSIX ERE has no such escape, so the pattern
 ##	matches nothing under the grep a script gets, while matching fine under the
@@ -1970,7 +1978,7 @@ while IFS= read -r f; do
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: backslash-t in a grep -E pattern, which POSIX ERE does not read as a tab: ${h}"; done <<<"${hits}"
 	fi
-done < <(fShellFiles)
+done < <(printf '%s\n' "${shellFileList[@]}")
 
 ##	The static half. Line continuations are joined first, so a substitution that
 ##	ends in `|| true` several lines down is read as guarded.
@@ -1980,7 +1988,7 @@ while IFS= read -r f; do
 	if [[ -n "${hits}" ]]; then
 		while IFS= read -r h; do fBad "${f#"${repoDir}/"}: unguarded grep in an assigned substitution: ${h}"; done <<<"${hits}"
 	fi
-done < <(fShellFiles)
+done < <(printf '%s\n' "${shellFileList[@]}")
 
 ##	20260918b item 44: green-tree.bash went in with no line in the shellcheck
 ##	list, and nothing noticed. The list is compared with the shell files the
@@ -1988,7 +1996,7 @@ done < <(fShellFiles)
 ##	a renamed one cannot leave a dead entry.
 # shellcheck source=/dev/null
 scTargets="$( ( set +u; source "${repoDir}/cicd/config.bash"; printf '%s\n' "${SHELLCHECK_TARGETS[@]}" ) | LC_ALL=C sort -u)"
-shFiles="$(while IFS= read -r f; do printf '%s\n' "${f#"${repoDir}/"}"; done < <(fShellFiles) | LC_ALL=C sort -u)"
+shFiles="$(while IFS= read -r f; do printf '%s\n' "${f#"${repoDir}/"}"; done < <(printf '%s\n' "${shellFileList[@]}") | LC_ALL=C sort -u)"
 while IFS= read -r f; do
 	if [[ -n "${f}" ]]; then fBad "${f}: a shell script the lint stage does not shellcheck; add it to SHELLCHECK_TARGETS"; fi
 done < <(LC_ALL=C comm -23 <(printf '%s\n' "${shFiles}") <(printf '%s\n' "${scTargets}"))

@@ -112,9 +112,11 @@ nDumped="$(find "${dump}" -maxdepth 1 -name '*.shcl' | wc -l)"
 ##	code 2.x reports on it binds the line: E001 (field kept), E005 (fence
 ##	unterminated, body kept), E015 (repaired), E017 (kept literally), the two
 ##	hints, and E019 as a hint, which is the `name:[x]` sugar read as `name: x`.
-##	E019 as an error is the bracket array.
+##	E019 as an error is the bracket array. Read from what 2.x's `check` printed,
+##	so one run of it serves every question asked of the same bytes.
+fCheck2x(){ "${oldCli}" check "$1" 2>/dev/null || true; }
 fUnclean2x(){
-	{ "${oldCli}" check "$1" 2>/dev/null || true; } | awk '$1 == "line" {
+	awk '$1 == "line" {
 		if ($4 ~ /^(E001|E005|E015|E017|H001|H002)$/ || ($4 == "E019" && $3 == "Hint:")) next
 		sub(/:$/, "", $2); print $2 }'
 }
@@ -178,12 +180,15 @@ fUnplaced(){
 }
 
 ##	Takes out every line above, until 2.x reads what is left cleanly. Fails
-##	when nothing is left, or when taking lines out keeps turning up more.
+##	when nothing is left, or when taking lines out keeps turning up more. The
+##	first round has the same bytes as the source, so it takes the source's
+##	2.x check as given rather than running it again.
 fTrim(){
-	local src="$1" dst="$2" lines
+	local src="$1" dst="$2" check2x="$3" lines round
 	cp "${src}" "${dst}"
-	for _ in 1 2 3 4; do
-		lines="$( { fUnclean2x "${dst}"
+	for round in 1 2 3 4; do
+		((round == 1)) || check2x="$(fCheck2x "${dst}")"
+		lines="$( { fUnclean2x <<<"${check2x}"
 			fUnplaced "${dst}"
 			grep -anE '(```|~~~)[^#]*#' "${dst}" | cut -d: -f1
 			grep -an $'\r[^\r]' "${dst}" | cut -d: -f1; } | sort -un)"
@@ -204,9 +209,9 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 	## the two rule sets disagree on and refuses.
 	## When the one thing wrong with the file under 2.x is bracket arrays,
 	## migrate has to refuse over each of them and nothing else.
-	unclean="$(fUnclean2x "${f}" | sort -un)"
-	arrays="$({ "${oldCli}" check "${f}" 2>/dev/null || true; } \
-		| awk '$1 == "line" && $3 == "Error:" && $4 == "E019" { sub(/:$/, "", $2); print $2 }' | sort -un)"
+	check2x="$(fCheck2x "${f}")"
+	unclean="$(fUnclean2x <<<"${check2x}" | sort -un)"
+	arrays="$(awk '$1 == "line" && $3 == "Error:" && $4 == "E019" { sub(/:$/, "", $2); print $2 }' <<<"${check2x}" | sort -un)"
 	if [[ -n "${unclean}" && "${unclean}" == "${arrays}" ]]; then
 		wantLost="$(wc -l <<<"${unclean}")"
 		gotLost="$({ "${newCli}" migrate --from-2x "${f}" 2>&1 >/dev/null || true; } \
@@ -217,7 +222,7 @@ for f in "${corpus}"/*/input.shcl "${dump}"/*.shcl; do
 			echo "check-migrate: DIVERGE ${name}: 2.x refused ${wantLost} bracket array(s), migrate counted ${gotLost:-0} lost"
 		fi
 	fi
-	if ! fTrim "${f}" "${tmpDir}/original.shcl"; then nSkipped+=1; continue; fi
+	if ! fTrim "${f}" "${tmpDir}/original.shcl" "${check2x}"; then nSkipped+=1; continue; fi
 	cmp -s "${f}" "${tmpDir}/original.shcl" || nTrimmed+=1
 	f="${tmpDir}/original.shcl"
 	rc=0; "${newCli}" migrate --from-2x "${f}" > "${tmpDir}/migrated.shcl" 2>/dev/null || rc=$?

@@ -989,8 +989,8 @@ def main():
 			# three times a sound build. A removed subtree keeps its own list,
 			# and the old walk indexed every dead child.
 			for i in range(50000):
-				idoc.set_int("g.tmp.x", i)
-				idoc.remove("g.tmp")
+				if not idoc.set_int("g.tmp.x", i) or idoc.remove("g.tmp") != 1:
+					raise SystemExit(f"churn cycle {i}: set or remove refused")
 		iother = shcl.Document.parse("g:\n\tk: 1\n")
 		t0 = time.perf_counter()
 		for _ in range(2000):

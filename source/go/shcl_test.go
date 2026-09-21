@@ -1462,8 +1462,9 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 			// three times a sound build. A removed subtree keeps its own list,
 			// and the old walk indexed every dead child.
 			for i := 0; i < 50000; i++ {
-				d.SetInt("g.tmp.x", int64(i))
-				d.Remove("g.tmp")
+				if !d.SetInt("g.tmp.x", int64(i)) || d.Remove("g.tmp") != 1 {
+					t.Fatalf("churn cycle %d: set or remove refused", i)
+				}
 			}
 		}
 		other := Parse("g:\n\tk: 1\n")

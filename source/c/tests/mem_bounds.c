@@ -250,7 +250,7 @@ int main(void) {
 			   parent's list, so the old walk only stepped over it and cost
 			   three times a sound build. A removed subtree keeps its own list,
 			   and the old walk indexed every dead child. */
-			if (churned) for (int i = 0; i < 50000; i++) { shcl_set_int(cd, "g.tmp.x", 7, i); shcl_remove(cd, "g.tmp", 5); }
+			if (churned) for (int i = 0; i < 50000; i++) if (!shcl_set_int(cd, "g.tmp.x", 7, i) || shcl_remove(cd, "g.tmp", 5) != 1) { fail("churn cycle: set or remove refused"); break; }
 			/* A second document, as the other three runners use. Merging one
 			   onto itself returns before the index is dropped, so both sides
 			   built the index once and timed 1999 hash lookups. */
