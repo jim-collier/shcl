@@ -178,6 +178,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `Remove` on a wildcard path no longer leaves data behind. A leaf that repeated under one instance made that slot ambiguous, and the remove skipped it and still reported success, so `set --write --remove='server[*].port'` cleared the instances holding one port and left the ones holding two. Every node the path reaches goes now, and `Exists` answers over the same list. The reads are unchanged: a slot with two nodes under it is still `Multiple` there.
+
+- A generated starter config no longer documents a value its own schema refuses. A field carrying both `allowed` and a numeric bound annotated only the allowed list, so `type: int`, `min: 1` and `allowed: 0, 5` generated `## int, one of: 0, 5, required` and the value it wrote then failed `check --schema` at `V005`. The two are separate parts of the annotation line, as the spec's grammar has them, and both numeric arms print now.
+
 - On Windows, the C binding's save no longer replaces a dangling symlink with a regular file. It creates the file the link points at and leaves the link, which is what Rust and Go already did. A path given with the `\\?\` prefix works too: it was prefixed a second time, so a save past `MAX_PATH` - the length that needs the prefix - failed outright.
 
 - A `--write` that has nothing to write no longer rewrites the file. What the save would publish is compared with the bytes read back first, so a canonical file keeps its inode, its mtime and its hard links, an idempotent `--set-default` in a provisioning script stops reporting a change on every run, and a canonical file in a read-only directory stops failing at exit 8. A load that dropped content still refuses the write before any of this.

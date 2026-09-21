@@ -3060,7 +3060,7 @@ class Document:
 			c = idx.next_same[c]
 		return out
 
-	def _resolve_from(self, start, segs):
+	def _resolve_from(self, start, segs, group=False):
 		# Returns ("none",) | ("one", idx) | ("many", [idx]) | ("slots", [entry]).
 		# A slots entry is a node idx, or the Status saying why the sub-path did
 		# not land on one node (NotFound missing, Multiple ambiguous).
@@ -3069,6 +3069,10 @@ class Document:
 		# frame per wildcard: a path can carry a wildcard per document level,
 		# and the frame budget is small. A wildcard inside the sub-walk widens
 		# the run rather than ending it, so the two compose.
+		# group: a sub-path landing on several nodes joins the slot list instead
+		# of becoming one Multiple slot. Reads want the slot per instance, so
+		# they leave it off; remove and exists want every node behind the
+		# wildcard.
 		cur = list(start)
 		for i, seg in enumerate(segs):
 			nxt = []
@@ -3085,7 +3089,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.extend(self._resolve_slots(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest, group))
 				return ("slots", slots)
 			sel = seg.selector
 			if sel is None:
@@ -3104,7 +3108,7 @@ class Document:
 					if not rest:
 						slots.append(inst)
 					else:
-						slots.extend(self._resolve_slots(inst, rest))
+						slots.extend(self._resolve_slots(inst, rest, group))
 				return ("slots", slots)
 		if len(cur) == 0:
 			return ("none",)
@@ -3112,7 +3116,7 @@ class Document:
 			return ("one", cur[0])
 		return ("many", cur)
 
-	def _resolve_slots(self, inst, rest):
+	def _resolve_slots(self, inst, rest, group=False):
 		# The slots one wildcard instance contributes: normally one - a node
 		# index, or the Status saying why the sub-path did not land on one node
 		# (NotFound missing, Multiple ambiguous) - but a further wildcard in
@@ -3157,19 +3161,23 @@ class Document:
 				out.append(Status.NotFound)
 			elif len(cur) == 1:
 				out.append(cur[0])
+			elif group:
+				out.extend(cur)
 			else:
 				out.append(Status.Multiple)
 		return out
 
-	def _resolve(self, path):
-		# Returns a _resolve_from result, or ("err", Status).
+	def _resolve(self, path, group=False):
+		# Returns a _resolve_from result, or ("err", Status). group puts every
+		# node behind a wildcard slot in the list, for the callers that act on
+		# the whole match rather than read one value per instance.
 		try:
 			segments, value_text = _scan_lookup(path)
 		except _PathError:
 			return ("err", Status.NotFound)
 		if value_text is not None:
 			return ("err", Status.NotFound)   # a query has no value part
-		return self._resolve_from([ROOT], segments)
+		return self._resolve_from([ROOT], segments, group)
 
 	def count(self, path: str) -> int:
 		"""Instance count at a path (0 when nothing matches)."""
@@ -3470,7 +3478,7 @@ class Document:
 
 	def exists(self, path: str) -> bool:
 		"""True when the path resolves to at least one real node."""
-		r = self._resolve(path)
+		r = self._resolve(path, True)
 		tag = r[0]
 		if tag == "one" or tag == "many":
 			return True
@@ -3483,7 +3491,7 @@ class Document:
 
 		A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
 		"""
-		r = self._resolve(path)
+		r = self._resolve(path, True)
 		tag = r[0]
 		if tag == "one":
 			targets = [r[1]]
@@ -6081,7 +6089,9 @@ def _gen_annotation(c, tyname):
 	parts = [tyname]
 	if c.allowed is not None:
 		parts.append("one of: " + _allowed_join(c.allowed))
-	elif c.min_i is not None or c.max_i is not None:
+	# The bounds are their own part of the annotation line, not an alternative
+	# to `allowed`. A field can carry both, and the validator enforces both.
+	if c.min_i is not None or c.max_i is not None:
 		if c.min_i is not None and c.max_i is not None:
 			parts.append(f"{c.min_i}-{c.max_i}")
 		elif c.min_i is not None:

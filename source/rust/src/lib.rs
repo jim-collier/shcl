@@ -4521,7 +4521,10 @@ impl Document {
 		out
 	}
 
-	fn resolve_from(&self, start: &[usize], segs: &[Segment]) -> Resolved {
+	// `group`: a sub-path landing on several nodes joins the slot list instead
+	// of becoming one Multiple slot. Reads want the slot per instance, so they
+	// leave it off; remove and exists want every node behind the wildcard.
+	fn resolve_from(&self, start: &[usize], segs: &[Segment], group: bool) -> Resolved {
 		let mut cur: Vec<usize> = start.to_vec();
 		for (i, seg) in segs.iter().enumerate() {
 			let mut next: Vec<usize> = Vec::new();
@@ -4540,13 +4543,14 @@ impl Document {
 					if rest.is_empty() {
 						slots.push(Ok(inst));
 					} else {
-						match self.resolve_from(&[inst], rest) {
+						match self.resolve_from(&[inst], rest, group) {
 							Resolved::One(x) => slots.push(Ok(x)),
 							Resolved::None => slots.push(Err(Status::NotFound)),
 							// A wildcard after a wildcard: the inner slots join the
 							// outer list, so the two compose into one flat run of
 							// leaves rather than one unreadable slot.
 							Resolved::Slots(inner) => slots.extend(inner),
+							Resolved::Many(v) if group => slots.extend(v.into_iter().map(Ok)),
 							_ => slots.push(Err(Status::Multiple)),
 						}
 					}
@@ -4579,13 +4583,14 @@ impl Document {
 						if rest.is_empty() {
 							slots.push(Ok(inst));
 						} else {
-							match self.resolve_from(&[inst], rest) {
+							match self.resolve_from(&[inst], rest, group) {
 								Resolved::One(x) => slots.push(Ok(x)),
 								Resolved::None => slots.push(Err(Status::NotFound)),
 								// A wildcard after a wildcard: the inner slots join the
 								// outer list, so the two compose into one flat run of
 								// leaves rather than one unreadable slot.
 								Resolved::Slots(inner) => slots.extend(inner),
+								Resolved::Many(v) if group => slots.extend(v.into_iter().map(Ok)),
 								_ => slots.push(Err(Status::Multiple)),
 							}
 						}
@@ -4602,11 +4607,22 @@ impl Document {
 	}
 
 	fn resolve(&self, path: &str) -> Result<Resolved, Status> {
+		self.resolve_mode(path, false)
+	}
+
+	/// resolve() with every node behind a wildcard slot in the list, for the
+	/// callers that act on the whole match rather than read one value per
+	/// instance.
+	fn resolve_group(&self, path: &str) -> Result<Resolved, Status> {
+		self.resolve_mode(path, true)
+	}
+
+	fn resolve_mode(&self, path: &str, group: bool) -> Result<Resolved, Status> {
 		let scan = scan_lookup(path).map_err(|_| Status::NotFound)?;
 		if scan.value_text.is_some() {
 			return Err(Status::NotFound); // a query has no value part
 		}
-		Ok(self.resolve_from(&[ROOT], &scan.segments))
+		Ok(self.resolve_from(&[ROOT], &scan.segments, group))
 	}
 
 	/// Instance count at a path (0 when nothing matches).
@@ -5053,7 +5069,7 @@ impl Document {
 
 	/// True when the path resolves to at least one real node.
 	pub fn exists(&self, path: &str) -> bool {
-		match self.resolve(path) {
+		match self.resolve_group(path) {
 			Ok(Resolved::One(_)) | Ok(Resolved::Many(_)) => true,
 			Ok(Resolved::Slots(s)) => s.iter().any(|r| r.is_ok()),
 			_ => false,
@@ -5063,7 +5079,7 @@ impl Document {
 	/// Delete the node(s) at a path (with their subtrees); returns how many.
 	/// A removed node's storage is not reclaimed, so a process that adds and removes in a loop grows by a few hundred bytes a pair. Reloading the canonical text gives it back.
 	pub fn remove(&mut self, path: &str) -> usize {
-		let targets: Vec<usize> = match self.resolve(path) {
+		let targets: Vec<usize> = match self.resolve_group(path) {
 			Ok(Resolved::One(n)) => vec![n],
 			Ok(Resolved::Many(v)) => v,
 			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
@@ -7073,7 +7089,10 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 	let mut parts: Vec<String> = vec![tyname.to_string()];
 	if let Some(a) = &c.allowed {
 		parts.push(format!("one of: {}", allowed_join(a)));
-	} else if c.min_i.is_some() || c.max_i.is_some() {
+	}
+	// The bounds are their own part of the annotation line, not an alternative
+	// to `allowed`. A field can carry both, and the validator enforces both.
+	if c.min_i.is_some() || c.max_i.is_some() {
 		parts.push(match (c.min_i, c.max_i) {
 			(Some(lo), Some(hi)) => format!("{}-{}", lo, hi),
 			(Some(lo), None) => format!(">= {}", lo),

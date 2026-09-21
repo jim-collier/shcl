@@ -3642,7 +3642,10 @@ static void children_named(shcl_doc *d, ShclArena *a, size_t parent, ShclStr nam
 	}
 }
 
-static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart, ShclSegment *segs, size_t nsegs) {
+// `group`: a sub-path landing on several nodes joins the slot list instead of
+// becoming one SHCL_MULTIPLE slot. Reads want the slot per instance, so they
+// leave it off; remove and exists want every node behind the wildcard.
+static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart, ShclSegment *segs, size_t nsegs, int group) {
 	ShclArena *a = &d->scratch; // candidates, slots, compare strings: dead after the call
 	ShclVecSize cur = {0};
 	// cppcheck-suppress objectIndex  ## single-element callers pass nstart == 1, so start[i] stays at 0
@@ -3666,13 +3669,17 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				ShclSlot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
 				else {
-					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
+					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest, group);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
 					else if (r.kind == R_SLOTS) {
 						// A wildcard after a wildcard: the inner slots join the
 						// outer list, so the two compose into one flat run of
 						// leaves rather than one unreadable slot.
 						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
+					else if (r.kind == R_MANY && group) {
+						for (size_t j = 0; j < r.many.len; j++) { ShclSlot m; m.present = 1; m.idx = r.many.data[j]; m.miss = SHCL_GOOD; ShclVecSlot_push(a, &slots, m); }
 						continue;
 					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
@@ -3702,13 +3709,17 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 				ShclSlot sl; sl.present = 0; sl.idx = 0; sl.miss = SHCL_NOT_FOUND;
 				if (nrest == 0) { sl.present = 1; sl.idx = next.data[k]; }
 				else {
-					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest);
+					size_t inst = next.data[k]; ShclResolved r = resolve_from(d, &inst, 1, rest, nrest, group);
 					if (r.kind == R_ONE) { sl.present = 1; sl.idx = r.one; }
 					else if (r.kind == R_SLOTS) {
 						// A wildcard after a wildcard: the inner slots join the
 						// outer list, so the two compose into one flat run of
 						// leaves rather than one unreadable slot.
 						for (size_t j = 0; j < r.slots.len; j++) ShclVecSlot_push(a, &slots, r.slots.data[j]);
+						continue;
+					}
+					else if (r.kind == R_MANY && group) {
+						for (size_t j = 0; j < r.many.len; j++) { ShclSlot m; m.present = 1; m.idx = r.many.data[j]; m.miss = SHCL_GOOD; ShclVecSlot_push(a, &slots, m); }
 						continue;
 					}
 					else if (r.kind != R_NONE) sl.miss = SHCL_MULTIPLE;
@@ -3726,7 +3737,7 @@ static ShclResolved resolve_from(shcl_doc *d, const size_t *start, size_t nstart
 	else { R.kind = R_MANY; R.many = cur; }
 	return R;
 }
-static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) {
+static int resolve_mode(shcl_doc *d, ShclStr path, ShclResolved *out, int group) {
 	// Every public read/query funnels through here, so this reset is the
 	// scratch lifetime: the previous resolve's temporaries die now, and the
 	// ShclResolved this call fills stays usable until the next resolve.
@@ -3734,9 +3745,13 @@ static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) {
 	ShclPathScan ps = scan_lookup(&d->scratch, path);
 	if (!ps.ok || ps.has_value) return 0;
 	size_t root = ROOT;
-	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len);
+	*out = resolve_from(d, &root, 1, ps.segs.data, ps.segs.len, group);
 	return 1;
 }
+static int resolve(shcl_doc *d, ShclStr path, ShclResolved *out) { return resolve_mode(d, path, out, 0); }
+// resolve() with every node behind a wildcard slot in the list, for the callers
+// that act on the whole match rather than read one value per instance.
+static int resolve_group(shcl_doc *d, ShclStr path, ShclResolved *out) { return resolve_mode(d, path, out, 1); }
 static shcl_status value_at(shcl_doc *d, ShclStr path, ShclValue **out) {
 	ShclResolved r;
 	if (!resolve(d, path, &r)) return SHCL_NOT_FOUND;
@@ -4201,7 +4216,7 @@ shcl_doc *shcl_new(void) { return shcl_parse("", 0); }
 
 int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 	ShclStr p; p.p = path; p.n = plen; ShclResolved r;
-	if (!resolve(d, p, &r)) return 0;
+	if (!resolve_group(d, p, &r)) return 0;
 	if (r.kind == R_ONE || r.kind == R_MANY) return 1;
 	if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) return 1;
 	return 0;
@@ -4209,7 +4224,7 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
-	if (!resolve(d, p, &r)) return 0;
+	if (!resolve_group(d, p, &r)) return 0;
 	ShclVecSize targets = {0};
 	if (r.kind == R_ONE) ShclVecSize_push(a, &targets, r.one);
 	else if (r.kind == R_MANY) targets = r.many;
@@ -7461,7 +7476,10 @@ static ShclStr v_gen_annotation(ShclArena *a, const ShclVCons *c, ShclStr tyname
 	sb_putS(a, &s, tyname);
 	if (c->has_allowed) {
 		sb_puts(a, &s, ", one of: "); sb_putS(a, &s, v_allowed_join(a, c));
-	} else if (c->has_min_i || c->has_max_i) {
+	}
+	// The bounds are their own part of the annotation line, not an alternative
+	// to `allowed`. A field can carry both, and the validator enforces both.
+	if (c->has_min_i || c->has_max_i) {
 		if (c->has_min_i && c->has_max_i) snprintf(nb, sizeof nb, ", %" PRId64 "-%" PRId64, c->min_i, c->max_i);
 		else if (c->has_min_i) snprintf(nb, sizeof nb, ", >= %" PRId64, c->min_i);
 		else snprintf(nb, sizeof nb, ", <= %" PRId64, c->max_i);

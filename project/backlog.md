@@ -98,25 +98,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
 
-	- 🔘 Item 1: `--remove` on a wildcard path skips a `Multiple` slot, leaves the data, and exits 0.
-		- Reproduced: three instances, one with a `port`, one with none, one with `port` twice. `set --write --remove='server[*].port'` removes the first instance's port, leaves both of the third's, prints only the `H001` hint and exits 0. `count 'server[*].port'` still answers 3 afterwards. The same path without the wildcard, `server[web3].port`, removes both.
-		- Cause: the slot list from a wildcard resolve carries a per-slot status, and every binding drops the ones that are not exactly one node instead of removing the group behind them. Rust `remove` `Resolved::Slots(s) => s.into_iter().filter_map(|r| r.ok())`, Go `Remove` `if s >= 0`, Python `remove` `isinstance(n, int)`, C `shcl_remove` `if (r.slots.data[i].present)`.
-		- Origin: `e71b2c45` (2026-07-21), the wildcard remove arm as first written. No earlier round read it. Confirmed in Rust by running; the other three by reading the same guard, which the crosscheck holds to the same behavior.
-		- Keep: 20260902 item 3, which decided a repeated leaf under one instance stays `Multiple` for a read. The status is not what this item is about.
-		- Against: nothing. `spec.md:449` says `Remove` on a wildcard path removes every resolved slot, and `design.md` says `count`, `instances`, the read and `Remove` all see the same list.
-		- Sweep: every other caller that walks a slot list and drops the not-exactly-one entries. The setters refuse a wildcard outright, so `remove` may be the only one, but the grep has to be run and named.
-		- Note: the fix has to decide what a partial remove reports. Removing the group is what the spec sentence says; refusing the whole call is the other reading. Silence at exit 0 is the one answer that is wrong either way.
-		- Opened: 20260920-b
-
-	- 🔘 Item 2: a generated annotation drops the numeric bounds whenever the field also has `allowed`, and the validator still enforces them.
-		- Reproduced: `type: int`, `min: 1`, `allowed: 0, 5` generates `## int, one of: 0, 5, required`. Feeding the starter's own `n: 0` back through `check --schema` is `V005 value below min 1 at 'n': 0` at exit 6. So the generated file documents a value its own validator refuses.
-		- Cause: the annotation builder tests `allowed` and the bounds as one exclusive chain rather than as the independent parts the spec's grammar has. Rust `gen_annotation` `if let Some(a) = &c.allowed { } else if c.min_i.is_some()`, Go `genAnnotation` `case c.allowed != nil:`, Python `_gen_annotation` `if c.allowed is not None:`, C by parity.
-		- Origin: `bbe81d33` (2026-07-24), the generator's first commit. No round had read the generation half in any binding. Confirmed.
-		- Against: nothing. `spec.md:691` gives the line as `## <type>[, one of: v1, v2, ...][, <lo>-<hi> | >= <lo> | <= <hi>][, repeat <lo>[-<hi>]][, required]`, four independent optional parts, and calls it a byte-for-byte cross-binding contract.
-		- Sweep: the float bound arm has the same chain as the integer one, and `repeat` and `required` are appended unconditionally, so they are not affected. Name both numeric arms in all four.
-		- Note: a corpus case with both keys on one field pins this in all four at once, and there is none today.
-		- Opened: 20260920-b
-
 	- 🔘 Item 3: the C index-rebuild bound merges a document onto itself, which has been a no-op since 2026-09-19.
 		- Reproduced: by reading. `mem_bounds.c:255` runs `shcl_merge(cd, cd)` 2000 times, and `shcl.h:4678` returns at `if (over == d) return;` before `index_drop(d)`. So neither timing side ever drops the index, both build it once and do 1999 hash lookups, and the ratio the fixture exists to judge is measured over an empty loop.
 		- Cause: the fixture has merged onto itself since it was written. The early return that made that a no-op arrived with 20260918b item 19 and updated `conformance.c` and `veneer_smoke.cpp`, not this file.
@@ -666,6 +647,30 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260920b:
+
+	- Every defect the round filed. Its ideas are open under Features and enhancements.
+
+	- ✅ Item 1: `--remove` on a wildcard path skips a `Multiple` slot, leaves the data, and exits 0.
+		- Reproduced: three instances, one with a `port`, one with none, one with `port` twice. `set --write --remove='server[*].port'` removes the first instance's port, leaves both of the third's, prints only the `H001` hint and exits 0. `count 'server[*].port'` still answers 3 afterwards. The same path without the wildcard, `server[web3].port`, removes both.
+		- Cause: the slot list from a wildcard resolve carries a per-slot status, and every binding drops the ones that are not exactly one node instead of removing the group behind them.
+		- Decided: remove the group. `spec.md` already says a wildcard remove takes every resolved slot, and `design.md` says `count`, `instances`, the read and `Remove` see the same list. Refusing the whole call would make a documented path unusable wherever one instance happens to repeat a leaf.
+		- Fixed: the resolve walk takes a `group` flag. Off, a sub-path landing on several nodes is still one `Multiple` slot, which is what the reads want; on, those nodes join the slot list. Rust `resolve_group` / `resolve_from`, Go `resolveGroup` / `resolveFrom`, Python `_resolve(path, True)` / `_resolve_slots`, C `resolve_group` / `resolve_from`.
+		- Swept: `exists` was the only other caller dropping the not-exactly-one entries, and it now reads the same list, so it cannot answer false where `remove` would take something. The reads keep the per-slot statuses and are unchanged. The setters refuse a wildcard before resolving, so there is nothing else.
+		- Pinned by: corpus case `130-remove-wild-group`, whose write op is the wildcard remove and whose reads still expect `Good|NotFound|Multiple`, so the two answers are held apart. Watched to fail: with the old arm back, the write dimension goes red in all four and the reads stay green.
+		- Note: `spec.md` and `design.md` both say what the two sides answer now.
+		- Opened: 20260920-b
+		- Closed: 20260920-2100
+
+	- ✅ Item 2: a generated annotation drops the numeric bounds whenever the field also has `allowed`, and the validator still enforces them.
+		- Reproduced: `type: int`, `min: 1`, `allowed: 0, 5` generates `## int, one of: 0, 5, required`. Feeding the starter's own `n: 0` back through `check --schema` is `V005 value below min 1 at 'n': 0` at exit 6. So the generated file documents a value its own validator refuses.
+		- Cause: the annotation builder tested `allowed` and the bounds as one exclusive chain rather than as the independent parts the spec's grammar has.
+		- Fixed: `allowed` is its own test, and the two numeric arms follow it. Rust `gen_annotation`, Go `genAnnotation`, Python `_gen_annotation`, C `v_gen_annotation`.
+		- Swept: the float arm had the same chain and is covered by the same change. `repeat` and `required` were already unconditional.
+		- Pinned by: two fields added to corpus case `026-init-schema`, one int and one float, each carrying `allowed` and a bound. Watched to fail: with the old chain back, the generation dimension goes red in all four.
+		- Opened: 20260920-b
+		- Closed: 20260920-2100
 
 - Code review 20260920:
 
