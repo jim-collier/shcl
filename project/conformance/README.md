@@ -283,6 +283,18 @@ Case `128` pins the column a kept `*` element holds, beside case `095`'s dropped
 
 Case `127` pins the `init` shapes where the generator guessed what the scanner would read (20260918b items 6, 7, 8, 25, 26 and 27). The first of two lines on one path is the instance its child selects. Two by-value fields with different values are two instances. An all-digit value past 64 bits is a quoted body, since bare it reads as an index. A quoted array element selects by the elements joined. A `#` in a selector body is quoted. A fragment name holding a line break stays inside the trailing block. The input is the output with every line uncommented, and its reads count the instances.
 
+Case `131` pins the fence a writer picks for a raw body that already holds one. A body with a three-backtick line gets a four-backtick fence, one with three and four gets five, a tilde run leaves the backtick fence at three, and a run with text after it is content and counts for nothing. The read half is in the same input: a five-backtick opener, a closing fence indented deeper than its opener, a backtick line with trailing text that does not close, and a tilde line inside a backtick block.
+
+Case `132` pins a space-indented file and a subtree indented tab-then-spaces, which the spec allows and which anyone coming from YAML writes. Nothing else in the corpus indents with spaces except `075`, where they are the fault under test.
+
+Case `133` pins a leading UTF-8 BOM, the ASCII-only case fold, and non-ASCII field names. `Srv` and `srv` are one container and an uppercase lookup finds it. `"clé"` and `"Clé"` fold together; `"CLÉ"` folds to `"clÉ"` and is a different field, because the fold is A-Z only and C counts bytes. A bare non-ASCII name is `E014` at the byte column where the name stops being bare.
+
+Case `134` pins real override for a raw block and an inline array, which `design.md` promises and the merge dimension only ever pinned for scalars and repeated leaves. The base layer's shell block and three-element array are replaced whole by the top layer's python block and single element, and a raw over-value fills the base's empty binding.
+
+Case `135` pins a schema path carrying a value selector, and the `bool-array` and `datetime-array` types, which no other schema names. The `max` on `srv[web1].port` leaves `srv[web2]`'s larger port alone, so a selector read as a wildcard shows up as an extra diagnostic.
+
+Case `136` pins the number spellings a hand-edited file carries - `007`, `+5`, `-0`, `+0009` - which read as integers and keep the spelling the author wrote. Beside them, a closed quote followed by bare text (`"abc"def`) is `E017` and the whole text is the value, and the path spellings that resolve to nothing: an empty selector, a leading dot, a trailing dot and a doubled dot.
+
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 
 Not yet modeled natively (as golden files): the on-bad/default outputs (covered cross-binding via the harness above, not by per-row `expected`). Diagnostic expectations are modeled natively via `expected-diags.txt` (above) and cross-binding via the `load` rows.

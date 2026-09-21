@@ -150,20 +150,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260920b:
 
-	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 3, 4, 5, 6 and 7 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. Ideas 1 and 2 are next, since both are places a wrong answer would reach a user with nothing watching, and both want new corpus cases, so they are one batch and one fuzz-seed shift.
-
-	- 🔘 Idea 1: nothing pins the writer's fence choice for a raw body that holds a fence run.
-		- Note: `set_raw` has to pick a fence longer than any run in the body, and each binding does it in hand-written code (`choose_fence` in Rust and its three twins). No test, no corpus `write.ops` row and no `cli-regress` fixture ever hands a body holding a backtick or tilde run. The fuzz builds runs of three to five on the input side only.
-		- Note: the reference is right today. A body holding a three-backtick line gets a four-backtick fence; one holding three and four gets five. No golden compares the other three bindings on any of it.
-		- Note: a wrong choice here is a silent data change at exit 0, which is why this is first. Markdown and shell snippets in a config carry fence runs routinely.
-		- Note: the read side is thin in the same place. No `input.shcl` has a fence run longer than three, a closing fence deeper than its opener, a closing fence with trailing text, or a mismatched closer.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 2: the corpus never covers several shapes a user writes by accident.
-		- Note: ranked by how likely a defect in that shape reaches someone. Space-indented files and a subtree indented tab-then-spaces, which the spec allows and which every YAML refugee writes; the only input with leading spaces is `075`, where they are the fault under test. A leading UTF-8 BOM, which the spec strips and which no input carries. Non-ASCII field names, bare or quoted, which no input has and which C handles in bytes with the ASCII fold sitting inside multibyte names. Case-differing duplicates and uppercase lookups, where `001` pins the output folding only and no `reads.tsv` query has an uppercase letter in a field name.
-		- Note: then the merge dimension, which pins the scalar override and the repeated-leaf list and never a raw block or an inline array with a different body, though `design.md` promises real override for all three. Then schema paths with a value selector, and the `bool-array` and `datetime-array` types, which no schema in the corpus names. Then a closed quote followed by bare text, empty selector and empty path segments, and the number spellings `007`, `+5`, `-0`.
-		- Note: the reference's answer was driven for every shape above, so the behavior is known and what is missing is a four-way pin.
-		- Opened: 20260920-b
+	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1, 2, 3, 4, 5, 6 and 7 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left needs a windows box (idea 10) or is loose (ideas 8 and 11).
 
 	- 🔘 Idea 8: `check-abnf.py` has no tie to the tokenizer.
 		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
@@ -4748,6 +4735,28 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260920b:
 
 	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 1: nothing pins the writer's fence choice for a raw body that holds a fence run.
+		- Note: `set_raw` has to pick a fence longer than any run in the body, and each binding does it in hand-written code (`choose_fence` in Rust and its three twins). No test, no corpus `write.ops` row and no `cli-regress` fixture ever hands a body holding a backtick or tilde run. The fuzz builds runs of three to five on the input side only.
+		- Note: the reference is right today. A body holding a three-backtick line gets a four-backtick fence; one holding three and four gets five. No golden compares the other three bindings on any of it.
+		- Note: a wrong choice here is a silent data change at exit 0, which is why this is first. Markdown and shell snippets in a config carry fence runs routinely.
+		- Note: the read side is thin in the same place. No `input.shcl` has a fence run longer than three, a closing fence deeper than its opener, a closing fence with trailing text, or a mismatched closer.
+		- Fixed: corpus case `131-raw-fence-runs`, both halves in one case. Its `write.ops` sets six raw blocks whose bodies hold a three-run, a three and a four, a tilde run, an indented run, a run with a label after it, and a run alone; its `input.shcl` carries the four read shapes the note lists. All four bindings agreed with the reference on every one, so nothing was wrong, which is what the note expected.
+		- Note: a run with text after it counts for nothing, because a closer has to be the whole trimmed line. That is why a body line spelled ```` ```python ```` still gets a three-backtick fence and still reads back.
+		- Pinned by: case `131`. Watched to fail twice: with `choose_fence` pinned at three the write golden and its fixpoint go red, and with `is_fence_close` reading only the first `min_len` bytes the trailing-text line closes the block and the read golden goes red. Both fired on case `131` alone.
+		- Opened: 20260920-b
+		- Closed: 20260921-082651
+
+	- ✅ Idea 2: the corpus never covers several shapes a user writes by accident.
+		- Note: ranked by how likely a defect in that shape reaches someone. Space-indented files and a subtree indented tab-then-spaces, which the spec allows and which every YAML refugee writes; the only input with leading spaces is `075`, where they are the fault under test. A leading UTF-8 BOM, which the spec strips and which no input carries. Non-ASCII field names, bare or quoted, which no input has and which C handles in bytes with the ASCII fold sitting inside multibyte names. Case-differing duplicates and uppercase lookups, where `001` pins the output folding only and no `reads.tsv` query has an uppercase letter in a field name.
+		- Note: then the merge dimension, which pins the scalar override and the repeated-leaf list and never a raw block or an inline array with a different body, though `design.md` promises real override for all three. Then schema paths with a value selector, and the `bool-array` and `datetime-array` types, which no schema in the corpus names. Then a closed quote followed by bare text, empty selector and empty path segments, and the number spellings `007`, `+5`, `-0`.
+		- Note: the reference's answer was driven for every shape above, so the behavior is known and what is missing is a four-way pin.
+		- Fixed: five corpus cases, one per group. `132-space-indent` is the space and tab-then-spaces file. `133-bom-and-case` is the BOM, the fold and the non-ASCII names. `134-merge-raw-array` is the merge dimension over a raw block and an inline array. `135-schema-selector-arrays` is the value-selector schema path with `bool-array` and `datetime-array`. `136-number-and-path-edges` is the number spellings, the glued quote and the path spellings that resolve to nothing.
+		- Note: the fold worry was the right one to have and the answer was already right. All four fold A-Z only, so `"CLÉ"` folds to `"clÉ"` and is a different field from `"clé"`, while `"Clé"` is the same one. A bare non-ASCII name never gets that far: it is `E014` at the byte column where the name stops being bare, which is the one place C's byte counting and the other three's had to agree.
+		- Note: a value selector in a schema path narrows, so a `max` written for `srv[web1].port` leaves `srv[web2]`'s larger port alone. That is the half a wildcard reading would get wrong quietly.
+		- Pinned by: the five cases. Each was watched to fail on its own: a Unicode fold reddens `133`, a raw over-value that cannot override reddens `134`, a value selector read as a wildcard reddens `135`, and refusing a leading-zero integer reddens `136`. `132` was watched against an indent scan that takes tabs only, which flattens its whole tree and loses every read - that injection also reddens `061-dedent-error`, so it was read off the case directly rather than off the suite.
+		- Opened: 20260920-b
+		- Closed: 20260921-082651
 
 	- ✅ Idea 3: C's `shcl_remove` keeps its two new work vectors in the permanent arena.
 		- Measured: from the source, not run. The 2026-09-20 remove fix pushes `marked` and `parents` on `d->arena`, which is never reset, where the other three free their pair list on return. That is about 128 bytes per single-target remove, and for n targets two vectors of the next power of two times 8 bytes plus the regrow garbage, since the pushes interleave and `arena_grow` cannot extend in place. A 40,000-target remove leaves roughly 2 MB in the document until `shcl_compact`.
