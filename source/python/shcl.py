@@ -2411,7 +2411,7 @@ class _Parser:
 				)
 				if all_scalar_leaves:
 					line = max(self.arena[c].line for c in group)
-					joined = ", ".join(self.arena[c].value.display() for c in group)
+					joined = ", ".join(_diag_value(self.arena[c].value) for c in group)
 					hints.append((line, f"{_h001_head(name)}{joined}'?"))
 		for line, message in hints:
 			self._diag(Diagnostic(line, Severity.Hint, message, "H001"))
@@ -4545,6 +4545,25 @@ def _diag_name(name):
 	# raw line break splits one diagnostic across two. CR is escaped here and not
 	# in _escape_name, because the name parse has no `\r` escape to read back.
 	return _emit_name(name).replace("\r", "\\r")
+
+
+def _diag_element(e):
+	# One element of a value, spelled for a diagnostic message: the emitter's
+	# inline spelling, so a value carrying a line break cannot split one
+	# diagnostic across two. A mid-piece CR is content and the emitter leaves it
+	# bare, so it forces quotes here and is escaped, same reason as _diag_name.
+	s = _emit_element(e)
+	if "\r" in s:
+		return _quote_double(e.text).replace("\r", "\\r")
+	return s
+
+
+def _diag_value(v):
+	# A value for a diagnostic message. Only a cell reaches this today, from the
+	# H001 hint; a raw block has no one-line form worth suggesting.
+	if v.kind != "cell":
+		return v.display()
+	return ", ".join(_diag_element(e) for e in v.els)
 
 
 def quote_segment(name: str) -> str:

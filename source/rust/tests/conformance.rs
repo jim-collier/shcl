@@ -80,6 +80,11 @@ fn unescape_ops(s: &str) -> String {
 
 /// Apply one write-ops line via the library Writer, with the same value gates
 /// the CLI applies. Err = the op must be rejected (bad value or unusable path).
+/// The error an op name no runner knows comes back as. A write-bad.ops row
+/// spelled wrong is a fixture mistake, and without this it counted as exactly
+/// the refusal the row exists to assert.
+const UNKNOWN_OP: &str = "unknown op: ";
+
 fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	let f: Vec<&str> = line.split('\t').collect();
 	let path = f.get(1).copied().unwrap_or("");
@@ -144,7 +149,7 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.remove(path);
 			true
 		}
-		other => return Err(format!("unknown op: {}", other)),
+		other => return Err(format!("{}{}", UNKNOWN_OP, other)),
 	};
 	if !wrote {
 		return Err(format!("cannot write {}", path));
@@ -167,10 +172,11 @@ fn load_cases() -> Vec<Case> {
 		if !path.is_dir() {
 			continue;
 		}
+		// A case directory with no input.shcl is a mistake, not a non-case. The
+		// runners all skipped one without a word while check-docs still wanted
+		// its README note, so the case read as present and asserted nothing.
 		let input = path.join("input.shcl");
-		if !input.exists() {
-			continue;
-		}
+		assert!(input.exists(), "{}: missing input.shcl", path.display());
 		let read_opt = |name: &str| std::fs::read_to_string(path.join(name)).ok();
 		// Layer files: every `layer*.shcl`, read in filename (= priority) order.
 		let mut layer_names: Vec<String> = std::fs::read_dir(&path)
@@ -999,13 +1005,21 @@ fn write_bad_ops_are_rejected() {
 			}
 			let mut doc = Document::parse(&case.input);
 			let before = doc.to_canonical();
-			assert!(
-				try_apply_op(&mut doc, line).is_err(),
-				"{}: write-bad.ops line {} was accepted: {}",
-				case.name,
-				n + 1,
-				line
-			);
+			match try_apply_op(&mut doc, line) {
+				Ok(()) => panic!(
+					"{}: write-bad.ops line {} was accepted: {}",
+					case.name,
+					n + 1,
+					line
+				),
+				Err(e) => assert!(
+					!e.starts_with(UNKNOWN_OP),
+					"{}: write-bad.ops line {} names no op: {}",
+					case.name,
+					n + 1,
+					line
+				),
+			}
 			assert_eq!(
 				doc.to_canonical(),
 				before,
@@ -1318,6 +1332,14 @@ fn file_tier_load_save() {
 		if id_of(&born) == 0o6750 {
 			fdoc.save_file(born.to_str().unwrap()).unwrap();
 			assert_eq!(id_of(&born), 0o6750, "save dropped a set-id bit");
+		} else {
+			// Setgid is cleared when the file's group is not one of the caller's,
+			// which happens on ordinary boxes. The skip was silent, so this
+			// fixture passed wherever it fired.
+			eprintln!(
+				"conformance: skipping the set-id fixture (mode came back {:o}, want 6750)",
+				id_of(&born)
+			);
 		}
 		let _ = std::fs::remove_file(&probe);
 		let _ = std::fs::remove_file(&born);

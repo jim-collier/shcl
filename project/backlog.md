@@ -86,13 +86,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- 🔘 The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
-	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
-	- Cause: the hint's builder splices the values into its suggestion in display form. `diag_name` spells a NAME carrying a line break on one line (20260916 item 18); the suggestion's VALUE half goes around it.
-	- Note: found while testing 20260920b item 26, which fixed the same class in the CLI's `instances`. Not the same site: this is the library's diagnostic prose, which the crosscheck drops and `expected-diags.txt` records by code only, so nothing watches it.
-	- Note: the fix is the value half of what `diag_name` already does for names, in all four. Pinned in `cli-regress.bash` or nowhere.
-	- Opened: 20260921-0210
-
 - Code review 20260920b:
 
 	- A full adversarial pass over the whole tree, aimed first at the ground the 20260920 round recorded as unread: most of `design.md`, `style-guide_code.md` entirely, the schema and generation half of all four bindings, the corpus's write, merge, layer and init dimensions, the test files read for what they do not assert, and the pipeline files nobody had opened. A second part went at the code merged 2026-09-19 and 2026-09-20, which had no soak time, and at the siblings of each of those fixes. Twenty-six defects here and ten enhancements under Features and enhancements.
@@ -157,7 +150,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260920b:
 
-	- The round's ten ideas. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1 and 2 are the two worth taking first, since both are places a wrong answer would reach a user with nothing watching.
+	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 3, 4, 5, 6 and 7 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. Ideas 1 and 2 are next, since both are places a wrong answer would reach a user with nothing watching, and both want new corpus cases, so they are one batch and one fuzz-seed shift.
 
 	- 🔘 Idea 1: nothing pins the writer's fence choice for a raw body that holds a fence run.
 		- Note: `set_raw` has to pick a fence longer than any run in the body, and each binding does it in hand-written code (`choose_fence` in Rust and its three twins). No test, no corpus `write.ops` row and no `cli-regress` fixture ever hands a body holding a backtick or tilde run. The fuzz builds runs of three to five on the input side only.
@@ -172,38 +165,9 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the reference's answer was driven for every shape above, so the behavior is known and what is missing is a four-way pin.
 		- Opened: 20260920-b
 
-	- 🔘 Idea 3: C's `shcl_remove` keeps its two new work vectors in the permanent arena.
-		- Measured: from the source, not run. The 2026-09-20 remove fix pushes `marked` and `parents` on `d->arena`, which is never reset, where the other three free their pair list on return. That is about 128 bytes per single-target remove, and for n targets two vectors of the next power of two times 8 bytes plus the regrow garbage, since the pushes interleave and `arena_grow` cannot extend in place. A 40,000-target remove leaves roughly 2 MB in the document until `shcl_compact`.
-		- Note: `d->scratch` was reset by the `resolve` at the top of the call and nothing resolves again before it returns, so both vectors can go there instead.
-		- Note: no stated bound is broken. The header already says a removed node's storage is not reclaimed until `shcl_compact`, so this is a cost, not a defect.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 4: a case directory with no `input.shcl` is silently not a case.
-		- Note: all four runners and `crosscheck.bash` skip such a directory without a word, while `check-docs.bash` still requires its README note, so the case looks present and asserts nothing. No directory is in that state today.
-		- Note: the C runner's own comment says a missing `expected.shcl` or `reads.tsv` used to count as a pass and that those two were fixed. The case-level skip is the one that stayed. Crosscheck's NUL skip is the model: it says so out loud.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 5: a misspelled op in `write-bad.ops` counts as a rejection in all four runners.
-		- Note: every bad-ops loop takes any error as the expected refusal, so a future row spelled `itn` would assert nothing. All 51 rows are spelled right today.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 6: two fuzz properties are weaker than they read.
-		- Note: `comments_behind_selectors_stay_comments` inspects only canonical lines that hold `# k` and asks they end with it, so a line retained as `E014` passes and a dropped line is never inspected. The `seen` floor is met by three shapes that bind. Corpus `105-quote-in-selector` is the real pin.
-		- Note: `raw_bodies_stay_content` asserts no diagnostic on body lines, not that the body reads back or that the field under it did not bind. A parser that opens the block and also binds the field is a fixpoint and passes.
-		- Note: `generated_starters` discards `generate_checked`'s result in its mutated-seed loop, so the doc comment's floors are not enforced. It passes if `generate` refuses every mutated schema.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 7: the set-id file-mode fixture skips without saying so in all four runners.
-		- Note: each guards on the mode it just set being readable back as `6750` and moves on quietly when it is not. Setgid is cleared when the file's group is not the caller's, so the guard fires on ordinary boxes. It passes if a save drops setuid or setgid anywhere that happens.
-		- Opened: 20260920-b
-
 	- 🔘 Idea 8: `check-abnf.py` has no tie to the tokenizer.
 		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
 		- Note: this is the same shape as the generator predicting what the scanner will read, which is a class this project has fixed twice elsewhere by asking the real component.
-		- Opened: 20260920-b
-
-	- 🔘 Idea 9: `install.bash` hardcodes the glibc floors that `package.bash` derives.
-		- Note: the two agree today. Nothing ties them, so a toolchain or target bump moves one and not the other. Deferred until then; the trigger is any change to the cross targets or the build image.
 		- Opened: 20260920-b
 
 	- 🔘 Idea 10: the Windows batch this round would have wanted.
@@ -220,6 +184,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
+	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
+	- Cause: the hint's builder splices the values into its suggestion in display form. `diag_name` spells a NAME carrying a line break on one line (20260916 item 18); the suggestion's VALUE half goes around it.
+	- Note: found while testing 20260920b item 26, which fixed the same class in the CLI's `instances`. Not the same site: this is the library's diagnostic prose, which the crosscheck drops and `expected-diags.txt` records by code only, so nothing watches it.
+	- Fixed: the suggestion is spelled through the emitter now, the same way `diag_name` spells a name. `diag_element` gives one element the emitter's inline spelling and `diag_value` joins a cell's elements with `, `; the hint builder calls the second. A mid-piece carriage return is content, so the emitter leaves it bare - it forces quotes here and is escaped, which is the rule `diag_name` already had. `diag_element`/`diag_value` in Rust, `diagElement`/`diagValue` in Go, `_diag_element`/`_diag_value` in Python, `diag_element`/`diag_value` in C.
+	- Note: the suggestion is now valid SHCL, where before it was not: `srv: "a\nb", c` reads back as the two values it names.
+	- Pinned by: the `diag-value-line-break` row in `cli-regress.bash`, over the `nlvalue.shcl` fixture that was already there for the `instances` rows. Watched to fail in all four with the per-element helper cut back to the raw text.
+	- Opened: 20260921-0210
+	- Closed: 20260920-204500
 
 - ✅ `check-migrate` diverged on a 2.x file whose indentation the current parser places nowhere.
 	- 2.x read both elements of a list whose second line is indented with a space before its tab. The current parser reports `E012` and keeps only the first, so the migrated text reads one element short and the gate calls that a divergence. The document came into the fuzz seed set when corpus case `129-remove-many` shifted it.
@@ -4771,6 +4745,52 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Opened: n/a
 	- Closed: 20260713-065600
 
+- Code review 20260920b:
+
+	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 3: C's `shcl_remove` keeps its two new work vectors in the permanent arena.
+		- Measured: from the source, not run. The 2026-09-20 remove fix pushes `marked` and `parents` on `d->arena`, which is never reset, where the other three free their pair list on return. That is about 128 bytes per single-target remove, and for n targets two vectors of the next power of two times 8 bytes plus the regrow garbage, since the pushes interleave and `arena_grow` cannot extend in place. A 40,000-target remove leaves roughly 2 MB in the document until `shcl_compact`.
+		- Note: `d->scratch` was reset by the `resolve` at the top of the call and nothing resolves again before it returns, so both vectors can go there instead.
+		- Note: no stated bound is broken. The header already says a removed node's storage is not reclaimed until `shcl_compact`, so this is a cost, not a defect.
+		- Fixed: `shcl_remove` takes its three work vectors from `d->scratch`, which the `resolve` at the top of the call already reset and which nothing resolves again before it returns. `targets` moved with `marked` and `parents`: it was pushed on the document arena too in the single-target and slot arms.
+		- Measured: removing 20,000 same-named leaves grew the document arena by 1,048,448 bytes before and by 0 after.
+		- Pinned by: a `remove` block in `source/c/tests/mem_bounds.c`, bounded at 8 KB. Watched to fail with the arena put back.
+		- Opened: 20260920-b
+		- Closed: 20260920-204500
+
+	- ✅ Idea 4: a case directory with no `input.shcl` is silently not a case.
+		- Note: all four runners and `crosscheck.bash` skip such a directory without a word, while `check-docs.bash` still requires its README note, so the case looks present and asserts nothing. No directory is in that state today.
+		- Note: the C runner's own comment says a missing `expected.shcl` or `reads.tsv` used to count as a pass and that those two were fixed. The case-level skip is the one that stayed. Crosscheck's NUL skip is the model: it says so out loud.
+		- Fixed: a directory with no `input.shcl` is a mistake, not a non-case. The Rust, Go and Python runners fail on it the way the C runner already failed on a missing `expected.shcl`; the C runner takes every subdirectory as a case now, through an `opendir` test that needs no extra header on windows, so its own check fires. `crosscheck.bash` exits 2 and names the directory.
+		- Pinned by: nothing standing, since no such directory exists and adding one would fail the whole corpus. Watched instead: an empty `999-no-input` directory makes all four runners and crosscheck say so by name, and every one of them passed before.
+		- Opened: 20260920-b
+		- Closed: 20260920-204500
+
+	- ✅ Idea 5: a misspelled op in `write-bad.ops` counts as a rejection in all four runners.
+		- Note: every bad-ops loop takes any error as the expected refusal, so a future row spelled `itn` would assert nothing. All 51 rows are spelled right today.
+		- Fixed: an op name the runner does not have is told apart from a refusal. Rust and Python carry it as a fixed message prefix, Go wraps a sentinel error that `errors.Is` finds, and the C runner returns 2 where a refusal returns 1. Each bad-ops loop reports `names no op` instead of counting it as the rejection the row asserts.
+		- Pinned by: the four loops themselves. Watched to fail by spelling `029-write-gate`'s first op `itn`, which all four now name and none of them did before.
+		- Opened: 20260920-b
+		- Closed: 20260920-204500
+
+	- ✅ Idea 6: two fuzz properties are weaker than they read.
+		- Note: `comments_behind_selectors_stay_comments` inspects only canonical lines that hold `# k` and asks they end with it, so a line retained as `E014` passes and a dropped line is never inspected. The `seen` floor is met by three shapes that bind. Corpus `105-quote-in-selector` is the real pin.
+		- Note: `raw_bodies_stay_content` asserts no diagnostic on body lines, not that the body reads back or that the field under it did not bind. A parser that opens the block and also binds the field is a fixpoint and passes.
+		- Note: `generated_starters` discards `generate_checked`'s result in its mutated-seed loop, so the doc comment's floors are not enforced. It passes if `generate` refuses every mutated schema.
+		- Fixed, all three. `comments_behind_selectors_stay_comments` runs the four selector shapes alone first, where nothing above can drop the line, and asks for a zero lost count and exactly one canonical line ending in `# k`; the soup loop and its floor stay as they were. `raw_bodies_stay_content` reads each body line back out of the document's values and floors how many it read. `generated_starters_load_and_validate_clean` counts the mutated seeds that generated and floors it at a sixteenth.
+		- Measured: 235 of 2000 mutated schemas generate, so the floor sits at about half the observed rate. Holds at 300, 20,000 and 200,000 iterations.
+		- Pinned by: the properties themselves, each watched to fail and each shown to have passed the same injection before. An `E017` in a selector made to drop its line: the new head catches it, the old property does not. A parsed raw block emptied of its body: the read-back catches it, the old property does not. A `generate` that refuses any schema over 300 bytes, which is the corpus seeds and not the grid: the new floor catches it.
+		- Opened: 20260920-b
+		- Closed: 20260920-204500
+
+	- ✅ Idea 7: the set-id file-mode fixture skips without saying so in all four runners.
+		- Note: each guards on the mode it just set being readable back as `6750` and moves on quietly when it is not. Setgid is cleared when the file's group is not the caller's, so the guard fires on ordinary boxes. It passes if a save drops setuid or setgid anywhere that happens.
+		- Fixed: each of the four runners prints `skipping the set-id fixture` with the mode it got back, so a box where setgid does not stick says so instead of passing quietly. The assertion itself is unchanged.
+		- Pinned by: nothing, since the skip does not fire on this box (the mode reads back as 6750 here). Watched instead: comparing against 6751 makes all four print the line.
+		- Opened: 20260920-b
+		- Closed: 20260920-204500
+
 - Code review 20260920:
 
 	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
@@ -7388,6 +7408,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ Code review 20260920b idea 9: `install.bash` hardcodes the glibc floors that `package.bash` derives.
+	- Note: the two agree today. Nothing ties them, so a toolchain or target bump moves one and not the other. Deferred until then; the trigger is any change to the cross targets or the build image.
+	- Note: deferred 20260920, as the item itself recommended.
+	- Opened: 20260920-b
 
 - ✋ Code review 20260909 item 47, second half: `check --schema` builds the schema three times.
 	- `validate` builds one, and `suppress_declared_repeats` and `suppress_declared_reopens` build one each through `disavowed_names`, in the CLI and in `load_and_validate` alike.

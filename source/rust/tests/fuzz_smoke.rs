@@ -380,6 +380,28 @@ fn writes_on_structural_soup_stay_fixpoint() {
 /// holding it has to end with it.
 #[test]
 fn comments_behind_selectors_stay_comments() {
+	// The four selector shapes on their own first. In the soup a line can be
+	// dropped by what sits above it, and a dropped line never reaches the loop
+	// below - so the floor there was met by the two shapes that always bind,
+	// and all four of the shapes this property is named for could have stopped
+	// generating without a word.
+	for one in [
+		"a[O'x].b: 5  # k",
+		"a[C:\\].b: it's  # k",
+		"a[ \"q]v\" ].b: 5  # k",
+		"a['x].b: 5  # k",
+	] {
+		let doc = Document::parse(one);
+		let canon = doc.to_canonical();
+		assert_eq!(doc.lost_count(), 0, "line dropped: {:?}\n{}", one, canon);
+		let held: Vec<&str> = canon.lines().filter(|l| l.contains("# k")).collect();
+		assert!(
+			held.len() == 1 && held[0].ends_with("# k"),
+			"comment read as value: {:?}\n{}",
+			one,
+			canon
+		);
+	}
 	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0003);
 	let mut seen = 0usize;
@@ -609,10 +631,23 @@ fn raw_spans(text: &str) -> Vec<(usize, usize)> {
 fn raw_bodies_stay_content() {
 	let iters = iter_count(1);
 	let mut rng = Rng(0x5EED_57A7_1C00_0008);
-	let (mut seen, mut skipped) = (0usize, 0usize);
+	let (mut seen, mut skipped, mut read_back) = (0usize, 0usize, 0usize);
 	for i in 0..iters {
 		let text = structural(&mut rng);
+		let lines: Vec<&str> = text.lines().collect();
 		let doc = Document::parse(&text);
+		// Every value the document holds, as one blob - a raw block's value is
+		// its body. Silence on the body lines was never enough on its own: a
+		// parser that opened the block and ALSO bound the field under it drew no
+		// diagnostic and was its own fixpoint, so the body has to be read back.
+		// Read through instances rather than get_raw, since a repeated name
+		// answers a path lookup with Multiple and the block would go unseen.
+		let values = doc
+			.paths()
+			.iter()
+			.flat_map(|p| doc.instances(p))
+			.collect::<Vec<_>>()
+			.join("\n");
 		let diags = doc.diagnostics();
 		let on = |n: usize, codes: &[&str]| {
 			diags
@@ -636,10 +671,33 @@ fn raw_bodies_stay_content() {
 					i,
 					text
 				);
+				// Only where the opening line itself drew nothing: a skipped or
+				// capped opener takes its body with it, which is a separate rule.
+				if on(opener, &[]) {
+					continue;
+				}
+				let t = lines[body - 1].trim();
+				if t.is_empty() || fence_run(t).is_some() {
+					continue;
+				}
+				assert!(
+					values.contains(t),
+					"raw body line {} of the block opened at {} did not read back, at iteration {}:\n{}",
+					body,
+					opener,
+					i,
+					text
+				);
+				read_back += 1;
 			}
 		}
 	}
 	assert!(seen > iters / 8, "the soup opened only {} blocks", seen);
+	assert!(
+		read_back > iters / 8,
+		"only {} body lines were read back",
+		read_back
+	);
 	assert!(
 		skipped > iters / 60,
 		"the soup skipped only {} block openers",
@@ -1177,10 +1235,22 @@ fn generated_starters_load_and_validate_clean() {
 	seeds.sort();
 	assert!(!seeds.is_empty(), "no init-schema.shcl in the corpus");
 	let mut rng = Rng(0x5EED_CAFE_F00D_0005);
+	// Without a count here the loop asserted nothing: generate_checked only
+	// checks what it generated, so a run whose every mutated schema was refused
+	// came back clean.
+	let mut mutated = 0usize;
 	for _ in 0..iters {
 		let base = &seeds[rng.below(seeds.len())];
-		generate_checked(&mutate(&mut rng, base));
+		if generate_checked(&mutate(&mut rng, base)).is_some() {
+			mutated += 1;
+		}
 	}
+	assert!(
+		mutated > iters / 16,
+		"only {} of {} mutated schemas generated",
+		mutated,
+		iters
+	);
 
 	assert_eq!(
 		generate_checked("field: \"a[b]\"\n\trequired: yes\n\tdefault: b\n").as_deref(),

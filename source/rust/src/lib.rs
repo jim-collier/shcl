@@ -2863,7 +2863,7 @@ impl Parser {
 					let line = group.iter().map(|&c| self.arena[c].line).max().unwrap_or(0);
 					let joined = group
 						.iter()
-						.map(|&c| self.arena[c].value.display())
+						.map(|&c| diag_value(&self.arena[c].value))
 						.collect::<Vec<_>>()
 						.join(", ");
 					hints.push((line, format!("{}{}'?", h001_head(name), joined)));
@@ -3645,6 +3645,27 @@ fn emit_name(name: &str) -> String {
 /// in `escape_name`, because the name parse has no `\r` escape to read back.
 fn diag_name(name: &str) -> String {
 	emit_name(name).replace('\r', "\\r")
+}
+
+/// One element of a value, spelled for a diagnostic message: the emitter's
+/// inline spelling, so a value carrying a line break cannot split one
+/// diagnostic across two. A mid-piece CR is content and the emitter leaves it
+/// bare, so it forces quotes here and is escaped, same reason as `diag_name`.
+fn diag_element(e: &Element) -> String {
+	let s = emit_element(e);
+	if s.contains('\r') {
+		return quote_double(&e.text).replace('\r', "\\r");
+	}
+	s
+}
+
+/// A value for a diagnostic message. Only a cell reaches this today, from the
+/// H001 hint; a raw block has no one-line form worth suggesting.
+fn diag_value(v: &Value) -> String {
+	match v {
+		Value::Cell(els) => els.iter().map(diag_element).collect::<Vec<_>>().join(", "),
+		_ => v.display(),
+	}
 }
 
 /// Render a float the way the writer and the CLI do: shortest round-trip

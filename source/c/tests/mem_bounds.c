@@ -321,6 +321,23 @@ int main(void) {
 		if (per > 4096) fail("a merge retained the parent's whole child list");
 		shcl_free(over); shcl_free(base); free(txt);
 	}
+	// Remove's mark-and-rebuild work vectors were pushed on the document arena,
+	// which nothing resets, so removing n same-named leaves left two n-sized
+	// vectors plus their regrow garbage behind until shcl_compact.
+	{
+		size_t n = 20000, cap = n * 16 + 16, tl = 0;
+		char *txt = (char *)malloc(cap);
+		for (size_t i = 0; i < n; i++) tl += (size_t)sprintf(txt + tl, "k: %zu\n", i);
+		d = shcl_parse(txt, tl);
+		held = arena_bytes(&d->arena);
+		size_t gone = shcl_remove(d, "k", 1);
+		size_t grew = arena_bytes(&d->arena) - held;
+		printf("mem_bounds: remove: %zu bytes to remove %zu of %zu instances\n", grew, gone, n);
+		if (gone != n || shcl_count(d, "k", 1) != 0) fail("remove: wrong result");
+		// Nothing target-sized: the three vectors are 480 KB between them.
+		if (grew > 8192) fail("a remove retained its work vectors in the document arena");
+		shcl_free(d); free(txt);
+	}
 	{
 		size_t big = 4u * 1024 * 1024;
 		char *blob = (char *)malloc(big);

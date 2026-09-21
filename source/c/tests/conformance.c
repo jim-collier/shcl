@@ -313,7 +313,7 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (!strcmp(op, "comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
-	else rc = 1; // unknown op
+	else rc = 2; // no such op here: a misspelled bad-ops row is a fixture bug
 	if (rc == 0 && !wrote) rc = 1;
 	#undef SET
 	free(f);
@@ -391,8 +391,11 @@ int main(int argc, char **argv) {
 	char **names = NULL; size_t nn = 0, cn = 0; const struct dirent *de;
 	while ((de = readdir(dir))) {
 		if (de->d_name[0] == '.') continue;
-		char path[4096]; snprintf(path, sizeof path, "%s/%s/input.shcl", corpus, de->d_name);
-		FILE *t = fopen(path, "rb"); if (!t) continue; fclose(t);
+		/* Every subdirectory is a case, so one with no input.shcl reaches the
+		   missing-file check below instead of being skipped without a word.
+		   opendir is the directory test that needs no extra header on windows. */
+		char path[4096]; snprintf(path, sizeof path, "%s/%s", corpus, de->d_name);
+		DIR *sub = opendir(path); if (!sub) continue; closedir(sub);
 		if (nn == cn) { cn = cn ? cn * 2 : 8; names = xrealloc(names, cn * sizeof *names); }
 		names[nn++] = strdup(de->d_name);
 	}
@@ -572,7 +575,9 @@ int main(int argc, char **argv) {
 				shcl_str before = shcl_to_canonical(bd);
 				char *before_copy = (char *)xrealloc(NULL, before.n ? before.n : 1);
 				memcpy(before_copy, before.p, before.n); size_t before_n = before.n;
-				if (!try_apply_op_c(bd, blines[li])) fail(names[ci], "write-bad.ops line was accepted");
+				int brc = try_apply_op_c(bd, blines[li]);
+				if (brc == 0) fail(names[ci], "write-bad.ops line was accepted");
+				if (brc == 2) fail(names[ci], "write-bad.ops line names no op");
 				shcl_str after = shcl_to_canonical(bd);
 				if (after.n != before_n || (before_n && memcmp(after.p, before_copy, before_n) != 0)) fail(names[ci], "write-bad.ops line changed the document");
 				free(before_copy); shcl_free(bd);
@@ -1184,6 +1189,11 @@ int main(int argc, char **argv) {
 					if (shcl_save_file(nd, born) != SHCL_SAVE_OK) fail("file_tier", "set-id save failed");
 					if (stat(born, &ns) != 0) fail("file_tier", "set-id stat failed");
 					if ((ns.st_mode & 07777) != 06750) fail("file_tier", "set-id bits lost");
+				} else {
+					/* Setgid is cleared when the file's group is not one of the
+					   caller's, which happens on ordinary boxes. The skip was
+					   silent, so this fixture passed wherever it fired. */
+					printf("conformance: skipping the set-id fixture (mode came back %o, want 6750)\n", (unsigned)(ns.st_mode & 07777));
 				}
 				remove(probe); remove(born);
 			}

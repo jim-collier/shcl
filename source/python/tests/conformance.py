@@ -45,9 +45,12 @@ def load_cases():
 		d = os.path.join(CORPUS, name)
 		if not os.path.isdir(d):
 			continue
+		# A case directory with no input.shcl is a mistake, not a non-case: it
+		# used to be skipped without a word while check-docs still wanted its
+		# README note, so the case read as present and asserted nothing.
 		inp = os.path.join(d, "input.shcl")
 		if not os.path.exists(inp):
-			continue
+			raise SystemExit(f"{name}: missing input.shcl")
 		case = {
 			"name": name,
 			"input": _read(inp),
@@ -262,6 +265,12 @@ def _op_flt(s):
 	return x
 
 
+# What an op name this runner does not have comes back as. A write-bad.ops row
+# spelled wrong is a fixture mistake, and without telling it apart it counted as
+# exactly the refusal the row exists to assert.
+_UNKNOWN_OP = "unknown op: "
+
+
 def try_apply_op(doc, line):
 	# Apply one write-ops line via the library Writer, with the same value gates
 	# the CLI applies. A returned string = the op must be rejected (bad value or
@@ -331,7 +340,7 @@ def try_apply_op(doc, line):
 			doc.remove(path)
 			wrote = True
 		else:
-			return f"unknown op: {op}"
+			return f"{_UNKNOWN_OP}{op}"
 	except ValueError as e:
 		return str(e)
 	if not wrote:
@@ -500,8 +509,11 @@ def main():
 				continue
 			doc = shcl.Document.parse(case["input"])
 			before = doc.to_canonical()
-			if try_apply_op(doc, line) is None:
+			err = try_apply_op(doc, line)
+			if err is None:
 				fails.append(f"{case['name']}: write-bad.ops line {n + 1} was accepted: {line}")
+			elif err.startswith(_UNKNOWN_OP):
+				fails.append(f"{case['name']}: write-bad.ops line {n + 1} names no op: {line}")
 			if doc.to_canonical() != before:
 				fails.append(f"{case['name']}: write-bad.ops line {n + 1} changed the document: {line}")
 
@@ -1315,6 +1327,12 @@ def main():
 				ndoc.save_file(born)
 				if os.stat(born).st_mode & 0o7777 != 0o6750:
 					raise SystemExit("save dropped a set-id bit")
+			else:
+				# Setgid is cleared when the file's group is not one of the caller's,
+				# which happens on ordinary boxes. The skip was silent, so this
+				# fixture passed wherever it fired.
+				got = os.stat(born).st_mode & 0o7777
+				print(f"conformance: skipping the set-id fixture (mode came back {got:o}, want 6750)")
 			# A link to a file that is not there yet is written through like any
 			# other link: the file appears where the link points and the link
 			# stays a link. Same fixture in every POSIX runner.

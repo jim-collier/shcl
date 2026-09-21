@@ -1661,6 +1661,7 @@ static ShclStr emit_element(ShclArena *a, const ShclElement *e);
 static ShclElement new_element(ShclStr text);
 static ShclStr escape_name(ShclArena *a, ShclStr name);
 static ShclStr diag_name(ShclArena *a, ShclStr name);
+static ShclStr diag_value(ShclArena *a, const ShclValue *v);
 static int index_shape(ShclStr body);
 
 /* One edit to a line: replace start..end with the text. */
@@ -3231,7 +3232,7 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 			}
 			if (!all_scalar) continue;
 			ShclSB joined = {0};
-			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(tmp, &joined, ", "); sb_putS(tmp, &joined, value_display(tmp, &NODE(P->d, grp.data[k]).value)); }
+			for (size_t k = 0; k < grp.len; k++) { if (k) sb_puts(tmp, &joined, ", "); sb_putS(tmp, &joined, diag_value(tmp, &NODE(P->d, grp.data[k]).value)); }
 			ShclSB m = {0}; sb_putS(tmp, &m, h001_head(tmp, names.data[gi])); sb_putS(tmp, &m, sb_S(&joined)); sb_puts(tmp, &m, "'?");
 			p_diag(P, maxline, SHCL_SEV_HINT, "H001", sb_S(&m));
 		}
@@ -4228,7 +4229,10 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen) {
 }
 
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
-	ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
+	// Work vectors only, so they go in the scratch the resolve below resets -
+	// the document arena is never reset, and a wildcard remove left two vectors
+	// sized to the target count sitting in it until shcl_compact.
+	ShclArena *a = &d->scratch; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
 	if (!resolve_group(d, p, &r)) return 0;
 	ShclVecSize targets = {0};
 	if (r.kind == R_ONE) ShclVecSize_push(a, &targets, r.one);
@@ -4978,6 +4982,31 @@ static ShclStr diag_name(ShclArena *a, ShclStr name) {
 		if (q.p[i] == '\r') sb_puts(a, &b, "\\r");
 		else sb_putc(a, &b, q.p[i]);
 	}
+	return sb_S(&b);
+}
+/* One element of a value, spelled for a diagnostic message: the emitter's
+   inline spelling, so a value carrying a line break cannot split one
+   diagnostic across two. A mid-piece CR is content and the emitter leaves it
+   bare, so it forces quotes here and is escaped, same reason as diag_name. */
+static ShclStr diag_element(ShclArena *a, const ShclElement *e) {
+	ShclStr s = emit_element(a, e);
+	size_t i = 0;
+	while (i < s.n && s.p[i] != '\r') i++;
+	if (i == s.n) return s;
+	ShclStr q = quote_double(a, e->text);
+	ShclSB b = {0};
+	for (i = 0; i < q.n; i++) {
+		if (q.p[i] == '\r') sb_puts(a, &b, "\\r");
+		else sb_putc(a, &b, q.p[i]);
+	}
+	return sb_S(&b);
+}
+/* A value for a diagnostic message. Only a cell reaches this today, from the
+   H001 hint; a raw block has no one-line form worth suggesting. */
+static ShclStr diag_value(ShclArena *a, const ShclValue *v) {
+	if (v->kind != V_CELL) return value_display(a, v);
+	ShclSB b = {0};
+	for (size_t i = 0; i < v->nels; i++) { if (i) sb_puts(a, &b, ", "); sb_putS(a, &b, diag_element(a, &v->els[i])); }
 	return sb_S(&b);
 }
 
