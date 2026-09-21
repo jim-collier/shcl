@@ -192,7 +192,11 @@ refused: --write with --layer; --write with --set outside 'set'; --write with a
 FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
 --check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
 --default with --on-bad=error or --on-bad=flag; '-' named more than once across
-FILE, --layer and --schema.
+FILE, --layer and --schema. Two options that ask for different answers are a
+usage error whichever order they came in, and both are named: two different type
+options, or one value option given two different values. Repeating an option
+with the same value is allowed, and --layer and --set are ordered lists, so they
+repeat.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -393,10 +397,23 @@ class _SetOpt:
 
 
 class _Opts:
-	__slots__ = ("kind", "array", "slots", "default", "on_bad", "on_bad_arg", "strictness", "write", "lossy", "from_2x", "check", "no_banner", "schema", "layers", "sets", "args", "seen", "swallowed")
+	__slots__ = ("kind", "kind_opt", "kind_text", "clash_opt", "clash", "array", "slots", "default", "on_bad", "on_bad_arg", "on_bad_text", "strictness", "strictness_text", "write", "lossy", "from_2x", "check", "no_banner", "schema", "layers", "sets", "args", "seen", "swallowed")
 
 	def __init__(self):
 		self.kind = "string"     # int|float|bool|datetime|string|raw
+		# Which type option was given, if any. kind cannot answer that, since it
+		# starts at the default type.
+		self.kind_opt = None
+		# As it was typed, for the competing-pair message.
+		self.kind_text = None
+		# The first competing pair the line held. Two options that ask for
+		# different answers are a usage error whichever order they came in, so the
+		# pair is recorded here rather than refused on the spot and the "not valid
+		# for this subcommand" answer still comes first. clash_opt is set when the
+		# pair is one option repeated with a different value, in which case the
+		# two entries are the values; otherwise they are whole option spellings.
+		self.clash_opt = None
+		self.clash = None
 		self.array = False
 		self.slots = False
 		self.default = None
@@ -405,7 +422,9 @@ class _Opts:
 		# on_bad too, so without this the two options silently overwrote each
 		# other and which one survived depended on which came last.
 		self.on_bad_arg = None
+		self.on_bad_text = None
 		self.strictness = shcl.Strictness.Standard
+		self.strictness_text = None
 		self.schema = None
 		self.write = False
 		self.lossy = False
@@ -439,8 +458,18 @@ def known_option(name):
 	return name == "-w" or name in option_names()
 
 
+def note_clash(o, opt, a, b):
+	# Record the first competing pair. Only the first is kept: the line is already
+	# a usage error, and a second pair would just change which one gets named.
+	if o.clash is None:
+		o.clash_opt = opt
+		o.clash = (a, b)
+
+
 def _set_value_opt(o, name, v):
 	if name == "--default":
+		if o.default is not None and o.default != v:
+			note_clash(o, "--default", o.default, v)
 		o.default = v
 		o.on_bad = "default"
 		o.seen.append("--default")
@@ -448,16 +477,24 @@ def _set_value_opt(o, name, v):
 		low = _ascii_lower(v)
 		if low not in ("error", "default", "flag"):
 			raise ValueError(f"bad --on-bad value: {v} (see --help)")
+		if o.on_bad_text is not None and o.on_bad_arg != low:
+			note_clash(o, "--on-bad", o.on_bad_text, v)
 		o.on_bad = low
 		o.on_bad_arg = low
+		o.on_bad_text = v
 		o.seen.append("--on-bad")
 	elif name == "--strictness":
 		s = shcl.Strictness.from_arg(v)
 		if s is None:
 			raise ValueError(f"bad --strictness value: {v} (see --help)")
+		if o.strictness_text is not None and o.strictness != s:
+			note_clash(o, "--strictness", o.strictness_text, v)
 		o.strictness = s
+		o.strictness_text = v
 		o.seen.append("--strictness")
 	elif name == "--schema":
+		if o.schema is not None and o.schema != v:
+			note_clash(o, "--schema", o.schema, v)
 		o.schema = v
 		o.seen.append("--schema")
 	elif name == "--layer":
@@ -597,7 +634,11 @@ def parse_opts(argv):
 			return o
 		k = kind_from_opt(a)
 		if k is not None:
+			if o.kind_opt is not None and o.kind_opt != k:
+				note_clash(o, None, o.kind_text, a)
 			o.kind = k
+			o.kind_opt = k
+			o.kind_text = a
 			o.seen.append("--<type>")
 			i += 1
 			continue
@@ -952,6 +993,18 @@ def check_opts(cmd, o):
 			else:
 				sys.stderr.write(f"option {s} not valid for {cmd} (see --help)\n")
 			return 1
+	# Options that ask for different answers used to resolve last-wins with
+	# nothing said, so which answer you got depended on typing order. Two type
+	# options are one case, one value option given two values the other.
+	# Repeating an option with the same value competes with nothing and stays
+	# allowed, and so do --layer and --set, which are ordered lists.
+	if o.clash is not None:
+		a, b = o.clash
+		if o.clash_opt is not None:
+			sys.stderr.write(f"{o.clash_opt}={a} cannot be combined with {o.clash_opt}={b} (see --help)\n")
+		else:
+			sys.stderr.write(f"{a} cannot be combined with {b} (see --help)\n")
+		return 1
 	# Writing back the merged document would fold the lower layers permanently
 	# into the top file, which is the opposite of what layering is for. On 'set'
 	# the --set values are edits to the document rather than a layer over it, so

@@ -100,6 +100,9 @@ Other points
 
 - It was decided that `-` (stdin) may be named only once across FILE, `--layer` and `--schema`. There is one stream, so two names for it each read part of a document, and which name got the real content depended on read order; the second name is a usage error instead.
 
+- **Nothing on the command line resolves last-wins.** Two options asking for different answers are a usage error whichever order they came in, and the message names both. The rule covers two different type options on `get` and one value option given two different values; a repeat with the same value competes with nothing, and `--layer` and `--set` are ordered lists, so they repeat by design. The rule is what a new option is judged against, not the list of pairs.
+	- Why: `get --raw --int` printed the int and `get --int --raw` failed at exit 4, so the same two flags gave two answers and neither said anything. That is the shape 20260902 item 41 already fixed for `--default` against `--on-bad=error`, one pair at a time; the rule closes the class instead. Decided 20260920.
+
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Bare `shcl` counts as asking: it prints the same padded help as `shcl help` and exits 0. `version` stays unpadded on purpose, a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
 - The lexical rules are few, and a byte's position decides what it means. The rule table is under Lexical edges below; `spec.md` carries the normative wording.

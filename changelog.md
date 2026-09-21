@@ -50,6 +50,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Two options that ask for different answers are a usage error, whichever order they were typed in, and the message names both. `get --raw --int` used to print the int and `get --int --raw` used to fail at exit 4, so the same two flags gave two answers and neither said why. A value option given two different values (`--strictness`, `--on-bad`, `--default`, `--schema`) went the same way, silently keeping the last. Repeating an option with the same value still goes through, and `--layer` and `--set` are ordered lists, so they repeat by design.
+
 - An unknown option or a bad option value ends with `(see --help)`, like the other usage errors. Those were the ones that left a user nowhere to go.
 
 - `V005` and `V006` name the bound and the value that broke it, not just the field. A long report meant opening the schema for every range failure. The element named is the one that broke the bound, so an array says which slot.

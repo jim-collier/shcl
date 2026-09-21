@@ -670,6 +670,8 @@ On the CLI, every loading subcommand (`get`, `fmt`, `count`, `instances`, `child
 
 - `--lossy` only means anything alongside `--write`. On its own it would read as protection against something the command never did, so it is a usage error anywhere else, like every other option a subcommand does not take.
 
+- Two options that ask for different answers are a usage error whichever order they came in, and the message names both. Two different type options on `get` are one case, one value option given two different values the other. Nothing resolves last-wins, since the answer would then depend on typing order with nothing said about it. Repeating an option with the same value competes with nothing and is allowed, and `--layer` and `--set` are ordered lists, so they repeat by design.
+
 - A FILE of `-` is stdin on every subcommand, `set` included. When the edits arrive as options, no ops script is read, so stdin carries the document there as it does everywhere else. Only when stdin is the ops script does `-` mean an empty base instead. It cannot carry both, and reading neither is what the two used to combine to: a piped document thrown away at exit 0.
 
 - A `--set` value goes in as **data**. Its type still follows the text (`workers=8` is an integer), but a comma or quote inside it is content, so `ports=80, 443` stores one quoted string.

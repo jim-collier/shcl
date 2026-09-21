@@ -505,7 +505,20 @@ and
 .B \-\-rawinfo
 have no
 .B \-\-array
-form. And
+form. Two options that ask for different answers are refused whichever order
+they came in, and the message names both: two different type options, such as
+.B \-\-int
+with
+.BR \-\-raw ,
+or one value option given two different values, such as
+.B \-\-strictness=loose
+with
+.BR \-\-strictness=strict .
+Repeating an option with the same value is allowed, and
+.B \-\-layer
+and
+.B \-\-set
+are ordered lists, so they repeat. And
 .B \-
 may be named only once across
 .IR FILE ,

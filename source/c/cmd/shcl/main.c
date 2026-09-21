@@ -174,7 +174,11 @@ static const char *HELP =
 	"FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;\n"
 	"--check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;\n"
 	"--default with --on-bad=error or --on-bad=flag; '-' named more than once across\n"
-	"FILE, --layer and --schema.\n"
+	"FILE, --layer and --schema. Two options that ask for different answers are a\n"
+	"usage error whichever order they came in, and both are named: two different type\n"
+	"options, or one value option given two different values. Repeating an option\n"
+	"with the same value is allowed, and --layer and --set are ordered lists, so they\n"
+	"repeat.\n"
 	"Every subcommand that loads a document prints the load's diagnostics to stderr,\n"
 	"once per run; 'shcl explain CODE' gives the rule behind one of their codes. An\n"
 	"in-place write also refuses when the load dropped content the rewrite would\n"
@@ -222,6 +226,18 @@ typedef struct { const char *path; size_t plen; const char *value; const char *o
 
 typedef struct {
 	const char *kind;         // int|float|bool|datetime|string|raw
+	// Which type option was given. kind cannot answer that, since it starts at
+	// the default type.
+	const char *kind_opt;     // NULL if no type option was given
+	const char *kind_text;    // as it was typed, for the competing-pair message
+	// The first competing pair the line held. Two options that ask for different
+	// answers are a usage error whichever order they came in, so the pair is
+	// recorded here rather than refused on the spot and the "not valid for this
+	// subcommand" answer still comes first. clash_opt is set when the pair is one
+	// option repeated with a different value, in which case clash[] holds the two
+	// values; otherwise clash[] holds whole option spellings.
+	const char *clash_opt;    // NULL when clash[] is already whole spellings
+	const char *clash[2];     // clash[0] NULL when nothing competed
 	int array;
 	int slots;
 	const char *deflt;        // NULL if unset
@@ -230,7 +246,9 @@ typedef struct {
 	// on_bad too, so without this the two options silently overwrote each other
 	// and which one survived depended on which came last.
 	const char *on_bad_arg;   // NULL if --on-bad was not given
+	const char *on_bad_text;  // as it was typed, for the competing-pair message
 	shcl_strictness strictness;
+	const char *strictness_text;  // NULL if --strictness was not given
 	int write;
 	int lossy;
 	int from_2x;
@@ -1552,20 +1570,36 @@ static void opts_free(Opts *o) {
 }
 
 
+// Record the first competing pair. Only the first is kept: the line is already
+// a usage error, and a second pair would just change which one gets named.
+static void note_clash(Opts *o, const char *opt, const char *a, const char *b) {
+	if (!o->clash[0]) { o->clash_opt = opt; o->clash[0] = a; o->clash[1] = b; }
+}
+
 // Apply a value-taking option's value. Returns 0 ok, 1 on a bad value.
 static int set_value_opt(Opts *o, const char *name, const char *v) {
-	if (!strcmp(name, "--default")) { o->deflt = v; o->on_bad = "default"; opt_seen(o, "--default"); }
+	if (!strcmp(name, "--default")) {
+		if (o->deflt && strcmp(o->deflt, v)) note_clash(o, "--default", o->deflt, v);
+		o->deflt = v; o->on_bad = "default"; opt_seen(o, "--default");
+	}
 	else if (!strcmp(name, "--on-bad")) {
-		if (g_ci_eq(v, strlen(v), "error")) o->on_bad = "error";
-		else if (g_ci_eq(v, strlen(v), "default")) o->on_bad = "default";
-		else if (g_ci_eq(v, strlen(v), "flag")) o->on_bad = "flag";
+		const char *mode;
+		if (g_ci_eq(v, strlen(v), "error")) mode = "error";
+		else if (g_ci_eq(v, strlen(v), "default")) mode = "default";
+		else if (g_ci_eq(v, strlen(v), "flag")) mode = "flag";
 		else { fprintf(stderr, "bad --on-bad value: %s (see --help)\n", v); return 1; }
-		o->on_bad_arg = o->on_bad;
+		if (o->on_bad_text && strcmp(o->on_bad_arg, mode)) note_clash(o, "--on-bad", o->on_bad_text, v);
+		o->on_bad = o->on_bad_arg = mode;
+		o->on_bad_text = v;
 		opt_seen(o, "--on-bad");
 	} else if (!strcmp(name, "--strictness")) {
-		if (!shcl_strictness_from_arg(v, strlen(v), &o->strictness)) { fprintf(stderr, "bad --strictness value: %s (see --help)\n", v); return 1; }
+		shcl_strictness level;
+		if (!shcl_strictness_from_arg(v, strlen(v), &level)) { fprintf(stderr, "bad --strictness value: %s (see --help)\n", v); return 1; }
+		if (o->strictness_text && o->strictness != level) note_clash(o, "--strictness", o->strictness_text, v);
+		o->strictness = level; o->strictness_text = v;
 		opt_seen(o, "--strictness");
 	} else if (!strcmp(name, "--schema")) {
+		if (o->schema && strcmp(o->schema, v)) note_clash(o, "--schema", o->schema, v);
 		o->schema = v; opt_seen(o, "--schema");
 	} else if (!strcmp(name, "--layer")) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
@@ -1596,8 +1630,9 @@ static int known_option(const char *name) {
 }
 
 static int parse_opts(int argc, char **argv, int from, Opts *o) {
-	o->kind = "string"; o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL;
-	o->strictness = SHCL_STANDARD; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
+	o->kind = "string"; o->kind_opt = o->kind_text = NULL; o->clash_opt = NULL; o->clash[0] = o->clash[1] = NULL;
+	o->array = 0; o->slots = 0; o->deflt = NULL; o->on_bad = "flag"; o->on_bad_arg = NULL; o->on_bad_text = NULL;
+	o->strictness = SHCL_STANDARD; o->strictness_text = NULL; o->write = 0; o->lossy = 0; o->from_2x = 0; o->check = 0; o->no_banner = 0; o->schema = NULL;
 	o->layers = o->args = NULL; o->sets = NULL; o->nlayers = o->nsets = o->nargs = 0; o->nseen = 0;
 	o->swallowed_opt = o->swallowed_value = NULL;
 	// Value-taking options accept both --opt=VALUE and the space form --opt VALUE.
@@ -1610,7 +1645,11 @@ static int parse_opts(int argc, char **argv, int from, Opts *o) {
 			return 0;
 		}
 		const char *k = kind_from_opt(a);
-		if (k) { o->kind = k; opt_seen(o, "--<type>"); }
+		if (k) {
+			// Both spellings are argv or static text, so the pair outlives the parse.
+			if (o->kind_opt && strcmp(o->kind_opt, k)) note_clash(o, NULL, o->kind_text, a);
+			o->kind = o->kind_opt = k; o->kind_text = a; opt_seen(o, "--<type>");
+		}
 		else if (!strcmp(a, "--array")) { o->array = 1; opt_seen(o, "--array"); }
 		else if (!strcmp(a, "--slots")) { o->slots = 1; opt_seen(o, "--slots"); }
 		else if (!strcmp(a, "--write") || !strcmp(a, "-w")) { o->write = 1; opt_seen(o, "--write"); }
@@ -1740,6 +1779,18 @@ static int check_opts(const char *cmd, const Opts *o) {
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
 			return 1;
 		}
+	}
+	// Options that ask for different answers used to resolve last-wins with
+	// nothing said, so which answer you got depended on typing order. Two type
+	// options are one case, one value option given two values the other.
+	// Repeating an option with the same value competes with nothing and stays
+	// allowed, and so do --layer and --set, which are ordered lists.
+	if (o->clash[0]) {
+		if (o->clash_opt)
+			fprintf(stderr, "%s=%s cannot be combined with %s=%s (see --help)\n", o->clash_opt, o->clash[0], o->clash_opt, o->clash[1]);
+		else
+			fprintf(stderr, "%s cannot be combined with %s (see --help)\n", o->clash[0], o->clash[1]);
+		return 1;
 	}
 	// Writing back the merged document would fold the lower layers permanently
 	// into the top file, which is the opposite of what layering is for. On 'set'

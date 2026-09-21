@@ -190,7 +190,11 @@ refused: --write with --layer; --write with --set outside 'set'; --write with a
 FILE of '-'; --lossy without --write; --no-banner on 'set' without --write;
 --check with --write; --layer=- on 'set'; --array with --raw or --rawinfo;
 --default with --on-bad=error or --on-bad=flag; '-' named more than once across
-FILE, --layer and --schema.
+FILE, --layer and --schema. Two options that ask for different answers are a
+usage error whichever order they came in, and both are named: two different type
+options, or one value option given two different values. Repeating an option
+with the same value is allowed, and --layer and --set are ordered lists, so they
+repeat.
 Every subcommand that loads a document prints the load's diagnostics to stderr,
 once per run; 'shcl explain CODE' gives the rule behind one of their codes. An
 in-place write also refuses when the load dropped content the rewrite would
@@ -486,6 +490,18 @@ impl OnBad {
 
 struct Opts {
 	kind: Kind,
+	// Which type option was given, if any. `kind` cannot answer that, since it
+	// starts at the default type.
+	kind_opt: Option<Kind>,
+	kind_text: Option<String>, // as it was typed, for the competing-pair message
+	// The first competing pair the line held. Two options that ask for different
+	// answers are a usage error whichever order they came in, so the pair is
+	// recorded here rather than refused on the spot and the "not valid for this
+	// subcommand" answer still comes first. `clash_opt` is set when the pair is
+	// one option repeated with a different value, in which case a and b are the
+	// two values; otherwise a and b are whole option spellings.
+	clash_opt: Option<&'static str>,
+	clash: Option<(String, String)>,
 	array: bool,
 	slots: bool,
 	default: Option<String>,
@@ -494,7 +510,9 @@ struct Opts {
 	// on_bad too, so without this the two options silently overwrote each other
 	// and which one survived depended on which came last.
 	on_bad_arg: Option<OnBad>,
+	on_bad_text: Option<String>,
 	strictness: Strictness,
+	strictness_text: Option<String>,
 	write: bool,
 	lossy: bool,
 	from_2x: bool,
@@ -640,12 +658,18 @@ fn known_option(name: &str) -> bool {
 fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	let mut o = Opts {
 		kind: Kind::String,
+		kind_opt: None,
+		kind_text: None,
+		clash_opt: None,
+		clash: None,
 		array: false,
 		slots: false,
 		default: None,
 		on_bad: OnBad::Flag,
 		on_bad_arg: None,
+		on_bad_text: None,
 		strictness: Strictness::Standard,
+		strictness_text: None,
 		write: false,
 		lossy: false,
 		from_2x: false,
@@ -669,7 +693,14 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			return Ok(o);
 		}
 		if let Some(k) = Kind::from_opt(a) {
+			if let (Some(prev), Some(prev_text)) = (o.kind_opt, o.kind_text.clone())
+				&& prev != k
+			{
+				note_clash(&mut o, None, &prev_text, a);
+			}
 			o.kind = k;
+			o.kind_opt = Some(k);
+			o.kind_text = Some(a.to_string());
 			o.seen.push("--<type>");
 			i += 1;
 			continue;
@@ -760,29 +791,62 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 	Ok(o)
 }
 
+/// Record the first competing pair. Only the first is kept: the line is already
+/// a usage error, and a second pair would just change which one gets named.
+fn note_clash(o: &mut Opts, opt: Option<&'static str>, a: &str, b: &str) {
+	if o.clash.is_none() {
+		o.clash_opt = opt;
+		o.clash = Some((a.to_string(), b.to_string()));
+	}
+}
+
 fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 	match name {
 		"--default" => {
+			if let Some(prev) = o.default.clone()
+				&& prev != v
+			{
+				note_clash(o, Some("--default"), &prev, v);
+			}
 			o.default = Some(v.to_string());
 			o.on_bad = OnBad::Default;
 			o.seen.push("--default");
 		}
 		"--on-bad" => {
-			o.on_bad = match v.to_ascii_lowercase().as_str() {
+			let mode = match v.to_ascii_lowercase().as_str() {
 				"error" => OnBad::Error,
 				"default" => OnBad::Default,
 				"flag" => OnBad::Flag,
 				_ => return Err(format!("bad --on-bad value: {} (see --help)", v)),
 			};
-			o.on_bad_arg = Some(o.on_bad);
+			if let Some(prev) = o.on_bad_text.clone()
+				&& o.on_bad_arg != Some(mode)
+			{
+				note_clash(o, Some("--on-bad"), &prev, v);
+			}
+			o.on_bad = mode;
+			o.on_bad_arg = Some(mode);
+			o.on_bad_text = Some(v.to_string());
 			o.seen.push("--on-bad");
 		}
 		"--strictness" => {
-			o.strictness = Strictness::from_arg(v)
+			let level = Strictness::from_arg(v)
 				.ok_or_else(|| format!("bad --strictness value: {} (see --help)", v))?;
+			if let Some(prev) = o.strictness_text.clone()
+				&& o.strictness != level
+			{
+				note_clash(o, Some("--strictness"), &prev, v);
+			}
+			o.strictness = level;
+			o.strictness_text = Some(v.to_string());
 			o.seen.push("--strictness");
 		}
 		"--schema" => {
+			if let Some(prev) = o.schema.clone()
+				&& prev != v
+			{
+				note_clash(o, Some("--schema"), &prev, v);
+			}
 			o.schema = Some(v.to_string());
 			o.seen.push("--schema");
 		}
@@ -1000,6 +1064,24 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 			}
 			return Err(1);
 		}
+	}
+	// Options that ask for different answers used to resolve last-wins with
+	// nothing said, so which answer you got depended on typing order. Two type
+	// options are one case, one value option given two values the other.
+	// Repeating an option with the same value competes with nothing and stays
+	// allowed, and so do --layer and --set, which are ordered lists.
+	if let Some((a, b)) = &o.clash {
+		match o.clash_opt {
+			Some(opt) => errln!(
+				"{}={} cannot be combined with {}={} (see --help)",
+				opt,
+				a,
+				opt,
+				b
+			),
+			None => errln!("{} cannot be combined with {} (see --help)", a, b),
+		}
+		return Err(1);
 	}
 	// Writing back the merged document would fold the lower layers permanently
 	// into the top file, which is the opposite of what layering is for. On 'set'
