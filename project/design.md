@@ -571,7 +571,7 @@ Method, and why each part of it is the way it is:
 
 - **One abstract model per document, five encoders.** Each shape is built once as a small tree and then encoded five ways, so the files hold the same data by construction rather than by five hand-written generators happening to agree. Each encoding is the spelling a person would really use - SHCL raw blocks against YAML block scalars against XML CDATA - because a number taken from an unidiomatic encoding is not measuring the format.
 
-- **A pre-flight equivalence check.** At a small scale, every library has to parse its own file and find the same number of scalar values in it. One model does not rule out an escaping mistake in one encoder, and a size or speed number taken from documents that are not the same data is worth nothing.
+- **A pre-flight equivalence check.** At a small scale, every library in the rust tier has to parse its own file and find the same number of scalar values in it. One model does not rule out an escaping mistake in one encoder, and a size or speed number taken from documents that are not the same data is worth nothing. The python tier reports no scalar count, so it is not in that comparison; what it has instead is the same refusal of a document its parse did not read whole, which is the half that catches a binding defect.
 
 - **One process per measurement.** Peak resident memory is only attributable that way: a process that parsed six documents says nothing about what any one of them cost.
 

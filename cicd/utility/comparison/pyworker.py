@@ -37,12 +37,14 @@ from typing import Any, Optional
 
 REPO_PY = Path(__file__).absolute().parents[3] / "source" / "python"
 
-# What a loader hands back: (version, parse, emit), and optionally a fourth
-# element that turns the file's text into whatever its parser wants - emit None
-# when the library cannot write. Optional[] rather than | None: this alias is
-# evaluated at import.
+# What a loader hands back: (version, parse, emit), optionally a fourth element
+# that turns the file's text into whatever its parser wants, and optionally a
+# fifth that reads the parsed document and returns why it is not whole - emit
+# None when the library cannot write. Optional[] rather than | None: this alias
+# is evaluated at import.
 Loader = tuple[str, Callable[[Any], Any], Optional[Callable[[Any], str]]]
 LoaderPrep = tuple[str, Callable[[Any], Any], Optional[Callable[[Any], str]], Callable[[str], Any]]
+LoaderCheck = tuple[str, Callable[[Any], Any], Optional[Callable[[Any], str]], Callable[[str], Any], Callable[[Any], str]]
 
 
 def vmhwm() -> int:
@@ -62,13 +64,25 @@ def vmhwm() -> int:
 # library cannot write - and raises ImportError when it is not installed.
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
-def load_shcl() -> Loader:
+def load_shcl() -> LoaderCheck:
 	# Every call used to push the same entry again, and the listing calls every
 	# loader, so the search path grew a duplicate each time.
 	if str(REPO_PY) not in sys.path:
 		sys.path.insert(0, str(REPO_PY))
 	import shcl
-	return "working tree", shcl.Document.parse, lambda d: d.to_canonical()
+
+	# The rust tier refuses any document its parse did not read whole. This one
+	# took a partial parse and printed a timing at exit 0, so a python-side
+	# parity defect would have been measured rather than reported. Outside the
+	# timed loop, as the rust guard is.
+	def whole(doc: Any) -> str:
+		errors = sum(1 for g in doc.diagnostics() if g.severity == shcl.Severity.Error)
+		lost = doc.lost_count()
+		if errors or lost:
+			return f"{errors} diagnostics, {lost} lines lost"
+		return ""
+
+	return "working tree", shcl.Document.parse, lambda d: d.to_canonical(), lambda s: s, whole
 
 
 def load_json() -> Loader:
@@ -169,6 +183,7 @@ def run(key: str, path: str, iters: int) -> None:
 	# with a fourth element. Whatever it builds is built once, before the
 	# baseline, so neither the clock nor the memory figure carries it.
 	prepare = version_parse_emit[3] if len(version_parse_emit) > 3 else (lambda s: s)
+	whole = version_parse_emit[4] if len(version_parse_emit) > 4 else None
 	src = Path(path).read_text(encoding="utf-8")
 	subject = prepare(src)
 
@@ -179,6 +194,11 @@ def run(key: str, path: str, iters: int) -> None:
 		print(f"failed={type(e).__name__}: {e}".replace("\n", " "))
 		return
 	rss = vmhwm()
+	if whole is not None:
+		why = whole(doc)
+		if why:
+			print(f"failed={why}")
+			return
 	del doc
 
 	best = None

@@ -113,14 +113,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: this may be a spec wording fix rather than a code fix. `spec.md:561` says the one-shot never fails and that the CLI appends its diagnostics to `check`'s normal output, but `fmt` already has the precedent that a strict-failing document formats nothing. The call is which of the two `check` follows.
 		- Opened: 20260920-b
 
-	- 🔘 Item 17: the comparison tool's Python tier accepts a partial parse where the Rust tier refuses one.
-		- Reproduced: a document holding `a: 1`, a bare `b`, and `c: 2`. The reference CLI gives `E015` at exit 6. `python3 pyworker.py shcl bad.shcl 1` prints a timing with `scalars=0` and exits 0. The built Rust tool refuses the same file with `failed=1 diagnostics, 0 lines lost`.
-		- Cause: `pyworker.py:65` returns a bare `shcl.Document.parse` and `run()` never asks for diagnostics or lost lines, where `bench.rs:176` refuses any of either. `verify()` in `main.rs:487` walks the Rust entries only, so no Python library is ever counted against the SHCL scalar count.
-		- Origin: the Rust guard came with the tool, `e1fb936` (2026-08-20); the Python port `e369499` (2026-08-30) never had it, and `b1840c8` (2026-09-17) reworked `run()` without adding it. The 20260920 round saw the `scalars=0` gap and left it unfiled. Confirmed.
-		- Note: no published number is wrong today. A full run reads the same generated files through both tiers, and the Rust guard holds on them. What escapes is a `--tier python` run alone, or a Python-binding parity defect, measured as a partial parse at exit 0.
-		- Note: `design.md` -> Format comparison says every library has to parse its own file and find the same number of scalar values in it. None of the seven Python libraries does.
-		- Opened: 20260920-b
-
 	- 🔘 Item 23: the public surface has gaps the style guide does not list as deviations.
 		- Reproduced: `parse_datetime` is public in Rust, Go and Python and is `static` in C, with no `shcl_parse_datetime` declared and no text-to-`Datetime` call in the veneer; the C CLI reaches the static one only because it compiles the implementation into its own translation unit. Python's `__all__` omits `Migration`, `GEN_BANNER`, `FORMAT_MAJOR`, `FORMAT_LINE_HEAD`, `FORMAT_LINE` and `MIGRATED_LINE`, all of which Rust and Go export and one of which the Python CLI already reads. `Migration.__init__` is unannotated where the guide asks for hints on every public method.
 		- Cause: the constants arrived after `__all__` was written and were not added to it; the C datetime parser was never promoted.
@@ -254,6 +246,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
 		- Note: nothing in this round's defects needs a Windows box to confirm except item 19, which is why the batch waits for the fix round rather than holding the filing.
 		- Opened: 20260920-b
+
+	- 🔘 Idea 11: the comparison tool's scalar count covers the rust tier only.
+		- Note: `verify()` walks `bench::ENTRIES`, and `pyworker.py` prints `scalars=0` for every library it runs. So the pre-flight equivalence check - every library parsing its own file and finding the same number of scalar values - says nothing about the seven python libraries.
+		- Note: item 17 closed the half that matters today, a partial parse measured as a timing. What is left is coverage: an escaping mistake in a python encoder would not be caught, and none of the encoders is python-side, so the exposure is small.
+		- Note: the work is a scalar walk per library shape - dict, list, scalar for json, yaml and toml, an element tree for xml - reported as `scalars=N`, and `verify()` running the python tier alongside the rust one. `design.md` says what the check covers today.
+		- Opened: 20260920-c
 
 ### Done
 
@@ -685,6 +683,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Left alone: no check was added. Rust and Go carry 32 dividers each and Python 22, all already right, so a check would be four shapes to keep in step against a fault that has happened twice in a year.
 		- Opened: 20260920-b
 		- Closed: 20260920-2330
+
+	- ✅ Item 17: the comparison tool's Python tier accepts a partial parse where the Rust tier refuses one.
+		- Reproduced: a document holding `a: 1`, a bare `b`, and `c: 2`. The reference CLI gives `E015` at exit 6; `pyworker.py shcl bad.shcl 1` printed a timing and exited 0. The built Rust tool refuses the same file.
+		- Cause: `pyworker.py` returned a bare `shcl.Document.parse` and `run()` never asked for diagnostics or lost lines, where `bench.rs` refuses any of either.
+		- Fixed: a loader may hand back a fifth element saying why a parsed document is not whole, and the SHCL loader does. It runs after the first parse and outside the timed loop, the way the Rust guard sits before `measure`. The bad file now prints `failed=1 diagnostics, 0 lines lost`, in the Rust tier's own wording.
+		- Left alone: the scalar count. `verify()` walks the Rust entries and `pyworker.py` reports `scalars=0` for every library, so the pre-flight equivalence check has never covered the Python tier. That is coverage rather than a wrong answer - no encoder is Python-side - and it is filed as idea 11. `design.md` says what the check covers now instead of claiming every library.
+		- Pinned by: nothing automated. The comparison tool is outside the gate, since its Rust half is the one thing here with third-party crates. The two runs above are the check.
+		- Opened: 20260920-b
+		- Closed: 20260921-0010
 
 - Code review 20260920:
 
