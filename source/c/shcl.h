@@ -967,10 +967,13 @@ DEFINE_VEC(ShclVecS, ShclStr)
 /* One whole-line comment held as trivia, plus whether a blank line preceded
    it - so a blank between comment-only regions survives the round-trip
    (blank runs collapse to one, same as nodes). */
-typedef struct { ShclStr text; int blank_before; } ShclLead;
+/* depth: levels deeper than the place it is emitted at. A comment written under
+   the one before it keeps that nesting, so a commented-out block comes back in
+   its shape. */
+typedef struct { ShclStr text; int blank_before; size_t depth; } ShclLead;
 DEFINE_VEC(ShclVecLead, ShclLead)
-static ShclLead lead_make(ShclStr text, int blank_before) { ShclLead l; l.text = text; l.blank_before = blank_before; return l; }
-static ShclLead lead_plain(ShclStr text) { return lead_make(text, 0); }
+static ShclLead lead_make(ShclStr text, int blank_before, size_t depth) { ShclLead l; l.text = text; l.blank_before = blank_before; l.depth = depth; return l; }
+static ShclLead lead_plain(ShclStr text) { return lead_make(text, 0, 0); }
 
 /* Comment trivia, verbatim from `#` to end of line. Never part of identity
    or reads; merged instances concatenate leading, first trailing wins
@@ -2613,6 +2616,9 @@ static void cmap_del(ShclCMap *m, uint64_t h, size_t val) {
    incoming indent already checked against it: a later check can only hang it
    from a shorter one, so a longer one skips it. */
 typedef struct { ShclStr text; ShclStr indent; int blank_before; size_t ceiling; } ShclPend;
+/* One comment on a comment_depth chain: its indent and depth. */
+typedef struct { ShclStr indent; size_t depth; } ShclDepthEnt;
+DEFINE_VEC(ShclVecDepth, ShclDepthEnt)
 DEFINE_VEC(ShclVecPend, ShclPend)
 /* Every pending entry before end has a ceiling at or under indent_len. */
 typedef struct { size_t end; size_t indent_len; } ShclPendMark;
@@ -2651,7 +2657,7 @@ DEFINE_VEC(ShclVecPendMark, ShclPendMark)
    do_parse's frame: the recovery path is reached by longjmp, which leaves a
    local the parse has written to indeterminate. */
 typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
-typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
+typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; ShclVecDepth depth_chain; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
 	size_t max_nodes, max_elements;
@@ -2764,17 +2770,46 @@ static void fold_late_dups(ShclParser *P) {
 	}
 }
 
+/* How many levels past its place a pending line is written: the place's own
+   level for a comment no deeper than base, the place's own indent, which also
+   starts a new chain; for a deeper one, one level under the nearest comment
+   before it whose indent its own extends, level with one it equals, or at the
+   place's level when there is none. depth_chain holds those comments' indents
+   with their depths, innermost last. A line kept for being malformed always
+   sits at the place's level and leaves the chain alone: it holds its level on
+   a reload, so written deeper it would move what follows. */
+static size_t comment_depth(ShclParser *P, ShclStr base, ShclStr text, ShclStr indent) {
+	ShclVecDepth *chain = &P->depth_chain;
+	ShclDepthEnt e; e.indent = indent; e.depth = 0;
+	if (!(text.n && text.p[0] == '#')) return 0;
+	if (!(indent.n > base.n && (base.n == 0 || memcmp(indent.p, base.p, base.n) == 0))) {
+		chain->len = 0;
+		ShclVecDepth_push(P->tmp, chain, e);
+		return 0;
+	}
+	while (chain->len) {
+		const ShclDepthEnt *top = &chain->data[chain->len - 1];
+		if (s_eq(top->indent, indent)) return top->depth;
+		if (indent.n > top->indent.n && (top->indent.n == 0 || memcmp(indent.p, top->indent.p, top->indent.n) == 0)) break;
+		chain->len--;
+	}
+	e.depth = chain->len ? chain->data[chain->len - 1].depth + 1 : 0;
+	ShclVecDepth_push(P->tmp, chain, e);
+	return e.depth;
+}
+
 /* Hand pending leading comments (and this line's trailing one) to a node.
    First trailing wins; a later one demotes to leading so nothing is lost.
    Comment text is stored verbatim, so pending and trailing alike are slices
    of the retained input copy - nothing to duplicate. */
-static void attach_trivia(ShclParser *P, size_t node, ShclStr trailing) {
+static void attach_trivia(ShclParser *P, size_t node, ShclStr indent, ShclStr trailing) {
 	ShclArena *a = &P->d->arena;
 	if (P->pending.len) {
 		ShclTrivia *t = triv_mut(a, &NODE(P->d, node));
+		P->depth_chain.len = 0;
 		for (size_t k = 0; k < P->pending.len; k++) {
 			const ShclPend *p = &P->pending.data[k];
-			ShclVecLead_push(a, &t->leading, lead_make(p->text, p->blank_before));
+			ShclVecLead_push(a, &t->leading, lead_make(p->text, p->blank_before, comment_depth(P, indent, p->text, p->indent)));
 		}
 		P->pending.len = 0;
 		P->pend_marks.len = 0;
@@ -2800,16 +2835,24 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 	/* Only entries above the last mark at or under this indent can hang. */
 	while (P->pend_marks.len && P->pend_marks.data[P->pend_marks.len - 1].indent_len > new_indent.n) P->pend_marks.len--;
 	size_t w = P->pend_marks.len ? P->pend_marks.data[P->pend_marks.len - 1].end : 0;
+	/* A comment never goes ahead of the one written before it. Once one stays
+	   for the incoming line every later one stays too, and one whose block
+	   would be written out before the last one's goes there with it instead.
+	   What sits before w stays, so nothing after it can hang. */
+	int kept = w > 0;
+	/* Where the last comment went: stack index, node, at its own level. */
+	size_t last_si = (size_t)-1, last_node = 0; int last_own = 0;
+	P->depth_chain.len = 0;
 	for (size_t k = w; k < P->pending.len; k++) {
 		ShclPend p = P->pending.data[k];
-		if (p.ceiling > new_indent.n) {
+		if (!kept && p.ceiling > new_indent.n) {
 			/* A level shallower than the incoming line stays open and may
 			   still gain children, so a comment must not hang there - it
 			   would emit below the child; keep it pending instead. */
-			size_t target = (size_t)-1; int at_own_level = 0;
+			size_t si = (size_t)-1, target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
 				ShclStr ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { target = n; at_own_level = ind.n == p.indent.n; break; }
+				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { si = ii; target = n; at_own_level = ind.n == p.indent.n; break; }
 			}
 			/* A root node's trailing comment emits at column zero, which is
 			   exactly how the document's own trailing comment is spelled, so
@@ -2819,14 +2862,20 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 			   node keeps an indent of its own and comes back where it was, so
 			   it still hangs. */
 			if (target != (size_t)-1 && (!at_own_level || NODE(P->d, target).parent != ROOT)) {
-				ShclLead lead = lead_make(p.text, p.blank_before);
+				/* A deeper block is written out first, and a block's inside
+				   comments before its after ones. */
+				if (last_si != (size_t)-1 && (si > last_si || (si == last_si && !at_own_level && last_own))) { si = last_si; target = last_node; at_own_level = last_own; }
+				if (si != last_si || at_own_level != last_own) P->depth_chain.len = 0;
+				last_si = si; last_node = target; last_own = at_own_level;
+				ShclLead lead = lead_make(p.text, p.blank_before, comment_depth(P, P->stack.data[si].indent, p.text, p.indent));
 				ShclTrivia *t = triv_mut(a, &NODE(P->d, target));
 				if (at_own_level) ShclVecLead_push(a, &t->after, lead);
 				else ShclVecLead_push(a, &t->inside, lead);
 				continue;
 			}
-			p.ceiling = new_indent.n;
 		}
+		kept = 1;
+		if (p.ceiling > new_indent.n) p.ceiling = new_indent.n;
 		P->pending.data[w++] = p;
 	}
 	P->pending.len = w;
@@ -3272,7 +3321,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   cannot share the scratch arena: that one carries the parser's bookkeeping
 	   for the whole parse. Everything a node keeps is dup'd into the document
 	   arena before the next reset. */
-	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks);
+	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks); memset(&P.depth_chain, 0, sizeof P.depth_chain);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
 	P.max_nodes = max_nodes; P.max_elements = max_elements; P.max_diags = max_diags; P.unlisted_errors = 0; P.unlisted_hints = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
@@ -3375,7 +3424,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			}
 			else {
 				size_t bnode = bind_block(&P, parent, val, lineno, indent);
-				if (bnode != (size_t)-1) attach_trivia(&P, bnode, fcomment);
+				if (bnode != (size_t)-1) attach_trivia(&P, bnode, indent, fcomment);
 			}
 			i = next; continue;
 		}
@@ -3395,7 +3444,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				/* Elements have no node of their own; trivia rides the field. At the
 				   root there is no field (E007), so the comment rides the document
 				   like any other pending one. */
-				if (parent != ROOT) attach_trivia(&P, parent, ecomment);
+				if (parent != ROOT) attach_trivia(&P, parent, indent, ecomment);
 				else if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
 				add_star_element(&P, parent, &tok, rest, lineno, indent);
 				i++; continue;
@@ -3475,7 +3524,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t node = 0; /* attach_path fills it; the init quiets gcc's inlining-dependent maybe-uninitialized */
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, indent, &node)) {
 			if (had_blank) NODE(d, node).blank_before = 1;
-			attach_trivia(&P, node, comment);
+			attach_trivia(&P, node, indent, comment);
 			ShclStackEnt se; se.indent = indent; se.node = node; ShclVecStack_push(P.tmp, &P.stack, se);
 		}
 		i = next;
@@ -3491,8 +3540,9 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	emit_repeated_leaf_hints(&P);
 	/* Indented tail comments keep their block; only top-level ones orphan. */
 	hang_deeper_pending(&P, s_empty());
+	P.depth_chain.len = 0;
 	for (size_t k = 0; k < P.pending.len; k++)
-		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before));
+		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before, comment_depth(&P, s_empty(), P.pending.data[k].text, P.pending.data[k].indent)));
 	/* The emitter drops a blank before the first thing it prints, so a document
 	   that kept one there would not survive its own canonical form:
 	   load(emit(load(x))) and load(x) would differ on that bit, and a merge -
@@ -4466,9 +4516,9 @@ static ShclTrivia *w_clone_trivia(ShclArena *a, const ShclTrivia *st) {
 	ShclTrivia *nt = (ShclTrivia *)arena_alloc(a, sizeof(ShclTrivia));
 	memset(nt, 0, sizeof(ShclTrivia));
 	nt->trailing = s_dup(a, st->trailing);
-	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before));
-	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before));
-	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before));
+	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before, st->leading.data[i].depth));
+	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before, st->after.data[i].depth));
+	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before, st->inside.data[i].depth));
 	return nt;
 }
 static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size_t parent) {
@@ -4506,15 +4556,15 @@ static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t 
 	if (!st) return;
 	ShclTrivia *bt = triv_mut(a, &NODE(d, base));
 	for (size_t i = 0; i < st->leading.len; i++)
-		ShclVecLead_push(a, &bt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before));
+		ShclVecLead_push(a, &bt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before, st->leading.data[i].depth));
 	if (st->trailing.n) {
 		if (bt->trailing.n == 0) bt->trailing = s_dup(a, st->trailing);
 		else ShclVecLead_push(a, &bt->leading, lead_plain(s_dup(a, st->trailing)));
 	}
 	for (size_t i = 0; i < st->after.len; i++)
-		ShclVecLead_push(a, &bt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before));
+		ShclVecLead_push(a, &bt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before, st->after.data[i].depth));
 	for (size_t i = 0; i < st->inside.len; i++)
-		ShclVecLead_push(a, &bt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before));
+		ShclVecLead_push(a, &bt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before, st->inside.data[i].depth));
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
@@ -4731,8 +4781,8 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	for (size_t i = 0; i < over->orphans.len; i++) {
 		ShclStr ot = over->orphans.data[i].text;
 		int dup = 0;
-		for (size_t k = 0; k < had; k++) if (s_eq(d->orphans.data[k].text, ot)) { dup = 1; break; }
-		if (!dup) ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before));
+		for (size_t k = 0; k < had; k++) if (s_eq(d->orphans.data[k].text, ot) && d->orphans.data[k].depth == over->orphans.data[i].depth) { dup = 1; break; }
+		if (!dup) ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, over->orphans.data[i].depth));
 	}
 }
 
@@ -5185,7 +5235,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	   never as the first output line. */
 	for (size_t k = 0; k < lead.len; k++) {
 		if (lead.data[k].blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		for (size_t z = 0; z < depth + lead.data[k].depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, lead.data[k].text); sb_putc(a, out, '\n');
 	}
 	if (node->blank_before && out->len) sb_putc(a, out, '\n');
@@ -5229,7 +5279,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	for (size_t k = 0; k < ins.len; k++) {
 		const ShclLead *c = &ins.data[k];
 		if (c->blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth + 1; z++) sb_putc(a, out, '\t');
+		for (size_t z = 0; z < depth + 1 + c->depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
 	}
 	/* Comments that hung on this block after its last child. */
@@ -5237,7 +5287,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	for (size_t k = 0; k < aft.len; k++) {
 		const ShclLead *c = &aft.data[k];
 		if (c->blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
+		for (size_t z = 0; z < depth + c->depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
 	}
 }
@@ -5255,6 +5305,7 @@ static ShclStr emit_canonical(shcl_doc *d) {
 	/* Comments that never found a following line re-emit at the end. */
 	for (size_t k = 0; k < d->orphans.len; k++) {
 		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->scratch, &out, '\n');
+		for (size_t z = 0; z < d->orphans.data[k].depth; z++) sb_putc(&d->scratch, &out, '\t');
 		sb_putS(&d->scratch, &out, d->orphans.data[k].text); sb_putc(&d->scratch, &out, '\n');
 	}
 	return sb_S(&out);
@@ -5498,7 +5549,7 @@ void shcl_compact(shcl_doc *d) {
 		ShclVecSize_push(a, &NODE(n, ROOT).children, c);
 	}
 	for (size_t i = 0; i < d->diags.len; i++) push_diag(n, d->diags.data[i].line, d->diags.data[i].sev, d->diags.data[i].code, s_dup(a, d->diags.data[i].message));
-	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before));
+	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before, d->orphans.data[i].depth));
 	n->strictness = d->strictness;
 	n->lost = d->lost;
 	n->probe_doc = d->probe_doc;

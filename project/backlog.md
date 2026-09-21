@@ -121,7 +121,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 		- Closed: 20260921-1357
 
-	2. A save reorders a commented-out block
+	2. ✅ A save reorders a commented-out block
 
 		Still open on dev. First drafted 2026-09-18 against 2.0.0.
 
@@ -138,6 +138,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 		- A silent wrong answer one step removed. It bites when the lines are uncommented later: `enabled: true` then sits indented under `opacity: 0.2` and does nothing.
 
+		- Cause: each comment in a run chose its block alone. A deeper one hung on the block it sat in, while an earlier one at the next line's level stayed for that line, and a block is written out before the line after it. The same thing reordered two comments that both hung, when the second one's block closes first (`	# x` then `		# y` after a nested block).
+
+		- Fixed: a comment never goes ahead of the one written before it. Once one stays for the next line every later one stays too, and one whose block is written out earlier goes where the last one went. A comment kept away from its own block keeps its depth under the comment before it, one tab per level, so the commented-out block comes back in its shape. A malformed line kept as trivia keeps the order but not the depth, since it holds its level on a reload. `hang_deeper_pending` and `comment_depth` in Rust and C, `hangDeeperPending` and `commentDepth` in Go, `_hang_deeper_pending` and `_comment_depth` in Python, with a depth on each kept comment line that the emitter writes.
+
+		- Pinned by: corpus case `138-comment-run-order`, whose input is its own canonical form: both shapes above, the end-of-file one, and the nested one. The old C runner fails it. The fuzz fixpoint properties hold at 2,000,000 iterations, apart from the two older bugs filed below, which the same run found.
+
+		- Closed: 20260921-1411
+
 	3. On Windows a failed save can delete the file it was saving
 
 		Still open on dev. First drafted 2026-09-11 against 2.0.0.
@@ -147,6 +155,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Suggested: pass a backup name made like the temp name, remove it after a good replace, never remove the temp while nothing is at the target, retry the rename a few times, and return an error naming whichever file still holds the text. `REPLACEFILE_WRITE_THROUGH` is documented as unsupported and could be 0.
 
 		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
+
+- 🔘 A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
+	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0.
+	- Cause, probably: the end of the load folds late duplicates before it hangs the tail comments, so the tail lines hang on the node the fold just dropped. Mid-load the order is the other way round, and the fold carries them over.
+	- Note: found by `lost_count_follows_the_outcome_table` at iteration 983,588, past the gate's 200,000, while testing the SilkTerm comment fix.
+	- Opened: 20260921-1411
+
+- 🔘 Merging a layer and merging that layer's canonical form place a retained line differently.
+	- Reproduced: in all four, on the old code as well. The base layer holds `\t: 1*\t  d: 2` (`E014`) under `a.b`, and the top layer is corpus `075`'s input with one line mutated. The retained line lands one line apart in the two merges.
+	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 861,523, while testing the SilkTerm comment fix. The two inputs are kept with the private notes, under `fuzz-20260921`.
+	- Opened: 20260921-1411
 
 - Code review 20260921:
 

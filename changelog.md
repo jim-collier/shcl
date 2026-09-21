@@ -182,6 +182,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A save keeps a run of whole-line comments in the order it was written. A comment written deeper than the next binding hangs on the block it sits in, and one written after a comment that went with the next binding jumped ahead of it: `# b:` followed by an indented `# c: true` came back with `# c` first, so uncommenting both later put `c` under the wrong field. A comment kept with the ones before it keeps its nesting under them, one tab per level, so a commented-out block comes back in its shape.
+
 - The `H001` hint no longer spans lines. It splices the repeated values into its suggestion, and a value holding a real line break went in raw, so one hint arrived as four lines on stderr. The values are spelled the way the writer would spell them now, which also makes the suggested line valid: `srv: "a\nb", c` reads back as the two values it names. This is the library side of the same rule `instances` got.
 
 - A `Remove` in the C binding no longer leaves its work vectors in the document. They were pushed on the arena that is never reset, so removing 20,000 instances of one name held a megabyte until `shcl_compact`. They go in the scratch arena the path lookup already reset, and the call now costs the document nothing.

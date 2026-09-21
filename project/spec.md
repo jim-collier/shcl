@@ -138,6 +138,8 @@ A few nouns from the wider surface:
 
 - A whole-line comment attaches to the next line that binds a node - except when it is written **deeper** than that next line: then it belongs to the block it sits in, and it stays there at its own depth. Written at the level of the block's last binding it trails that binding - except at column zero after the last top-level binding, where it is the document's own tail comment instead: a top-level field's trailing comment and the document's are spelled identically, so a reload could not tell them apart. Written deeper still, it sits inside that binding's block - so a header whose children are all commented out keeps those comments indented under it rather than handing them back a level shallow. The same rule keeps indented tail-of-file comments with their block, and only top-level tail comments remain end-of-file orphans.
 
+- A run of comments keeps the order it was written in. Once one comment in the run goes with the next binding, every later one does too, and a comment whose block would be written out ahead of the one before it goes where that one went. A comment written under the comment before it keeps that nesting, one level per step, so a commented-out block comes back in its shape. A malformed line kept as trivia keeps its place in the order but not the extra depth, since it holds its level on a reload.
+
 - A `#` inside quotes is literal (`url: "http://h/#frag"`), and so is a `#` inside a raw block.
 
 - Comments are never discarded: the parser carries each one as trivia attached to the tree, and the canonical formatter re-emits them (see Canonical formatter). They play no part in merging, reads, or diagnostics.
@@ -546,7 +548,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 - Collapse and merge redundant sections and paths.
 
-- Preserve comments as attached trivia. A whole-line comment attaches to the node bound by the next non-comment line and re-emits just above that node's line, at its indent; a trailing comment stays on its line, two spaces before the `#`. Comment text is never rewritten.
+- Preserve comments as attached trivia. A whole-line comment attaches to the node bound by the next non-comment line and re-emits just above that node's line, at its indent, plus one tab for each level it sits under the comment before it (see Comments); a trailing comment stays on its line, two spaces before the `#`. Comment text is never rewritten.
 
 - When instances merge, their comments concatenate in encounter order; a second trailing comment moves to the lines above (a canonical line has room for one). Comments among stacked-list elements ride the list's field line. Top-level comments after the last binding line re-emit at the end of the output, unindented; indented ones stay with their block (see Comments).
 

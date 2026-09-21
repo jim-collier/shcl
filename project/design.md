@@ -356,6 +356,14 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - It was decided that merge adopts the parser's own empty-fill rule, so a merge and a parse of the concatenation agree. The fill is limited to raw blocks because that is the limit of the parser's rule: a valued instance still appends.
 
+**A run of whole-line comments keeps its written order and its nesting.** A comment written deeper than the next binding hangs on the block it sits in, and the rest of the run goes to the next binding. Each comment chose its block alone, so one could land ahead of the comments written before it: a commented-out header followed by its commented-out child came back child first, and once both were uncommented the child sat under the wrong field.
+
+- It was decided that a comment never goes ahead of the one before it. Once one stays for the next binding, every later one stays too, and one whose block is written out before the last one's goes there with it. Order is the one thing a reader of a commented-out block cannot fix by eye.
+
+- A comment kept away from its own block keeps its depth under the comment before it, one tab per level. A comment no deeper than the place it lands sits at that place's level, as before, which also keeps a run's first comment there, so a reload files the run the same way.
+
+- A malformed line kept verbatim keeps the place's level. It holds its level on a reload, so written deeper it would move the lines after it.
+
 **A float is written with the fewest digits that read back, and an exact tie between two such spellings rounds to even.** Shortest-round-trip formatters agree on every double except two cases, and both had leaked into the output: at a power of two the rounding interval is lopsided, so the closest short spelling can fall outside it while its neighbor reads back, and on an exact tie between two spellings of the shortest length Rust's formatter rounds away from zero where Go's, Python's and glibc's round to even.
 
 - We decided on round to even: it is IEEE 754's own tie rule, what three of the four bindings already did, and what `repr` in Python and `strconv` in Go print, so a value read from another tool's output spells the same here. The reference takes the correctly rounded spelling of the shortest length whenever it reads back, and keeps its own shortest spelling only when it does not.
