@@ -98,6 +98,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
 
+	- Finished items are under Done - Bugs, and the ideas under Done - Features and enhancements, each in a bullet of the same name. Idea 9 is deferred, under Future and/or deferred. The round is whole as of 2026-09-21.
+
 - Code review 20260920:
 
 	- Review document `20260920-055406`. The first Panoplia code review on this project, over the whole tree, split four ways and run one part at a time: the Rust reference and its CLI, the Go, Python, C and C++ bindings, the pipeline and gates and installers, and the documents and the conformance corpus. Aimed at what the four-way crosscheck cannot see: behavior that never reaches stdout, structural inputs the value-level fuzz never generates, and round-trip and fixpoint properties where the code reads back its own output.
@@ -147,15 +149,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
-
-- Code review 20260920b:
-
-	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1 to 8 and 11 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left is idea 10, which needs a windows box.
-
-	- 🔘 Idea 10: the Windows batch this round would have wanted.
-		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
-		- Note: nothing in this round's defects needs a Windows box to confirm except item 19, which is why the batch waits for the fix round rather than holding the filing.
-		- Opened: 20260920-b
 
 ### Done
 
@@ -4811,6 +4804,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: `design.md` says what the check covers now.
 		- Opened: 20260920-c
 		- Closed: 20260921-094852
+
+	- ✅ Idea 10: the Windows batch this round would have wanted.
+		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
+		- Note: nothing in this round's defects needs a Windows box to confirm except item 19, which is why the batch waits for the fix round rather than holding the filing.
+		- Done: the sandbox path on B29W, with TMP and TEMP set to a folder whose name holds a space. The fixed `winpath-sandbox.ps1` started the sandbox and the registry gate passed inside it. The script from before item 19's fix waited out its 420 seconds and failed under the same TEMP, so the setup does reach the defect.
+		- Done: the four device rows and the Python runner ran on a hosted windows runner (build 26100), on dev `bca746f`, and all passed. That runner carries git-bash, which neither box here does, so it is the place these rows run from now on.
+		- Measured: the Python row goes red with the Python CLI's pre-read check taken out. `CON` exited 124 at the 20 second timeout, which is the console wait the row exists for, and the other three device rows stayed green.
+		- Opened: 20260920-b
+		- Closed: 20260921-105648
 
 - Code review 20260920:
 
