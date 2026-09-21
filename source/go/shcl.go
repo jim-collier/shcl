@@ -337,10 +337,55 @@ type element struct {
 type lead struct {
 	text        string
 	blankBefore bool
+	// Levels deeper than the place it is emitted at. A comment written under
+	// the one before it keeps that nesting, so a commented-out block comes
+	// back in its shape.
+	depth int
 }
 
 func plainLead(text string) lead {
 	return lead{text: text}
+}
+
+// depthEnt is one comment on a commentDepth chain: its indent and depth.
+type depthEnt struct {
+	indent string
+	depth  int
+}
+
+// commentDepth says how many levels past its place a pending line is
+// written: the place's own level for a comment no deeper than base, the
+// place's own indent, which also starts a new chain; for a deeper one, one
+// level under the nearest comment before it whose indent its own extends,
+// level with one it equals, or at the place's level when there is none. chain
+// holds those comments' indents with their depths, innermost last. A line kept
+// for being malformed always sits at the place's level and leaves the chain
+// alone: it holds its level on a reload, so written deeper it would move what
+// follows.
+func commentDepth(chain *[]depthEnt, base, text, indent string) int {
+	if !strings.HasPrefix(text, "#") {
+		return 0
+	}
+	if !(len(indent) > len(base) && strings.HasPrefix(indent, base)) {
+		*chain = append((*chain)[:0], depthEnt{indent: indent})
+		return 0
+	}
+	for len(*chain) > 0 {
+		top := (*chain)[len(*chain)-1]
+		if top.indent == indent {
+			return top.depth
+		}
+		if len(indent) > len(top.indent) && strings.HasPrefix(indent, top.indent) {
+			break
+		}
+		*chain = (*chain)[:len(*chain)-1]
+	}
+	depth := 0
+	if len(*chain) > 0 {
+		depth = (*chain)[len(*chain)-1].depth + 1
+	}
+	*chain = append(*chain, depthEnt{indent: indent, depth: depth})
+	return depth
 }
 
 // pend is a pending whole-line comment during parse: text, source indent (used
@@ -649,7 +694,8 @@ const dead = -1
 
 // unopened is the stack entry for a line whose indent matched no open level
 // (E012): never a level a sibling can bind at, but deeper lines are still
-// under it.
+// under it. It sits on top of the levels open before it without closing any
+// of them.
 const unopened = -2
 
 // foldNodeInto merges a later instance into an earlier one under the in-file
@@ -2315,6 +2361,23 @@ func (p *parser) remapChild(node int, oldKey, oldDisp uint64) {
 	}
 }
 
+// insideToLastChild: a block's inside comments are written out after its last
+// child's block, at that child's level, which is where a reload files them: as
+// the last child's own. File them there once the tree is final, so a layer and
+// its canonical form merge the same. The text does not move.
+func (p *parser) insideToLastChild() {
+	for n := range p.arena {
+		kids := p.arena[n].children
+		t := p.arena[n].trivia
+		if len(kids) == 0 || t == nil || len(t.inside) == 0 {
+			continue
+		}
+		kt := p.arena[kids[len(kids)-1]].trivMut()
+		kt.after = append(kt.after, t.inside...)
+		t.inside = nil
+	}
+}
+
 // foldLateDups: a value that mutates after its sibling group was keyed - an
 // empty field filled by a fence, a stacked list closed - can land on a key an
 // earlier sibling already holds, which the keyed lookup can no longer catch.
@@ -2348,11 +2411,12 @@ func (p *parser) foldLateDups() {
 // attachTrivia hands pending leading comments (and this line's trailing one)
 // to a node. First trailing wins; a later one demotes to leading so nothing
 // is lost.
-func (p *parser) attachTrivia(node int, trailing string) {
+func (p *parser) attachTrivia(node int, indent, trailing string) {
 	if len(p.pending) > 0 {
 		t := p.arena[node].trivMut()
+		var chain []depthEnt
 		for _, pn := range p.pending {
-			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore})
+			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, indent, pn.text, pn.indent)})
 		}
 		p.pending = p.pending[:0]
 		p.pendMarks = p.pendMarks[:0]
@@ -2390,18 +2454,26 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	}
 	taken := append([]pend(nil), p.pending[start:]...)
 	p.pending = p.pending[:start]
+	// A comment never goes ahead of the one written before it. Once one stays
+	// for the incoming line every later one stays too, and one whose block
+	// would be written out before the last one's goes there with it instead.
+	// What sits before start stays, so nothing after it can hang.
+	kept := start > 0
+	// Where the last comment went: stack index, node, at its own level.
+	lastSi, lastNode, lastOwn := -1, -1, false
+	var chain []depthEnt
 	for _, pn := range taken {
-		if pn.ceiling > newLen {
+		if !kept && pn.ceiling > newLen {
 			// A level shallower than the incoming line stays open and may
 			// still gain children, so a comment must not hang there - it
 			// would emit below the child; keep it pending instead.
-			target := -1
+			si, target := -1, -1
 			atOwnLevel := false
 			for j := len(p.stack) - 1; j >= 0; j-- {
 				ent := p.stack[j]
 				if ent.node != root && ent.node != dead && ent.node != unopened && len(ent.indent) >= len(newIndent) &&
 					strings.HasPrefix(pn.indent, ent.indent) {
-					target = ent.node
+					si, target = j, ent.node
 					atOwnLevel = len(ent.indent) == len(pn.indent)
 					break
 				}
@@ -2414,7 +2486,16 @@ func (p *parser) hangDeeperPending(newIndent string) {
 			// node keeps an indent of its own and comes back where it was, so
 			// it still hangs.
 			if target >= 0 && (!atOwnLevel || p.arena[target].parent != root) {
-				l := lead{text: pn.text, blankBefore: pn.blankBefore}
+				// A deeper block is written out first, and a block's inside
+				// comments before its after ones.
+				if lastSi >= 0 && (si > lastSi || (si == lastSi && !atOwnLevel && lastOwn)) {
+					si, target, atOwnLevel = lastSi, lastNode, lastOwn
+				}
+				if si != lastSi || atOwnLevel != lastOwn {
+					chain = chain[:0]
+				}
+				lastSi, lastNode, lastOwn = si, target, atOwnLevel
+				l := lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, p.stack[si].indent, pn.text, pn.indent)}
 				t := p.arena[target].trivMut()
 				if atOwnLevel {
 					t.after = append(t.after, l)
@@ -2423,6 +2504,9 @@ func (p *parser) hangDeeperPending(newIndent string) {
 				}
 				continue
 			}
+		}
+		kept = true
+		if pn.ceiling > newLen {
 			pn.ceiling = newLen
 		}
 		p.pending = append(p.pending, pn)
@@ -2434,19 +2518,20 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	}
 }
 
-// resolveParent resolves which open level this indent belongs to. Child only
-// when the current top's indent is a proper prefix; otherwise the indent must
-// equal an open level exactly (dedent), else it is a recoverable error.
+// resolveParent resolves which open level this indent belongs to, walking
+// down from the top. Equal to a level is its sibling. Deeper than a level is
+// its child, unless a level opened under that one is still open, in which case
+// the line falls between the two. Anything else is a recoverable error.
 func (p *parser) resolveParent(indent string) (int, bool) {
-	top := p.stack[len(p.stack)-1]
-	if len(indent) > len(top.indent) && strings.HasPrefix(indent, top.indent) {
-		if top.node == unopened {
-			return dead, true
-		}
-		return top.node, true
-	}
+	hold := -1
 	for i := len(p.stack) - 1; i >= 0; i-- {
-		if p.stack[i].indent == indent && p.stack[i].node != unopened {
+		ent := p.stack[i]
+		if ent.indent == indent {
+			if ent.node == unopened {
+				// Back at a skipped line's column: refused the same way.
+				p.stack = p.stack[:i+1]
+				return 0, false
+			}
 			// Sibling of stack[i]: its parent is the entry below it. Keep the
 			// sentinel; a top-level line resolves to root.
 			parent := root
@@ -2463,16 +2548,30 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 			}
 			return parent, true
 		}
-	}
-	// Skipped, but it still owns its indent: whatever is written deeper is
-	// skipped with it, and a sibling at the same bad indent is refused the
-	// same way instead of binding one level up.
-	for len(p.stack) > 1 {
-		topIndent := p.stack[len(p.stack)-1].indent
-		if len(indent) > len(topIndent) && strings.HasPrefix(indent, topIndent) {
-			break
+		if len(indent) > len(ent.indent) && strings.HasPrefix(indent, ent.indent) {
+			// A skipped line's unopened level sits on top without opening
+			// anything, so it does not count as a level in between.
+			if i+1 < len(p.stack) && p.stack[i+1].node != unopened {
+				break
+			}
+			p.stack = p.stack[:i+1]
+			if ent.node == unopened {
+				return dead, true
+			}
+			return ent.node, true
 		}
-		p.stack = p.stack[:len(p.stack)-1]
+		if ent.node == unopened {
+			hold = i
+		}
+	}
+	// Skipped, but it holds its own column: whatever is written deeper is
+	// skipped with it, and a line back at it is refused the same way instead
+	// of binding one level up. It closes nothing, so a later line that matches
+	// a level open before it still binds there, as in 2.0.0. The hold ends at
+	// the first line neither under it nor at it, this one included, which
+	// keeps one on the stack at most.
+	if hold >= 0 {
+		p.stack = p.stack[:hold]
 	}
 	p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
 	return 0, false
@@ -2972,7 +3071,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					// lines.
 					p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 				} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
-					p.attachTrivia(node, comment)
+					p.attachTrivia(node, indent, comment)
 				}
 				i = next
 				continue
@@ -3009,7 +3108,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// root there is no field (E007), so the comment rides the document like
 				// any other pending one.
 				if parent != root {
-					p.attachTrivia(parent, comment)
+					p.attachTrivia(parent, indent, comment)
 				} else if comment != "" {
 					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
 				}
@@ -3140,7 +3239,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if hadBlank {
 				p.arena[node].blankBefore = true
 			}
-			p.attachTrivia(node, comment)
+			p.attachTrivia(node, indent, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
 		}
 		i = next
@@ -3151,13 +3250,17 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		p.refuse(len(lines), "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes), outStopped(nil), "")
 	}
 	p.starFlush()
-	p.foldLateDups()
-	p.emitRepeatedLeafHints()
 	// Indented tail comments keep their block; only top-level ones orphan.
+	// Before the fold, which carries a dropped instance's comments over to the
+	// one it joins: after it they would hang on the dropped one.
 	p.hangDeeperPending("")
+	p.foldLateDups()
+	p.insideToLastChild()
+	p.emitRepeatedLeafHints()
 	orphans := make([]lead, 0, len(p.pending))
+	var chain []depthEnt
 	for _, pn := range p.pending {
-		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore})
+		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, "", pn.text, pn.indent)})
 	}
 	p.pending = p.pending[:0]
 	// The emitter drops a blank before the first thing it prints, so a document
@@ -3318,6 +3421,13 @@ func (d *Document) Strictness() Strictness {
 	return d.strictness
 }
 
+// writeTabs writes a comment's depth past the place it is emitted at.
+func writeTabs(out *strings.Builder, n int) {
+	for i := 0; i < n; i++ {
+		out.WriteByte('\t')
+	}
+}
+
 // ToCanonical emits the canonical form: block layout, tabs, insertion order,
 // minimal quoting, redundancy collapsed, comments re-emitted as attached
 // trivia. Scalar text is never rewritten.
@@ -3330,6 +3440,7 @@ func (d *Document) ToCanonical() string {
 		if c.blankBefore && out.Len() > 0 {
 			out.WriteByte('\n')
 		}
+		writeTabs(&out, c.depth)
 		out.WriteString(c.text)
 		out.WriteByte('\n')
 	}
@@ -3372,6 +3483,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 			out.WriteByte('\n')
 		}
 		out.WriteString(pad)
+		writeTabs(out, c.depth)
 		out.WriteString(c.text)
 		out.WriteByte('\n')
 	}
@@ -3436,6 +3548,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 			out.WriteByte('\n')
 		}
 		out.WriteString(ipad)
+		writeTabs(out, c.depth)
 		out.WriteString(c.text)
 		out.WriteByte('\n')
 	}
@@ -3445,6 +3558,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 			out.WriteByte('\n')
 		}
 		out.WriteString(pad)
+		writeTabs(out, c.depth)
 		out.WriteString(c.text)
 		out.WriteByte('\n')
 	}
@@ -5428,15 +5542,31 @@ func (d *Document) Merge(over *Document) {
 	// stack of files from repeating it once per layer. Only the lines
 	// already here count: a layer's own repeats are its content.
 	had := len(d.orphans)
+	// A repeat skipped here may be the comment the next one sat under, and a
+	// reload puts a comment at most one level past the comment before it, so
+	// none goes deeper than that.
+	room := 0
+	for k := len(d.orphans) - 1; k >= 0; k-- {
+		if strings.HasPrefix(d.orphans[k].text, "#") {
+			room = d.orphans[k].depth + 1
+			break
+		}
+	}
 	for _, o := range over.orphans {
 		seen := false
 		for _, e := range d.orphans[:had] {
-			if e.text == o.text {
+			if e.text == o.text && e.depth == o.depth {
 				seen = true
 				break
 			}
 		}
 		if !seen {
+			if strings.HasPrefix(o.text, "#") {
+				if o.depth > room {
+					o.depth = room
+				}
+				room = o.depth + 1
+			}
 			d.orphans = append(d.orphans, o)
 		}
 	}

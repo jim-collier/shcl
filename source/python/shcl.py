@@ -338,11 +338,42 @@ class _Lead:
 	"""One whole-line comment held as trivia, plus whether a blank line preceded
 	it - so a blank between comment-only regions survives the round-trip
 	(blank runs collapse to one, same as nodes)."""
-	__slots__ = ("text", "blank_before")
+	__slots__ = ("text", "blank_before", "depth")
 
-	def __init__(self, text, blank_before):
+	def __init__(self, text, blank_before, depth=0):
 		self.text = text
 		self.blank_before = blank_before
+		# Levels deeper than the place it is emitted at. A comment written
+		# under the one before it keeps that nesting, so a commented-out block
+		# comes back in its shape.
+		self.depth = depth
+
+
+def _comment_depth(chain, base, text, indent):
+	"""How many levels past its place a pending line is written: the place's
+	own level for a comment no deeper than `base`, the place's own indent,
+	which also starts a new chain; for a deeper one, one level under the
+	nearest comment before it whose indent its own extends, level with one it
+	equals, or at the place's level when there is none. `chain` holds those
+	comments' indents with their depths, innermost last. A line kept for being
+	malformed always sits at the place's level and leaves the chain alone: it
+	holds its level on a reload, so written deeper it would move what
+	follows."""
+	if not text.startswith("#"):
+		return 0
+	if not (len(indent) > len(base) and indent.startswith(base)):
+		chain[:] = [(indent, 0)]
+		return 0
+	while chain:
+		ind, depth = chain[-1]
+		if ind == indent:
+			return depth
+		if len(indent) > len(ind) and indent.startswith(ind):
+			break
+		chain.pop()
+	depth = chain[-1][1] + 1 if chain else 0
+	chain.append((indent, depth))
+	return depth
 
 
 class _Pend:
@@ -635,7 +666,8 @@ ROOT = 0
 # loudly rather than reading a real node.
 DEAD = sys.maxsize
 # Stack entry for a line whose indent matched no open level (E012): never a
-# level a sibling can bind at, but deeper lines are still under it.
+# level a sibling can bind at, but deeper lines are still under it. It sits
+# on top of the levels open before it without closing any of them.
 UNOPENED = sys.maxsize - 1
 # Ends a name-index chain (see _NameIndex).
 NIL = sys.maxsize
@@ -1999,6 +2031,18 @@ class _Parser:
 			del dmap[old_disp]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
+	def _inside_to_last_child(self):
+		"""A block's inside comments are written out after its last child's
+		block, at that child's level, which is where a reload files them: as the
+		last child's own. File them there once the tree is final, so a layer and
+		its canonical form merge the same. The text does not move."""
+		for nd in self.arena:
+			t = nd.trivia
+			if not nd.children or t is None or not t.inside:
+				continue
+			self.arena[nd.children[-1]]._triv().after.extend(t.inside)
+			t.inside = []
+
 	def _fold_late_dups(self):
 		"""A value that mutates after its sibling group was keyed - an empty field
 		filled by a fence, a stacked list closed - can land on a key an earlier
@@ -2024,13 +2068,14 @@ class _Parser:
 			stack.extend(keep)
 			self.arena[parent].children = keep
 
-	def _attach_trivia(self, node, trailing):
+	def _attach_trivia(self, node, indent, trailing):
 		"""Hand pending leading comments (and this line's trailing one) to a node.
 		First trailing wins; a later one demotes to leading so nothing is lost."""
 		if self.pending:
 			t = self.arena[node]._triv()
+			chain: list[tuple[str, int]] = []
 			for p in self.pending:
-				t.leading.append(_Lead(p.text, p.blank_before))
+				t.leading.append(_Lead(p.text, p.blank_before, _comment_depth(chain, indent, p.text, p.indent)))
 			self.pending = []
 			self.pend_marks = []
 		if trailing:
@@ -2058,17 +2103,24 @@ class _Parser:
 		start = self.pend_marks[-1][0] if self.pend_marks else 0
 		taken = self.pending[start:]
 		del self.pending[start:]
+		# A comment never goes ahead of the one written before it. Once one
+		# stays for the incoming line every later one stays too, and one whose
+		# block would be written out before the last one's goes there with it
+		# instead. What sits before `start` stays, so nothing after it can hang.
+		kept = start > 0
+		# Where the last comment went: (stack index, node, at its own level).
+		last = None
+		chain: list[tuple[str, int]] = []
 		for p in taken:
-			if p.ceiling > new_len:
+			if not kept and p.ceiling > new_len:
 				# A level shallower than the incoming line stays open and may
 				# still gain children, so a comment must not hang there - it
 				# would emit below the child; keep it pending instead.
-				target = None
-				at_own_level = False
-				for ind, node in reversed(self.stack):
+				at = None
+				for si in range(len(self.stack) - 1, -1, -1):
+					ind, node = self.stack[si]
 					if node != ROOT and node != DEAD and node != UNOPENED and len(ind) >= len(new_indent) and p.indent.startswith(ind):
-						target = node
-						at_own_level = len(ind) == len(p.indent)
+						at = (si, node, len(ind) == len(p.indent))
 						break
 				# A root node's trailing comment emits at column zero, which is
 				# exactly how the document's own trailing comment is spelled, so
@@ -2077,14 +2129,22 @@ class _Parser:
 				# reload of this document's own output reads it. A comment
 				# deeper than the node keeps an indent of its own and comes back
 				# where it was, so it still hangs.
-				if target is not None and (not at_own_level or self.arena[target].parent != ROOT):
-					lead = _Lead(p.text, p.blank_before)
-					if at_own_level:
-						self.arena[target]._triv().after.append(lead)
+				if at is not None and (not at[2] or self.arena[at[1]].parent != ROOT):
+					# A deeper block is written out first, and a block's inside
+					# comments before its after ones.
+					if last is not None and (at[0], not at[2]) > (last[0], not last[2]):
+						at = last
+					if at != last:
+						chain.clear()
+					last = at
+					lead = _Lead(p.text, p.blank_before, _comment_depth(chain, self.stack[at[0]][0], p.text, p.indent))
+					if at[2]:
+						self.arena[at[1]]._triv().after.append(lead)
 					else:
-						self.arena[target]._triv().inside.append(lead)
+						self.arena[at[1]]._triv().inside.append(lead)
 					continue
-				p.ceiling = new_len
+			kept = True
+			p.ceiling = min(p.ceiling, new_len)
 			self.pending.append(p)
 		if self.pend_marks and self.pend_marks[-1][1] == new_len:
 			self.pend_marks[-1] = (len(self.pending), new_len)
@@ -2092,27 +2152,40 @@ class _Parser:
 			self.pend_marks.append((len(self.pending), new_len))
 
 	def _resolve_parent(self, indent):
-		"""Resolve which open level this indent belongs to. Child only when the
-		current top's indent is a proper prefix; otherwise the indent must equal
-		an open level exactly (dedent), else it is a recoverable error."""
-		top_indent, top_node = self.stack[-1]
-		if len(indent) > len(top_indent) and indent.startswith(top_indent):
-			return DEAD if top_node == UNOPENED else top_node
+		"""Resolve which open level this indent belongs to, walking down from
+		the top. Equal to a level is its sibling. Deeper than a level is its
+		child, unless a level opened under that one is still open, in which case
+		the line falls between the two. Anything else is a recoverable error."""
+		hold = None
 		for i in range(len(self.stack) - 1, -1, -1):
-			if self.stack[i][0] == indent and self.stack[i][1] != UNOPENED:
+			ind, node = self.stack[i]
+			if ind == indent:
+				if node == UNOPENED:
+					# Back at a skipped line's column: refused the same way.
+					del self.stack[i + 1:]
+					return None
 				# Sibling of stack[i]: its parent is the entry below it.
 				parent = ROOT if i == 0 else self.stack[i - 1][1]
 				# Keep the sentinel; a top-level line resolves to ROOT.
-				self.stack = self.stack[:max(i, 1)]
+				del self.stack[max(i, 1):]
 				return DEAD if parent == UNOPENED else parent
-		# Skipped, but it still owns its indent: whatever is written deeper is
-		# skipped with it, and a sibling at the same bad indent is refused the
-		# same way instead of binding one level up.
-		while len(self.stack) > 1:
-			top = self.stack[-1][0]
-			if len(indent) > len(top) and indent.startswith(top):
-				break
-			self.stack.pop()
+			if len(indent) > len(ind) and indent.startswith(ind):
+				# A skipped line's unopened level sits on top without opening
+				# anything, so it does not count as a level in between.
+				if i + 1 < len(self.stack) and self.stack[i + 1][1] != UNOPENED:
+					break
+				del self.stack[i + 1:]
+				return DEAD if node == UNOPENED else node
+			if node == UNOPENED:
+				hold = i
+		# Skipped, but it holds its own column: whatever is written deeper is
+		# skipped with it, and a line back at it is refused the same way
+		# instead of binding one level up. It closes nothing, so a later line
+		# that matches a level open before it still binds there, as in 2.0.0.
+		# The hold ends at the first line neither under it nor at it, this one
+		# included, which keeps one on the stack at most.
+		if hold is not None:
+			del self.stack[hold:]
 		self.stack.append((indent, UNOPENED))
 		return None
 
@@ -2497,7 +2570,7 @@ class _Parser:
 				else:
 					node = self._bind_block(parent, value, lineno, indent)
 					if node is not None:
-						self._attach_trivia(node, comment)
+						self._attach_trivia(node, indent, comment)
 				i = nxt
 				continue
 			# Stacked-list element: colon-less by construction ('*' can't begin a name).
@@ -2526,7 +2599,7 @@ class _Parser:
 					# root there is no field (E007), so the comment rides the document
 					# like any other pending one.
 					if parent != ROOT:
-						self._attach_trivia(parent, comment)
+						self._attach_trivia(parent, indent, comment)
 					elif comment:
 						self.pending.append(_Pend(comment, indent, had_blank))
 					self._add_star_element(parent, tok, tok.src, lineno, indent)
@@ -2637,7 +2710,7 @@ class _Parser:
 						self.arena[node].src = src_text
 				if had_blank:
 					self.arena[node].blank_before = True
-				self._attach_trivia(node, comment)
+				self._attach_trivia(node, indent, comment)
 				self.stack.append((indent, node))
 			i = nxt
 		# A cap crossed on the document's last line still reports, with nothing
@@ -2645,11 +2718,15 @@ class _Parser:
 		if not node_capped and self.max_nodes and len(self.arena) - 1 > self.max_nodes:
 			self._refuse(nlines, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped", _out_stopped(()), "")
 		self._star_flush()
-		self._fold_late_dups()
-		self._emit_repeated_leaf_hints()
 		# Indented tail comments keep their block; only top-level ones orphan.
+		# Before the fold, which carries a dropped instance's comments over to
+		# the one it joins: after it they would hang on the dropped one.
 		self._hang_deeper_pending("")
-		orphans = [_Lead(p.text, p.blank_before) for p in self.pending]
+		self._fold_late_dups()
+		self._inside_to_last_child()
+		self._emit_repeated_leaf_hints()
+		chain: list[tuple[str, int]] = []
+		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent)) for p in self.pending]
 		self.pending = []
 		# The emitter drops a blank before the first thing it prints, so a
 		# document that kept one there would not survive its own canonical form:
@@ -2930,6 +3007,7 @@ class Document:
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(ipad)
+					out.append("\t" * c.depth)
 					out.append(c.text)
 					out.append("\n")
 				# Comments that hung on this block after its last child re-emit
@@ -2939,6 +3017,7 @@ class Document:
 					if c.blank_before and out:
 						out.append("\n")
 					out.append(pad)
+					out.append("\t" * c.depth)
 					out.append(c.text)
 					out.append("\n")
 				continue
@@ -2951,6 +3030,7 @@ class Document:
 		for c in self.orphans:
 			if c.blank_before and out:
 				out.append("\n")
+			out.append("\t" * c.depth)
 			out.append(c.text)
 			out.append("\n")
 		return "".join(out)
@@ -2984,6 +3064,7 @@ class Document:
 			if c.blank_before and out:
 				out.append("\n")
 			out.append(pad)
+			out.append("\t" * c.depth)
 			out.append(c.text)
 			out.append("\n")
 		if node.blank_before and out:
@@ -3760,9 +3841,17 @@ class Document:
 		# stack of files from repeating it once per layer. Only the lines
 		# already here count: a layer's own repeats are its content.
 		had = len(self.orphans)
+		# A repeat skipped here may be the comment the next one sat under, and
+		# a reload puts a comment at most one level past the comment before
+		# it, so none goes deeper than that.
+		room = next((e.depth + 1 for e in reversed(self.orphans) if e.text.startswith("#")), 0)
 		for o in over.orphans:
-			if not any(e.text == o.text for e in self.orphans[:had]):
-				self.orphans.append(_Lead(o.text, o.blank_before))
+			if not any(e.text == o.text and e.depth == o.depth for e in self.orphans[:had]):
+				depth = o.depth
+				if o.text.startswith("#"):
+					depth = min(depth, room)
+					room = depth + 1
+				self.orphans.append(_Lead(o.text, o.blank_before, depth))
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
@@ -3778,14 +3867,14 @@ class Document:
 		if st is None:
 			return
 		bt = self.arena[base]._triv()
-		bt.leading.extend(_Lead(c.text, c.blank_before) for c in st.leading)
+		bt.leading.extend(_Lead(c.text, c.blank_before, c.depth) for c in st.leading)
 		if st.trailing:
 			if not bt.trailing:
 				bt.trailing = st.trailing
 			else:
 				bt.leading.append(_Lead(st.trailing, False))
-		bt.after.extend(_Lead(c.text, c.blank_before) for c in st.after)
-		bt.inside.extend(_Lead(c.text, c.blank_before) for c in st.inside)
+		bt.after.extend(_Lead(c.text, c.blank_before, c.depth) for c in st.after)
+		bt.inside.extend(_Lead(c.text, c.blank_before, c.depth) for c in st.inside)
 
 	def _overlay(self, base_parent, over, over_parent):
 		"""Explicit stack rather than recursion, for the same reason _clone_subtree
@@ -3856,7 +3945,7 @@ class Document:
 						nd = self.arena[b]
 						for lead in nd.leading() + nd.inside() + nd.after():
 							if not lead.text.startswith("#"):
-								kept.append(_Lead(lead.text, lead.blank_before))
+								kept.append(_Lead(lead.text, lead.blank_before, lead.depth))
 					if kept:
 						t = self.arena[clones[0][1]]._triv()
 						t.leading = kept + t.leading
@@ -3938,10 +4027,10 @@ class Document:
 		st = src.trivia
 		if st is not None:
 			t = node._triv()
-			t.leading = [_Lead(c.text, c.blank_before) for c in st.leading]
+			t.leading = [_Lead(c.text, c.blank_before, c.depth) for c in st.leading]
 			t.trailing = st.trailing
-			t.after = [_Lead(c.text, c.blank_before) for c in st.after]
-			t.inside = [_Lead(c.text, c.blank_before) for c in st.inside]
+			t.after = [_Lead(c.text, c.blank_before, c.depth) for c in st.after]
+			t.inside = [_Lead(c.text, c.blank_before, c.depth) for c in st.inside]
 		node.blank_before = src.blank_before
 		node.src_set = src.src_set
 		node.src = src.src

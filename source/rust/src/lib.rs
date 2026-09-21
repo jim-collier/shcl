@@ -343,6 +343,10 @@ struct Element {
 struct Lead {
 	text: String,
 	blank_before: bool,
+	// Levels deeper than the place it is emitted at. A comment written under
+	// the one before it keeps that nesting, so a commented-out block comes
+	// back in its shape.
+	depth: usize,
 }
 
 impl Lead {
@@ -350,8 +354,40 @@ impl Lead {
 		Lead {
 			text,
 			blank_before: false,
+			depth: 0,
 		}
 	}
+}
+
+/// How many levels past its place a pending line is written: the place's
+/// own level for a comment no deeper than `base`, the place's own indent,
+/// which also starts a new chain; for a deeper one, one level under the
+/// nearest comment before it whose indent its own extends, level with one it
+/// equals, or at the place's level when there is none. `chain` holds those
+/// comments' indents with their depths, innermost last. A line kept for being
+/// malformed always sits at the place's level and leaves the chain alone: it
+/// holds its level on a reload, so written deeper it would move what follows.
+fn comment_depth(chain: &mut Vec<(String, usize)>, base: &str, text: &str, indent: &str) -> usize {
+	if !text.starts_with('#') {
+		return 0;
+	}
+	if !(indent.len() > base.len() && indent.starts_with(base)) {
+		chain.clear();
+		chain.push((indent.to_string(), 0));
+		return 0;
+	}
+	while let Some((ind, depth)) = chain.last() {
+		if ind == indent {
+			return *depth;
+		}
+		if indent.len() > ind.len() && indent.starts_with(ind.as_str()) {
+			break;
+		}
+		chain.pop();
+	}
+	let depth = chain.last().map_or(0, |(_, d)| d + 1);
+	chain.push((indent.to_string(), depth));
+	depth
 }
 
 /// A pending whole-line comment during parse: text, source indent (used only
@@ -632,7 +668,8 @@ const ROOT: usize = 0;
 // re-parenting one level up.
 const DEAD: usize = usize::MAX;
 // Stack entry for a line whose indent matched no open level (E012): never a
-// level a sibling can bind at, but deeper lines are still under it.
+// level a sibling can bind at, but deeper lines are still under it. It sits
+// on top of the levels open before it without closing any of them.
 const UNOPENED: usize = usize::MAX - 1;
 
 /// Merge a later instance into an earlier one under the in-file merge rule:
@@ -2282,13 +2319,35 @@ impl Parser {
 		}
 	}
 
+	/// A block's inside comments are written out after its last child's block,
+	/// at that child's level, which is where a reload files them: as the last
+	/// child's own. File them there once the tree is final, so a layer and its
+	/// canonical form merge the same. The text does not move.
+	fn inside_to_last_child(&mut self) {
+		for n in 0..self.arena.len() {
+			let Some(&kid) = self.arena[n].children.last() else {
+				continue;
+			};
+			let Some(t) = self.arena[n].trivia.as_deref_mut() else {
+				continue;
+			};
+			if t.inside.is_empty() {
+				continue;
+			}
+			let moved = std::mem::take(&mut t.inside);
+			self.arena[kid].triv_mut().after.extend(moved);
+		}
+	}
+
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
-	fn attach_trivia(&mut self, node: usize, trailing: Option<&str>) {
+	fn attach_trivia(&mut self, node: usize, indent: &str, trailing: Option<&str>) {
 		if !self.pending.is_empty() {
 			let t = self.arena[node].triv_mut();
+			let mut chain = Vec::new();
 			for p in self.pending.drain(..) {
 				t.leading.push(Lead {
+					depth: comment_depth(&mut chain, indent, &p.text, &p.indent),
 					text: p.text,
 					blank_before: p.blank_before,
 				});
@@ -2324,22 +2383,32 @@ impl Parser {
 		}
 		let start = self.pend_marks.last().map_or(0, |m| m.0);
 		let taken: Vec<Pend> = self.pending.drain(start..).collect();
+		// A comment never goes ahead of the one written before it. Once one
+		// stays for the incoming line every later one stays too, and one
+		// whose block would be written out before the last one's goes there
+		// with it instead. What sits before `start` stays, so nothing after it
+		// can hang.
+		let mut kept = start > 0;
+		// Where the last comment went: (stack index, node, at its own level).
+		let mut last: Option<(usize, usize, bool)> = None;
+		let mut chain: Vec<(String, usize)> = Vec::new();
 		for mut p in taken {
-			if p.ceiling > new_len {
+			if !kept && p.ceiling > new_len {
 				// A level shallower than the incoming line stays open and may
 				// still gain children, so a comment must not hang there - it
 				// would emit below the child; keep it pending instead.
 				let target = self
 					.stack
 					.iter()
+					.enumerate()
 					.rev()
-					.find(|(ind, node)| {
+					.find(|(_, (ind, node))| {
 						*node != ROOT
 							&& *node != DEAD && *node != UNOPENED
 							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(ind.as_str())
 					})
-					.map(|(ind, n)| (*n, ind.len() == p.indent.len()));
+					.map(|(si, (ind, n))| (si, *n, ind.len() == p.indent.len()));
 				// A root node's trailing comment emits at column zero, which
 				// is exactly how the document's own trailing comment is
 				// spelled, so keeping the two apart here made a merge depend on
@@ -2348,21 +2417,35 @@ impl Parser {
 				// comment deeper than the node keeps an indent of its own and
 				// comes back where it was, so it still hangs.
 				let expressible =
-					target.is_some_and(|(n, own)| !own || self.arena[n].parent != ROOT);
-				if let (Some((n, at_own_level)), true) = (target, expressible) {
+					target.is_some_and(|(_, n, own)| !own || self.arena[n].parent != ROOT);
+				if let (Some(mut at), true) = (target, expressible) {
+					// A deeper block is written out first, and a block's
+					// inside comments before its after ones.
+					if let Some(prev) = last
+						&& (at.0, !at.2) > (prev.0, !prev.2)
+					{
+						at = prev;
+					}
+					if last != Some(at) {
+						chain.clear();
+					}
+					last = Some(at);
+					let base = &self.stack[at.0].0;
 					let lead = Lead {
+						depth: comment_depth(&mut chain, base, &p.text, &p.indent),
 						text: p.text,
 						blank_before: p.blank_before,
 					};
-					if at_own_level {
-						self.arena[n].triv_mut().after.push(lead);
+					if at.2 {
+						self.arena[at.1].triv_mut().after.push(lead);
 					} else {
-						self.arena[n].triv_mut().inside.push(lead);
+						self.arena[at.1].triv_mut().inside.push(lead);
 					}
 					continue;
 				}
-				p.ceiling = new_len;
 			}
+			kept = true;
+			p.ceiling = p.ceiling.min(new_len);
 			self.pending.push(p);
 		}
 		match self.pend_marks.last_mut() {
@@ -2371,38 +2454,47 @@ impl Parser {
 		}
 	}
 
-	/// Resolve which open level this indent belongs to. Child only when the
-	/// current top's indent is a proper prefix; otherwise the indent must equal
-	/// an open level exactly (dedent), else it is a recoverable error.
+	/// Resolve which open level this indent belongs to, walking down from the
+	/// top. Equal to a level is its sibling. Deeper than a level is its child,
+	/// unless a level opened under that one is still open, in which case the
+	/// line falls between the two. Anything else is a recoverable error.
 	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
-		let Some((top_indent, top_node)) = self.stack.last() else {
-			return None; // sentinel invariant; degrade, never abort
-		};
-		if indent.len() > top_indent.len() && indent.starts_with(top_indent.as_str()) {
-			return Some(if *top_node == UNOPENED {
-				DEAD
-			} else {
-				*top_node
-			});
-		}
+		let mut hold = None;
 		for i in (0..self.stack.len()).rev() {
-			if self.stack[i].0 == indent && self.stack[i].1 != UNOPENED {
+			let (ind, node) = (&self.stack[i].0, self.stack[i].1);
+			if ind == indent {
+				if node == UNOPENED {
+					// Back at a skipped line's column: refused the same way.
+					self.stack.truncate(i + 1);
+					return None;
+				}
 				// Sibling of stack[i]: its parent is the entry below it.
 				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
 				// Keep the sentinel; a top-level line resolves to ROOT.
 				self.stack.truncate(i.max(1));
 				return Some(if parent == UNOPENED { DEAD } else { parent });
 			}
-		}
-		// Skipped, but it still owns its indent: whatever is written deeper is
-		// skipped with it, and a sibling at the same bad indent is refused the
-		// same way instead of binding one level up.
-		while self.stack.len() > 1 {
-			let top = &self.stack[self.stack.len() - 1].0;
-			if indent.len() > top.len() && indent.starts_with(top.as_str()) {
-				break;
+			if indent.len() > ind.len() && indent.starts_with(ind.as_str()) {
+				// A skipped line's unopened level sits on top without opening
+				// anything, so it does not count as a level in between.
+				if self.stack.get(i + 1).is_some_and(|e| e.1 != UNOPENED) {
+					break;
+				}
+				self.stack.truncate(i + 1);
+				return Some(if node == UNOPENED { DEAD } else { node });
 			}
-			self.stack.pop();
+			if node == UNOPENED {
+				hold = Some(i);
+			}
+		}
+		// Skipped, but it holds its own column: whatever is written deeper is
+		// skipped with it, and a line back at it is refused the same way
+		// instead of binding one level up. It closes nothing, so a later line
+		// that matches a level open before it still binds there, as in 2.0.0.
+		// The hold ends at the first line neither under it nor at it, this one
+		// included, which keeps one on the stack at most.
+		if let Some(h) = hold {
+			self.stack.truncate(h);
 		}
 		self.stack.push((indent.to_string(), UNOPENED));
 		None
@@ -2998,7 +3090,7 @@ impl Parser {
 						indent,
 					);
 				} else if let Some(node) = self.bind_block(parent, value, lineno, indent) {
-					self.attach_trivia(node, comment);
+					self.attach_trivia(node, indent, comment);
 				}
 				i = next;
 				continue;
@@ -3037,7 +3129,7 @@ impl Parser {
 					// At the root there is no field (E007), so the comment rides
 					// the document like any other pending one.
 					if parent != ROOT {
-						self.attach_trivia(parent, comment);
+						self.attach_trivia(parent, indent, comment);
 					} else if let Some(c) = comment {
 						self.pending.push(Pend {
 							text: c.to_string(),
@@ -3221,7 +3313,7 @@ impl Parser {
 				if had_blank {
 					self.arena[node].blank_before = true;
 				}
-				self.attach_trivia(node, comment);
+				self.attach_trivia(node, indent, comment);
 				self.stack.push((indent.to_string(), node));
 			}
 			i = next;
@@ -3238,14 +3330,19 @@ impl Parser {
 			);
 		}
 		self.star_flush();
-		self.fold_late_dups();
-		self.emit_repeated_leaf_hints();
 		// Indented tail comments keep their block; only top-level ones orphan.
+		// Before the fold, which carries a dropped instance's comments over to
+		// the one it joins: after it they would hang on the dropped one.
 		self.hang_deeper_pending("");
+		self.fold_late_dups();
+		self.inside_to_last_child();
+		self.emit_repeated_leaf_hints();
+		let mut chain = Vec::new();
 		let mut orphans: Vec<Lead> = self
 			.pending
 			.drain(..)
 			.map(|p| Lead {
+				depth: comment_depth(&mut chain, "", &p.text, &p.indent),
 				text: p.text,
 				blank_before: p.blank_before,
 			})
@@ -3485,6 +3582,7 @@ impl Document {
 			if c.blank_before && !out.is_empty() {
 				out.push('\n');
 			}
+			out.extend(std::iter::repeat_n('\t', c.depth));
 			out.push_str(&c.text);
 			out.push('\n');
 		}
@@ -3519,6 +3617,7 @@ impl Document {
 				out.push('\n');
 			}
 			out.push_str(&pad);
+			out.extend(std::iter::repeat_n('\t', c.depth));
 			out.push_str(&c.text);
 			out.push('\n');
 		}
@@ -3586,6 +3685,7 @@ impl Document {
 				out.push('\n');
 			}
 			out.push_str(&ipad);
+			out.extend(std::iter::repeat_n('\t', c.depth));
 			out.push_str(&c.text);
 			out.push('\n');
 		}
@@ -3595,6 +3695,7 @@ impl Document {
 				out.push('\n');
 			}
 			out.push_str(&pad);
+			out.extend(std::iter::repeat_n('\t', c.depth));
 			out.push_str(&c.text);
 			out.push('\n');
 		}
@@ -5408,9 +5509,26 @@ impl Document {
 		// stack of files from repeating it once per layer. Only the lines
 		// already here count: a layer's own repeats are its content.
 		let had = self.orphans.len();
+		// A repeat skipped here may be the comment the next one sat under, and
+		// a reload puts a comment at most one level past the comment before
+		// it, so none goes deeper than that.
+		let mut room = self
+			.orphans
+			.iter()
+			.rev()
+			.find(|l| l.text.starts_with('#'))
+			.map_or(0, |l| l.depth + 1);
 		for o in &over.orphans {
-			if !self.orphans[..had].iter().any(|e| e.text == o.text) {
-				self.orphans.push(o.clone());
+			if !self.orphans[..had]
+				.iter()
+				.any(|e| e.text == o.text && e.depth == o.depth)
+			{
+				let mut o = o.clone();
+				if o.text.starts_with('#') {
+					o.depth = o.depth.min(room);
+					room = o.depth + 1;
+				}
+				self.orphans.push(o);
 			}
 		}
 	}

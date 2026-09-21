@@ -182,6 +182,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A load no longer drops a comment or a malformed line written under a stacked list whose field ends up equal to an earlier instance. The field folds into that instance at the end of the load, and what sat under it was filed on the instance that went away, so a save wrote the file without them at exit 0.
+
+- Merging a layer and merging its formatted copy put a comment in the same place. A comment written inside a block after its children, at an indent none of them has, was filed on the block, while a reload of the same text files it on the last child. When the other layer added children to that block, the comment landed after them one way and before them the other.
+
+- A save keeps a run of whole-line comments in the order it was written. A comment written deeper than the next binding hangs on the block it sits in, and one written after a comment that went with the next binding jumped ahead of it: `# b:` followed by an indented `# c: true` came back with `# c` first, so uncommenting both later put `c` under the wrong field. A comment kept with the ones before it keeps its nesting under them, one tab per level, so a commented-out block comes back in its shape.
+
 - The `H001` hint no longer spans lines. It splices the repeated values into its suggestion, and a value holding a real line break went in raw, so one hint arrived as four lines on stderr. The values are spelled the way the writer would spell them now, which also makes the suggested line valid: `srv: "a\nb", c` reads back as the two values it names. This is the library side of the same rule `instances` got.
 
 - A `Remove` in the C binding no longer leaves its work vectors in the document. They were pushed on the arena that is never reset, so removing 20,000 instances of one name held a megabyte until `shcl_compact`. They go in the scratch arena the path lookup already reset, and the call now costs the document nothing.
@@ -282,7 +288,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A colon before a field's own colon no longer hides a bracket array. `"a:b": [80, 443]` and `srv[db:5432].ports: [80, 443]` were reported as a missing colon, counted nothing lost, and were rewritten to a quoted string by `fmt --write` at exit 0. They are `E019` now, like the plain spelling.
 
-- A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding.
+- A line whose indent matches no open level (`E012`) and a `*` line with no space after it (`E013`) now hold their indent level, so what is written under them is skipped with them (`E018`) instead of attaching one level up, a fence line at a bad indent takes its whole body with it instead of parsing it as top-level bindings, and a second line at the same bad indent is refused the same way rather than binding. The levels open before the bad line stay open, so a later line back at one of them binds there, as it did before.
 
 - A value after an index selector on the last segment (`a[0]: 2`) was dropped with no diagnostic and no lost count, so an in-place write deleted it at exit 0. It is reported (`E002`) and counted as lost now, as a value after a value selector always was.
 
