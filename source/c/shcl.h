@@ -577,15 +577,20 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over);
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out);
 
 // Format helpers matching the reference's textual output.
-// out must be at least SHCL_F64_BUF bytes; returns the byte length written.
-#define SHCL_F64_BUF 512
-size_t shcl_format_f64(double v, char *out);
+// out must be at least SHCL_FLOAT_BUF bytes; returns the byte length written.
+#define SHCL_FLOAT_BUF 512
+size_t shcl_format_float(double v, char *out);
 // Renders a datetime into out (>= SHCL_DT_BUF bytes); returns byte length. A
 // frac longer than 30 bytes is truncated, and the whole rendering is clamped to
 // SHCL_DT_BUF bytes, so a hand-built value cannot overrun the documented buffer
 // (parsed input never gets near either limit).
 #define SHCL_DT_BUF 64
 size_t shcl_datetime_str(const shcl_datetime *dt, char *out);
+// The reverse: text to a datetime, per the whitelist. Returns 1 on success and
+// leaves *out untouched on failure. The other three bindings export this, and
+// the C CLI reached the internal one only by compiling the implementation into
+// its own translation unit.
+int shcl_parse_datetime(const char *text, size_t tlen, shcl_datetime *out);
 // Status <-> the CLI exit code / textual name.
 int shcl_status_code(shcl_status s);
 const char *shcl_status_name(shcl_status s);
@@ -3954,7 +3959,7 @@ size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out)
 
 static ShclStr w_dupz(ShclArena *a, const char *p, size_t n) { ShclStr s; s.p = p; s.n = n; return s_dup(a, s); }
 static ShclStr w_int_text(ShclArena *a, int64_t v) { char b[32]; int n = snprintf(b, sizeof b, "%lld", (long long)v); return w_dupz(a, b, (size_t)n); }
-static ShclStr w_float_text(ShclArena *a, double v) { char b[SHCL_F64_BUF]; size_t n = shcl_format_f64(v, b); return w_dupz(a, b, n); }
+static ShclStr w_float_text(ShclArena *a, double v) { char b[SHCL_FLOAT_BUF]; size_t n = shcl_format_float(v, b); return w_dupz(a, b, n); }
 static ShclStr w_bool_text(int v) { return v ? s_lit("true") : s_lit("false"); }
 static ShclStr w_dt_text(ShclArena *a, const shcl_datetime *dt) { char b[SHCL_DT_BUF]; size_t n = shcl_datetime_str(dt, b); return w_dupz(a, b, n); }
 /* Whether a datetime's canonical spelling reads back as the same value: the
@@ -5304,7 +5309,7 @@ static int f64_neighbor(const char *tmp, const ShclF64Interval *iv, int delta, c
 	return f64_reads_back(out, iv);
 }
 
-size_t shcl_format_f64(double v, char *out) {
+size_t shcl_format_float(double v, char *out) {
 	if (isnan(v)) { memcpy(out, "NaN", 3); return 3; }
 	if (isinf(v)) { if (v < 0) { memcpy(out, "-inf", 4); return 4; } memcpy(out, "inf", 3); return 3; }
 	if (v == 0.0) { if (signbit(v)) { memcpy(out, "-0", 2); return 2; } out[0] = '0'; return 1; }
@@ -5378,6 +5383,19 @@ const char *shcl_status_name(shcl_status s) {
 	return "Good";
 }
 int shcl_status_ok(shcl_status s) { return s == SHCL_GOOD || s == SHCL_EMPTY; }
+int shcl_parse_datetime(const char *text, size_t tlen, shcl_datetime *out) {
+	/* Its own arena: the internal call splits the text into temporaries, and a
+	   standalone caller has no document to lend one. Freed before returning, so
+	   nothing here outlives the call. */
+	ShclArena a = {0, 0, 0, 0, 0};
+	ShclStr t; t.p = text; t.n = tlen;
+	shcl_datetime got;
+	int ok = parse_datetime(&a, t, &got);
+	arena_free(&a);
+	if (ok) *out = got;
+	return ok;
+}
+
 int shcl_strictness_from_arg(const char *s, size_t n, shcl_strictness *out) {
 	char buf[16]; if (n >= sizeof buf) return 0;
 	for (size_t i = 0; i < n; i++) { unsigned char c = (unsigned char)s[i]; buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c; }
@@ -6211,8 +6229,8 @@ static void v_node(ShclArena *a, ShclArena *lv, shcl_doc *d, const ShclVCons *c,
 				if (!found) { v_not_allowed(a, out, line, c, els[x].text); break; }
 			}
 		}
-		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->min_f, fb); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
-		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { ShclStr b; char fb[SHCL_F64_BUF]; b.p = fb; b.n = shcl_format_f64(c->max_f, fb); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
+		if (c->has_min_f) { for (size_t x = 0; x < nels; x++) if (vals[x] < c->min_f) { ShclStr b; char fb[SHCL_FLOAT_BUF]; b.p = fb; b.n = shcl_format_float(c->min_f, fb); v_out_of_range(a, out, line, c, "V005", "below min ", b, els[x].text); break; } }
+		if (c->has_max_f) { for (size_t x = 0; x < nels; x++) if (vals[x] > c->max_f) { ShclStr b; char fb[SHCL_FLOAT_BUF]; b.p = fb; b.n = shcl_format_float(c->max_f, fb); v_out_of_range(a, out, line, c, "V006", "above max ", b, els[x].text); break; } }
 	} else if (V_BASE_IS("bool")) {
 		int *vals = (int *)arena_alloc(lv, (nels ? nels : 1) * sizeof(int));
 		for (size_t x = 0; x < nels; x++)
@@ -7460,7 +7478,7 @@ static ShclStr v_allowed_join(ShclArena *a, const ShclVCons *c) {
 		if (i) sb_puts(a, &s, ", ");
 		switch (c->akind) {
 			case ALLOW_INTS: { snprintf(nb, sizeof nb, "%" PRId64, c->a_ints[i]); sb_puts(a, &s, nb); break; }
-			case ALLOW_FLOATS: { char fb[SHCL_F64_BUF]; ShclStr f; f.p = fb; f.n = shcl_format_f64(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
+			case ALLOW_FLOATS: { char fb[SHCL_FLOAT_BUF]; ShclStr f; f.p = fb; f.n = shcl_format_float(c->a_floats[i], fb); sb_putS(a, &s, f); break; }
 			case ALLOW_BOOLS: sb_puts(a, &s, c->a_bools[i] ? "true" : "false"); break;
 			case ALLOW_DATES: { char db[SHCL_DT_BUF]; ShclStr d; d.p = db; d.n = shcl_datetime_str(&c->a_dates[i], db); sb_putS(a, &s, d); break; }
 			case ALLOW_STRINGS: sb_putS(a, &s, c->a_strs[i]); break;
@@ -7485,16 +7503,16 @@ static ShclStr v_gen_annotation(ShclArena *a, const ShclVCons *c, ShclStr tyname
 		else snprintf(nb, sizeof nb, ", <= %" PRId64, c->max_i);
 		sb_puts(a, &s, nb);
 	} else if (c->has_min_f || c->has_max_f) {
-		char fb[SHCL_F64_BUF];
+		char fb[SHCL_FLOAT_BUF];
 		sb_puts(a, &s, ", ");
 		if (c->has_min_f && c->has_max_f) {
-			ShclStr f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			ShclStr f; f.p = fb; f.n = shcl_format_float(c->min_f, fb); sb_putS(a, &s, f);
 			sb_putc(a, &s, '-');
-			ShclStr g; g.p = fb; g.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, g);
+			ShclStr g; g.p = fb; g.n = shcl_format_float(c->max_f, fb); sb_putS(a, &s, g);
 		} else if (c->has_min_f) {
-			sb_puts(a, &s, ">= "); ShclStr f; f.p = fb; f.n = shcl_format_f64(c->min_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, ">= "); ShclStr f; f.p = fb; f.n = shcl_format_float(c->min_f, fb); sb_putS(a, &s, f);
 		} else {
-			sb_puts(a, &s, "<= "); ShclStr f; f.p = fb; f.n = shcl_format_f64(c->max_f, fb); sb_putS(a, &s, f);
+			sb_puts(a, &s, "<= "); ShclStr f; f.p = fb; f.n = shcl_format_float(c->max_f, fb); sb_putS(a, &s, f);
 		}
 	}
 	if (c->has_repeat) {

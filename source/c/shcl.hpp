@@ -91,7 +91,14 @@ inline std::optional<Strictness> strictness_from_arg(std::string_view s) {
 }
 
 // A float in the reference's textual form, the spelling a save writes.
-inline std::string format_f64(double v) { char b[SHCL_F64_BUF]; return std::string(b, shcl_format_f64(v, b)); }
+inline std::string format_float(double v) { char b[SHCL_FLOAT_BUF]; return std::string(b, shcl_format_float(v, b)); }
+
+// Text to a datetime, per the whitelist. Empty when the text is not one.
+inline std::optional<Datetime> parse_datetime(std::string_view s) {
+	shcl_datetime out;
+	if (!shcl_parse_datetime(s.data(), s.size(), &out)) return std::nullopt;
+	return Datetime(out);
+}
 
 // The tokenizer's view of one line or one lookup path, as `shcl tokens` prints
 // it. Every offset is into the text that was tokenized. The spans are copied

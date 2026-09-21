@@ -226,7 +226,7 @@ pub struct ShclDateTime {
 	pub date: Option<(i32, u32, u32)>,         // (year, month, day)
 	pub time: Option<(u32, u32, Option<u32>)>, // (hour, minute, seconds if written)
 	pub frac: Option<String>,                  // fractional-second digits as typed
-	pub zone: Option<ZoneSpec>,
+	pub zone: Option<Zone>,
 }
 
 /// The name the Go binding uses for the same type; either spelling works.
@@ -244,9 +244,9 @@ fn same_moment(a: &ShclDateTime, b: &ShclDateTime) -> bool {
 		f.as_deref()
 			.map_or(String::new(), |d| d.trim_end_matches('0').to_string())
 	};
-	let zone = |z: &Option<ZoneSpec>| match z {
-		Some(ZoneSpec::Utc) | Some(ZoneSpec::OffsetMinutes(0)) => Some(0),
-		Some(ZoneSpec::OffsetMinutes(m)) => Some(*m),
+	let zone = |z: &Option<Zone>| match z {
+		Some(Zone::Utc) | Some(Zone::OffsetMinutes(0)) => Some(0),
+		Some(Zone::OffsetMinutes(m)) => Some(*m),
 		None => None,
 	};
 	if a.date.is_some() != b.date.is_some()
@@ -289,7 +289,7 @@ fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
 
 /// A datetime's zone suffix as written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZoneSpec {
+pub enum Zone {
 	Utc,
 	OffsetMinutes(i32),
 }
@@ -312,8 +312,8 @@ impl std::fmt::Display for ShclDateTime {
 			}
 		}
 		match self.zone {
-			Some(ZoneSpec::Utc) => write!(f, "Z")?,
-			Some(ZoneSpec::OffsetMinutes(off)) => {
+			Some(Zone::Utc) => write!(f, "Z")?,
+			Some(Zone::OffsetMinutes(off)) => {
 				let sign = if off < 0 { '-' } else { '+' };
 				let a = off.abs();
 				write!(f, "{}{:02}:{:02}", sign, a / 60, a % 60)?;
@@ -3653,7 +3653,7 @@ fn diag_name(name: &str) -> String {
 /// other three bindings have to implement it, and a consumer building canonical
 /// text by hand should not have to know which of the four they are reading.
 #[must_use]
-pub fn format_f64(v: f64) -> String {
+pub fn format_float(v: f64) -> String {
 	let s = format!("{v}");
 	if !v.is_finite() || v == 0.0 {
 		return s;
@@ -5172,7 +5172,7 @@ impl Document {
 		if !v.is_finite() {
 			return false;
 		}
-		self.set_value(path, cell_of(format_f64(v)))
+		self.set_value(path, cell_of(format_float(v)))
 	}
 	/// Bind true/false at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -5232,7 +5232,10 @@ impl Document {
 		if !v.iter().all(|x| x.is_finite()) {
 			return false;
 		}
-		self.set_value(path, array_cell(v.iter().map(|x| format_f64(*x)).collect()))
+		self.set_value(
+			path,
+			array_cell(v.iter().map(|x| format_float(*x)).collect()),
+		)
 	}
 	/// Bind an inline bool array at a path.
 	#[must_use = "a setter reports whether the write applied; an unusable path writes nothing (see write_reason)"]
@@ -5934,15 +5937,15 @@ fn parse_num2(s: &str) -> Option<u32> {
 }
 
 /// (hour, minute, seconds-if-written), fraction digits, zone.
-type TimeParts = ((u32, u32, Option<u32>), Option<String>, Option<ZoneSpec>);
+type TimeParts = ((u32, u32, Option<u32>), Option<String>, Option<Zone>);
 
 /// Time with optional meridiem, fraction, zone: `H:MM[:SS[.f+]][ AM|PM][Z|+HH:MM]`.
 fn parse_time_part(s: &str) -> Option<TimeParts> {
 	let mut t = s.trim();
 	// Zone suffix first (only valid after a time).
-	let mut zone: Option<ZoneSpec> = None;
+	let mut zone: Option<Zone> = None;
 	if let Some(rest) = t.strip_suffix(['Z', 'z']) {
-		zone = Some(ZoneSpec::Utc);
+		zone = Some(Zone::Utc);
 		t = rest.trim_end();
 	} else if t.len() >= 6 {
 		// Byte-wise on purpose: a str slice here can land mid-char and panic when
@@ -5964,7 +5967,7 @@ fn parse_time_part(s: &str) -> Option<TimeParts> {
 				if sign == b'-' {
 					off = -off;
 				}
-				zone = Some(ZoneSpec::OffsetMinutes(off));
+				zone = Some(Zone::OffsetMinutes(off));
 				t = t[..t.len() - 6].trim_end();
 			}
 		}
@@ -7070,7 +7073,7 @@ fn allowed_join(a: &AllowedSet) -> String {
 			.join(", "),
 		AllowedSet::Floats(v) => v
 			.iter()
-			.map(|x| format_f64(*x))
+			.map(|x| format_float(*x))
 			.collect::<Vec<_>>()
 			.join(", "),
 		AllowedSet::Bools(v) => v
@@ -7104,9 +7107,9 @@ fn gen_annotation(c: &Constraint, tyname: &str) -> String {
 		});
 	} else if c.min_f.is_some() || c.max_f.is_some() {
 		parts.push(match (c.min_f, c.max_f) {
-			(Some(lo), Some(hi)) => format!("{}-{}", format_f64(lo), format_f64(hi)),
-			(Some(lo), None) => format!(">= {}", format_f64(lo)),
-			(None, Some(hi)) => format!("<= {}", format_f64(hi)),
+			(Some(lo), Some(hi)) => format!("{}-{}", format_float(lo), format_float(hi)),
+			(Some(lo), None) => format!(">= {}", format_float(lo)),
+			(None, Some(hi)) => format!("<= {}", format_float(hi)),
 			(None, None) => String::new(), // guarded above; keep the map total
 		});
 	}
@@ -8164,7 +8167,7 @@ impl Document {
 								"V005",
 								format!(
 									"value below min {} at '{}': {}",
-									format_f64(lo),
+									format_float(lo),
 									schema_text(&c.path),
 									one_line(&els[i].text)
 								),
@@ -8179,7 +8182,7 @@ impl Document {
 								"V006",
 								format!(
 									"value above max {} at '{}': {}",
-									format_f64(hi),
+									format_float(hi),
 									schema_text(&c.path),
 									one_line(&els[i].text)
 								),

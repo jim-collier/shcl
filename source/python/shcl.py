@@ -40,9 +40,15 @@ __all__ = [
 	"DateTime",
 	"Diagnostic",
 	"Document",
+	"FORMAT_LINE",
+	"FORMAT_LINE_HEAD",
+	"FORMAT_MAJOR",
 	"FileStatus",
+	"GEN_BANNER",
 	"LoadError",
 	"MAX_DEPTH",
+	"MIGRATED_LINE",
+	"Migration",
 	"Piece",
 	"Quote",
 	"RULES_CURRENT",
@@ -1403,7 +1409,7 @@ class Migration:
 
 	__slots__ = ("text", "current", "ambiguous", "lost")
 
-	def __init__(self, text, current=False, ambiguous=0, lost=0):
+	def __init__(self, text: str, current: bool = False, ambiguous: int = 0, lost: int = 0) -> None:
 		self.text = text
 		self.current = current
 		self.ambiguous = ambiguous

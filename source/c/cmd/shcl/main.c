@@ -394,6 +394,29 @@ static const char *CODES =
 
 static void outln(const char *p, size_t n) { fwrite(p, 1, n, stdout); fputc('\n', stdout); }
 
+/* A value for a one-per-line listing. `instances` promises one line per
+   instance, and a value holding a line break broke that, so a caller splitting
+   on newlines counted more instances than `count` reports. Only such a value
+   changes: anything else goes out as it is. The escaped spelling is the one the
+   generator writes for a default holding a newline, for the same reason. */
+static void out_one_line(const char *p, size_t n) {
+	size_t i = 0;
+	while (i < n && p[i] != '\n' && p[i] != '\r') i++;
+	if (i == n) { outln(p, n); return; }
+	fputc('"', stdout);
+	for (i = 0; i < n; i++) {
+		switch (p[i]) {
+			case '\\': fputs("\\\\", stdout); break;
+			case '"':  fputs("\\\"", stdout); break;
+			case '\n': fputs("\\n", stdout); break;
+			case '\r': fputs("\\r", stdout); break;
+			case '\t': fputs("\\t", stdout); break;
+			default:   fputc(p[i], stdout); break;
+		}
+	}
+	fputs("\"\n", stdout);
+}
+
 // Whole-buffer UTF-8 validation, matching Rust read_to_string rejecting bad bytes.
 static int utf8_valid(const char *p, size_t n) {
 	size_t i = 0;
@@ -721,28 +744,28 @@ static int do_get(Opts *o) {
 
 	shcl_status status = SHCL_GOOD;
 	const shcl_status *slotSts = NULL; size_t nSlots = 0;
-	char fbuf[SHCL_F64_BUF];
+	char fbuf[SHCL_FLOAT_BUF];
 	// Buffer output lines so the on-bad modes can suppress them uniformly. Each
 	// line either borrows arena/const memory (owned=0) or is formatted into own[].
 	// Owned entries keep p NULL: own[] lives inside the growable array, so a stored
 	// self-pointer goes stale on realloc - LINEPTR picks the live one at print time.
-	struct { const char *p; size_t n; char own[SHCL_F64_BUF]; int owned; } *lines = NULL;
+	struct { const char *p; size_t n; char own[SHCL_FLOAT_BUF]; int owned; } *lines = NULL;
 	size_t nlines = 0, clines = 0;
 	#define LINEPTR(I) (lines[I].owned ? lines[I].own : lines[I].p)
 	#define PUSHLINE_BYTES(P, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } lines[nlines].p = (P); lines[nlines].n = (N); lines[nlines].owned = 0; nlines++; } while (0)
-	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_F64_BUF, FMT, __VA_ARGS__); lines[nlines].p = NULL; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
+	#define PUSHLINE_FMT(FMT, ...) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } int k = snprintf(lines[nlines].own, SHCL_FLOAT_BUF, FMT, __VA_ARGS__); lines[nlines].p = NULL; lines[nlines].n = (size_t)k; lines[nlines].owned = 1; nlines++; } while (0)
 	#define PUSHLINE_BUF(B, N) do { if (nlines == clines) { clines = clines ? clines * 2 : 8; lines = xrealloc(lines, clines * sizeof *lines); } memcpy(lines[nlines].own, (B), (N)); lines[nlines].p = NULL; lines[nlines].n = (N); lines[nlines].owned = 1; nlines++; } while (0)
 
 	if (o->array) {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64_arr r = shcl_read_int_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_FMT("%" PRId64, r.values[i]); }
-		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_f64(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
+		else if (!strcmp(o->kind, "float")) { shcl_read_f64_arr r = shcl_read_float_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_format_float(r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "bool")) { shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i] ? "true" : "false", r.values[i] ? 4 : 5); }
 		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) { size_t k = shcl_datetime_str(&r.values[i], fbuf); PUSHLINE_BUF(fbuf, k); } }
 		else if (!strcmp(o->kind, "raw") || !strcmp(o->kind, "rawinfo")) { fprintf(stderr, "--%s has no --array form (see --help)\n", o->kind); free(lines); layered_free(&L); return 1; }
 		else { shcl_read_str_arr r = shcl_read_string_array(d, path, plen); status = r.status; slotSts = r.statuses; nSlots = r.n; for (size_t i = 0; i < r.n; i++) PUSHLINE_BYTES(r.values[i].p, r.values[i].n); }
 	} else {
 		if (!strcmp(o->kind, "int")) { shcl_read_i64 r = shcl_read_int(d, path, plen); status = r.status; PUSHLINE_FMT("%" PRId64, r.value); }
-		else if (!strcmp(o->kind, "float")) { shcl_read_f64 r = shcl_read_float(d, path, plen); status = r.status; size_t k = shcl_format_f64(r.value, fbuf); PUSHLINE_BUF(fbuf, k); }
+		else if (!strcmp(o->kind, "float")) { shcl_read_f64 r = shcl_read_float(d, path, plen); status = r.status; size_t k = shcl_format_float(r.value, fbuf); PUSHLINE_BUF(fbuf, k); }
 		else if (!strcmp(o->kind, "bool")) { shcl_read_bool r = shcl_read_bool_(d, path, plen); status = r.status; PUSHLINE_BYTES(r.value ? "true" : "false", r.value ? 4 : 5); }
 		else if (!strcmp(o->kind, "datetime")) { shcl_read_dt r = shcl_read_datetime(d, path, plen); status = r.status; size_t k = shcl_datetime_str(&r.value, fbuf); PUSHLINE_BUF(fbuf, k); }
 		else if (!strcmp(o->kind, "raw")) { shcl_read_str r = shcl_read_raw(d, path, plen); status = r.status; PUSHLINE_BYTES(r.value.p, r.value.n); }
@@ -1406,7 +1429,12 @@ static int do_check(const Opts *o) {
 	shcl_doc *sd = NULL;
 	char *stext = NULL;
 	int v99 = 0;
-	if (!shcl_strict_failed(d) && o->schema) {
+	/* A strict load leaves the document it recovered, which is what the
+	   library's one-shot validate walks. So the schema half runs either way: at
+	   strict a user was getting less out of check than at standard on the same
+	   file, and check writes nothing, so fmt's refusal to rewrite a
+	   strict-failing document does not carry over. */
+	if (o->schema) {
 		size_t slen; stext = read_input(o->schema, &slen);
 		if (!stext) { shcl_free(d); free(text); return EXIT_IO; }
 		sd = xdoc(shcl_parse(stext, slen));
@@ -1527,7 +1555,7 @@ static int do_enum(Opts *o, int want_count) {
 	if (gate) return gate;
 	shcl_doc *d = L.doc;
 	if (want_count) printf("%zu\n", shcl_count(d, path, plen));
-	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) outln(vals[i].p, vals[i].n); }
+	else { shcl_str *vals; size_t n = shcl_instances(d, path, plen, &vals); for (size_t i = 0; i < n; i++) out_one_line(vals[i].p, vals[i].n); }
 	layered_free(&L); return 0;
 }
 

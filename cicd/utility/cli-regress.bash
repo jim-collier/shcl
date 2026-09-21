@@ -176,6 +176,12 @@ printf 'a: 1\n##    Format   0\n##    Format   3\n' > "${tmpDir}/twostamps.shcl"
 ## selector is ignored, so generation used to write a line that failed its own
 ## check. One default contradicts the selector and one names it.
 printf 'field: "a[b]"\n\trequired: yes\n\tdefault: hello\n' > "${tmpDir}/seldefbad.shcl"
+## A schema naming a path the two-error file does not have, so validation has
+## something to say that the parse does not.
+printf 'field: zz\n\trequired: yes\n' > "${tmpDir}/missreq.shcl"
+## Two instances whose values hold a real line break, and one plain value, so a
+## listing that spans lines can be told from one that does not.
+printf 'srv: "a\\nb"\nsrv: "c\\nd"\nplain: x.y\n' > "${tmpDir}/nlvalue.shcl"
 printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.shcl"
 ## An optional field's line is commented, so the self-check never read its
 ## default. The second schema must still pass, since each line works alone;
@@ -223,6 +229,8 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 ##	an apostrophe, %T% a document with a name that needs quoting in a path,
 ##	%F2% a two-key file for the edit options, %M% a path with no file at it,
 ##	%BA% a bracket array, %SQ% a selector whose discriminator needs quotes,
+##	%SV% a schema naming a path the two-error file does not have,
+##	%NV% two instance values holding a line break beside one plain value,
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
@@ -281,6 +289,10 @@ rows=(
 	## 20260918 item 21: the spec named two summary spellings for check and a
 	## strict one prints a third.
 	'check-strict-summary|check --strictness=strict %B%|-|6|line 2: Error: E015\nline 3: Error: E014\nstrict load failed: 2 diagnostic(s)\n|-'
+	## 20260920b item 7: a strict load still hands back the document it
+	## recovered, so check --schema validates it. Without this the V-codes were
+	## dropped and a user got less out of check at strict than at standard.
+	'check-strict-schema-validates|check --strictness=strict --schema=%SV% %B%|-|6|line 2: Error: E015\nline 3: Error: E014\nline 0: Error: V002\nline 1: Error: V001\nstrict load failed: 4 diagnostic(s)\n|-'
 	## 20260830 round: an unknown command is judged before its options.
 	'unknown-cmd-before-opts|bogus --nope %F%|-|1|-|unknown command: bogus'
 	## 20260909 item 59: a real option in front of the subcommand was called
@@ -493,6 +505,11 @@ rows=(
 	'get-diags|get %B% a|-|0|1|E015 missing colon'
 	'count-diags|count %B% a|-|0|1|E015 missing colon'
 	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	## 20260920b item 26: a value holding a line break printed across two lines,
+	## so `instances` gave four lines where `count` said two. Only such a value
+	## is escaped; a plain one with a dot in it comes out as written.
+	'instances-one-per-line|instances %NV% srv|-|0|"a\\nb"\n"c\\nd"\n|-'
+	'instances-plain-unescaped|instances %NV% plain|-|0|x.y\n|-'
 	## 20260830b item 22: usage and I/O shared exit 1, so a script could not
 	## tell "the command line is wrong" from "that file is not there".
 	'io-missing-file|get %M% a|-|8|-|-'
@@ -690,6 +707,8 @@ for row in "${rows[@]}"; do
 	argv="${argv//%Q%/${tmpDir}/quote.shcl}"
 	argv="${argv//%BA%/${tmpDir}/brarray.shcl}"
 	argv="${argv//%SQ%/${tmpDir}/selcomma.shcl}"
+	argv="${argv//%SV%/${tmpDir}/missreq.shcl}"
+	argv="${argv//%NV%/${tmpDir}/nlvalue.shcl}"
 	argv="${argv//%NB%/${tmpDir}/nbname.shcl}"
 	argv="${argv//%DN%/${tmpDir}/dotname.shcl}"
 	argv="${argv//%SN%/${tmpDir}/dotschema.shcl}"

@@ -18,13 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl tokens FILE`: each line's lexical spans, one output line per input line, for seeing why the parser read a line the way it did. It prints the same view the parser reads through, so it is also the cross-binding pin for the tokenizer. C's `shcl_tokens` grows its two arrays in the read arena of the document it was last handed, so zero the struct before handing it another one.
 
+- `shcl_parse_datetime(text, len, out)` in the C binding, and `parse_datetime` on the C++ veneer: text to a `shcl_datetime`, per the same whitelist the other three parse with. The call existed and was `static`, so the C CLI reached it only by compiling the implementation into its own translation unit and nobody embedding the header could reach it at all.
+
 - `ReadFile(path, maxBytes)` in every binding and the C++ veneer: the file tier's read half on its own - the file's text, or the load status saying why not, with a cap on how much is read (past it is `Unreadable`; 0 is no cap). `LoadFile` is now this plus a parse. It is for a consumer that needs the exact bytes it last saw, to tell its own save coming back as a change notification from somebody else's edit, or a bound on what it will read before parsing - both of which meant keeping a hand-rolled read beside the library.
 
 - `ParseLimited` (each binding's spelling, and the C++ veneer): a parse with caller-supplied caps, for input the consumer does not control. A document holds many times its byte size in memory, so `ReadFile`'s byte cap alone cannot bound a load. A node cap stops the parse with one `E020` and counts the unparsed remainder as lost, so a save cannot silently truncate; an element cap refuses any line whose array would exceed it (`E021`), skipping the line whole rather than truncating the value, and a raw-block fence refused this way takes its block with it; a diagnostic cap lists only that many and ends the list with one `E022` that counts the rest, since a document of nothing but bad lines costs a diagnostic per line. 0 disables a cap.
 
 - `shcl_compact()` in the C binding, and `compact()` on the C++ veneer: the write-side counterpart to `shcl_reads_release`. A write lands in the document's bump arena and the value it replaced stays there until `shcl_free`, so a process rewriting one field once a second grew by a few megabytes a day with no way to give it back. Compaction rebuilds the document into fresh arenas holding only what it now contains, diagnostics, lost count and strictness included, so a save or a strict gate afterwards reads the same. Optional; a write-once consumer never needs it.
 
-- The C++ veneer can write. It had no setters, so a document it loaded could be merged and saved but not changed. It now has the rest of the C API: the setters and their `_default` forms, `set_literal`, `set_comment`, `set_empty` and `remove`, the tokenizer, both hint suppressors, `write_file_atomic`, `format_f64`, `strictness_from_arg` and `status_code`. `c()` hands back the C handle for anything the veneer leaves out, and `get_or<T>` covers datetimes and arrays, with `get_raw_or` and `get_raw_info_or` beside it, since the veneer copies every result and the reason C stops at the value types does not apply.
+- The C++ veneer can write. It had no setters, so a document it loaded could be merged and saved but not changed. It now has the rest of the C API: the setters and their `_default` forms, `set_literal`, `set_comment`, `set_empty` and `remove`, the tokenizer, both hint suppressors, `write_file_atomic`, `format_float`, `strictness_from_arg` and `status_code`. `c()` hands back the C handle for anything the veneer leaves out, and `get_or<T>` covers datetimes and arrays, with `get_raw_or` and `get_raw_info_or` beside it, since the veneer copies every result and the reason C stops at the value types does not apply.
 
 - `shcl_reads_release()` in the C binding: gives back the memory the read calls have handed out, without touching the document. `shcl_paths` and the string reads go through it, where they used to grow the document itself. Read results live in the document's arena until it is freed, which is right for a read-once consumer and wrong for a process polling one document in a loop - 200k array reads held 15.7 MB it could not give back. Optional, so nothing changes for a caller that ignores it; the C++ veneer calls it on every read, since it copies each result out immediately.
 
@@ -49,6 +51,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
 ### Changed
+
+- The float formatter is `format_float` in every binding, which is what Go and Python already called it. Rust's `format_f64` and C's `shcl_format_f64` are gone, and C's `SHCL_F64_BUF` is `SHCL_FLOAT_BUF`. A name in a cross-binding contract should not be spelled after one language's type. Rust's zone enum is `Zone` rather than `ZoneSpec` for the same reason: Go, Python and C all say zone.
 
 - Two options that ask for different answers are a usage error, whichever order they were typed in, and the message names both. `get --raw --int` used to print the int and `get --int --raw` used to fail at exit 4, so the same two flags gave two answers and neither said why. A value option given two different values (`--strictness`, `--on-bad`, `--default`, `--schema`) went the same way, silently keeping the last. Repeating an option with the same value still goes through, and `--layer` and `--set` are ordered lists, so they repeat by design.
 
@@ -177,6 +181,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A malformed line (`E014`) names the column where the path went wrong.
 
 ### Fixed
+
+- `check --schema` at strict reports what the schema found. A strict load fails and still hands back the document it recovered, and the library's one-shot validates that - but the CLI stopped at the parse error, so the same file gave fewer answers at strict than at standard. The summary line is still `strict load failed`.
+
+- `instances` prints one line per instance. A value holding a real line break went out raw, so a caller splitting the output on newlines counted more instances than `count` reports. Such a value is printed in its quoted escaped spelling now; every other value is unchanged, and the library still hands values back as they are.
 
 - `Remove` on a wildcard path no longer leaves data behind. A leaf that repeated under one instance made that slot ambiguous, and the remove skipped it and still reported success, so `set --write --remove='server[*].port'` cleared the instances holding one port and left the ones holding two. Every node the path reaches goes now, and `Exists` answers over the same list. The reads are unchanged: a slot with two nodes under it is still `Multiple` there.
 

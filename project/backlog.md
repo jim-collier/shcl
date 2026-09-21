@@ -86,6 +86,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- 🔘 The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
+	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
+	- Cause: the hint's builder splices the values into its suggestion in display form. `diag_name` spells a NAME carrying a line break on one line (20260916 item 18); the suggestion's VALUE half goes around it.
+	- Note: found while testing 20260920b item 26, which fixed the same class in the CLI's `instances`. Not the same site: this is the library's diagnostic prose, which the crosscheck drops and `expected-diags.txt` records by code only, so nothing watches it.
+	- Note: the fix is the value half of what `diag_name` already does for names, in all four. Pinned in `cli-regress.bash` or nowhere.
+	- Opened: 20260921-0210
+
 - Code review 20260920b:
 
 	- A full adversarial pass over the whole tree, aimed first at the ground the 20260920 round recorded as unread: most of `design.md`, `style-guide_code.md` entirely, the schema and generation half of all four bindings, the corpus's write, merge, layer and init dimensions, the test files read for what they do not assert, and the pipeline files nobody had opened. A second part went at the code merged 2026-09-19 and 2026-09-20, which had no soak time, and at the siblings of each of those fixes. Twenty-six defects here and ten enhancements under Features and enhancements.
@@ -97,36 +104,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Where they come from. Eleven are stale claims in a document the code has moved past, spread over `design.md`, `spec.md`, `style-guide_ui-ux.md` and the corpus README, none of which any round had read in these sections. Five sit in the generation half, which no round had read in any binding. Four are in test and gate code. Item 11 was written by the same commit that made the code contradict it, which is the shortest path from fix to drift this project has recorded.
 
 	- Seen and not filed, since each would reverse a recorded decision: a read of `CON` with no `--write` still waiting on the console, `--set=a=1 --set=a=2` taking the last value, a closing fence at a deeper indent closing the block, and the `Multiple` status a repeated leaf reports. Item 1 is adjacent to the last of these and does not touch it: 20260902 item 3 settled what such a slot reports and said `Remove` sees the same list, and left what `Remove` does with it unstated.
-
-	- 🔘 Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
-		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` prints only the `E014` and `strict load failed: 1 diagnostic(s)`. At standard the `V003` appears.
-		- Cause: the CLI's strict arm takes the load error's diagnostics and stops; `lib.rs:3399` `load_and_validate` validates what the parse recovered.
-		- Origin: `592ba117` (2026-07-21). Confirmed.
-		- Note: this may be a spec wording fix rather than a code fix. `spec.md:561` says the one-shot never fails and that the CLI appends its diagnostics to `check`'s normal output, but `fmt` already has the precedent that a strict-failing document formats nothing. The call is which of the two `check` follows.
-		- Opened: 20260920-b
-
-	- 🔘 Item 23: the public surface has gaps the style guide does not list as deviations.
-		- Reproduced: `parse_datetime` is public in Rust, Go and Python and is `static` in C, with no `shcl_parse_datetime` declared and no text-to-`Datetime` call in the veneer; the C CLI reaches the static one only because it compiles the implementation into its own translation unit. Python's `__all__` omits `Migration`, `GEN_BANNER`, `FORMAT_MAJOR`, `FORMAT_LINE_HEAD`, `FORMAT_LINE` and `MIGRATED_LINE`, all of which Rust and Go export and one of which the Python CLI already reads. `Migration.__init__` is unannotated where the guide asks for hints on every public method.
-		- Cause: the constants arrived after `__all__` was written and were not added to it; the C datetime parser was never promoted.
-		- Origin: `__all__` 2026-08-18; the constants `dd004f1` (2026-09-08) and `7040ab7` (2026-09-16). Confirmed by comparing the full inventory, 102 `pub fn` and 34 public types, against the three ports.
-		- Note: `check-veneer.bash` walks public declarations, so it cannot see a call that was never declared public. Every other inventory gap found is a deviation the guide already lists.
-		- Note: the float formatter is `format_f64` in Rust and C and `FormatFloat` / `format_float` in Go and Python, and the zone type has four spellings. Those are naming, not inventory, and want a decision rather than a fix.
-		- Opened: 20260920-b
-
-	- 🔘 Item 24: `contributing.md` names issue labels the repository does not have.
-		- Reproduced: lines 95 to 97 promise `needs-repro`, `needs-fix` and `critical`. `gh label list` returns only the nine GitHub defaults. The `label:bug` on line 60 exists.
-		- Cause: template text that was never reconciled with the repository.
-		- Origin: `c93db82` (2026-07-11). Confirmed.
-		- Note: either the labels get created or the sentences go. Creating them is the smaller change and matches what the document promises a reporter.
-			- Remove the lables in the doc.
-		- Opened: 20260920-b
-
-	- 🔘 Item 26: `instances` prints a value holding a newline across two lines.
-		- Reproduced: two `srv` fields whose values hold a real newline. `instances` prints four lines where `count` says 2. `children` and `paths` escape the names they print; `instances` prints the value raw.
-		- Cause: the value goes out in its display form with no one-line spelling applied.
-		- Origin: not blamed. Confirmed.
-		- Note: the help says "instance values at a path, one per line", which this breaks, so a consumer splitting on newlines miscounts. This wants a decision more than a fix: escaping the value changes what a caller reading a value out of `instances` gets back, and that is a contract.
-		- Opened: 20260920-b
 
 - Code review 20260920:
 
@@ -696,6 +673,44 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: two fields added to corpus case `113-init-selector-newline`, one selector and one name, each spelled with a real line break beside the escaped twin already there. Watched to fail: with the guard taken out, the generation dimension reports `113-init-selector-newline: init schema has faults`.
 		- Opened: 20260920-b
 		- Closed: 20260921-0100
+
+	- ✅ Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
+		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` printed only the `E014`. At standard the `V003` appeared.
+		- Cause: the CLI's strict arm took the load error's diagnostics and stopped, where `load_and_validate` validates what the parse recovered.
+		- Decided: the CLI moves, not the spec. `check` writes nothing, so `fmt`'s refusal to rewrite a strict-failing document does not carry over, and a user was getting less out of `check` at strict than at standard on the same file.
+		- Fixed: the strict arm takes the recovered document out of the load error and the schema half runs either way, in all four CLIs. The summary line is still `strict load failed`, so the exit contract is unchanged. A schema that does not itself load is still one `V099` at strict.
+		- Fixed: `spec.md` says the one-shot's diagnostics reach `check` at strict too.
+		- Pinned by: `cli-regress.bash` row `check-strict-schema-validates`, watched to fail with the old strict guard put back.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 23: the public surface has gaps the style guide does not list as deviations.
+		- Reproduced: `parse_datetime` was public in Rust, Go and Python and `static` in C, with no `shcl_parse_datetime` and no text-to-`Datetime` call in the veneer. Python's `__all__` omitted `Migration`, `GEN_BANNER`, `FORMAT_MAJOR`, `FORMAT_LINE_HEAD`, `FORMAT_LINE` and `MIGRATED_LINE`, one of which the Python CLI already read. `Migration.__init__` was unannotated where the guide asks for hints on every public method.
+		- Decided: promote the C call, and unify the names. Checked first for churn - `git log -S` and the backlog find no earlier decision on either spelling, so nothing is being reversed. 3.0.0 is the cut that may break an API name, which is why the rename goes now rather than later.
+		- Fixed: `shcl_parse_datetime(text, len, out)` is declared and defined, with its own arena since a standalone caller has no document to lend one, and `shcl::parse_datetime` wraps it in the veneer with two smoke assertions. `check-veneer.bash` reads 103 public calls, all covered.
+		- Fixed: the float formatter is `format_float` everywhere. Rust's `format_f64` and C's `shcl_format_f64` are renamed, and `SHCL_F64_BUF` is `SHCL_FLOAT_BUF`. Rust's `ZoneSpec` is `Zone`, so all four say zone.
+		- Fixed: Python's `__all__` carries the six missing names, and `Migration.__init__` is annotated.
+		- Fixed, so it is not asked again: `project/style-guide_code.md` states the rule - one name per public call, cased per language - and lists the three exceptions with their reasons: Go's `DateTime`/`ParseDateTime`, Go's and C's extra zone types where the language has no payload-carrying enum, and Python's zone tuple. A later pass judges a name against that rule, and a new exception needs a line there.
+		- Pinned by: `check-veneer.bash` for the promoted call, the two `veneer_smoke.cpp` assertions, and `-Werror` builds in all four; `mypy` for the annotation. The renames are compile-time: nothing builds with the old names.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 24: `contributing.md` names issue labels the repository does not have.
+		- Reproduced: lines 95 to 97 promised `needs-repro`, `needs-fix` and `critical`. `gh label list` returns only the nine GitHub defaults. The `label:bug` on line 60 exists.
+		- Decided: the sentences go, and the repository is left alone. A label a one-person project never applies is a promise to a reporter that nothing keeps.
+		- Fixed: the two bullets say what actually happens - an issue waits until it reproduces, and then it is left to be implemented.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
+
+	- ✅ Item 26: `instances` prints a value holding a newline across two lines.
+		- Reproduced: two `srv` fields whose values hold a real newline. `instances` printed four lines where `count` said 2.
+		- Cause: the value went out in its display form with no one-line spelling applied, where `children` and `paths` escape the names they print.
+		- Decided: escape the value. The help promises one per line, a consumer splitting on newlines miscounts, and only a value holding a line break changes - everything else goes out as written, which is what keeps the contract for every caller that has one today.
+		- Fixed: a `one_line` helper in each CLI (`out_one_line` in C) writes the quoted escaped spelling when the value holds a line break. Not `quote_segment`, which is for path segments and would also quote a value holding a dot. The library still hands values back as they are, so `reads.tsv` and the conformance runners are untouched.
+		- Fixed: the man page and `spec.md` say the CLI escapes such a value and the library does not.
+		- Pinned by: `cli-regress.bash` rows `instances-one-per-line` and `instances-plain-unescaped`. Watched to fail: with the escape taken out the first goes red and the second stays green, which is what proves it pins the no-change half too.
+		- Opened: 20260920-b
+		- Closed: 20260921-0200
 
 - Code review 20260920:
 

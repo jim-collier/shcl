@@ -6,7 +6,7 @@
 
 use shcl::{
 	Diagnostic, Document, GEN_BANNER, Piece, Quote, Rules, SaveError, Severity, Status, Strictness,
-	Tokens, format_f64, generate, migrate, parse_datetime, suppress_declared_reopens,
+	Tokens, format_float, generate, migrate, parse_datetime, suppress_declared_reopens,
 	suppress_declared_repeats, tokenize, write_file_atomic,
 };
 use std::process::ExitCode;
@@ -1518,7 +1518,7 @@ fn do_get(o: &Opts) -> u8 {
 			Kind::Float => {
 				let r = doc.read_float_array(path);
 				(
-					r.value.iter().map(|v| format_f64(*v)).collect(),
+					r.value.iter().map(|v| format_float(*v)).collect(),
 					r.status,
 					r.slots,
 				)
@@ -1556,7 +1556,7 @@ fn do_get(o: &Opts) -> u8 {
 			}
 			Kind::Float => {
 				let r = doc.read_float(path);
-				(vec![format_f64(r.value)], r.status, Vec::new())
+				(vec![format_float(r.value)], r.status, Vec::new())
 			}
 			Kind::Bool => {
 				let r = doc.read_bool(path);
@@ -2307,63 +2307,69 @@ fn do_check(o: &Opts) -> u8 {
 			return EXIT_IO;
 		}
 	};
-	let (diags, strict_failed) = match Document::parse_with(&text, o.strictness) {
-		Ok(doc) => {
-			let mut diags = doc.diagnostics().to_vec();
-			// --schema: append validation diagnostics under the same contract.
-			// The schema itself always loads at Standard (a program artifact);
-			// one that does not load cleanly is a single V099 schema fault.
-			if let Some(schema_file) = &o.schema {
-				let stext = match read_input(schema_file) {
-					Ok(t) => t,
-					Err(e) => {
-						errln!("{}", e);
-						return EXIT_IO;
-					}
-				};
-				let sdoc = Document::parse(&stext);
-				if sdoc
-					.diagnostics()
-					.iter()
-					.any(|d| d.severity == Severity::Error)
-				{
-					for d in sdoc.diagnostics() {
-						errln!(
-							"schema line {}: {:?}: {} {}",
-							d.line,
-							d.severity,
-							d.code,
-							d.message
-						);
-					}
-					diags.push(Diagnostic {
-						line: 0,
-						severity: Severity::Error,
-						message: "schema failed to load".to_string(),
-						code: "V099",
-					});
-				} else {
-					// The schema's own load has something to say too: an H001
-					// on a repeated `allowed` is what explains the V092 below
-					// it. On stderr with the schema's own line numbers, the
-					// way a V099's are - stdout is the code contract.
-					for d in sdoc.diagnostics() {
-						errln!(
-							"schema line {}: {:?}: {} {}",
-							d.line,
-							d.severity,
-							d.code,
-							d.message
-						);
-					}
-					diags.extend(doc.validate(&sdoc));
-					suppress_declared_repeats(&sdoc, &mut diags);
-					suppress_declared_reopens(&sdoc, &mut diags);
+	// A strict load fails and still hands back the document it recovered, which
+	// is what the library's one-shot `load_and_validate` validates. So the schema
+	// half runs either way: at strict a user was getting less out of `check` than
+	// at standard on the same file, and `check` writes nothing, so `fmt`'s refusal
+	// to rewrite a strict-failing document does not carry over.
+	let (doc, strict_failed) = match Document::parse_with(&text, o.strictness) {
+		Ok(doc) => (doc, false),
+		Err(e) => (e.document, true),
+	};
+	let diags = {
+		let mut diags = doc.diagnostics().to_vec();
+		// --schema: append validation diagnostics under the same contract.
+		// The schema itself always loads at Standard (a program artifact);
+		// one that does not load cleanly is a single V099 schema fault.
+		if let Some(schema_file) = &o.schema {
+			let stext = match read_input(schema_file) {
+				Ok(t) => t,
+				Err(e) => {
+					errln!("{}", e);
+					return EXIT_IO;
 				}
+			};
+			let sdoc = Document::parse(&stext);
+			if sdoc
+				.diagnostics()
+				.iter()
+				.any(|d| d.severity == Severity::Error)
+			{
+				for d in sdoc.diagnostics() {
+					errln!(
+						"schema line {}: {:?}: {} {}",
+						d.line,
+						d.severity,
+						d.code,
+						d.message
+					);
+				}
+				diags.push(Diagnostic {
+					line: 0,
+					severity: Severity::Error,
+					message: "schema failed to load".to_string(),
+					code: "V099",
+				});
+			} else {
+				// The schema's own load has something to say too: an H001
+				// on a repeated `allowed` is what explains the V092 below
+				// it. On stderr with the schema's own line numbers, the
+				// way a V099's are - stdout is the code contract.
+				for d in sdoc.diagnostics() {
+					errln!(
+						"schema line {}: {:?}: {} {}",
+						d.line,
+						d.severity,
+						d.code,
+						d.message
+					);
+				}
+				diags.extend(doc.validate(&sdoc));
+				suppress_declared_repeats(&sdoc, &mut diags);
+				suppress_declared_reopens(&sdoc, &mut diags);
 			}
-			(diags, false)
 		}
-		Err(e) => (e.diagnostics.clone(), true),
+		diags
 	};
 	// stdout carries the stable codes - the cross-binding contract. The prose is
 	// per-binding voice and goes to stderr (which the differential check drops).
@@ -2448,6 +2454,30 @@ fn do_init(o: &Opts) -> u8 {
 	}
 }
 
+/// A value in a one-per-line listing. `instances` promises one line per
+/// instance, and a value holding a line break broke that, so a caller splitting
+/// on newlines counted more instances than `count` reports. Only such a value
+/// changes: anything else comes out as it is. The escaped spelling is the one
+/// `gen_default_text` writes for the same reason.
+fn one_line(v: &str) -> String {
+	if !v.contains('\n') && !v.contains('\r') {
+		return v.to_string();
+	}
+	let mut s = String::from("\"");
+	for ch in v.chars() {
+		match ch {
+			'\\' => s.push_str("\\\\"),
+			'"' => s.push_str("\\\""),
+			'\n' => s.push_str("\\n"),
+			'\r' => s.push_str("\\r"),
+			'\t' => s.push_str("\\t"),
+			c => s.push(c),
+		}
+	}
+	s.push('"');
+	s
+}
+
 fn do_enum(o: &Opts, want_count: bool) -> u8 {
 	let [file, path] = o.args.as_slice() else {
 		let name = if want_count { "count" } else { "instances" };
@@ -2462,7 +2492,7 @@ fn do_enum(o: &Opts, want_count: bool) -> u8 {
 		outln!("{}", doc.count(path));
 	} else {
 		for v in doc.instances(path) {
-			outln!("{}", v);
+			outln!("{}", one_line(&v));
 		}
 	}
 	0

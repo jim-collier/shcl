@@ -442,7 +442,7 @@ fn reads_match_expected() {
 					}
 					"float" => {
 						let r = doc.read_float(query);
-						(shcl::format_f64(r.value), r.status, r.slots)
+						(shcl::format_float(r.value), r.status, r.slots)
 					}
 					"bool" => {
 						let r = doc.read_bool(query);
@@ -481,7 +481,7 @@ fn reads_match_expected() {
 						(
 							r.value
 								.iter()
-								.map(|v| shcl::format_f64(*v))
+								.map(|v| shcl::format_float(*v))
 								.collect::<Vec<_>>()
 								.join("|"),
 							r.status,
@@ -1072,7 +1072,7 @@ fn setters_refuse_a_value_the_reader_refuses() {
 	// Each setter is the inverse of its read, so a value with no spelling the
 	// reader accepts fails the write and leaves the document alone. Same
 	// fixture in every runner.
-	use shcl::{ShclDateTime, ZoneSpec};
+	use shcl::{ShclDateTime, Zone};
 	let mut doc = Document::parse("z: 0\n");
 	for v in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
 		assert!(!doc.set_float("f", v), "{v}");
@@ -1091,7 +1091,7 @@ fn setters_refuse_a_value_the_reader_refuses() {
 		frac: None,
 		zone: None,
 	};
-	let with = |dt: ShclDateTime, frac: Option<&str>, zone: Option<ZoneSpec>| ShclDateTime {
+	let with = |dt: ShclDateTime, frac: Option<&str>, zone: Option<Zone>| ShclDateTime {
 		frac: frac.map(str::to_string),
 		zone,
 		..dt
@@ -1108,9 +1108,9 @@ fn setters_refuse_a_value_the_reader_refuses() {
 		with(
 			good(None, Some((1, 2, None))),
 			None,
-			Some(ZoneSpec::OffsetMinutes(9999)),
+			Some(Zone::OffsetMinutes(9999)),
 		), // +166:39
-		with(good(Some((2026, 1, 1)), None), None, Some(ZoneSpec::Utc)), // zone on a date alone
+		with(good(Some((2026, 1, 1)), None), None, Some(Zone::Utc)), // zone on a date alone
 	];
 	for dt in &bad {
 		assert!(!doc.set_datetime("d", dt), "{dt}");
@@ -1128,7 +1128,7 @@ fn setters_refuse_a_value_the_reader_refuses() {
 	let ok = with(
 		good(Some((2026, 1, 2)), Some((3, 4, Some(5)))),
 		Some("60"),
-		Some(ZoneSpec::OffsetMinutes(-90)),
+		Some(Zone::OffsetMinutes(-90)),
 	);
 	assert!(doc.set_datetime("d", &ok));
 	assert_eq!(doc.get_datetime("d"), Ok(ok));
@@ -1654,9 +1654,9 @@ fn standard_trait_surface() {
 	assert_eq!(doc.get_int("a"), Ok(1));
 	assert_eq!(copy.get_int("a"), Ok(9));
 	assert_eq!(shcl::Status::BadType.to_string(), "BadType");
-	assert_eq!(shcl::format_f64(1.5), "1.5");
-	assert_eq!(shcl::format_f64(f64::INFINITY), "inf");
-	assert_eq!(shcl::format_f64(f64::NAN), "NaN");
+	assert_eq!(shcl::format_float(1.5), "1.5");
+	assert_eq!(shcl::format_float(f64::INFINITY), "inf");
+	assert_eq!(shcl::format_float(f64::NAN), "NaN");
 }
 
 #[test]

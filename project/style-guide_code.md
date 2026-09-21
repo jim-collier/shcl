@@ -47,6 +47,11 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 - A setter writes only what reads back. It builds its text through the emitter, hands that to the tokenizer, and refuses unless what comes back is the value it was given, so a write that would come back different never touches the document. No setter carries its own trim, carriage-return, `#` or quote rule, in any binding; a new setter adds no rule of its own. The typed setters keep their render-and-parse-back on top of it, since a float or a datetime has to read back as that type and not merely as the same text.
 
+- **A public call has one name across the four bindings, cased the way its language cases names.** `format_float` is `format_float`, `FormatFloat`, `format_float` and `shcl_format_float`; it was `format_f64` in Rust and C until 2026-09-20, which made the reference name a Rust type in an API contract that has none. The datetime zone type is `Zone` everywhere for the same reason. This is the rule a later pass judges a name against, so the spread does not get re-argued: the exceptions below are the whole list, and a new one needs a line here.
+	- Go spells the datetime type `DateTime` and the call `ParseDateTime`, where the other three spell it `datetime` as one word. Go names a constructor after its type, and the type is a deliberate deviation of its own, below.
+	- Go carries a `ZoneKind` enum and a `Zone` struct where Rust has one enum with a payload, and C carries a `shcl_zone_kind` enum beside an `off_min` field. Neither language has a payload-carrying enum, so the shape differs; the word does not.
+	- Python's zone is a `("utc", None) | ("offset", minutes)` tuple with no named type. A two-case tagged value is a tuple in Python, and a class for it would be the port reading as something the other three are not.
+
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 
 - Small standalone utility scripts are MIT regardless of anything else, and carry their license in the header.
