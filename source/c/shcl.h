@@ -714,10 +714,6 @@ static void *arena_grow(ShclArena *a, void *old, size_t oldcap, size_t newcap, s
 	if (old && oldcap) memcpy(p, old, oldcap * sz);
 	return p;
 }
-// Reset a scratch arena, keeping its newest (largest) block so steady-state
-// reads never re-malloc. Bump arenas cannot free per-object, so without this
-// every resolver temporary would live until shcl_free - a long-running process
-// doing reads would grow without bound.
 /* A point to roll back to. A bump arena cannot free one allocation, but it can
    give back everything since a mark, which is what a setter needs when the
    value it just encoded turns out to be refused. Only sound when nothing
@@ -736,6 +732,10 @@ static void arena_release(ShclArena *a, ShclMark m) {
 	a->last = m.last; a->last_n = m.last_n;
 }
 
+// Reset a scratch arena, keeping its newest (largest) block so steady-state
+// reads never re-malloc. Bump arenas cannot free per-object, so without this
+// every resolver temporary would live until shcl_free - a long-running process
+// doing reads would grow without bound.
 static void arena_reset(ShclArena *a) {
 	if (!a->head) return;
 	ShclBlock *b = a->head->next;
@@ -1505,14 +1505,14 @@ static ShclStr apply_escapes(ShclArena *a, ShclStr s) {
 	return sb_S(&out);
 }
 
-/* The predicate a `[value]` selector matches with: the display form, which is
-   built from logical strings, so `["q\"uote"]` finds `'q"uote'` - a
-   logical-string match, not spelling against spelling. */
 /* The restriction a QUOTED [value] selector adds on top of the display
    match: quoting selects the scalar spelling only, so the scalar "a, b" and
    the list a, b stop meeting the same selector. */
 static int single_scalar(const ShclValue *v) { return v->kind == V_CELL && v->nels == 1; }
 
+/* The predicate a `[value]` selector matches with: the display form, which is
+   built from logical strings, so `["q\"uote"]` finds `'q"uote'` - a
+   logical-string match, not spelling against spelling. */
 static ShclStr disp_key(ShclArena *a, const ShclValue *v) {
 	return value_display(a, v);
 }
@@ -1725,13 +1725,13 @@ static int v2_bracket_array(ShclArena *a, ShclStr body) {
 	return tok.nelem > 1;
 }
 
+/* The counters a line rewrite reports back, and the one thing it asks. */
+typedef struct { int from_v2; size_t ambiguous; size_t lost; } ShclMigrating;
+
 /* The re-spellings a value's pieces need. Each piece is read the 2.x way
    (escapes everywhere, an open quote kept whole, a quote at both ends making
    it quoted) and re-spelled only where the current rules would read the same
    text as something else. */
-/* The counters a line rewrite reports back, and the one thing it asks. */
-typedef struct { int from_v2; size_t ambiguous; size_t lost; } ShclMigrating;
-
 static void value_edits(ShclArena *a, ShclStr text, const ShclTokens *tok, ShclVecEdit *edits, ShclMigrating *st) {
 	for (size_t i = 0; i < tok->nelem; i++) {
 		const ShclPiece *p = &tok->elements[i];
@@ -1836,22 +1836,6 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 	return s_splice(a, rest, &edits);
 }
 
-/* Rewrite a document written under the 2.x rules so this parser reads the
-   same tree. Each line is read with the 2.x tokenizer and re-spelled only
-   where the two rule sets disagree: a bare or single-quoted piece whose
-   backslash meant an escape is double-quoted with that escape; a piece that
-   opened a quote it never closed is quoted whole; the name:[disc] selector
-   sugar loses its colon, and on a last segment becomes `name: disc`, with
-   `disc` spelled the way the formatter spells a value. A re-spelled piece
-   holding a backslash is double-quoted, so the result reads the same under
-   2.x and a second run changes nothing.
-   Everything else - comments, blank lines, raw bodies, layout, a line 2.x
-   could not read - comes through as written. One shape has no spelling here
-   at all: a fence label holding a `#`, which 2.x ran to the end of the line
-   and which now ends at the `#`.
-   The output and the reused tokens live in `a`; the per-line temporaries go
-   to `sc`, reset per line, so a large document costs its own size and not
-   every line's scratch on top. */
 /* The major a `##    Format   N` line names, or -1 when the document carries
    none. Once the running value is past this major it stops accumulating: the
    comparison below only asks which side of this major it falls, and that keeps
@@ -1965,6 +1949,22 @@ static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating 
    an ordinary local is indeterminate by the time the jump lands. */
 typedef struct { ShclArena a, sc; } ShclMigrateOwn;
 
+/* Rewrite a document written under the 2.x rules so this parser reads the
+   same tree. Each line is read with the 2.x tokenizer and re-spelled only
+   where the two rule sets disagree: a bare or single-quoted piece whose
+   backslash meant an escape is double-quoted with that escape; a piece that
+   opened a quote it never closed is quoted whole; the name:[disc] selector
+   sugar loses its colon, and on a last segment becomes `name: disc`, with
+   `disc` spelled the way the formatter spells a value. A re-spelled piece
+   holding a backslash is double-quoted, so the result reads the same under
+   2.x and a second run changes nothing.
+   Everything else - comments, blank lines, raw bodies, layout, a line 2.x
+   could not read - comes through as written. One shape has no spelling here
+   at all: a fence label holding a `#`, which 2.x ran to the end of the line
+   and which now ends at the `#`.
+   The output and the reused tokens live in `a`; the per-line temporaries go
+   to `sc`, reset per line, so a large document costs its own size and not
+   every line's scratch on top. */
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
 	ShclMigrateOwn *volatile own = (ShclMigrateOwn *)calloc(1, sizeof *own);
 	if (!own) { SHCL_OOM(); abort(); }
@@ -2010,7 +2010,6 @@ typedef struct { ShclStr name; ShclStr name_src; ShclSelector sel; int star; } S
 DEFINE_VEC(ShclVecSeg, ShclSegment)
 typedef struct { int ok; ShclVecSeg segs; int has_value; ShclStr value_text; ShclStr err; } ShclPathScan; // value_text: after the separator colon, before any comment, trimmed
 
-// usize parse: optional single leading '+', >=1 digit, no overflow.
 /* The spelling of an index selector - an optional `#`, an optional `+`, then
    digits - whatever its size. The grammar says 1*DIGIT, with no upper bound. */
 static int index_shape(ShclStr body) {
@@ -2021,6 +2020,7 @@ static int index_shape(ShclStr body) {
 	for (; i < body.n; i++) if (!is_adigit((unsigned char)body.p[i])) return 0;
 	return 1;
 }
+// usize parse: optional single leading '+', >=1 digit, no overflow.
 static int parse_u64(ShclStr s, uint64_t *out) {
 	size_t i = 0;
 	if (i < s.n && s.p[i] == '+') i++;
@@ -2624,6 +2624,11 @@ DEFINE_VEC(ShclVecPend, ShclPend)
 typedef struct { size_t end; size_t indent_len; } ShclPendMark;
 DEFINE_VEC(ShclVecPendMark, ShclPendMark)
 
+/* What a parse owns outright and has to give back, on the heap rather than in
+   do_parse's frame: the recovery path is reached by longjmp, which leaves a
+   local the parse has written to indeterminate. */
+typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
+
 /* pending: whole-line comments waiting for the next line that binds a node.
    The source indent is kept only to decide after-attachment (a comment deeper
    than the next binding hangs on the block it sits in).
@@ -2653,10 +2658,6 @@ DEFINE_VEC(ShclVecPendMark, ShclPendMark)
    per node. Everything a node keeps (name, value, trivia text) is still dup'd
    into the document arena. Nothing resets scratch during a parse; the first
    read after it does. */
-/* What a parse owns outright and has to give back, on the heap rather than in
-   do_parse's frame: the recovery path is reached by longjmp, which leaves a
-   local the parse has written to indeterminate. */
-typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseOwn;
 typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; ShclVecDepth depth_chain; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
@@ -4117,9 +4118,6 @@ static size_t w_new_child(shcl_doc *d, size_t parent, ShclStr name, ShclStr name
 	return idx;
 }
 
-// Why a write at this path would fail - the validation walk w_place runs
-// before creating anything. SHCL_W_WRITABLE means w_place's gate would pass;
-// nothing is created. Temporaries (scan, compare strings) go into `a`.
 /* The validation walk w_write_reason and w_place share. `trail`, when non-NULL,
    receives where each segment landed - (size_t)-1 from the point the path falls
    off the existing tree - so w_place can create from exactly there instead of
@@ -4163,6 +4161,9 @@ static shcl_write_reason w_probe_write(shcl_doc *d, ShclArena *a, const ShclPath
 	return SHCL_W_WRITABLE;
 }
 
+// Why a write at this path would fail - the validation walk w_place runs
+// before creating anything. SHCL_W_WRITABLE means w_place's gate would pass;
+// nothing is created. Temporaries (scan, compare strings) go into `a`.
 static shcl_write_reason w_write_reason(shcl_doc *d, ShclArena *a, ShclStr path) {
 	ShclPathScan ps = scan_lookup(a, path);
 	return w_probe_write(d, a, &ps, NULL);
@@ -4209,10 +4210,6 @@ static int w_place(shcl_doc *d, ShclStr path, size_t *out) {
 	*out = cur; return 1;
 }
 
-/* A written value may now collide with a same-named sibling under the in-file
-   merge rule; fold the pair the way a reparse would (earlier sibling survives,
-   later one folds children and trivia in) so Writer output stays a formatter
-   fixpoint. */
 /* Folding moves the loser's children up a level, where they can collide with
    the survivor's own. The parser's fold is depth-first for the same reason;
    only a node that just received children can hold a new pair. */
@@ -4252,6 +4249,10 @@ static void w_fold_dups_below(shcl_doc *d, size_t start) {
 	}
 }
 
+/* A written value may now collide with a same-named sibling under the in-file
+   merge rule; fold the pair the way a reparse would (earlier sibling survives,
+   later one folds children and trivia in) so Writer output stays a formatter
+   fixpoint. */
 static void w_collapse_dup(shcl_doc *d, size_t node) {
 	size_t parent = NODE(d, node).parent;
 	const ShclNode *me = &NODE(d, node);
@@ -5143,7 +5144,6 @@ static int piece_is(ShclArena *a, const ShclPiece *p, ShclStr text, ShclStr want
 	return s_eq(raw, want);
 }
 
-/* True when a value comes back off the page as itself. */
 /* Scan text as a line's value half, behind the colon a field line puts there.
    `a` holds the line the token spans index into, `tmp` the token
    bookkeeping. */
@@ -5156,6 +5156,7 @@ static ShclStr value_half(ShclArena *a, ShclArena *tmp, ShclStr text, ShclTokens
 	return line;
 }
 
+/* True when a value comes back off the page as itself. */
 static int value_reads_back(ShclArena *a, const ShclValue *v) {
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
 	if (v->kind == V_EMPTY) return 1;
@@ -5701,7 +5702,6 @@ static int v_single_text(const ShclValue *v, ShclStr *out) {
 	return 1;
 }
 
-// Field-wise datetime equality (struct compare would read unset fields).
 /* Two datetimes naming the same moment, whatever the spelling. The struct
    mirrors what was written, so 12:00:00Z and 12:00:00+00:00 are different values
    field by field while naming one time, and 12:00:00 and 12:00:00.0 differ only
@@ -6048,8 +6048,6 @@ static size_t v_edit_distance(ShclArena *a, ShclStr sa, ShclStr sb, size_t cap) 
 	return prev[cb.n];
 }
 
-// Closest legal sibling name (same parent chain, schema order, edit distance
-// <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
 /* The legal names under one parent chain, each once, in schema order. Every
    unknown field used to be compared with every sibling, and the list held one
    copy per schema field, so a document whose names all miss cost the schema
@@ -6157,6 +6155,8 @@ static void suggest_find(void *ctx, uint64_t h) {
 	}
 }
 
+// Closest legal sibling name (same parent chain, schema order, edit distance
+// <= 2) appended as "; did you mean 'x'?" - or nothing. Prose only.
 static void v_suggest(ShclArena *a, ShclArena *tmp, ShclSuggestNames *sn, ShclStr name, ShclSB *msg) {
 	/* tmp holds the DP rows and codepoint decodes - dead after this call.
 	   Resetting per unknown field keeps a wholesale unmatched document (the
@@ -7316,15 +7316,6 @@ static int shcl_publish_new_file(const char *tmp, const char *target) {
 }
 #endif
 
-// The file tier's write mechanism (also what the CLI's --write uses): a temp
-// file in the same dir, then a rename over the target, so an interrupted write
-// can never truncate the config it rewrites. The data is synced before the
-// rename so a crash cannot publish an empty file. The target is resolved
-// through symlinks first (a dangling link gets its file created where it
-// points) and the original's whole mode - setuid, setgid and sticky included,
-// as an editor's rewrite would carry it - is copied onto the temp file; other
-// hard links to the old inode keep the old content (inherent to rename).
-// Returns 1 on success, 0 on failure with errno left describing it.
 /* A path that names a directory rather than a file: it ends in a separator, or
    its last component is `.` or `..`. The OS refuses to open such a path as a
    regular file, but a path cleanup drops the trailing separator first, so a
@@ -7342,6 +7333,15 @@ static int shcl_names_a_directory(const char *path) {
 	return !strcmp(last, ".") || !strcmp(last, "..");
 }
 
+// The file tier's write mechanism (also what the CLI's --write uses): a temp
+// file in the same dir, then a rename over the target, so an interrupted write
+// can never truncate the config it rewrites. The data is synced before the
+// rename so a crash cannot publish an empty file. The target is resolved
+// through symlinks first (a dangling link gets its file created where it
+// points) and the original's whole mode - setuid, setgid and sticky included,
+// as an editor's rewrite would carry it - is copied onto the temp file; other
+// hard links to the old inode keep the old content (inherent to rename).
+// Returns 1 on success, 0 on failure with errno left describing it.
 int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	if (shcl_names_a_directory(path)) { errno = EISDIR; return 0; }
 #ifndef _WIN32

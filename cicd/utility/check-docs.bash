@@ -173,7 +173,7 @@ if [[ -f "${corpusDir}/README.md" ]]; then
 	noted="$(grep -oE '`[0-9]{3}`(-`[0-9]{3}`)?' "${corpusDir}/README.md" | tr -d '`' || true)"
 	for d in "${corpusDir}"/[0-9][0-9][0-9]-*/; do
 		[[ -d "${d}" ]] || continue
-		n="$(basename -- "${d}")"; n="${n%%-*}"
+		n="${d%/}"; n="${n##*/}"; n="${n%%-*}"
 		found=0
 		while IFS= read -r r; do
 			[[ -n "${r}" ]] || continue
@@ -187,13 +187,25 @@ fi
 ##	The style guide says every source file starts with the SPDX line and the
 ##	copyright, and files added later kept arriving without them. "Starts with"
 ##	means the header block, which in a script comes after the purpose text, so
-##	the first 80 lines are searched.
+##	the first 80 lines are searched. One awk over every file, since a head and a
+##	grep per file were most of this script's time. An empty file never reaches
+##	awk's first line, so it is caught before.
 if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	hdrFiles=()
 	while IFS= read -r f; do
 		[[ -f "${repoDir}/${f}" ]] || continue
-		head -n 80 "${repoDir}/${f}" | grep -q 'SPDX-License-Identifier' || fBad "${f} has no SPDX line in its header"
-		head -n 80 "${repoDir}/${f}" | grep -q 'Copyright' || fBad "${f} has no copyright line in its header"
+		if [[ ! -s "${repoDir}/${f}" ]]; then fBad "${f} has no SPDX line in its header"; fBad "${f} has no copyright line in its header"; continue; fi
+		hdrFiles+=("${repoDir}/${f}")
 	done < <(git -C "${repoDir}" ls-files -- '*.rs' '*.go' '*.py' '*.c' '*.h' '*.hpp' '*.cpp' '*.bash' '*.ps1' || true)
+	while IFS=$'\t' read -r f what; do
+		fBad "${f#"${repoDir}/"} has no ${what} line in its header"
+	done < <(((${#hdrFiles[@]})) && LC_ALL=C awk '
+		function report() { if (!spdx) print name "\tSPDX"; if (!copy) print name "\tcopyright" }
+		FNR == 1 { if (name != "") report(); name = FILENAME; spdx = 0; copy = 0 }
+		FNR > 80 { nextfile }
+		/SPDX-License-Identifier/ { spdx = 1 }
+		/Copyright/ { copy = 1 }
+		END { if (name != "") report() }' "${hdrFiles[@]}")
 fi
 
 ##	The marker in a copyright line is a fixed run of bytes to be copied, never
@@ -204,13 +216,19 @@ fi
 ##	scripts carry the Bubbles form.
 if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	marker='[ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]'
+	mkFiles=()
 	while IFS= read -r f; do
 		[[ -f "${repoDir}/${f}" ]] || continue
 		[[ "${f}" == "install.ps1" || "${f}" == "source/rust/build.rs" ]] && continue
-		line="$(head -n 80 "${repoDir}/${f}" | grep -m1 'Copyright.*ID:' || true)"
-		[[ -n "${line}" ]] || continue
-		[[ "${line}" == *"${marker}"* ]] || fBad "${f} carries a copyright marker that is not the canonical bytes"
+		mkFiles+=("${repoDir}/${f}")
 	done < <(git -C "${repoDir}" ls-files || true)
+	##	The first marker line in each file's first 80, as a head and a grep -m1
+	##	per file found it.
+	while IFS=$'\t' read -r f line; do
+		[[ "${line}" == *"${marker}"* ]] || fBad "${f#"${repoDir}/"} carries a copyright marker that is not the canonical bytes"
+	done < <(((${#mkFiles[@]})) && LC_ALL=C awk '
+		FNR > 80 { nextfile }
+		/Copyright.*ID:/ { print FILENAME "\t" $0; nextfile }' "${mkFiles[@]}")
 fi
 
 ##	The grammar is the oracle harnesses are written against. It has to read as

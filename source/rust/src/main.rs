@@ -375,9 +375,6 @@ fn status_code(st: Status) -> u8 {
 	}
 }
 
-/// One `--set`/`--set-literal` override. Both spellings share a list so they
-/// apply in the order given, which is what decides the winner when two target
-/// the same path.
 /// Which spelling produced one edit. They share a single ordered list, so two
 /// options touching the same path resolve in the order given.
 #[derive(Clone, Copy, PartialEq)]
@@ -389,6 +386,9 @@ enum SetKind {
 	Remove,
 }
 
+/// One `--set`/`--set-literal` override. Both spellings share a list so they
+/// apply in the order given, which is what decides the winner when two target
+/// the same path.
 struct Set {
 	path: String,
 	value: String,
@@ -1145,11 +1145,6 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 	Ok(())
 }
 
-/// The per-binding wording behind a setter's bare `false`.
-/// Why a write was refused. When the path itself is fine what failed is the
-/// text, and only the caller knows which half of the op that was, so it names
-/// it: a setter refused for its value used to report the sentence written for
-/// `set_literal` whatever the op.
 /// Which half of a `raw` op had no spelling, and why. The half is asked of the
 /// library rather than worked out here: an empty info string always reads back,
 /// so a write that still fails with one is the body's fault. Re-deriving the
@@ -1163,6 +1158,11 @@ fn raw_refusal(content: &str) -> &'static str {
 	}
 }
 
+/// The per-binding wording behind a setter's bare `false`.
+/// Why a write was refused. When the path itself is fine what failed is the
+/// text, and only the caller knows which half of the op that was, so it names
+/// it: a setter refused for its value used to report the sentence written for
+/// `set_literal` whatever the op.
 fn describe_refusal(doc: &Document, path: &str, unwritable: &'static str) -> &'static str {
 	match doc.write_reason(path) {
 		shcl::WriteReason::Writable => unwritable,
@@ -1859,12 +1859,6 @@ fn do_migrate(o: &Opts) -> u8 {
 	rc
 }
 
-/// Every line's spans, one line of output per input line: the indent
-/// length, then each token as `kind=start-end` with a mark for how it was
-/// quoted (`'`, `"`, or `?` for a quote that never closed), offsets counted
-/// from the first character after the indent. A blank line and a comment
-/// line say so; every other line is tokenized on its own, raw bodies
-/// included, since this is the lexical view and not the parse.
 /// `CODE  severity  summary` - the one line both explain forms lead with.
 fn code_line(head: &str) -> String {
 	let mut f = head.split('|');
@@ -1933,6 +1927,12 @@ fn do_explain(o: &Opts) -> u8 {
 	0
 }
 
+/// Every line's spans, one line of output per input line: the indent
+/// length, then each token as `kind=start-end` with a mark for how it was
+/// quoted (`'`, `"`, or `?` for a quote that never closed), offsets counted
+/// from the first character after the indent. A blank line and a comment
+/// line say so; every other line is tokenized on its own, raw bodies
+/// included, since this is the lexical view and not the parse.
 fn do_tokens(o: &Opts) -> u8 {
 	let [file] = o.args.as_slice() else {
 		errln!("usage: shcl tokens FILE (see --help)");

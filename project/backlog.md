@@ -90,64 +90,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Note: Tested against shcl `dev` at f85a0d2, the 3.0.0-beta.1 candidate, and against v2.0.0 for comparison. Linux box. SilkTerm builds against dev with no source changes. 810 of 813 tests pass, and all three failures come from report 1.
 
-	1. ✅ One badly indented line drops the correctly indented siblings after it
-
-		A silent wrong answer, and a regression from 2.0.0. Blocking for SilkTerm.
-
-		~~~sh
-		printf 'window:\n\topacity: 1.0\n    margin: 4\n\n\tcolumns: 160\n\trows: 48\n' > t.shcl
-		shcl get t.shcl window.columns
-		~~~
-
-		- Observed on dev: `no value at that path`, with E012 on lines 3, 5 and 6.
-
-		- Expected, and what 2.0.0 does: `160`, with E012 on line 3 only.
-
-		- `columns` and `rows` are not under the bad line. Their tab indent does not extend its four spaces, and it matches `opacity` exactly, so they are siblings under `window`. Lines that really are deeper than the bad line should still be skipped with it (E018), and that part is right.
-
-		- Cause: the E012 path at the end of `resolve_parent` pops every stack entry that is not a prefix of the bad indent before it pushes `UNOPENED`. That removes the open `\t` level, so no later line can match it.
-
-		- A trial fix that drops the pop loop and pushes `UNOPENED` unless the top is already that same unopened indent: shcl's own Rust tests pass, 2.0.0's answer comes back, and the E018 rule for lines deeper than the bad one still holds. It is on a local branch `trial-e012` in SilkTerm's clone, not pushed. The other bindings were not looked at.
-
-		- Why it matters: one stray line in a hand-edited config quietly turns off every setting after it in that block. A save then drops them all, since the gate only protects lines that are counted as lost.
-
-		- Origin: `ba2ca9c` (2026-09-02), which gave an `E012` line its hold and popped every level its indent did not extend.
-
-		- Fixed: the bad line holds only its own column and closes nothing. The resolve walks down from the top: equal to a level is a sibling, deeper than a level is a child unless a level opened under that one is still open, and the skipped line's unopened level does not count as one. The hold ends at the first line neither under it nor at it, so the stack carries one at most. `resolve_parent` in Rust and C, `resolveParent` in Go, `_resolve_parent` in Python.
-
-		- Note: the trial fix was not taken as it stood. It still refused the first child of a leaf written after the bad line, and every sibling of that child, since nothing was open at their column yet. Case `137` has that shape too.
-
-		- Pinned by: corpus case `137-e012-keeps-levels`, the report's input plus a deeper level and a leaf's first child after a bad line. The old C runner fails it 15 times. `075` still passes, so what is written under a bad line is still `E018`.
-
-		- Closed: 20260921-1357
-
-	2. ✅ A save reorders a commented-out block
-
-		Still open on dev. First drafted 2026-09-18 against 2.0.0.
-
-		~~~sh
-		printf 'a: 1\n# b:\n\t# c: true\nd: 2\n' > cm.shcl
-		shcl fmt cm.shcl
-		~~~
-
-		- Observed: `a: 1`, `	# c: true`, `# b:`, `d: 2`. The indented comment moves above the heading it sat under.
-
-		- Expected: the input back as written.
-
-		- Same inside a block: `wallpaper:`, `	opacity: 0.2`, `	# rotate:`, `		# enabled: true`, `	blur: 3` comes back with `# enabled: true` above `# rotate:`.
-
-		- A silent wrong answer one step removed. It bites when the lines are uncommented later: `enabled: true` then sits indented under `opacity: 0.2` and does nothing.
-
-		- Cause: each comment in a run chose its block alone. A deeper one hung on the block it sat in, while an earlier one at the next line's level stayed for that line, and a block is written out before the line after it. The same thing reordered two comments that both hung, when the second one's block closes first (`	# x` then `		# y` after a nested block).
-
-		- Fixed: a comment never goes ahead of the one written before it. Once one stays for the next line every later one stays too, and one whose block is written out earlier goes where the last one went. A comment kept away from its own block keeps its depth under the comment before it, one tab per level, so the commented-out block comes back in its shape. A malformed line kept as trivia keeps the order but not the depth, since it holds its level on a reload. `hang_deeper_pending` and `comment_depth` in Rust and C, `hangDeeperPending` and `commentDepth` in Go, `_hang_deeper_pending` and `_comment_depth` in Python, with a depth on each kept comment line that the emitter writes.
-
-		- Pinned by: corpus case `138-comment-run-order`, whose input is its own canonical form: both shapes above, the end-of-file one, and the nested one. The old C runner fails it. The fuzz fixpoint properties hold at 2,000,000 iterations, apart from the two older bugs filed below, which the same run found.
-
-		- Note: a later long fuzz run found one more, in the new code. A merge keeps one copy of a footer line two layers share, and dropping the top layer's copy can drop the comment the next one sat under, leaving it two levels past the line it now follows. A reload reads one. A merge now caps a footer comment it appends at one level past the comment before it. Case `140` pins it, and fails as not a fixpoint with only the cap taken out of the C merge.
-
-		- Closed: 20260921-1411
-
+	<!-- markdownlint-disable-next-line MD029 -- reports keep their own numbers -->
 	3. On Windows a failed save can delete the file it was saving
 
 		Still open on dev. First drafted 2026-09-11 against 2.0.0.
@@ -157,25 +100,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Suggested: pass a backup name made like the temp name, remove it after a good replace, never remove the temp while nothing is at the target, retry the rename a few times, and return an error naming whichever file still holds the text. `REPLACEFILE_WRITE_THROUGH` is documented as unsupported and could be 0.
 
 		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
-
-- ✅ A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
-	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0. A comment in the same place is lost the same way.
-	- Cause: the end of the load folded late duplicates before it filed the tail comments, so the tail lines were filed on the instance the fold had just dropped. The fold carries a dropped instance's trivia over, but only what is already on it.
-	- Note: found by `lost_count_follows_the_outcome_table` at iteration 983,588, past the gate's 200,000, while testing the SilkTerm comment fix.
-	- Fixed: the tail is filed before the fold, in the end-of-load sequence of `Parser::parse` in Rust, `parser.parse` in Go, `_Parser.parse` in Python and `do_parse` in C.
-	- Pinned by: corpus case `139-fold-keeps-tail`, a comment and an `E013` line under the folded list. The old C runner fails it.
-	- Opened: 20260921-1411
-	- Closed: 20260921-1421
-
-- ✅ Merging a layer and merging that layer's canonical form place a retained line differently.
-	- Reproduced: in all four, on the old code as well. The base layer holds `\t: 1*\t  d: 2` (`E014`) under `a.b`, and the top layer is corpus `075`'s input with one line mutated. The retained line lands one line apart in the two merges.
-	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 861,523, while testing the SilkTerm comment fix. The two inputs are kept with the private notes, under `fuzz-20260921`.
-	- Cause: a comment inside a block, at an indent between the block's and its child's, is filed as the block's inside comment. It is written out after the last child's block at that child's level, and a reload files it on the last child. A merge treats the two differently when the other layer adds children to the block.
-	- Fixed: once the tree is final, a block's inside comments move onto its last child's trailing list, which writes them in the same place. `inside_to_last_child` in Rust and C, `insideToLastChild` in Go, `_inside_to_last_child` in Python.
-	- Note: the first try moved them while the comments were being filed, onto the last child at that moment. The next fuzz run found a block reopened later, whose new children the comment then landed ahead of. Doing it once at the end fixed that.
-	- Pinned by: corpus case `140-inside-comment-on-child`, whose merged golden has the comment right after the overridden leaf. The old C runner fails its merge dimension.
-	- Opened: 20260921-1411
-	- Closed: 20260921-1421
 
 - Code review 20260921:
 
@@ -191,6 +115,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Deferred: `gfs-rotate.bash` forks four times per archive file when it names one. It is a shared copy, so the fix belongs in the canonical one, and the trigger is the next time the helpers are brought in line. Two Go allocations on the tokenizer path, the selector piece and a segment slice per field line, wait for a Go profile, since reusing a buffer changes helper signatures in all four bindings.
 
+	- Finished items are under Done - Bugs, in a bullet of the same name.
+
 	- 🔘 Item 1: `winpath-sandbox.ps1` reads `ProcessStartInfo.ArgumentList`, which Windows PowerShell 5.1 does not have, and `win-runners.bash` runs it under 5.1.
 		- Reproduced: by reading only. `ArgumentList` arrived in .NET Core 2.1, and 5.1 runs on .NET Framework. The script sets strict mode, so reading the missing property throws, and the sandbox row would fail before any sandbox starts.
 		- Note: the hosted windows runner has no Windows Sandbox, so the script exits 2 at its install check and never reaches the line. No gate has run it the way `win-runners.bash` does.
@@ -198,74 +124,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Probable fix: set `$psi.Arguments` to the quoted path, which 5.1 and 7 both have.
 		- Origin: `d5978c0` (2026-09-20), the fix for 20260920b item 19. The `Start-Process` line it replaced ran on 5.1. Plausible, and needs a Windows box.
 		- Opened: 20260921-132543
-
-	- 🔘 Item 2: `cli-regress.bash` does not match stdout exactly, though its header says stdout is matched exactly.
-		- Reproduced: both sides of the stdout and created-file compares go through `$(...)`, which drops every trailing newline. A CLI that drops or doubles a final newline passes. `x="$(printf 'a\n\n')"` compares equal to `a`.
-		- Note: `crosscheck.bash` already reads its output in a way that keeps the newlines.
-		- Note: an exact compare may need some rows' expected text adjusted.
-		- Origin: `e5024383` (2026-08-30), when the row table was written. No earlier round saw it. Confirmed.
-		- Opened: 20260921-132543
-
-	- 🔘 Item 3: the index-rebuild fixture discards the setter result in Go, Python and C, where the Rust one asserts it.
-		- Reproduced: by reading. `conformance.rs` asserts `set_int("g.tmp.x", i)`. `shcl_test.go`, `conformance.py` and `mem_bounds.c` call it bare. A refused set builds no dead nodes, so both timings match and the bound passes while testing nothing.
-		- Note: the same class as 20260920b item 8, which fixed the `merge.sets` setter in the same three runners. This fixture was left as it was.
-		- Sweep: every other setter call in the three runners' timing and memory fixtures, and the `remove` count beside this one.
-		- Origin: `97995cb` (2026-09-17). Confirmed.
-		- Opened: 20260921-132543
-
-	- 🔘 Item 4: pipeline scripts fork inside loops again, which the style guide says they are held to.
-		- Note: Fix what is reasonable to do so among these. There may be very legitimate cases where this forking inside Bash loops makes more sense than unrolling.
-		- Measured, each on a scratch copy of the section:
-			- `shell-regress.bash` `fShellFiles` runs `head` and `grep` per tracked file, about 790 files, and is called four times. That is about 2.9 s a run. A builtin read gives the same list in 0.04 s.
-			- `check-docs.bash`'s header loops fork three or four times per file: 1.33 s of its 2.31 s.
-			- `crosscheck.bash` `fWriteState` and `fFixCase` fork about ten times per binding run, over about 2,500 runs. That is about 16 s, and one `find -printf` with builtin copies saves about 7 s of it.
-			- `cli-regress.bash` forks per probe, per width check and per row.
-			- `check-migrate.bash` runs the old CLI's `check` three times on the same bytes per document, over about 636 documents: about 7.7 s.
-		- Note: 20260829 item 48 closed this class. Every site here arrived after it, most as a loop that was small when written and grew with the corpus or the file list.
-		- Note: `fShellFiles` also ends on a failed `&&` list, the recorded bash trap. Harmless while every caller reads it through `< <(...)`.
-		- Sweep: every loop in `cicd/utility/*.bash` that runs per tracked file, per corpus case, per fuzz file or per row.
-		- Origin: `e5024383`, `e0b04437`, `15e6bd0e`, `fb0c885`, `b216ad2`, `7f4c359`, `833d8f1` and `d5978c0`, 2026-08-30 to 2026-09-20. Confirmed.
-		- Opened: 20260921-132543
-
-	- ✅ Item 5: both wrapper headers still give the old meaning of exit 6.
-		- Reproduced: `source/bash/shcl.bash` and `source/powershell/shcl.ps1` say "migrate --check found a line to rewrite". The help and the man page say "--check found a rewrite to make", since `fmt --check` exits 6 too.
-		- Origin: `af1fd74` (2026-09-19) changed the help and the man page and not the wrappers. Confirmed.
-		- Fixed: both headers use the help's wording.
-		- Pinned by: nothing. It is a comment, and a grep for the wording would be the source-grep pin the conventions rule out.
-		- Opened: 20260921-132543
-		- Closed: 20260921-1433
-
-	- 🔘 Item 6: Go's `Read.OK()` says it goes away at the next major, and nothing in the 3.0.0 steps takes it out.
-		- Note: 20260830 item 31 kept it as a deprecated alias of `Ok()`. 3.0.0 is that major. Either take it out at the cut or change the comment.
-		- Origin: `82bc14c9` (2026-08-30). Confirmed.
-		- Opened: 20260921-132543
-
-	- 🔘 Item 7: doc comments sit above the wrong declaration, eight times in Go and three in Rust.
-		- Reproduced in Go: `leadingWS`'s comment sits on `isWsp`, `dispKey`'s on `singleScalar`, `resolveTarget`'s on `namesADirectory` and `vContexts`' on `type vContext`. In the CLI, `setOpt`'s sits on `setKind`, `checkOpts`' on `allowedOpts` and `doTokens`' on `codeLine`. A `dtEqual` comment names a deleted function and now opens `sameMoment`'s. `writeBack` carries two stacked blocks.
-		- Note: plausible in Rust, read only: `lib.rs` near 3935, and `main.rs` near 378 and 1862.
-		- Note: 20260904 item 30 fixed this class once. Each one arrived as code inserted between a comment and its function.
-		- Sweep: Python and C, which no sweep reached.
-		- Origin: `a0f38d4`, `5cd50453`, `dd1330c`, `0f818d71`, `2f9aa1f9` and `c78d41d`, 2026-08-31 to 2026-09-17. `dispKey`'s is from `f459105b` (2026-08-17), which the 20260904 fix missed. Confirmed in Go.
-		- Opened: 20260921-132543
-
-	- ✅ Item 8: three pipeline comments no longer describe their code.
-		- `PSScriptAnalyzerSettings.psd1` says it covers three scripts, and the gate runs it over six.
-		- `config.bash` says PSScriptAnalyzer runs on the ps1 wrapper, and that the exhaustive cppcheck takes about 20 s. It gates six scripts, and cppcheck took 537 s here on 2026-09-15.
-		- `install.ps1` has `Test-ReleaseSignature`'s comment sitting above the PATH block. The function itself has none.
-		- Origin: `install.ps1`'s from `f3ff00e` (2026-08-30) and `618dd27` (2026-09-01), which put code between the comment and its function. The other two were right when written, and the script list grew past them. Confirmed.
-		- Fixed: the settings file says it covers every script the pipeline lints, and `config.bash` says every tracked `.ps1` and that cppcheck takes minutes. Neither names a count or a time that can go stale again. The signature comment sits on `Test-ReleaseSignature`.
-		- Note: `install.ps1` changed, so main needs the sanctioned docs-only sync once this reaches dev, or `check-docs` refuses the next main push.
-		- Pinned by: nothing, for the reason item 5 gives.
-		- Opened: 20260921-132543
-		- Closed: 20260921-1433
-
-	- ✅ Item 9: the style guide's banner rule does not allow the `#===` frame `install.ps1` uses.
-		- Reproduced: the guide says shell keeps the `#•••` rule and "no other decorative comment forms". `install.ps1` switched to `#===` because it has to stay ASCII.
-		- Probable fix: name the exception in the guide, with its reason.
-		- Origin: `82c2a38` (2026-09-19). Confirmed.
-		- Fixed: the guide says PowerShell keeps the `#•••` rule too, and names `install.ps1`'s `#===` with the byte-order-mark reason.
-		- Opened: 20260921-132543
-		- Closed: 20260921-1433
 
 - Code review 20260920b:
 
@@ -381,6 +239,87 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
+	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0. A comment in the same place is lost the same way.
+	- Cause: the end of the load folded late duplicates before it filed the tail comments, so the tail lines were filed on the instance the fold had just dropped. The fold carries a dropped instance's trivia over, but only what is already on it.
+	- Note: found by `lost_count_follows_the_outcome_table` at iteration 983,588, past the gate's 200,000, while testing the SilkTerm comment fix.
+	- Fixed: the tail is filed before the fold, in the end-of-load sequence of `Parser::parse` in Rust, `parser.parse` in Go, `_Parser.parse` in Python and `do_parse` in C.
+	- Pinned by: corpus case `139-fold-keeps-tail`, a comment and an `E013` line under the folded list. The old C runner fails it.
+	- Opened: 20260921-1411
+	- Closed: 20260921-1421
+
+- ✅ Merging a layer and merging that layer's canonical form place a retained line differently.
+	- Reproduced: in all four, on the old code as well. The base layer holds `\t: 1*\t  d: 2` (`E014`) under `a.b`, and the top layer is corpus `075`'s input with one line mutated. The retained line lands one line apart in the two merges.
+	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 861,523, while testing the SilkTerm comment fix. The two inputs are kept with the private notes, under `fuzz-20260921`.
+	- Cause: a comment inside a block, at an indent between the block's and its child's, is filed as the block's inside comment. It is written out after the last child's block at that child's level, and a reload files it on the last child. A merge treats the two differently when the other layer adds children to the block.
+	- Fixed: once the tree is final, a block's inside comments move onto its last child's trailing list, which writes them in the same place. `inside_to_last_child` in Rust and C, `insideToLastChild` in Go, `_inside_to_last_child` in Python.
+	- Note: the first try moved them while the comments were being filed, onto the last child at that moment. The next fuzz run found a block reopened later, whose new children the comment then landed ahead of. Doing it once at the end fixed that.
+	- Pinned by: corpus case `140-inside-comment-on-child`, whose merged golden has the comment right after the overridden leaf. The old C runner fails its merge dimension.
+	- Opened: 20260921-1411
+	- Closed: 20260921-1421
+
+- From the SilkTerm:
+
+	- Note: reports 1 and 2. Report 3 is still open under Bugs.
+
+	1. ✅ One badly indented line drops the correctly indented siblings after it
+
+		A silent wrong answer, and a regression from 2.0.0. Blocking for SilkTerm.
+
+		~~~sh
+		printf 'window:\n\topacity: 1.0\n    margin: 4\n\n\tcolumns: 160\n\trows: 48\n' > t.shcl
+		shcl get t.shcl window.columns
+		~~~
+
+		- Observed on dev: `no value at that path`, with E012 on lines 3, 5 and 6.
+
+		- Expected, and what 2.0.0 does: `160`, with E012 on line 3 only.
+
+		- `columns` and `rows` are not under the bad line. Their tab indent does not extend its four spaces, and it matches `opacity` exactly, so they are siblings under `window`. Lines that really are deeper than the bad line should still be skipped with it (E018), and that part is right.
+
+		- Cause: the E012 path at the end of `resolve_parent` pops every stack entry that is not a prefix of the bad indent before it pushes `UNOPENED`. That removes the open `\t` level, so no later line can match it.
+
+		- A trial fix that drops the pop loop and pushes `UNOPENED` unless the top is already that same unopened indent: shcl's own Rust tests pass, 2.0.0's answer comes back, and the E018 rule for lines deeper than the bad one still holds. It is on a local branch `trial-e012` in SilkTerm's clone, not pushed. The other bindings were not looked at.
+
+		- Why it matters: one stray line in a hand-edited config quietly turns off every setting after it in that block. A save then drops them all, since the gate only protects lines that are counted as lost.
+
+		- Origin: `ba2ca9c` (2026-09-02), which gave an `E012` line its hold and popped every level its indent did not extend.
+
+		- Fixed: the bad line holds only its own column and closes nothing. The resolve walks down from the top: equal to a level is a sibling, deeper than a level is a child unless a level opened under that one is still open, and the skipped line's unopened level does not count as one. The hold ends at the first line neither under it nor at it, so the stack carries one at most. `resolve_parent` in Rust and C, `resolveParent` in Go, `_resolve_parent` in Python.
+
+		- Note: the trial fix was not taken as it stood. It still refused the first child of a leaf written after the bad line, and every sibling of that child, since nothing was open at their column yet. Case `137` has that shape too.
+
+		- Pinned by: corpus case `137-e012-keeps-levels`, the report's input plus a deeper level and a leaf's first child after a bad line. The old C runner fails it 15 times. `075` still passes, so what is written under a bad line is still `E018`.
+
+		- Closed: 20260921-1357
+
+	2. ✅ A save reorders a commented-out block
+
+		Still open on dev. First drafted 2026-09-18 against 2.0.0.
+
+		~~~sh
+		printf 'a: 1\n# b:\n\t# c: true\nd: 2\n' > cm.shcl
+		shcl fmt cm.shcl
+		~~~
+
+		- Observed: `a: 1`, `	# c: true`, `# b:`, `d: 2`. The indented comment moves above the heading it sat under.
+
+		- Expected: the input back as written.
+
+		- Same inside a block: `wallpaper:`, `	opacity: 0.2`, `	# rotate:`, `		# enabled: true`, `	blur: 3` comes back with `# enabled: true` above `# rotate:`.
+
+		- A silent wrong answer one step removed. It bites when the lines are uncommented later: `enabled: true` then sits indented under `opacity: 0.2` and does nothing.
+
+		- Cause: each comment in a run chose its block alone. A deeper one hung on the block it sat in, while an earlier one at the next line's level stayed for that line, and a block is written out before the line after it. The same thing reordered two comments that both hung, when the second one's block closes first (`	# x` then `		# y` after a nested block).
+
+		- Fixed: a comment never goes ahead of the one written before it. Once one stays for the next line every later one stays too, and one whose block is written out earlier goes where the last one went. A comment kept away from its own block keeps its depth under the comment before it, one tab per level, so the commented-out block comes back in its shape. A malformed line kept as trivia keeps the order but not the depth, since it holds its level on a reload. `hang_deeper_pending` and `comment_depth` in Rust and C, `hangDeeperPending` and `commentDepth` in Go, `_hang_deeper_pending` and `_comment_depth` in Python, with a depth on each kept comment line that the emitter writes.
+
+		- Pinned by: corpus case `138-comment-run-order`, whose input is its own canonical form: both shapes above, the end-of-file one, and the nested one. The old C runner fails it. The fuzz fixpoint properties hold at 2,000,000 iterations, apart from the two older bugs filed below, which the same run found.
+
+		- Note: a later long fuzz run found one more, in the new code. A merge keeps one copy of a footer line two layers share, and dropping the top layer's copy can drop the comment the next one sat under, leaving it two levels past the line it now follows. A reload reads one. A merge now caps a footer comment it appends at one level past the comment before it. Case `140` pins it, and fails as not a fixpoint with only the cap taken out of the C merge.
+
+		- Closed: 20260921-1411
 
 - ✅ The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
 	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
@@ -651,6 +590,101 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260921:
+
+	- Every defect the round has closed. Item 1 is still open under Bugs, and the ideas under Features and enhancements.
+
+	- ✅ Item 2: `cli-regress.bash` does not match stdout exactly, though its header says stdout is matched exactly.
+		- Reproduced: both sides of the stdout and created-file compares go through `$(...)`, which drops every trailing newline. A CLI that drops or doubles a final newline passes. `x="$(printf 'a\n\n')"` compares equal to `a`.
+		- Note: `crosscheck.bash` already reads its output in a way that keeps the newlines.
+		- Note: an exact compare may need some rows' expected text adjusted.
+		- Origin: `e5024383` (2026-08-30), when the row table was written. No earlier round saw it. Confirmed.
+		- Fixed: both sides of both compares keep every byte now, read with `read -d ''` and `printf -v`. Sixteen rows had left off the final newline every CLI prints, and the two `explain` rows the blank line they end on. Their expected text says so now. No CLI output changed.
+		- Pinned by: the compare itself. A CLI that drops its final newline fails 51 stdout checks under the new script and none under the old.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1615
+
+	- ✅ Item 3: the index-rebuild fixture discards the setter result in Go, Python and C, where the Rust one asserts it.
+		- Reproduced: by reading. `conformance.rs` asserts `set_int("g.tmp.x", i)`. `shcl_test.go`, `conformance.py` and `mem_bounds.c` call it bare. A refused set builds no dead nodes, so both timings match and the bound passes while testing nothing.
+		- Note: the same class as 20260920b item 8, which fixed the `merge.sets` setter in the same three runners. This fixture was left as it was.
+		- Sweep: every other setter call in the three runners' timing and memory fixtures, and the `remove` count beside this one.
+		- Origin: `97995cb` (2026-09-17). Confirmed.
+		- Fixed: each churn cycle checks that the set went through and the remove took one node, and stops at the first that did not. `index_rebuild_ignores_removed_nodes` in Rust, `TestIndexRebuildIgnoresRemovedNodes` in Go, the index block of `conformance.py`, and the index block of `mem_bounds.c`. Rust already checked the set and now checks the remove too.
+		- Swept: no other timing or memory fixture in the three runners calls a setter without checking it. The one other loop in `mem_bounds.c`, the 100k rewrites, is checked by its growth floor and its final value.
+		- Pinned by: the fixture itself. With the set pointed at a wildcard path, which every setter refuses, Go, Python and C each fail at the first cycle.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1542
+
+	- ✅ Item 4: pipeline scripts fork inside loops again, which the style guide says they are held to.
+		- Note: Fix what is reasonable to do so among these. There may be very legitimate cases where this forking inside Bash loops makes more sense than unrolling.
+		- Measured, each on a scratch copy of the section:
+			- `shell-regress.bash` `fShellFiles` runs `head` and `grep` per tracked file, about 790 files, and is called four times. That is about 2.9 s a run. A builtin read gives the same list in 0.04 s.
+			- `check-docs.bash`'s header loops fork three or four times per file: 1.33 s of its 2.31 s.
+			- `crosscheck.bash` `fWriteState` and `fFixCase` fork about ten times per binding run, over about 2,500 runs. That is about 16 s, and one `find -printf` with builtin copies saves about 7 s of it.
+			- `cli-regress.bash` forks per probe, per width check and per row.
+			- `check-migrate.bash` runs the old CLI's `check` three times on the same bytes per document, over about 636 documents: about 7.7 s.
+		- Note: 20260829 item 48 closed this class. Every site here arrived after it, most as a loop that was small when written and grew with the corpus or the file list.
+		- Note: `fShellFiles` also ends on a failed `&&` list, the recorded bash trap. Harmless while every caller reads it through `< <(...)`.
+		- Sweep: every loop in `cicd/utility/*.bash` that runs per tracked file, per corpus case, per fuzz file or per row.
+		- Origin: `e5024383`, `e0b04437`, `15e6bd0e`, `fb0c885`, `b216ad2`, `7f4c359`, `833d8f1` and `d5978c0`, 2026-08-30 to 2026-09-20. Confirmed.
+		- Fixed: `shell-regress.bash` reads each file's first bytes with builtins and builds the list once for its four users. `check-docs.bash` asks one awk for every header rather than a head and a grep per file. `crosscheck.bash`'s write fixtures set a variable instead of echoing, `fWriteState` reads one `find -printf` plus builtin reads, and a call makes all its roots with one `mkdir`. `cli-regress.bash` reads its option probes from a file with a builtin match, and checks each help's width, tabs and ASCII in one awk. `check-migrate.bash` runs 2.x's `check` once per document.
+		- Measured, whole script before and after: `check-docs.bash` 2.35 s to 1.1 s, `shell-regress.bash` 43.6 s to 40.3 s, `cli-regress.bash` 27.7 s to 22.6 s, `check-migrate.bash` 51.8 s to 47.4 s, and `crosscheck.bash` over the corpus alone 110 s to 107 s. The fuzz set `--ci` adds is about three times the corpus's writes.
+		- Note: `fShellFiles` no longer ends on a failed `&&` list.
+		- Note: `fWriteState` shows a NUL in a file as `<NUL>`. The old substitution dropped it with a warning.
+		- Swept: the other per-row loops launch `pwsh` or a CLI per row, which is the cost there, and the crosscheck case loops fork nothing else. Idea 8 has `win-runners.bash`'s five C builds.
+		- Pinned by: each script's own output, which is the same before and after. `check-docs.bash` still names a file with no SPDX line and a marker one byte off, and the write compare still reports a CLI that widens a mode and leaves a file behind.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1615
+
+	- ✅ Item 5: both wrapper headers still give the old meaning of exit 6.
+		- Reproduced: `source/bash/shcl.bash` and `source/powershell/shcl.ps1` say "migrate --check found a line to rewrite". The help and the man page say "--check found a rewrite to make", since `fmt --check` exits 6 too.
+		- Origin: `af1fd74` (2026-09-19) changed the help and the man page and not the wrappers. Confirmed.
+		- Fixed: both headers use the help's wording.
+		- Pinned by: nothing. It is a comment, and a grep for the wording would be the source-grep pin the conventions rule out.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1433
+
+	- ✅ Item 6: Go's `Read.OK()` says it goes away at the next major, and nothing in the 3.0.0 steps takes it out.
+		- Note: 20260830 item 31 kept it as a deprecated alias of `Ok()`. 3.0.0 is that major. Either take it out at the cut or change the comment.
+		- Origin: `82bc14c9` (2026-08-30). Confirmed.
+		- Decided: take it out now. 3.0.0 is the major its comment promised, and no other binding has a second spelling.
+		- Fixed: `OK()` is gone from `shcl.go`, and the changelog lists it under Removed. Nothing in the tree called it.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1542
+
+	- ✅ Item 7: doc comments sit above the wrong declaration, eight times in Go and three in Rust.
+		- Reproduced in Go: `leadingWS`'s comment sits on `isWsp`, `dispKey`'s on `singleScalar`, `resolveTarget`'s on `namesADirectory` and `vContexts`' on `type vContext`. In the CLI, `setOpt`'s sits on `setKind`, `checkOpts`' on `allowedOpts` and `doTokens`' on `codeLine`. A `dtEqual` comment names a deleted function and now opens `sameMoment`'s. `writeBack` carries two stacked blocks.
+		- Note: plausible in Rust, read only: `lib.rs` near 3935, and `main.rs` near 378 and 1862.
+		- Note: 20260904 item 30 fixed this class once. Each one arrived as code inserted between a comment and its function.
+		- Sweep: Python and C, which no sweep reached.
+		- Origin: `a0f38d4`, `5cd50453`, `dd1330c`, `0f818d71`, `2f9aa1f9` and `c78d41d`, 2026-08-31 to 2026-09-17. `dispKey`'s is from `f459105b` (2026-08-17), which the 20260904 fix missed. Confirmed in Go.
+		- Fixed in Go: the comments for `leadingWS`, `dispKey`, `resolveTarget`, `vContexts`, `setOpt` and `doTokens` sit on them now. The stray copy of `checkOpts`' comment and the `dtEqual` lines are gone, and `writeBack` has one block.
+		- Fixed in Rust: `resolve_target`, `Set`, `do_tokens`, plus `describe_refusal`, whose comment sat on `raw_refusal`.
+		- Fixed in C: the header had eleven, none of them filed. `arena_reset`, `value_edits`, `shcl_migrate`, `parse_u64`, `w_write_reason`, `w_collapse_dup`, `value_reads_back`, `disp_key`, `v_suggest` and `shcl_write_file_atomic` each have their comment back, and `ShclParseOwn` no longer sits between the parser's field notes and the parser. A stale datetime-equality line is gone, and so is a stray copy of `check_opts`' comment in the CLI.
+		- Swept: Python has none; its functions carry docstrings or a comment inside the body. Each binding's comments were read against Go's once Go was clean.
+		- Pinned by: nothing, for the reason item 5 gives.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1542
+
+	- ✅ Item 8: three pipeline comments no longer describe their code.
+		- `PSScriptAnalyzerSettings.psd1` says it covers three scripts, and the gate runs it over six.
+		- `config.bash` says PSScriptAnalyzer runs on the ps1 wrapper, and that the exhaustive cppcheck takes about 20 s. It gates six scripts, and cppcheck took 537 s here on 2026-09-15.
+		- `install.ps1` has `Test-ReleaseSignature`'s comment sitting above the PATH block. The function itself has none.
+		- Origin: `install.ps1`'s from `f3ff00e` (2026-08-30) and `618dd27` (2026-09-01), which put code between the comment and its function. The other two were right when written, and the script list grew past them. Confirmed.
+		- Fixed: the settings file says it covers every script the pipeline lints, and `config.bash` says every tracked `.ps1` and that cppcheck takes minutes. Neither names a count or a time that can go stale again. The signature comment sits on `Test-ReleaseSignature`.
+		- Note: `install.ps1` changed, so main needs the sanctioned docs-only sync once this reaches dev, or `check-docs` refuses the next main push.
+		- Pinned by: nothing, for the reason item 5 gives.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1433
+
+	- ✅ Item 9: the style guide's banner rule does not allow the `#===` frame `install.ps1` uses.
+		- Reproduced: the guide says shell keeps the `#•••` rule and "no other decorative comment forms". `install.ps1` switched to `#===` because it has to stay ASCII.
+		- Probable fix: name the exception in the guide, with its reason.
+		- Origin: `82c2a38` (2026-09-19). Confirmed.
+		- Fixed: the guide says PowerShell keeps the `#•••` rule too, and names `install.ps1`'s `#===` with the byte-order-mark reason.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1433
 
 - Code review 20260920b:
 

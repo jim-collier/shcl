@@ -206,11 +206,6 @@ func (r Read[T]) at(line int, quoted bool) Read[T] {
 	return r
 }
 
-// OK is the same test as Ok.
-//
-// Deprecated: use Ok; OK goes away at the next major.
-func (r Read[T]) OK() bool { return r.Ok() }
-
 // LoadError is a failed Strict load: the diagnostics that failed it, plus the
 // recovered tree.
 type LoadError struct {
@@ -1267,7 +1262,6 @@ func trimEndWS(s string) string {
 	return strings.TrimRightFunc(s, isWsp)
 }
 
-// leadingWS is the leading space/tab run of a line (the indent).
 // isWsp is the grammar's wsp: a space, a tab or a carriage return. The parser
 // trims with this and nothing wider - a no-break space or a line separator
 // after a value is content, and a Unicode trim used to delete it with no
@@ -1276,6 +1270,7 @@ func isWsp(c rune) bool { return c == ' ' || c == '\t' || c == '\r' }
 
 func trimWsp(s string) string { return strings.TrimFunc(s, isWsp) }
 
+// leadingWS is the leading space/tab run of a line (the indent).
 func leadingWS(s string) string {
 	i := 0
 	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
@@ -1339,9 +1334,6 @@ func applyEscapes(s string) string {
 	return string(out)
 }
 
-// dispKey is the predicate a [value] selector matches with: the display form,
-// which is built from logical strings, so ["q\"uote"] finds 'q"uote' - a
-// logical-string match, not spelling against spelling.
 // singleScalar is the restriction a QUOTED [value] selector adds on top of
 // the display match: quoting selects the scalar spelling only, so the scalar
 // "a, b" and the list a, b stop meeting the same selector.
@@ -1349,6 +1341,9 @@ func singleScalar(v *value) bool {
 	return v.kind == vCell && len(v.els) == 1
 }
 
+// dispKey is the predicate a [value] selector matches with: the display form,
+// which is built from logical strings, so ["q\"uote"] finds 'q"uote' - a
+// logical-string match, not spelling against spelling.
 func dispKey(v *value) string {
 	return v.display()
 }
@@ -3890,12 +3885,6 @@ func WriteFileAtomic(file, data string) error {
 	return nil
 }
 
-// resolveTarget is the path a save actually rewrites. A symlink is followed so
-// the write goes through it; EvalSymlinks does that but needs the target to
-// exist, so a dangling link is walked by hand and the file is created where it
-// points. A path that is no link at all is a plain create at the path as given.
-// A link cycle is an error: silently creating a regular file in its place
-// would be the exact replacement the symlink walk exists to avoid.
 // namesADirectory reports a path that names a directory rather than a file: it
 // ends in a separator, or its last component is `.` or `..`. The OS refuses to
 // open such a path as a regular file, but a path cleanup drops the trailing
@@ -3916,6 +3905,12 @@ func namesADirectory(file string) bool {
 	return last == "." || last == ".."
 }
 
+// resolveTarget is the path a save actually rewrites. A symlink is followed so
+// the write goes through it; EvalSymlinks does that but needs the target to
+// exist, so a dangling link is walked by hand and the file is created where it
+// points. A path that is no link at all is a plain create at the path as given.
+// A link cycle is an error: silently creating a regular file in its place
+// would be the exact replacement the symlink walk exists to avoid.
 func resolveTarget(file string) (string, error) {
 	if p, err := filepath.EvalSymlinks(file); err == nil {
 		return p, nil
@@ -6919,8 +6914,6 @@ func singleText(v *value) (string, bool) {
 	return "", false
 }
 
-// dtEqual compares datetimes field-wise (Zone is a pointer, so == would
-// compare identity, not value).
 // sameMoment reports two datetimes naming the same moment, whatever the
 // spelling. The struct mirrors what was written, so 12:00:00Z and
 // 12:00:00+00:00 are different values field by field while naming one time, and
@@ -8267,16 +8260,16 @@ func (d *Document) Validate(schema *Document) []Diagnostic {
 	return out
 }
 
-// vContexts collects resolution contexts: the whole document for a plain path;
-// each enclosing instance for the part of a path after a wildcard. required/
-// repeat evaluate per context (anchor line 0 = document scope), so
-// `server[*].port` + required means a port under EACH server - vacuously true
-// with no servers.
 type vContext struct {
 	anchor int
 	found  []int
 }
 
+// vContexts collects resolution contexts: the whole document for a plain path;
+// each enclosing instance for the part of a path after a wildcard. required/
+// repeat evaluate per context (anchor line 0 = document scope), so
+// `server[*].port` + required means a port under EACH server - vacuously true
+// with no servers.
 func (d *Document) vContexts(start []int, segs []segment, anchor int, out *[]vContext) {
 	cur := start
 	for i, seg := range segs {

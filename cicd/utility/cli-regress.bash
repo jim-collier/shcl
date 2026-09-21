@@ -388,8 +388,8 @@ rows=(
 	'init-strictness-see-help|init --strictness=1 --schema=%S2%|-|1||^option --strictness not valid for init: .*\(see --help\)$'
 	## 20260918 items 19 and 20: explain gave a file spelling that is a comment,
 	## and left out the V097 a user meets most.
-	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n|-'
-	'explain-v097|explain V097|-|0|\nV097  error       generated output does not load, or fails its own schema\n  init checks its own output before returning it, so a starter config that\n  would fail its first check is a fault instead. A default outside its\n  field'"'"'s constraints is one cause. A required path nothing can generate is\n  the other, such as one with a [#N] selector or a * name. Line 0.\n|-'
+	'explain-e003|explain E003|-|0|\nE003  error       selector names an instance that does not exist\n  a[5].b where there is one a. An index selects an existing instance by\n  position and never creates one, so a binding line should select by value\n  instead. In a file the index is the bare [5], since a # opens a comment.\n\n|-'
+	'explain-v097|explain V097|-|0|\nV097  error       generated output does not load, or fails its own schema\n  init checks its own output before returning it, so a starter config that\n  would fail its first check is a fault instead. A default outside its\n  field'"'"'s constraints is one cause. A required path nothing can generate is\n  the other, such as one with a [#N] selector or a * name. Line 0.\n\n|-'
 	## 20260830 item 35: -h and --help after FILE were an unknown option, though
 	## every other option is read there.
 	'help-after-file|get %F% -h|-|0|-|-'
@@ -411,9 +411,9 @@ rows=(
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
 	## 20260909 item 13: a value built by a setter or a selector read as
 	## unquoted, so quoted thousands were BadType until a save and reload.
-	'set-quoted-thousands|get --int --set=a=1,000 %F% a|-|0|1000|-'
-	"set-selector-thousands|get --int --set=x[\"1,000\"].y=1 %F% x|-|0|1000|-"
-	'selector-thousands|get --int %SQ% srv|-|0|1000|-'
+	'set-quoted-thousands|get --int --set=a=1,000 %F% a|-|0|1000\n|-'
+	"set-selector-thousands|get --int --set=x[\"1,000\"].y=1 %F% x|-|0|1000\n|-"
+	'selector-thousands|get --int %SQ% srv|-|0|1000\n|-'
 	## 3.0: bracket text after the colon is one outcome, kept verbatim. The
 	## 2.x selector sugar is that shape now too, and migrate is what carries
 	## a file written with it across.
@@ -506,9 +506,9 @@ rows=(
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
 	## about a line the load had dropped, so a damaged file read clean at exit 0.
-	'get-diags|get %B% a|-|0|1|E015 missing colon'
-	'count-diags|count %B% a|-|0|1|E015 missing colon'
-	'instances-diags|instances %B% a|-|0|1|E015 missing colon'
+	'get-diags|get %B% a|-|0|1\n|E015 missing colon'
+	'count-diags|count %B% a|-|0|1\n|E015 missing colon'
+	'instances-diags|instances %B% a|-|0|1\n|E015 missing colon'
 	## 20260920b item 26: a value holding a line break printed across two lines,
 	## so `instances` gave four lines where `count` said two. Only such a value
 	## is escaped; a plain one with a dot in it comes out as written.
@@ -536,10 +536,10 @@ rows=(
 	## 20260830b item 19: a script could read an open section's values but never
 	## learn its keys, so the only route was parsing fmt output in shell. A name
 	## needing quotes comes back path-ready, or enumerating it buys nothing.
-	'children-top|children %T%|-|0|db\nweb|-'
-	'children-quoted|children %T% db|-|0|host\n"odd.key"|-'
+	'children-top|children %T%|-|0|db\nweb\n|-'
+	'children-quoted|children %T% db|-|0|host\n"odd.key"\n|-'
 	'children-missing|children %T% nope|-|0||-'
-	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port|-'
+	'paths-all|paths %T%|-|0|db\ndb.host\ndb."odd.key"\nweb\nweb.port\n|-'
 	## 20260901b item 28: a value with newlines in it stays on one line.
 	'diag-value-one-line|check --schema=%SA% %R%|-|6|-|not allowed at .b.: line one.nline two'
 	## 20260901b item 24: two layers with a bad line 2 printed the same thing
@@ -576,8 +576,8 @@ rows=(
 	## mode, so which one applied depended on which was typed last.
 	'default-vs-onbad|get --int --default=7 --on-bad=error %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
 	'onbad-vs-default|get --int --on-bad=error --default=7 %F% nope|-|1|-|--default cannot be combined with --on-bad=error'
-	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7|-'
-	'default-alone|get --int --default=7 %F% nope|-|0|7|-'
+	'default-with-onbad-default|get --int --default=7 --on-bad=default %F% nope|-|0|7\n|-'
+	'default-alone|get --int --default=7 %F% nope|-|0|7\n|-'
 	## 20260920 idea 2, the same disease one step wider: two options asking for
 	## different answers resolved last-wins and said nothing, so the answer
 	## depended on typing order. Both orders refuse, and a repeat with the same
@@ -585,17 +585,17 @@ rows=(
 	'type-clash|get --int --raw %F% a|-|1|-|^--int cannot be combined with --raw \(see --help\)$'
 	'type-clash-other-order|get --raw --int %F% a|-|1|-|^--raw cannot be combined with --int \(see --help\)$'
 	'type-clash-first-pair-named|get --float --float --bool %F% a|-|1|-|^--float cannot be combined with --bool \(see --help\)$'
-	'type-repeat-ok|get --int --int %F% a|-|0|1|-'
+	'type-repeat-ok|get --int --int %F% a|-|0|1\n|-'
 	'type-clash-after-cmd-refusal|check --int --raw %F%|-|1|-|^type options are not valid for check \(see --help\)$'
 	'strictness-clash|get --int --strictness=1 --strictness=3 %F% a|-|1|-|^--strictness=1 cannot be combined with --strictness=3 \(see --help\)$'
-	'strictness-same-level-ok|get --int --strictness=1 --strictness=loose %F% a|-|0|1|-'
+	'strictness-same-level-ok|get --int --strictness=1 --strictness=loose %F% a|-|0|1\n|-'
 	'onbad-clash|get --int --on-bad=error --on-bad=flag %F% nope|-|1|-|^--on-bad=error cannot be combined with --on-bad=flag \(see --help\)$'
 	'onbad-same-mode-ok|get --int --on-bad=ERROR --on-bad=error %F% nope|-|3|-|no value at that path'
 	'default-clash|get --int --default=7 --default=8 %F% nope|-|1|-|^--default=7 cannot be combined with --default=8 \(see --help\)$'
-	'default-repeat-ok|get --int --default=7 --default=7 %F% nope|-|0|7|-'
+	'default-repeat-ok|get --int --default=7 --default=7 %F% nope|-|0|7\n|-'
 	'schema-clash|check --schema=%S% --schema=%S2% %F%|-|1|-|^--schema=.* cannot be combined with --schema=.* \(see --help\)$'
-	'layer-repeats|get --int --layer=%F% --layer=%F% %F% a|-|0|1|-'
-	'set-repeats-last-wins|get --int --set=a=1 --set=a=2 %F% a|-|0|2|-'
+	'layer-repeats|get --int --layer=%F% --layer=%F% %F% a|-|0|1\n|-'
+	'set-repeats-last-wins|get --int --set=a=1 --set=a=2 %F% a|-|0|2\n|-'
 	## 20260902 item 15: a refused edit returned before the load's diagnostics
 	## were printed, so a damaged file said nothing about the damage.
 	'refused-set-still-reports|get --set=a[*]=1 %B% a|-|1|-|E015 missing colon'
@@ -837,16 +837,19 @@ for row in "${rows[@]}"; do
 		if ((rc != wantRc)); then
 			echo "cli-regress: ${id} [${name}]: exit ${rc}, expected ${wantRc}" >&2; nBad+=1; continue
 		fi
+		##	read -d '' and printf -v keep every byte, trailing newlines included,
+		##	which $(...) would drop on both sides.
 		if [[ "${wantOut}" != "-" ]]; then
-			gotOut="$(cat "${tmpDir}/out")"
-			expOut="$(printf '%b' "${wantOut}")"
+			gotOut=""; IFS= read -r -d '' gotOut <"${tmpDir}/out" || true
+			printf -v expOut '%b' "${wantOut}"
 			if [[ "${gotOut}" != "${expOut}" ]]; then
 				echo "cli-regress: ${id} [${name}]: stdout ${gotOut@Q}, expected ${expOut@Q}" >&2; nBad+=1; continue
 			fi
 		fi
 		if [[ -n "${wantFile}" && "${wantFile}" != "-" ]]; then
-			gotFile="$(cat "${tmpDir}/created.shcl" 2>/dev/null || true)"
-			expFile="$(printf '%b' "${wantFile}")"
+			gotFile=""
+			if [[ -e "${tmpDir}/created.shcl" ]]; then IFS= read -r -d '' gotFile <"${tmpDir}/created.shcl" || true; fi
+			printf -v expFile '%b' "${wantFile}"
 			if [[ "${gotFile}" != "${expFile}" ]]; then
 				echo "cli-regress: ${id} [${name}]: created file ${gotFile@Q}, expected ${expFile@Q}" >&2; nBad+=1; continue
 			fi
@@ -972,16 +975,15 @@ for b in "${bindings[@]}"; do
 		if [[ -z "${text}" ]]; then
 			echo "cli-regress: help-width [${name}]: ${cmd} printed nothing" >&2; nBad+=1; continue
 		fi
-		## ASCII first: it is what makes the byte count below a column count.
-		if LC_ALL=C grep -q '[^ -~]' <<<"${text}"; then
-			echo "cli-regress: help-width [${name}]: ${cmd} is not plain ASCII" >&2; nBad+=1
-		fi
-		if grep -q "$(printf '\t')" <<<"${text}"; then
-			echo "cli-regress: help-width [${name}]: ${cmd} prints hard tabs" >&2; nBad+=1
-		fi
+		## ASCII first: it is what makes the byte count a column count. One awk
+		## for the three checks, since this runs for every help and code.
 		while IFS= read -r wide; do
-			echo "cli-regress: help-width [${name}]: ${cmd} line ${wide}" >&2; nBad+=1
-		done < <(LC_ALL=C awk -v m="${maxCols}" 'length($0) > m { print NR " is " length($0) " columns: " substr($0, 1, 40) }' <<<"${text}")
+			echo "cli-regress: help-width [${name}]: ${cmd} ${wide}" >&2; nBad+=1
+		done < <(LC_ALL=C awk -v m="${maxCols}" '
+			/[^ -~]/ { ascii = 1 }
+			/\t/ { tab = 1 }
+			length($0) > m { print "line " NR " is " length($0) " columns: " substr($0, 1, 40) }
+			END { if (ascii) print "is not plain ASCII"; if (tab) print "prints hard tabs" }' <<<"${text}")
 	done
 done
 
@@ -1033,10 +1035,12 @@ for b in "${bindings[@]}"; do
 		fi
 		takes=""
 		for c in "${cmds[@]}"; do
-			## Captured first: under pipefail the refusal's own exit 1 would fail
-			## a pipe into grep whatever grep found.
-			said="$("${cli}" "${c}" "${probe}" </dev/null 2>&1 >/dev/null || true)"
-			grep -qF "not valid for ${c}" <<<"${said}" || takes+="${c} "
+			## Through a file, not a pipe into grep: under pipefail the refusal's
+			## own exit 1 would fail the pipe whatever grep found. And matched with
+			## a builtin, since this runs once per option per subcommand.
+			"${cli}" "${c}" "${probe}" </dev/null >/dev/null 2>"${tmpDir}/said" || true
+			said=""; IFS= read -r -d '' said <"${tmpDir}/said" || true
+			[[ "${said}" == *"not valid for ${c}"* ]] || takes+="${c} "
 		done
 		takes="$(tr ' ' '\n' <<<"${takes}" | sort -u | xargs)"
 		nOpts=$((nOpts + 1)); nRun+=1
