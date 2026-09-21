@@ -144,6 +144,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 		- Pinned by: corpus case `138-comment-run-order`, whose input is its own canonical form: both shapes above, the end-of-file one, and the nested one. The old C runner fails it. The fuzz fixpoint properties hold at 2,000,000 iterations, apart from the two older bugs filed below, which the same run found.
 
+		- Note: a later long fuzz run found one more, in the new code. A merge keeps one copy of a footer line two layers share, and dropping the top layer's copy can drop the comment the next one sat under, leaving it two levels past the line it now follows. A reload reads one. A merge now caps a footer comment it appends at one level past the comment before it. Case `140` pins it, and fails as not a fixpoint with only the cap taken out of the C merge.
+
 		- Closed: 20260921-1411
 
 	3. On Windows a failed save can delete the file it was saving
@@ -156,16 +158,24 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
 
-- 🔘 A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
-	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0.
-	- Cause, probably: the end of the load folds late duplicates before it hangs the tail comments, so the tail lines hang on the node the fold just dropped. Mid-load the order is the other way round, and the fold carries them over.
+- ✅ A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
+	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0. A comment in the same place is lost the same way.
+	- Cause: the end of the load folded late duplicates before it filed the tail comments, so the tail lines were filed on the instance the fold had just dropped. The fold carries a dropped instance's trivia over, but only what is already on it.
 	- Note: found by `lost_count_follows_the_outcome_table` at iteration 983,588, past the gate's 200,000, while testing the SilkTerm comment fix.
+	- Fixed: the tail is filed before the fold, in the end-of-load sequence of `Parser::parse` in Rust, `parser.parse` in Go, `_Parser.parse` in Python and `do_parse` in C.
+	- Pinned by: corpus case `139-fold-keeps-tail`, a comment and an `E013` line under the folded list. The old C runner fails it.
 	- Opened: 20260921-1411
+	- Closed: 20260921-1421
 
-- 🔘 Merging a layer and merging that layer's canonical form place a retained line differently.
+- ✅ Merging a layer and merging that layer's canonical form place a retained line differently.
 	- Reproduced: in all four, on the old code as well. The base layer holds `\t: 1*\t  d: 2` (`E014`) under `a.b`, and the top layer is corpus `075`'s input with one line mutated. The retained line lands one line apart in the two merges.
 	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 861,523, while testing the SilkTerm comment fix. The two inputs are kept with the private notes, under `fuzz-20260921`.
+	- Cause: a comment inside a block, at an indent between the block's and its child's, is filed as the block's inside comment. It is written out after the last child's block at that child's level, and a reload files it on the last child. A merge treats the two differently when the other layer adds children to the block.
+	- Fixed: once the tree is final, a block's inside comments move onto its last child's trailing list, which writes them in the same place. `inside_to_last_child` in Rust and C, `insideToLastChild` in Go, `_inside_to_last_child` in Python.
+	- Note: the first try moved them while the comments were being filed, onto the last child at that moment. The next fuzz run found a block reopened later, whose new children the comment then landed ahead of. Doing it once at the end fixed that.
+	- Pinned by: corpus case `140-inside-comment-on-child`, whose merged golden has the comment right after the overridden leaf. The old C runner fails its merge dimension.
 	- Opened: 20260921-1411
+	- Closed: 20260921-1421
 
 - Code review 20260921:
 

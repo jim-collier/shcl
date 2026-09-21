@@ -2319,6 +2319,26 @@ impl Parser {
 		}
 	}
 
+	/// A block's inside comments are written out after its last child's block,
+	/// at that child's level, which is where a reload files them: as the last
+	/// child's own. File them there once the tree is final, so a layer and its
+	/// canonical form merge the same. The text does not move.
+	fn inside_to_last_child(&mut self) {
+		for n in 0..self.arena.len() {
+			let Some(&kid) = self.arena[n].children.last() else {
+				continue;
+			};
+			let Some(t) = self.arena[n].trivia.as_deref_mut() else {
+				continue;
+			};
+			if t.inside.is_empty() {
+				continue;
+			}
+			let moved = std::mem::take(&mut t.inside);
+			self.arena[kid].triv_mut().after.extend(moved);
+		}
+	}
+
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
 	fn attach_trivia(&mut self, node: usize, indent: &str, trailing: Option<&str>) {
@@ -3310,10 +3330,13 @@ impl Parser {
 			);
 		}
 		self.star_flush();
-		self.fold_late_dups();
-		self.emit_repeated_leaf_hints();
 		// Indented tail comments keep their block; only top-level ones orphan.
+		// Before the fold, which carries a dropped instance's comments over to
+		// the one it joins: after it they would hang on the dropped one.
 		self.hang_deeper_pending("");
+		self.fold_late_dups();
+		self.inside_to_last_child();
+		self.emit_repeated_leaf_hints();
 		let mut chain = Vec::new();
 		let mut orphans: Vec<Lead> = self
 			.pending
@@ -5486,12 +5509,26 @@ impl Document {
 		// stack of files from repeating it once per layer. Only the lines
 		// already here count: a layer's own repeats are its content.
 		let had = self.orphans.len();
+		// A repeat skipped here may be the comment the next one sat under, and
+		// a reload puts a comment at most one level past the comment before
+		// it, so none goes deeper than that.
+		let mut room = self
+			.orphans
+			.iter()
+			.rev()
+			.find(|l| l.text.starts_with('#'))
+			.map_or(0, |l| l.depth + 1);
 		for o in &over.orphans {
 			if !self.orphans[..had]
 				.iter()
 				.any(|e| e.text == o.text && e.depth == o.depth)
 			{
-				self.orphans.push(o.clone());
+				let mut o = o.clone();
+				if o.text.starts_with('#') {
+					o.depth = o.depth.min(room);
+					room = o.depth + 1;
+				}
+				self.orphans.push(o);
 			}
 		}
 	}

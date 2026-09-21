@@ -364,6 +364,12 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - A malformed line kept verbatim keeps the place's level. It holds its level on a reload, so written deeper it would move the lines after it.
 
+- A reload puts a comment at most one level past the comment before it. A merge that drops a layer's repeated footer line can drop the one the next line sat under, so that line comes no deeper than one level past what it now follows.
+
+- A block's inside comments are written out after its last child's block, at that child's level, and a reload files them on that child. The load files them there too, once the tree is final, since a merge treats the two differently. It has to wait for the end: a block reopened later gains children, and filed on the child it had at the time, the comment would land ahead of them.
+
+- Tail comments are filed before the end-of-load fold of late duplicates, not after. The fold carries a dropped instance's comments over to the one it joins; after it, they were filed on the dropped one and lost.
+
 **A float is written with the fewest digits that read back, and an exact tie between two such spellings rounds to even.** Shortest-round-trip formatters agree on every double except two cases, and both had leaked into the output: at a power of two the rounding interval is lopsided, so the closest short spelling can fall outside it while its neighbor reads back, and on an exact tie between two spellings of the shortest length Rust's formatter rounds away from zero where Go's, Python's and glibc's round to even.
 
 - We decided on round to even: it is IEEE 754's own tie rule, what three of the four bindings already did, and what `repr` in Python and `strconv` in Go print, so a value read from another tool's output spells the same here. The reference takes the correctly rounded spelling of the shortest length whenever it reads back, and keeps its own shortest spelling only when it does not.

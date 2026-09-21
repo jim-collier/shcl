@@ -182,6 +182,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A load no longer drops a comment or a malformed line written under a stacked list whose field ends up equal to an earlier instance. The field folds into that instance at the end of the load, and what sat under it was filed on the instance that went away, so a save wrote the file without them at exit 0.
+
+- Merging a layer and merging its formatted copy put a comment in the same place. A comment written inside a block after its children, at an indent none of them has, was filed on the block, while a reload of the same text files it on the last child. When the other layer added children to that block, the comment landed after them one way and before them the other.
+
 - A save keeps a run of whole-line comments in the order it was written. A comment written deeper than the next binding hangs on the block it sits in, and one written after a comment that went with the next binding jumped ahead of it: `# b:` followed by an indented `# c: true` came back with `# c` first, so uncommenting both later put `c` under the wrong field. A comment kept with the ones before it keeps its nesting under them, one tab per level, so a commented-out block comes back in its shape.
 
 - The `H001` hint no longer spans lines. It splices the repeated values into its suggestion, and a value holding a real line break went in raw, so one hint arrived as four lines on stderr. The values are spelled the way the writer would spell them now, which also makes the suggested line valid: `srv: "a\nb", c` reads back as the two values it names. This is the library side of the same rule `instances` got.

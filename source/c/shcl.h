@@ -2737,6 +2737,21 @@ static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t o
 	if (!cmap_first(P->dmaps->data[parent], hd)) cmap_put(P->tmp, map_mut(P->tmp, P->dmaps, parent), hd, node);
 }
 
+/* A block's inside comments are written out after its last child's block, at
+   that child's level, which is where a reload files them: as the last child's
+   own. File them there once the tree is final, so a layer and its canonical
+   form merge the same. The text does not move. */
+static void inside_to_last_child(ShclParser *P) {
+	ShclArena *a = &P->d->arena;
+	for (size_t n = 0; n < P->d->nodes.len; n++) {
+		ShclNode *nd = &NODE(P->d, n);
+		if (!nd->children.len || !nd->trivia || !nd->trivia->inside.len) continue;
+		ShclTrivia *kt = triv_mut(a, &NODE(P->d, nd->children.data[nd->children.len - 1]));
+		for (size_t k = 0; k < nd->trivia->inside.len; k++) ShclVecLead_push(a, &kt->after, nd->trivia->inside.data[k]);
+		nd->trivia->inside.len = 0;
+	}
+}
+
 /* A value that mutates after its sibling group was keyed - an empty field
    filled by a fence, a stacked list closed - can land on a key an earlier
    sibling already holds, which the keyed lookup can no longer catch. Fold
@@ -3536,10 +3551,13 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		p_refuse(&P, lines.len, "E020", sb_S(&m), out_stopped(NULL, 0), s_empty());
 	}
 	star_flush(&P);
-	fold_late_dups(&P);
-	emit_repeated_leaf_hints(&P);
-	/* Indented tail comments keep their block; only top-level ones orphan. */
+	/* Indented tail comments keep their block; only top-level ones orphan.
+	   Before the fold, which carries a dropped instance's comments over to the
+	   one it joins: after it they would hang on the dropped one. */
 	hang_deeper_pending(&P, s_empty());
+	fold_late_dups(&P);
+	inside_to_last_child(&P);
+	emit_repeated_leaf_hints(&P);
 	P.depth_chain.len = 0;
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before, comment_depth(&P, s_empty(), P.pending.data[k].text, P.pending.data[k].indent)));
@@ -4778,11 +4796,19 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	// of files from repeating it once per layer. Only the lines already here
 	// count: a layer's own repeats are its content.
 	size_t had = d->orphans.len;
+	/* A repeat skipped here may be the comment the next one sat under, and a
+	   reload puts a comment at most one level past the comment before it, so
+	   none goes deeper than that. */
+	size_t room = 0;
+	for (size_t k = had; k-- > 0;) if (d->orphans.data[k].text.n && d->orphans.data[k].text.p[0] == '#') { room = d->orphans.data[k].depth + 1; break; }
 	for (size_t i = 0; i < over->orphans.len; i++) {
 		ShclStr ot = over->orphans.data[i].text;
+		size_t depth = over->orphans.data[i].depth;
 		int dup = 0;
-		for (size_t k = 0; k < had; k++) if (s_eq(d->orphans.data[k].text, ot) && d->orphans.data[k].depth == over->orphans.data[i].depth) { dup = 1; break; }
-		if (!dup) ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, over->orphans.data[i].depth));
+		for (size_t k = 0; k < had; k++) if (s_eq(d->orphans.data[k].text, ot) && d->orphans.data[k].depth == depth) { dup = 1; break; }
+		if (dup) continue;
+		if (ot.n && ot.p[0] == '#') { if (depth > room) depth = room; room = depth + 1; }
+		ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, depth));
 	}
 }
 

@@ -2361,6 +2361,23 @@ func (p *parser) remapChild(node int, oldKey, oldDisp uint64) {
 	}
 }
 
+// insideToLastChild: a block's inside comments are written out after its last
+// child's block, at that child's level, which is where a reload files them: as
+// the last child's own. File them there once the tree is final, so a layer and
+// its canonical form merge the same. The text does not move.
+func (p *parser) insideToLastChild() {
+	for n := range p.arena {
+		kids := p.arena[n].children
+		t := p.arena[n].trivia
+		if len(kids) == 0 || t == nil || len(t.inside) == 0 {
+			continue
+		}
+		kt := p.arena[kids[len(kids)-1]].trivMut()
+		kt.after = append(kt.after, t.inside...)
+		t.inside = nil
+	}
+}
+
 // foldLateDups: a value that mutates after its sibling group was keyed - an
 // empty field filled by a fence, a stacked list closed - can land on a key an
 // earlier sibling already holds, which the keyed lookup can no longer catch.
@@ -3233,10 +3250,13 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		p.refuse(len(lines), "E020", fmt.Sprintf("node cap of %d exceeded; parse stopped", p.maxNodes), outStopped(nil), "")
 	}
 	p.starFlush()
-	p.foldLateDups()
-	p.emitRepeatedLeafHints()
 	// Indented tail comments keep their block; only top-level ones orphan.
+	// Before the fold, which carries a dropped instance's comments over to the
+	// one it joins: after it they would hang on the dropped one.
 	p.hangDeeperPending("")
+	p.foldLateDups()
+	p.insideToLastChild()
+	p.emitRepeatedLeafHints()
 	orphans := make([]lead, 0, len(p.pending))
 	var chain []depthEnt
 	for _, pn := range p.pending {
@@ -5522,6 +5542,16 @@ func (d *Document) Merge(over *Document) {
 	// stack of files from repeating it once per layer. Only the lines
 	// already here count: a layer's own repeats are its content.
 	had := len(d.orphans)
+	// A repeat skipped here may be the comment the next one sat under, and a
+	// reload puts a comment at most one level past the comment before it, so
+	// none goes deeper than that.
+	room := 0
+	for k := len(d.orphans) - 1; k >= 0; k-- {
+		if strings.HasPrefix(d.orphans[k].text, "#") {
+			room = d.orphans[k].depth + 1
+			break
+		}
+	}
 	for _, o := range over.orphans {
 		seen := false
 		for _, e := range d.orphans[:had] {
@@ -5531,6 +5561,12 @@ func (d *Document) Merge(over *Document) {
 			}
 		}
 		if !seen {
+			if strings.HasPrefix(o.text, "#") {
+				if o.depth > room {
+					o.depth = room
+				}
+				room = o.depth + 1
+			}
 			d.orphans = append(d.orphans, o)
 		}
 	}

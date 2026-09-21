@@ -2031,6 +2031,18 @@ class _Parser:
 			del dmap[old_disp]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
+	def _inside_to_last_child(self):
+		"""A block's inside comments are written out after its last child's
+		block, at that child's level, which is where a reload files them: as the
+		last child's own. File them there once the tree is final, so a layer and
+		its canonical form merge the same. The text does not move."""
+		for nd in self.arena:
+			t = nd.trivia
+			if not nd.children or t is None or not t.inside:
+				continue
+			self.arena[nd.children[-1]]._triv().after.extend(t.inside)
+			t.inside = []
+
 	def _fold_late_dups(self):
 		"""A value that mutates after its sibling group was keyed - an empty field
 		filled by a fence, a stacked list closed - can land on a key an earlier
@@ -2706,10 +2718,13 @@ class _Parser:
 		if not node_capped and self.max_nodes and len(self.arena) - 1 > self.max_nodes:
 			self._refuse(nlines, "E020", f"node cap of {self.max_nodes} exceeded; parse stopped", _out_stopped(()), "")
 		self._star_flush()
-		self._fold_late_dups()
-		self._emit_repeated_leaf_hints()
 		# Indented tail comments keep their block; only top-level ones orphan.
+		# Before the fold, which carries a dropped instance's comments over to
+		# the one it joins: after it they would hang on the dropped one.
 		self._hang_deeper_pending("")
+		self._fold_late_dups()
+		self._inside_to_last_child()
+		self._emit_repeated_leaf_hints()
 		chain: list[tuple[str, int]] = []
 		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent)) for p in self.pending]
 		self.pending = []
@@ -3826,9 +3841,17 @@ class Document:
 		# stack of files from repeating it once per layer. Only the lines
 		# already here count: a layer's own repeats are its content.
 		had = len(self.orphans)
+		# A repeat skipped here may be the comment the next one sat under, and
+		# a reload puts a comment at most one level past the comment before
+		# it, so none goes deeper than that.
+		room = next((e.depth + 1 for e in reversed(self.orphans) if e.text.startswith("#")), 0)
 		for o in over.orphans:
 			if not any(e.text == o.text and e.depth == o.depth for e in self.orphans[:had]):
-				self.orphans.append(_Lead(o.text, o.blank_before, o.depth))
+				depth = o.depth
+				if o.text.startswith("#"):
+					depth = min(depth, room)
+					room = depth + 1
+				self.orphans.append(_Lead(o.text, o.blank_before, depth))
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
