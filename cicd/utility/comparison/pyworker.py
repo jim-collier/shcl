@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Optional
 
@@ -140,27 +140,85 @@ def load_xml_lxml() -> LoaderPrep:
 		(lambda s: s.encode("utf-8")))
 
 
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+# One scalar count per document shape, for the orchestrator's pre-flight. Each
+# counts what its opposite number in the rust tier counts: one per scalar, one
+# per array element, nothing for a container binding.
+#•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+
+def data_scalars(v: Any) -> int:
+	"""json, yaml and both toml readers: a mapping or a sequence recurses, and
+	anything else is one value. Mapping and Sequence rather than dict and list,
+	since tomlkit hands back its own container types."""
+	if isinstance(v, Mapping):
+		return sum(data_scalars(x) for x in v.values())
+	if isinstance(v, Sequence) and not isinstance(v, (str, bytes, bytearray)):
+		return sum(data_scalars(x) for x in v)
+	return 1
+
+
+def xml_scalars(el: Any) -> int:
+	"""Both XML readers: a leaf element carries the value, a branch carries
+	none. lxml puts comments and processing instructions in the child list with
+	a tag that is not a string, so they are dropped."""
+	kids = [k for k in el if isinstance(getattr(k, "tag", None), str)]
+	if not kids:
+		return 1
+	return sum(xml_scalars(k) for k in kids)
+
+
+def shcl_scalars(doc: Any) -> int:
+	"""The binding, walked the way the rust tier walks it: children() and
+	instances(), not paths(), which deduplicates and would fold every repeated
+	instance into one."""
+	import shcl
+
+	def walk(prefix: str) -> int:
+		kids = doc.children(prefix)
+		if not kids:
+			r = doc.read_string_array(prefix)
+			if r.status == shcl.Status.Good:
+				return len(r.value)
+			return 1 if doc.read_raw(prefix).status == shcl.Status.Good else 0
+		n = 0
+		seen = set()
+		for name in kids:
+			if name in seen:              # one visit per distinct name
+				continue
+			seen.add(name)
+			seg = shcl.quote_segment(name)
+			base = seg if not prefix else f"{prefix}.{seg}"
+			insts = doc.instances(base)
+			if len(insts) > 1:
+				n += sum(walk(f"{base}[{shcl.quote_segment(v)}]") for v in insts)
+			else:
+				n += walk(base)
+		return n
+
+	return walk("")
+
+
 ENTRIES = {
 	"shcl":      (load_shcl,      "shcl", "shcl (this repo)",      "layout+comments",
-		"pure python - no C anywhere, which is the row to read tomllib against"),
+		"pure python - no C anywhere, which is the row to read tomllib against", shcl_scalars),
 	"json":      (load_json,      "json", "json (stdlib)",         "data",
-		"C accelerated - the stdlib module is a thin shell over _json"),
+		"C accelerated - the stdlib module is a thin shell over _json", data_scalars),
 	"yaml":      (load_yaml,      "yaml", "PyYAML",                "data",
-		"C accelerated where libyaml is built, which CSafeLoader uses"),
+		"C accelerated where libyaml is built, which CSafeLoader uses", data_scalars),
 	"toml":      (load_toml,      "toml", "tomllib (stdlib)",      "data",
-		"pure python, and read-only by design; tomli_w supplies a writer when installed"),
+		"pure python, and read-only by design; tomli_w supplies a writer when installed", data_scalars),
 	"toml-edit": (load_toml_edit, "toml", "tomlkit",               "layout+comments",
-		"pure python; the answer to toml_edit - keeps the file as written"),
+		"pure python; the answer to toml_edit - keeps the file as written", data_scalars),
 	"xml":       (load_xml,       "xml",  "xml.etree.ElementTree", "data",
-		"C accelerated - the stdlib module is a shell over _elementtree/expat"),
+		"C accelerated - the stdlib module is a shell over _elementtree/expat", xml_scalars),
 	"xml-lxml":  (load_xml_lxml,  "xml",  "lxml",                  "data",
-		"C - a binding to libxml2, with huge_tree on so its size ceilings do not refuse the document"),
+		"C - a binding to libxml2, with huge_tree on so its size ceilings do not refuse the document", xml_scalars),
 }
 
 
 def emit_list() -> None:
 	"""key|format|library|retains|version|note for every entry that can be imported."""
-	for key, (loader, fmt, lib, retains, note) in ENTRIES.items():
+	for key, (loader, fmt, lib, retains, note, _scalars) in ENTRIES.items():
 		try:
 			version = loader()[0]
 		# Not just ImportError: a loader that fails any other way is one entry
@@ -171,19 +229,49 @@ def emit_list() -> None:
 		print(f"available|{key}|{fmt}|{lib}|{retains}|{version}|{note}")
 
 
-def run(key: str, path: str, iters: int) -> None:
-	loader = ENTRIES[key][0]
+def unpack(loaded: tuple[Any, ...]) -> tuple[Any, Any, Any, Any]:
+	"""(parse, emit, prepare, whole) out of a loader's three to five elements.
+	A loader whose parser wants something other than the file's text says so
+	with a fourth element; a fifth reads the parsed document and says why it is
+	not whole."""
+	prepare = loaded[3] if len(loaded) > 3 else (lambda s: s)
+	whole = loaded[4] if len(loaded) > 4 else None
+	return loaded[1], loaded[2], prepare, whole
+
+
+def count(key: str, path: str) -> None:
+	"""The orchestrator's pre-flight: parse once and say how many scalar values
+	are in the document. Its own mode, so the walk costs the measured run
+	neither clock nor memory - the rust worker leaves it out the same way."""
+	scalars = ENTRIES[key][5]
 	try:
-		version_parse_emit = loader()
+		loaded = ENTRIES[key][0]()
 	except ImportError as e:
 		print(f"skipped={e}")
 		return
-	_, parse, emit = version_parse_emit[:3]
-	# A loader whose parser wants something other than the file's text says so
-	# with a fourth element. Whatever it builds is built once, before the
-	# baseline, so neither the clock nor the memory figure carries it.
-	prepare = version_parse_emit[3] if len(version_parse_emit) > 3 else (lambda s: s)
-	whole = version_parse_emit[4] if len(version_parse_emit) > 4 else None
+	parse, _, prepare, whole = unpack(loaded)
+	try:
+		doc = parse(prepare(Path(path).read_text(encoding="utf-8")))
+	except Exception as e:
+		print(f"failed={type(e).__name__}: {e}".replace("\n", " "))
+		return
+	if whole is not None:
+		why = whole(doc)
+		if why:
+			print(f"failed={why}")
+			return
+	print(f"scalars={scalars(doc)}")
+
+
+def run(key: str, path: str, iters: int) -> None:
+	try:
+		loaded = ENTRIES[key][0]()
+	except ImportError as e:
+		print(f"skipped={e}")
+		return
+	# Whatever `prepare` builds is built once, before the baseline, so neither
+	# the clock nor the memory figure carries it.
+	parse, emit, prepare, whole = unpack(loaded)
 	src = Path(path).read_text(encoding="utf-8")
 	subject = prepare(src)
 
@@ -226,6 +314,8 @@ def run(key: str, path: str, iters: int) -> None:
 		print(f"emit-secs={emit_best:.6f}")
 	print(f"emit-bytes={len(out.encode('utf-8'))}")
 	print(f"roundtrip={'true' if out and out == src else 'false'}")
+	# The count is the pre-flight's job, not the measurement's, as in the rust
+	# worker. `--count` is where it comes from.
 	print("scalars=0")
 	print(f"rss-bytes={rss}")
 	print(f"base-rss-bytes={base}")
@@ -236,8 +326,14 @@ def main() -> int:
 	if args and args[0] == "--list":
 		emit_list()
 		return 0
+	if args and args[0] == "--count":
+		if len(args) != 3 or args[1] not in ENTRIES:
+			print("usage: pyworker.py --count KEY FILE", file=sys.stderr)
+			return 2
+		count(args[1], args[2])
+		return 0
 	if len(args) != 3 or args[0] not in ENTRIES:
-		print("usage: pyworker.py --list | KEY FILE ITERS", file=sys.stderr)
+		print("usage: pyworker.py --list | --count KEY FILE | KEY FILE ITERS", file=sys.stderr)
 		return 2
 	try:
 		iters = int(args[2])
@@ -246,7 +342,7 @@ def main() -> int:
 	# Zero timed rounds leaves the best time unset, which used to raise while
 	# formatting it - two lines below a usage line that says what ITERS is.
 	if iters < 1:
-		print("usage: pyworker.py --list | KEY FILE ITERS (ITERS is a positive integer)", file=sys.stderr)
+		print("usage: pyworker.py --list | --count KEY FILE | KEY FILE ITERS (ITERS is a positive integer)", file=sys.stderr)
 		return 2
 	run(args[0], args[1], iters)
 	return 0
