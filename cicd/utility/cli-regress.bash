@@ -421,6 +421,10 @@ rows=(
 	## would write it. A line break in a name used to split one hint across
 	## three stderr lines, and a flat `x.y` printed the same as `x` nesting `y`.
 	'diag-name-line-break|check %NB%|-|0|line 2: Hint: H001\nok (1 diagnostic(s))\n|^line 2: Hint: H001 ."a\\nb". repeats'
+	## The value half of the same rule: the H001 hint splices the repeated
+	## values into its suggestion, and a value carrying a line break used to go
+	## in raw, so the hint arrived as four stderr lines.
+	'diag-value-line-break|check %NV%|-|0|line 2: Hint: H001\nok (1 diagnostic(s))\n|^line 2: Hint: H001 .srv. repeats as a bare leaf - did you mean .srv: "a\\nb", "c\\nd".\?$'
 	'diag-name-dotted|check --schema=%SN% %DN%|-|6|line 1: Error: V001\nfailed: 1 diagnostic(s), 1 error(s)\n|unknown field ."x\.y".'
 	## 20260918 item 14: the same for schema text, which every code below printed raw.
 	'schema-text-v002|check --schema=%SL% %DL%|-|6|-|V002 required path missing: a\."x\\ny"$'

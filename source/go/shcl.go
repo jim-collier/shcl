@@ -2871,7 +2871,7 @@ func (p *parser) emitRepeatedLeafHints() {
 				if p.arena[c].line > line {
 					line = p.arena[c].line
 				}
-				vals = append(vals, p.arena[c].value.display())
+				vals = append(vals, diagValue(&p.arena[c].value))
 			}
 			p.diag(Diagnostic{
 				Line:     line,
@@ -3510,6 +3510,32 @@ func QuoteSegment(name string) string {
 // escape to read back.
 func diagName(name string) string {
 	return strings.ReplaceAll(emitName(name), "\r", `\r`)
+}
+
+// diagElement is one element of a value, spelled for a diagnostic message:
+// the emitter's inline spelling, so a value carrying a line break cannot split
+// one diagnostic across two. A mid-piece CR is content and the emitter leaves
+// it bare, so it forces quotes here and is escaped, same reason as diagName.
+func diagElement(e *element) string {
+	s := emitElement(e)
+	if strings.Contains(s, "\r") {
+		return strings.ReplaceAll(quoteDouble(e.text), "\r", `\r`)
+	}
+	return s
+}
+
+// diagValue is a value for a diagnostic message. Only a cell reaches this
+// today, from the H001 hint; a raw block has no one-line form worth
+// suggesting.
+func diagValue(v *value) string {
+	if v.kind != vCell {
+		return v.display()
+	}
+	parts := make([]string, len(v.els))
+	for i := range v.els {
+		parts[i] = diagElement(&v.els[i])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // h001Head is the single H001 wording site: the hint builder and the schema

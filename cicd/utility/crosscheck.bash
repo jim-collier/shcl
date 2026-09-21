@@ -269,7 +269,8 @@ fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 
 for caseDir in "$corpus"/*/; do
 	input="${caseDir}input.shcl"
-	[[ -f "$input" ]] || continue
+	## A case directory with no input.shcl is a mistake, not a non-case.
+	[[ -f "$input" ]] || { echo "crosscheck: ${caseDir} has no input.shcl" >&2; exit 2; }
 	caseName="${caseDir%/}"; caseName="${caseName##*/}"
 	# NUL-bearing cases (e.g. the merge-key NUL case) are pinned by the native
 	# conformance runners instead; skip them here, out loud.

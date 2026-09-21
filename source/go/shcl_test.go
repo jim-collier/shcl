@@ -93,9 +93,12 @@ func loadCases(t *testing.T) []corpusCase {
 			continue
 		}
 		caseDir := filepath.Join(dir, entry.Name())
+		// A case directory with no input.shcl is a mistake, not a non-case: it
+		// used to be skipped without a word while check-docs still wanted its
+		// README note, so the case read as present and asserted nothing.
 		input, err := os.ReadFile(filepath.Join(caseDir, "input.shcl"))
 		if err != nil {
-			continue
+			t.Fatalf("%s: %v", entry.Name(), err)
 		}
 		expected, err := os.ReadFile(filepath.Join(caseDir, "expected.shcl"))
 		if err != nil {
@@ -291,6 +294,11 @@ func floatGrammarTest(s string) bool {
 	}
 	return i == len(s)
 }
+
+// errUnknownOp is what an op name this runner does not have comes back as. A
+// write-bad.ops row spelled wrong is a fixture mistake, and without telling it
+// apart it counted as exactly the refusal the row exists to assert.
+var errUnknownOp = errors.New("unknown op")
 
 // tryApplyOpTest applies one write-ops line via the library Writer, with the
 // same value gates the CLI applies. A non-nil error = the op must be rejected
@@ -517,7 +525,7 @@ func tryApplyOpTest(doc *Document, line string) error {
 		doc.Remove(path)
 		wrote = true
 	default:
-		return fmt.Errorf("unknown op: %s", f[0])
+		return fmt.Errorf("%w: %s", errUnknownOp, f[0])
 	}
 	if !wrote {
 		return fmt.Errorf("cannot write %s", path)
@@ -674,8 +682,12 @@ func TestWriteBadOpsAreRejected(t *testing.T) {
 			}
 			doc := Parse(c.input)
 			before := doc.ToCanonical()
-			if err := tryApplyOpTest(doc, line); err == nil {
+			switch err := tryApplyOpTest(doc, line); {
+			case err == nil:
 				t.Errorf("%s: write-bad.ops line %d was accepted: %s", c.name, n+1, line)
+				continue
+			case errors.Is(err, errUnknownOp):
+				t.Errorf("%s: write-bad.ops line %d names no op: %s", c.name, n+1, line)
 				continue
 			}
 			if got := doc.ToCanonical(); got != before {
@@ -1100,6 +1112,11 @@ func TestFileTierLoadSave(t *testing.T) {
 			if idOf(born) != wantID {
 				t.Errorf("save dropped a set-id bit: got %v, want %v", idOf(born), wantID)
 			}
+		} else {
+			// Setgid is cleared when the file's group is not one of the caller's,
+			// which happens on ordinary boxes. The skip was silent, so this
+			// fixture passed wherever it fired.
+			t.Logf("skipping the set-id fixture (mode came back %v, want %v)", idOf(born), wantID)
 		}
 	}
 }

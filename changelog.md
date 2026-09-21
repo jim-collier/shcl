@@ -182,6 +182,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The `H001` hint no longer spans lines. It splices the repeated values into its suggestion, and a value holding a real line break went in raw, so one hint arrived as four lines on stderr. The values are spelled the way the writer would spell them now, which also makes the suggested line valid: `srv: "a\nb", c` reads back as the two values it names. This is the library side of the same rule `instances` got.
+
+- A `Remove` in the C binding no longer leaves its work vectors in the document. They were pushed on the arena that is never reset, so removing 20,000 instances of one name held a megabyte until `shcl_compact`. They go in the scratch arena the path lookup already reset, and the call now costs the document nothing.
+
 - `check --schema` at strict reports what the schema found. A strict load fails and still hands back the document it recovered, and the library's one-shot validates that - but the CLI stopped at the parse error, so the same file gave fewer answers at strict than at standard. The summary line is still `strict load failed`.
 
 - `instances` prints one line per instance. A value holding a real line break went out raw, so a caller splitting the output on newlines counted more instances than `count` reports. Such a value is printed in its quoted escaped spelling now; every other value is unchanged, and the library still hands values back as they are.
