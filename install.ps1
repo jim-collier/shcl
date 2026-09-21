@@ -109,10 +109,6 @@ file. Nothing unverified is installed.
 	$signingModulus = 'k5W58wTiFTlHUCsIuHESqexain6AC8WwFmCDsjfliOIDa2vPhkSVOqMsSbYH/OL94pHZ+Bs0agNXrl99ANolzwQ4rvu6gAsc4GCb0Krbbq2B+jKqTM8xeN7tFLWKd5E08IOF2HA4ugQSlK+rC6ezbBqP1MuJFFxqxDhEtGef9v/nuhX2kWq3v0uN6Y0umbghuNAR7gmoSOwbb8uYfVOAH1OAWV2To2wyIe6WWt4BPmFJBpEI53k4rmoDVdjmJFoj2vETHmEh2QfTPA5541jPLeuO8p8V6+Aa8i32EtVeT1+ozwHidku/CZZOAdxYZ7yXAZdG3eOOxcHVfmXVwqRxPR+lA3E/KcRcN9oeeveXS35jwH0h3hSh6sJOr1q0qMtM7bB4Lxt47wXHTJ0VPneG5xbmO5pUS3LMcZwnXXavYjh2kYS52ZLhi1JbPFgPyYUiIv76IUbwtpEXbONi12g7fioZ6cStZAekJs33Wkee6NmSY54AozxTkcNUJTgs81eMa/gRL8l3jud8AWqL5vykqpG1PTN70vSgrHD4wNMp2QX29Iv+A6+FO4B1oxjrnokg212rwqX004Ep0csu/JjOl9XHvwp0Iucfi8zCg7ozDcU3dsDnUJ8A3PtJ47jEt1n37/oiM6pWDXVVBjz4DI9iACmdUphTcGhYvn91ORZVxt0='
 	$signingExponent = 'AQAB'
 
-	## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
-	## key, unreadable signature, bad maths - comes back false, never an exception
-	## that a caller might mistake for a pass.
-
 	## PATH, idempotently - straight at the registry. [Environment]::Get expands
 	## %VAR% references before returning and Set writes the result back REG_SZ,
 	## which freezes every reference and downgrades the value type (user PATHs
@@ -176,6 +172,9 @@ file. Nothing unverified is installed.
 			Select-Object -Last 1
 	}
 
+	## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
+	## key, unreadable signature, bad maths - comes back false, never an exception
+	## that a caller might mistake for a pass.
 	function Test-ReleaseSignature([string]$file, [string]$sigFile) {
 		try {
 			$rsa = [System.Security.Cryptography.RSA]::Create()
