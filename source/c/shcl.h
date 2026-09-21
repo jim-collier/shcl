@@ -4976,9 +4976,7 @@ static ShclStr diag_name(ShclArena *a, ShclStr name) {
 	return sb_S(&b);
 }
 
-// ---------------------------------------------------------------------------
-// The write side's one rule: what is written has to read back
-// ---------------------------------------------------------------------------
+// --- The write side's one rule: what is written has to read back ------------
 //
 // A setter builds its text through the emitter and reads it back with the
 // tokenizer before the document is touched. If the read does not give the
@@ -5458,8 +5456,7 @@ shcl_severity shcl_diag_severity(const shcl_doc *d, size_t i) { return d->diags.
 shcl_str shcl_diag_message(const shcl_doc *d, size_t i) { return d->diags.data[i].message; }
 const char *shcl_diag_code(const shcl_doc *d, size_t i) { return d->diags.data[i].code; }
 
-// ===========================================================================
-// Validator: schema-as-SHCL
+// --- Validator: schema-as-SHCL ----------------------------------------------
 // The schema is an ordinary parsed document: a flat list of `field: <path>`
 // instances whose children are the constraints (closed vocabulary - see
 // spec.md "Schema validation"). Validation reuses the accessor's path scan and
@@ -5822,6 +5819,9 @@ static void v_build_schema(ShclArena *a, shcl_doc *schema, ShclVSchemaDef *def, 
 				v_diag(a, faults, node->line, "V094", v_msgz(a, "bad schema fragment"));
 				continue;
 			}
+			// Two `fragment` blocks of one name never reach here: the parse
+			// merges them into one node and reports H002. Kept as a guard in
+			// case that changes, which is why no case pins it.
 			if (v_frag_get(def, name)) {
 				v_diag(a, faults, node->line, "V094", v_msg3(a, "bad schema fragment '", diag_name(a, name), "': duplicate"));
 				continue;

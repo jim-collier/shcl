@@ -6851,6 +6851,9 @@ func buildSchema(schema *Document) (schemaDef, []Diagnostic) {
 				vdiag(&faults, node.line, "V094", "bad schema fragment")
 				continue
 			}
+			// Two `fragment` blocks of one name never reach here: the parse
+			// merges them into one node and reports H002. Kept as a guard in
+			// case that changes, which is why no case pins it.
 			if _, dup := frags[name]; dup {
 				vdiag(&faults, node.line, "V094", fmt.Sprintf("bad schema fragment '%s': duplicate", diagName(name)))
 				continue

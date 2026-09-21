@@ -6643,6 +6643,9 @@ fn build_schema(schema: &Document) -> (SchemaDef, Vec<Diagnostic>) {
 					);
 					continue;
 				};
+				// Two `fragment` blocks of one name never reach here: the parse
+				// merges them into one node and reports H002. Kept as a guard in
+				// case that changes, which is why no case pins it.
 				if frags.contains_key(&name) {
 					vdiag(
 						&mut faults,

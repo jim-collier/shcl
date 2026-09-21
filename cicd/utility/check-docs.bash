@@ -196,6 +196,23 @@ if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	done < <(git -C "${repoDir}" ls-files -- '*.rs' '*.go' '*.py' '*.c' '*.h' '*.hpp' '*.cpp' '*.bash' '*.ps1' || true)
 fi
 
+##	The marker in a copyright line is a fixed run of bytes to be copied, never
+##	retyped. One arrived with a Georgian letter one code point off the right
+##	one and read the same on screen, and the check above only asks for the word
+##	"Copyright". So compare the bytes. install.ps1 and rust/build.rs are the
+##	two sanctioned ASCII forms with no marker, and the shared cicd/utility
+##	scripts carry the Bubbles form.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	marker='[ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]'
+	while IFS= read -r f; do
+		[[ -f "${repoDir}/${f}" ]] || continue
+		[[ "${f}" == "install.ps1" || "${f}" == "source/rust/build.rs" ]] && continue
+		line="$(head -n 80 "${repoDir}/${f}" | grep -m1 'Copyright.*ID:' || true)"
+		[[ -n "${line}" ]] || continue
+		[[ "${line}" == *"${marker}"* ]] || fBad "${f} carries a copyright marker that is not the canonical bytes"
+	done < <(git -C "${repoDir}" ls-files || true)
+fi
+
 ##	The grammar is the oracle harnesses are written against. It has to read as
 ##	ABNF and derive what the parser reads; the samples live in check-abnf.py.
 python3 "${repoDir}/cicd/utility/check-abnf.py" "${repoDir}/project/grammar.abnf" >/dev/null \
@@ -691,3 +708,5 @@ echo "check-docs: OK"
 ##		            results.shcl.
 ##		2026-09-20  The man page's exit codes and per-option subcommand lists are
 ##		            compared with the help's.
+##		2026-09-20  Every copyright marker is the canonical bytes, not a retyped
+##		            lookalike.

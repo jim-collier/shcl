@@ -106,59 +106,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: the comment above the site still describes the route the condition no longer takes, in all four. `spec.md:697` says "a selector carrying a literal newline is left to the block", which the code stopped doing on 2026-09-08 and does not do now in either direction. The fix settles which of the two the document should say.
 		- Opened: 20260920-b
 
-	- 🔘 Item 6: the corpus README says case 029 accepts the float values the corpus and the spec both refuse.
-		- Reproduced: `README.md:102` says the good script "covers the boundary values every binding must ACCEPT (`1e400` -> `inf`, `.5`, `5.`, `INF`, `nan`, i64 min, a `+` sign)". `029-write-gate/write.ops` holds only `.5`, `5.`, i64 min and `+42`; `1e400`, `INF`, `nan`, `-inf`, `infinity` are all in `write-bad.ops`. `README.md:26` says "overflow stores `inf`" in the same breath. `spec.md:504` says `SetFloat` fails on an infinity or a NaN.
-		- Cause: `ac10c65` (2026-09-01, setters refuse unreadable values) moved those rows from the good script to the bad one and left both README sentences where they were.
-		- Origin: `279862a` (2026-07-25) wrote the sentences. Three rounds have read the corpus since and none read its README against its cases. Confirmed.
-		- Sweep: two other README claims are loose in the same way and want checking with the fix. Line 64 says case `016` chooses a fence "so the content cannot close it early" and neither of its raw bodies holds a fence run. Line 184 says case `079` pins merging onto an empty base and `079/layer1.shcl` is not empty.
-		- Opened: 20260920-b
-
 	- 🔘 Item 7: `check --schema` at strict with a parse error prints no validation diagnostics, where the library one-shot validates the recovered document.
 		- Reproduced: a document holding `a: x` and a malformed line, with a schema saying `a` is an int. `check --strictness=strict --schema` prints only the `E014` and `strict load failed: 1 diagnostic(s)`. At standard the `V003` appears.
 		- Cause: the CLI's strict arm takes the load error's diagnostics and stops; `lib.rs:3399` `load_and_validate` validates what the parse recovered.
 		- Origin: `592ba117` (2026-07-21). Confirmed.
 		- Note: this may be a spec wording fix rather than a code fix. `spec.md:561` says the one-shot never fails and that the CLI appends its diagnostics to `check`'s normal output, but `fmt` already has the precedent that a strict-failing document formats nothing. The call is which of the two `check` follows.
-		- Opened: 20260920-b
-
-	- 🔘 Item 11: the CLI style guide says a repeated value option takes the last value, two lines under the rule that nothing resolves last-wins.
-		- Reproduced: `style-guide_ui-ux.md:40` reads "The same value twice is a no-op, a different value takes the last one, and a repeatable option applies in the order given." The CLI refuses: `get --int --strictness=1 --strictness=3` exits 1 with `--strictness=1 cannot be combined with --strictness=3`.
-		- Cause: `37b88a9` (Competing options refuse), the commit that made the CLI refuse, rewrote this bullet and kept a last-wins clause the same commit removed from the code.
-		- Origin: `37b88a9` (2026-09-20). Confirmed.
-		- Note: the help, the man page, `spec.md` and `design.md` all say the new rule. This bullet is the only stale one, and no gate reads the guide's prose: the `check-docs.bash` pin added on 2026-09-20 compares the exit table alone.
-		- Opened: 20260920-b
-
-	- 🔘 Item 12: `design.md` records `ParseLimited` as taking two caps; every binding takes three.
-		- Reproduced: `design.md:154` says "`ParseLimited` takes a node cap and an array-element cap (0 = uncapped)", with sub-bullets for `E020` and `E021` only. `lib.rs:3346` is `parse_limited(text, strictness, max_nodes, max_elements, max_diags)`, and `shcl explain E022` describes the third. `spec.md:500` says "All three are parse-time caps."
-		- Cause: `0fb2777` (2026-09-01) added the diagnostics cap to the spec, all four bindings and the tests, and not to `design.md`.
-		- Origin: `0fb2777` (2026-09-01). Confirmed. `grep -n 'E022\|max_diags' project/design.md` finds nothing.
-		- Opened: 20260920-b
-
-	- 🔘 Item 13: `design.md` says `--set` writes its value as literal config text; it goes in as data.
-		- Reproduced: `design.md:191` and `:194` both say the value is written as literal text. `--set='x=80, 443'` stores the one string `x: "80, 443"`; `--set-literal='x=80, 443'` stores the array. The spec, the help and the section's own next bullet all say so.
-		- Cause: line 191 was written when `--set` did write literal text. The data reading and `--set-literal` arrived in `a369201` (2026-08-04) and the same day's design edit added line 194 without revising 191.
-		- Origin: `b4f05ab` (2026-07-24) for the sentence, `a369201` (2026-08-04) for the behavior change. Confirmed.
-		- Note: the type half of line 194 still holds. Only the literal-text half is wrong.
-		- Opened: 20260920-b
-
-	- 🔘 Item 14: `design.md` says the pre-push hook runs `cicd.bash --ci`; it runs `--ci --no-largedoc`.
-		- Reproduced: `design.md:614` against `cicd/hooks/pre-push:116`. The hook's own header says the large-document stage is left out.
-		- Cause: the flag was added to the hook and not to the sentence.
-		- Origin: `84a9b3b` (2026-09-16). Confirmed by reading. Project memory already records the hook as `--ci --no-largedoc`.
-		- Note: the Testing section presents the 100 MiB gate as part of the pipeline, so a reader takes a gated main push to include it. The record rule in the same paragraph is right.
-		- Opened: 20260920-b
-
-	- 🔘 Item 15: `spec.md` describes an indentation detection the parser does not have.
-		- Reproduced: `spec.md:183` describes indentation as detected, consistent within a subtree, and reset at each top-level ancestor. The parser has a prefix rule: `resolve_parent` treats an indent as a child when the open indent is a proper string prefix and a sibling when it is byte-equal, else `E012`. A file mixing a tab then two spaces inside one subtree loads clean with the nesting the prefix rule gives.
-		- Cause: original spec text that the parser never implemented in those terms.
-		- Origin: `c93db82` (2026-07-11). Confirmed.
-		- Note: what holds is the prefix rule, and `grammar.abnf:48` states it. "Consistent within a subtree" and "detection resets" describe nothing in the code. This is a wording fix unless the described behavior is wanted, which is a larger call.
-		- Opened: 20260920-b
-
-	- 🔘 Item 16: the `V094` row calls a duplicate `fragment` declaration a fault; the parser merges them first, so the case is unreachable.
-		- Reproduced: two `fragment: f` blocks give `schema line 5: Hint: H002 merged with 'fragment'`, both fields validate, and no `V094` appears.
-		- Cause: the parser merges duplicate declarations before the validator sees them, so the validator's duplicate arm has no input that reaches it.
-		- Origin: the row is `9ec35fee` (2026-08-02); the merging behavior `84ceff51` (2026-08-30). Confirmed.
-		- Note: either the row's wording goes, or the merge has to leave the duplicate for the validator. The first is the smaller change and matches what `H002` already tells the user.
 		- Opened: 20260920-b
 
 	- 🔘 Item 17: the comparison tool's Python tier accepts a partial parse where the Rust tier refuses one.
@@ -167,43 +119,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: the Rust guard came with the tool, `e1fb936` (2026-08-20); the Python port `e369499` (2026-08-30) never had it, and `b1840c8` (2026-09-17) reworked `run()` without adding it. The 20260920 round saw the `scalars=0` gap and left it unfiled. Confirmed.
 		- Note: no published number is wrong today. A full run reads the same generated files through both tiers, and the Rust guard holds on them. What escapes is a `--tier python` run alone, or a Python-binding parity defect, measured as a partial parse at exit 0.
 		- Note: `design.md` -> Format comparison says every library has to parse its own file and find the same number of scalar values in it. None of the seven Python libraries does.
-		- Opened: 20260920-b
-
-	- 🔘 Item 18: the publish helper rewrites every quote in a `--message` before committing it.
-		- Reproduced: `n8git_backup-and-publish:356`, in the `fParseArgs` GENERIC block, runs every argument through `thisStr="${thisStr//\"/″}"` and `thisStr="${thisStr//\'/′}"`. So `--message "it's done"` commits `it′s done` with U+2032.
-		- Cause: a stale block in the project copy. The canonical copy under the synced tree has the bare assignment with no substitution, so this is not a local customization anyone chose.
-		- Origin: `88d6a42b` (2026-07-12), untouched since. Confirmed for the substitution in isolation; the script was not run.
-		- Note: the pipeline passes its message through `GIT_AUTO_MESSAGE`, which is read before `fParseArgs`, so pipeline commits are unaffected. Only a hand `-m` run is.
-		- Sweep: the other project copies of this script were not inspected. The fix is a patch of the changed block, never an overwrite of the file.
-		- Opened: 20260920-b
-
-	- 🔘 Item 19: `winpath-sandbox.ps1` hands the sandbox an unquoted path under `%TEMP%`.
-		- Reproduced: not reproduced. `winpath-sandbox.ps1:79` is `Start-Process -FilePath $sandboxExe -ArgumentList $wsbPath`, with `$wsbPath` built under `[IO.Path]::GetTempPath()`.
-		- Cause: `Start-Process -ArgumentList` does not escape, which is a recorded PowerShell trap in this project.
-		- Origin: `4baa654` (2026-09-03). Plausible: it needs a Windows box whose profile path holds a space, and `wintest` on B29W has none, which is why item 38's batch did not see it.
-		- Note: the failure is quiet. The sandbox never starts, the script waits out its 420 second timeout, and the run reports that the test did not finish, which reads as a test failure rather than a setup fault.
-		- Note: this is the only `Start-Process` in any tracked `.ps1`. `n8runshcl.ps1:175` launches with `& $staged @Rest`.
-		- Opened: 20260920-b
-
-	- 🔘 Item 20: `main_windows.go` carries a retyped copyright marker.
-		- Reproduced: `source/go/cmd/shcl/main_windows.go:2` holds `341 202 243` (U+10A3) where all thirty other tracked copyright lines hold `341 203 243` (U+10E3).
-		- Cause: the marker was retyped rather than copied, which the tree root rule exists to prevent.
-		- Origin: `64ca57b` (2026-09-20), the file's first commit, which landed after the 20260920 round reported the marker sweep clean. Confirmed by `od -c`.
-		- Note: `check-docs.bash` only requires the word `Copyright` within the first 80 lines and checks no marker form, which is why nothing caught it. A byte comparison against the one canonical form is the cheaper fix than another reading pass.
-		- Opened: 20260920-b
-
-	- 🔘 Item 21: human-read contact addresses are in the plain form and on another domain.
-		- Reproduced: `contributing.md:30`, `contributing.md:75` and `trademark.md:93` all read `<shcl@ubx9.com>`. No tracked file uses the circled-A form anywhere. `code_of_conduct.md:58` is the same and is out of scope, being verbatim Contributor Covenant text.
-		- Cause: the files predate the address rule and nothing has swept for it since.
-		- Origin: `c93db82` (2026-07-11), `dd0790d` (2026-07-13), `15b0ce9` (2026-08-29). Confirmed.
-		- Note: the one machine-read field, `cicd/packaging/nfpm.yaml:11`, correctly keeps the noreply address, so only the human-read ones move.
-		- Opened: 20260920-b
-
-	- 🔘 Item 22: two C section dividers use spellings the style guide reserves for other things.
-		- Reproduced: `shcl.h:4964-4966` uses the three-line `// ----` / title / `// ----` form that the guide gives to Rust and Go, and `shcl.h:5446` opens the Validator section with a `// ====` line, which the guide reserves for the header and implementation split at `:604`.
-		- Cause: `:4964` was pasted in the reference's shape; `:5446` predates the rule.
-		- Origin: `e59dca5` (2026-09-08) and `4ed5f44` (2026-07-25); the rule is `c54c66d` (2026-08-03). Confirmed by `grep -n -E '^// (-{20,}|={20,})$'`.
-		- Note: nothing checks this rule. Rust and Go carry 32 dividers each, Python 22, and every one of them is the right form, so a check would have one shape per binding to hold.
 		- Opened: 20260920-b
 
 	- 🔘 Item 23: the public surface has gaps the style guide does not list as deviations.
@@ -219,6 +134,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Cause: template text that was never reconciled with the repository.
 		- Origin: `c93db82` (2026-07-11). Confirmed.
 		- Note: either the labels get created or the sentences go. Creating them is the smaller change and matches what the document promises a reporter.
+			- Remove the lables in the doc.
 		- Opened: 20260920-b
 
 	- 🔘 Item 26: `instances` prints a value holding a newline across two lines.
@@ -676,6 +592,99 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: the case itself, with the two orders measured apart.
 		- Opened: 20260920-b
 		- Closed: 20260920-2230
+
+	- ✅ Item 6: the corpus README says case 029 accepts the float values the corpus and the spec both refuse.
+		- Reproduced: the good script holds only `.5`, `5.`, i64 min and `+42`; `1e400`, `INF`, `nan` and `-inf` are all in `write-bad.ops`. The same README also said "overflow stores `inf`", where `SetFloat` refuses an infinity.
+		- Cause: `ac10c65` (2026-09-01, setters refuse unreadable values) moved those rows from the good script to the bad one and left both sentences where they were.
+		- Fixed: both sentences say what the case holds. The ACCEPT list is the four values that are there, and the REJECT list names the infinity and NaN spellings.
+		- Swept: the two other loose claims went with it. Case `016` holds no raw body with a fence run, so the sentence now says what it does pin - the info string as identity, and a string that looks like a fence. Case `079`'s base layer is not empty, so the claim that it pins merging onto an empty base is out.
+		- Pinned by: nothing new. A README sentence against a case file is prose about data, and the round's idea 1 is the coverage gap case `016` actually has.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 11: the CLI style guide says a repeated value option takes the last value, two lines under the rule that nothing resolves last-wins.
+		- Reproduced: the guide read "a different value takes the last one". The CLI exits 1 with `--strictness=1 cannot be combined with --strictness=3`.
+		- Cause: `37b88a9` (Competing options refuse) rewrote the bullet and kept a clause the same commit removed from the code.
+		- Fixed: the bullet says a repeat with the same value is the no-op, and two different values are the competing case above.
+		- Pinned by: nothing. No gate reads the guide's prose, and a check that did would be reading English. The help, the man page, `spec.md` and `design.md` all say the rule and are pinned against the CLI.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 12: `design.md` records `ParseLimited` as taking two caps; every binding takes three.
+		- Reproduced: `design.md` said "a node cap and an array-element cap", with sub-bullets for `E020` and `E021` only. `spec.md` says all three are parse-time caps, and `shcl explain E022` describes the third.
+		- Cause: `0fb2777` (2026-09-01) added the diagnostics cap to the spec, all four bindings and the tests, and not to `design.md`.
+		- Fixed: the decision names three caps and a sub-bullet says what `E022` does and why the element cap alone cannot bound it.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 13: `design.md` says `--set` writes its value as literal config text; it goes in as data.
+		- Reproduced: `--set='x=80, 443'` stores the one string; `--set-literal` stores the array. Two `design.md` sentences said literal text.
+		- Cause: the sentences were written when `--set` did write literal text. The data reading and `--set-literal` arrived in `a369201` (2026-08-04) and the design edit that day added the second sentence without revising the first.
+		- Fixed: both say data, and the layers bullet now carries the `80, 443` example that tells the two options apart.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 14: `design.md` says the pre-push hook runs `cicd.bash --ci`; it runs `--ci --no-largedoc`.
+		- Reproduced: `design.md` against `cicd/hooks/pre-push`, whose own header says the large-document stage is left out.
+		- Fixed: the sentence names the flag.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 15: `spec.md` describes an indentation detection the parser does not have.
+		- Reproduced: the spec described indentation as detected, consistent within a subtree, and reset at each top-level ancestor. The parser compares the indent as text: a proper prefix of the open one is a child, byte-equal is a sibling, anything else is `E012`. A file mixing a tab and two spaces inside one subtree loads clean with the nesting that comparison gives.
+		- Cause: original spec text the parser never implemented in those terms.
+		- Decided: the wording moves, not the parser. The prefix rule is what `grammar.abnf` states and what every binding does, and detection would be a new rule to port four times for a file nobody writes on purpose.
+		- Fixed: the bullet states the prefix rule, says a mixed file can still load, and keeps the advice to stay uniform.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 16: the `V094` row calls a duplicate `fragment` declaration a fault; the parser merges them first, so the case is unreachable.
+		- Reproduced: two `fragment: f` blocks give `H002 merged with 'fragment'`, both fields validate, and no `V094` appears.
+		- Cause: the parser merges duplicate declarations before the validator sees them, so the validator's duplicate arm has no input that reaches it.
+		- Fixed: the code table row and the Faults sentence both drop the duplicate, and the sentence says what happens instead.
+		- Left alone: the duplicate arm stays in all four bindings, as a guard if the merge ever changes. Each site carries a comment saying it is unreachable today and why no case pins it, so the next round does not refile it as dead code.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 18: the publish helper rewrites every quote in a `--message` before committing it.
+		- Reproduced: the `fParseArgs` GENERIC block ran every argument through two substitutions, so `--message "it's done"` committed `it′s done`.
+		- Cause: a stale block in the project copy. The canonical copy under the synced tree has the bare assignment, so this was not a local customization anyone chose.
+		- Fixed: the two substitutions are out, matching the canonical copy. `--help` still runs and the script still parses.
+		- Left alone: the other project copies were not touched. The rule is a patch of the changed block per copy, and that needs a go-ahead for trees outside this one.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 19: `winpath-sandbox.ps1` hands the sandbox an unquoted path under `%TEMP%`.
+		- Reproduced: on pwsh here, with a path holding a space. `Start-Process -ArgumentList` hands the child two arguments; `ProcessStartInfo.ArgumentList` hands it one. That is the .NET behavior the recorded trap names, so the item is Confirmed without a windows box.
+		- Cause: `Start-Process -ArgumentList` does not quote. The failure was quiet: the sandbox never starts, the script waits out its 420 second timeout, and the run reads as a test failure rather than a setup fault.
+		- Fixed: `ProcessStartInfo` with `ArgumentList`, which quotes each argument itself.
+		- Swept: this was the only `Start-Process` in any tracked `.ps1`. `n8runshcl.ps1` launches with `& $staged @Rest`.
+		- Pinned by: nothing automated. The path it takes needs a sandbox and a profile path holding a space; the argument-splitting half is measured above and is what the fix turns on.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 20: `main_windows.go` carries a retyped copyright marker.
+		- Reproduced: the file held U+10A3 where all thirty other tracked copyright lines hold U+10E3.
+		- Cause: the marker was retyped rather than copied, which the tree root rule exists to prevent.
+		- Fixed: the line is the canonical bytes, copied from `shcl.go`.
+		- Pinned by: a `check-docs.bash` check comparing every tracked file's marker with the one canonical run of bytes, watched to fail with the old byte put back. `install.ps1` and `source/rust/build.rs` are named as the two sanctioned ASCII forms.
+		- Swept: every tracked copyright line was compared byte for byte. The only other forms are the Bubbles one in the shared `cicd/utility` scripts and the two ASCII exceptions.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 21: human-read contact addresses are in the plain form and on another domain.
+		- Reproduced: `contributing.md` twice and `trademark.md` once read `<shcl@ubx9.com>`. No tracked file used the circled-A form anywhere.
+		- Fixed: all three read `shclⒶyottacore.com`, with the angle brackets dropped, since it is no longer an address a reader should click.
+		- Left alone: `code_of_conduct.md` keeps its address as verbatim Contributor Covenant text, and `nfpm.yaml` keeps the noreply address a packaging tool reads as an email.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
+
+	- ✅ Item 22: two C section dividers use spellings the style guide reserves for other things.
+		- Reproduced: one three-line `// ----` form that the guide gives to Rust and Go, and one `// ====` opening the Validator section, which the guide reserves for the header and implementation split.
+		- Fixed: both are the C form, `// --- <title> ---` padded to 79 columns like the other dividers in the file. The one `// ====` left is the header and implementation split.
+		- Left alone: no check was added. Rust and Go carry 32 dividers each and Python 22, all already right, so a check would be four shapes to keep in step against a fault that has happened twice in a year.
+		- Opened: 20260920-b
+		- Closed: 20260920-2330
 
 - Code review 20260920:
 

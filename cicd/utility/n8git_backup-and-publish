@@ -353,7 +353,6 @@ fParseArgs(){
 	local thisStr=""
 	for ((i=1; i<=totalArgCount; i++)); do
 		thisStr="${!i}"
-		thisStr="${thisStr//\"/″}"; thisStr="${thisStr//\'/′}"
 		allArgsArr+=("${thisStr}")
 	done
 

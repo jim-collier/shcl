@@ -5848,6 +5848,9 @@ def _build_schema(schema):
 			if not name:
 				_vdiag(faults, node.line, "V094", "bad schema fragment")
 				continue
+			# Two `fragment` blocks of one name never reach here: the parse
+			# merges them into one node and reports H002. Kept as a guard in
+			# case that changes, which is why no case pins it.
 			if name in frags:
 				_vdiag(faults, node.line, "V094", f"bad schema fragment '{_diag_name(name)}': duplicate")
 				continue

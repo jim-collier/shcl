@@ -36,7 +36,7 @@ There are four CLIs, one per binding. Only the Rust one ships. The Go, Python an
 
 - Two options that compete are a usage error, whichever order they were typed in, and the message names both. Nothing is ever resolved by last-wins, since that makes the answer depend on typing order and says nothing about it. Two different type options on `get` are the example.
 
-- Repeating one option is not competing. The same value twice is a no-op, a different value takes the last one, and a repeatable option applies in the order given.
+- Repeating one option is not competing when the value is the same, which is a no-op, and a repeatable option applies in the order given. The same option given two different values is competing and is refused like any other pair.
 
 ## Help text
 

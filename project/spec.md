@@ -180,7 +180,7 @@ Hierarchy is expressed two interchangeable ways; both produce identical trees.
 
 - A dedent to a column that matches no open level is a (recoverable) error - the line is diagnosed and skipped, the rest of the file continues. Like any skipped line it holds its column: what is written deeper is skipped with it (`E018`), a fence line there takes its whole body with it, and another line at the same bad column is refused the same way rather than binding one level up.
 
-- Indentation is tabs *or* spaces, consistent within a subtree. (Detection resets at each top-level ancestor, so distinct top-level trees could technically differ, but authors should just keep it uniform per file.)
+- Indentation is tabs *or* spaces, and nothing detects which. A line's indent is compared with the open levels as text: a proper prefix of the open one is a child, byte-equal is a sibling, and anything else is `E012`. So a file that mixes the two inside one subtree can still load, with the nesting that comparison gives. Keep it uniform per file.
 
 ### Dot and bracket (inline form)
 
@@ -609,7 +609,7 @@ Semantics:
 	- Semantics: a mounted fragment's fields evaluate per resolved node at the mount path (that node is the context - `required`/`repeat` inside the fragment anchor to it, like the segment after a wildcard), running right after the node's own checks in fragment order, depth-first. The mount's field keeps its own constraints (they apply to the mount node itself), and other `field:` paths through the mount point compose freely.
 	- For the unknown-field sweep, a chain that walks a mount continues against the fragment's fields (prefixes legal as usual); suggestions do not descend mounts. A `repeat` above 1 on a fragment field disavows `H001` by leaf name exactly as a top-level one does.
 	- Two `fragment` instances with the same name merge by the language's own merge rule (their fields combine); `field` is the only key legal inside a fragment.
-	- Faults: a nameless or malformed declaration is `V094`, `inherits` naming no declared fragment is `V095` - both schema faults, reported like the rest of `V09x` (a mount naming a missing or dropped fragment checks nothing at the mount). Validation checks each fragment at each node once, so a shape mounted by two paths that both reach the same node costs one pass, not two.
+	- Faults: a nameless or malformed declaration is `V094`, and `inherits` naming no declared fragment is `V095` - both schema faults, reported like the rest of `V09x` (a mount naming a missing or dropped fragment checks nothing at the mount). Two declarations of one name are not one of them: the parse merges them before the validator sees them, and reports `H002`. Validation checks each fragment at each node once, so a shape mounted by two paths that both reach the same node costs one pass, not two.
 	- Generation has to lay every path out flat rather than follow the document, so it does bound the unfolding: a mount chain reaching the nesting cap is noted like a re-entering one instead of expanded, a path deeper than a document may nest goes to the trailing note, and a schema whose mounts multiply past the field ceiling is a `V096` fault rather than an output nothing can hold.
 
 - A field in the document that no schema path covers is an unknown field. Legality is by name chain (selectors ignored): every schema path legalizes its own chain and every prefix of it. Only the topmost unknown node is diagnosed; its subtree is skipped. The "did you mean" suggestion lives in the prose message only, never the code - edit-distance output is not parity-pinnable.
@@ -630,7 +630,7 @@ Diagnostic codes ride the existing structure (line, severity, stable code, prose
 | `V091` | unknown schema type name | schema file
 | `V092` | bad schema constraint value (also: `min`/`max` without a numeric `type`, `allowed` with `type: raw`) | schema file
 | `V093` | bad schema path | schema file
-| `V094` | bad fragment declaration (no name, duplicate, or a non-`field` key inside) | schema file
+| `V094` | bad fragment declaration (no name, or a non-`field` key inside) | schema file
 | `V095` | `inherits` names no declared fragment | schema file
 | `V096` | schema expands to more fields than generation allows | 0 (a document line space, not a schema one)
 | `V097` | generated output does not load, or fails the schema that produced it (a `default` outside its own field's constraints, say), or a must-exist path nothing can generate | 0 (a document line space, not a schema one)
