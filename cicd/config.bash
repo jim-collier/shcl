@@ -98,10 +98,11 @@ BUILD_EXTRA=(
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
 ## scripts so cicd can't rot silently. The extras gate every other binding too:
-## go vet, ruff + mypy (Python), cppcheck (C, exhaustive - ~20s), markdownlint
-## over all tracked .md (config in .markdownlint-cli2.jsonc at repo root), and
-## PSScriptAnalyzer on the ps1 wrapper. shfmt is deliberately NOT here - its
-## output fights the hand-formatted shell style, so it stays interactive-only.
+## go vet, ruff + mypy (Python), cppcheck (C, exhaustive - minutes, not
+## seconds), markdownlint over all tracked .md (config in .markdownlint-cli2.jsonc
+## at repo root), and PSScriptAnalyzer on every tracked .ps1. shfmt is
+## deliberately NOT here - its output fights the hand-formatted shell style, so
+## it stays interactive-only.
 ##
 ## The last three are the supply-chain half: staticcheck alongside go vet,
 ## govulncheck against the Go standard library and module graph, and cargo-deny

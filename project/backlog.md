@@ -227,10 +227,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `e5024383`, `e0b04437`, `15e6bd0e`, `fb0c885`, `b216ad2`, `7f4c359`, `833d8f1` and `d5978c0`, 2026-08-30 to 2026-09-20. Confirmed.
 		- Opened: 20260921-132543
 
-	- 🔘 Item 5: both wrapper headers still give the old meaning of exit 6.
+	- ✅ Item 5: both wrapper headers still give the old meaning of exit 6.
 		- Reproduced: `source/bash/shcl.bash` and `source/powershell/shcl.ps1` say "migrate --check found a line to rewrite". The help and the man page say "--check found a rewrite to make", since `fmt --check` exits 6 too.
 		- Origin: `af1fd74` (2026-09-19) changed the help and the man page and not the wrappers. Confirmed.
+		- Fixed: both headers use the help's wording.
+		- Pinned by: nothing. It is a comment, and a grep for the wording would be the source-grep pin the conventions rule out.
 		- Opened: 20260921-132543
+		- Closed: 20260921-1433
 
 	- 🔘 Item 6: Go's `Read.OK()` says it goes away at the next major, and nothing in the 3.0.0 steps takes it out.
 		- Note: 20260830 item 31 kept it as a deprecated alias of `Ok()`. 3.0.0 is that major. Either take it out at the cut or change the comment.
@@ -245,18 +248,24 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `a0f38d4`, `5cd50453`, `dd1330c`, `0f818d71`, `2f9aa1f9` and `c78d41d`, 2026-08-31 to 2026-09-17. `dispKey`'s is from `f459105b` (2026-08-17), which the 20260904 fix missed. Confirmed in Go.
 		- Opened: 20260921-132543
 
-	- 🔘 Item 8: three pipeline comments no longer describe their code.
+	- ✅ Item 8: three pipeline comments no longer describe their code.
 		- `PSScriptAnalyzerSettings.psd1` says it covers three scripts, and the gate runs it over six.
 		- `config.bash` says PSScriptAnalyzer runs on the ps1 wrapper, and that the exhaustive cppcheck takes about 20 s. It gates six scripts, and cppcheck took 537 s here on 2026-09-15.
 		- `install.ps1` has `Test-ReleaseSignature`'s comment sitting above the PATH block. The function itself has none.
 		- Origin: `install.ps1`'s from `f3ff00e` (2026-08-30) and `618dd27` (2026-09-01), which put code between the comment and its function. The other two were right when written, and the script list grew past them. Confirmed.
+		- Fixed: the settings file says it covers every script the pipeline lints, and `config.bash` says every tracked `.ps1` and that cppcheck takes minutes. Neither names a count or a time that can go stale again. The signature comment sits on `Test-ReleaseSignature`.
+		- Note: `install.ps1` changed, so main needs the sanctioned docs-only sync once this reaches dev, or `check-docs` refuses the next main push.
+		- Pinned by: nothing, for the reason item 5 gives.
 		- Opened: 20260921-132543
+		- Closed: 20260921-1433
 
-	- 🔘 Item 9: the style guide's banner rule does not allow the `#===` frame `install.ps1` uses.
+	- ✅ Item 9: the style guide's banner rule does not allow the `#===` frame `install.ps1` uses.
 		- Reproduced: the guide says shell keeps the `#•••` rule and "no other decorative comment forms". `install.ps1` switched to `#===` because it has to stay ASCII.
 		- Probable fix: name the exception in the guide, with its reason.
 		- Origin: `82c2a38` (2026-09-19). Confirmed.
+		- Fixed: the guide says PowerShell keeps the `#•••` rule too, and names `install.ps1`'s `#===` with the byte-order-mark reason.
 		- Opened: 20260921-132543
+		- Closed: 20260921-1433
 
 - Code review 20260920b:
 

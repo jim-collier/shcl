@@ -1,6 +1,5 @@
 <#
-	PSScriptAnalyzer settings for the PowerShell wrapper, the Windows installer,
-	and the build runner.
+	PSScriptAnalyzer settings for every PowerShell script the pipeline lints.
 
 	Pinned here rather than passed on the command line so running the analyzer by
 	hand gives the same answer the pipeline gets, and so a new rule in a later
