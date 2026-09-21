@@ -150,12 +150,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260920b:
 
-	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1, 2, 3, 4, 5, 6 and 7 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left needs a windows box (idea 10) or is loose (ideas 8 and 11).
-
-	- 🔘 Idea 8: `check-abnf.py` has no tie to the tokenizer.
-		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
-		- Note: this is the same shape as the generator predicting what the scanner will read, which is a class this project has fixed twice elsewhere by asking the real component.
-		- Opened: 20260920-b
+	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1 to 8 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left needs a windows box (idea 10) or is loose (idea 11).
 
 	- 🔘 Idea 10: the Windows batch this round would have wanted.
 		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
@@ -4799,6 +4794,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: nothing, since the skip does not fire on this box (the mode reads back as 6750 here). Watched instead: comparing against 6751 makes all four print the line.
 		- Opened: 20260920-b
 		- Closed: 20260920-204500
+
+	- ✅ Idea 8: `check-abnf.py` has no tie to the tokenizer.
+		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
+		- Note: this is the same shape as the generator predicting what the scanner will read, which is a class this project has fixed twice elsewhere by asking the real component.
+		- Fixed: every sample row is now also run through the debug CLI, and the two answers have to agree. What is asked depends on the rule. A `bareword` goes in as `k: TEXT` and has to read back whole through `get --array`. An `info-string` goes in as a fence label and has to come back from `get --rawinfo`. A `fmt-bareword` is the formatter's class, so `set --set` has to emit it bare. A line rule (`field-line`, `fence-line`, `array-elem-line`) goes under a parent field and the document has to load clean with the kind of node the rule is for. A `file` row is the document.
+		- Note: indentation and fence termination are context ABNF cannot state, so a line rule's sample gets a parent field and a tab when it carries no indent of its own. The rule's own indent is `*(SP / HTAB)`, so that stays inside it. Where a probe needs a closing fence, the run to close is read off `shcl tokens` rather than guessed from the text.
+		- Note: three `bareword` rows in the true direction went in with it (`a]b`, `C:\dir\file`, `it's fine`), since all six that were there refuse. They are the value halves of field lines already listed.
+		- Note: the tie needs the debug binary. With none it says so on stderr and notes itself in `SHCL_GATE_SKIPS`, as `check-docs.bash` does for its own help checks, and under `SHCL_GATE_STRICT` it fails instead. The lint stage runs after the debug build, so a full run always has one.
+		- Pinned by: itself, watched to fail four times, each on the row it should and no other. A narrowed info string (the 20260918b item 51 defect put back) reddens `sql:pg, "v" [x]`; quoting a backslash in the emitter reddens `back\slash`; backtick-only fences redden the tilde fence line; a value scan that never splits on a comma reddens `a,b`.
+		- Opened: 20260920-b
+		- Closed: 20260921-093726
 
 - Code review 20260920:
 
