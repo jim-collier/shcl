@@ -155,11 +155,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- 🔘 Cut v3.0.0-beta1
-	- Note: for this release only, the release notes say just that some issues were fixed, and the changelog names each fixed issue briefly rather than describing it. Later releases go back to the usual detail.
-	- Decided: cut only when asked, never automatically. A full review round that opens no new items comes first.
-	- Opened: 20260914-184244
-
 - Code review 20260920b:
 
 	- The round's ten ideas. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1 and 2 are the two worth taking first, since both are places a wrong answer would reach a user with nothing watching.
