@@ -480,15 +480,77 @@ fn orchestrate(o: &Opts) -> i32 {
 	rc
 }
 
+/// The python libraries this box can import, as (key, format). The same
+/// `--list` call `discover_libs` makes, needed here because the pre-flight runs
+/// before the work directory exists.
+fn py_entries() -> Vec<(String, Fmt)> {
+	let mut out = Vec::new();
+	if let Ok(o) = Command::new("python3")
+		.args([&pyworker(), "--list"])
+		.output()
+	{
+		for line in String::from_utf8_lossy(&o.stdout).lines() {
+			let f: Vec<&str> = line.split('|').collect();
+			if let ["available", key, fmt, ..] = f.as_slice() {
+				if let Some(fmt) = Fmt::from_name(fmt) {
+					out.push(((*key).to_string(), fmt));
+				}
+			}
+		}
+	}
+	out
+}
+
+/// One python library's scalar count for a rendered document. `Ok(None)` is a
+/// library the worker could not import after all, which is a skip and not a
+/// disagreement.
+fn py_count(key: &str, path: &str) -> Result<Option<u64>, String> {
+	let out = Command::new("python3")
+		.args([pyworker().as_str(), "--count", key, path])
+		.output()
+		.map_err(|e| format!("cannot run worker: {e}"))?;
+	for line in String::from_utf8_lossy(&out.stdout).lines() {
+		match line.split_once('=') {
+			Some(("scalars", v)) => {
+				return v.parse().map(Some).map_err(|_| format!("bad count {v:?}"));
+			}
+			Some(("skipped", _)) => return Ok(None),
+			Some(("failed", v)) => return Err(v.to_string()),
+			_ => {}
+		}
+	}
+	Err(format!(
+		"worker said nothing (exit {:?})",
+		out.status.code()
+	))
+}
+
 /// Pre-flight: at a small scale, every library has to parse its own file and
 /// find the same number of scalar values in it. Five encoders written from one
 /// model can still disagree through an escaping mistake, and a size or speed
 /// number taken from documents that are not the same data is worthless.
+///
+/// The python tier is asked the same question through its worker, which counts
+/// on request and not while measuring. Without that the check said nothing
+/// about seven libraries.
 fn verify(o: &Opts) -> bool {
 	let mut ok = true;
+	let py = if o.tiers.contains(&Tier::Python) {
+		py_entries()
+	} else {
+		Vec::new()
+	};
+	// The python worker reads a file, so the pre-flight documents get written
+	// out. Nothing here is timed, so a temp directory costs the check nothing.
+	let work = if py.is_empty() { None } else { mktemp().ok() };
+	// A check that cannot run is not a check that passed.
+	if work.is_none() && !py.is_empty() {
+		eprintln!("verify: no temp directory, so the python tier cannot be checked");
+		return false;
+	}
 	for &shape in &o.shapes {
 		let units = shape.verify_units(o.verify_units);
-		let mut counts: Vec<(&str, u64)> = Vec::new();
+		let mut counts: Vec<(&str, String, u64)> = Vec::new();
 		for fmt in Fmt::all() {
 			let (text, _) = render(shape, fmt, units, None);
 			for e in bench::ENTRIES {
@@ -498,10 +560,32 @@ fn verify(o: &Opts) -> bool {
 				let m = bench::run(e.key, &text, 1, true, 0);
 				match m.failed {
 					Some(err) => {
-						eprintln!("verify: {}/{}: {err}", shape.name(), e.key);
+						eprintln!("verify: {}/rust/{}: {err}", shape.name(), e.key);
 						ok = false;
 					}
-					None => counts.push((e.key, m.scalars)),
+					None => counts.push(("rust", e.key.to_string(), m.scalars)),
+				}
+			}
+			let Some(work) = work.as_deref() else {
+				continue;
+			};
+			if !py.iter().any(|(_, f)| *f == fmt) {
+				continue;
+			}
+			let path = format!("{work}/verify-{}.{}", shape.name(), fmt.ext());
+			if let Err(e) = std::fs::write(&path, &text) {
+				eprintln!("verify: cannot write {path}: {e}");
+				ok = false;
+				continue;
+			}
+			for (key, _) in py.iter().filter(|(_, f)| *f == fmt) {
+				match py_count(key, &path) {
+					Ok(Some(n)) => counts.push(("python", key.clone(), n)),
+					Ok(None) => {}
+					Err(err) => {
+						eprintln!("verify: {}/python/{key}: {err}", shape.name());
+						ok = false;
+					}
 				}
 			}
 		}
@@ -515,14 +599,14 @@ fn verify(o: &Opts) -> bool {
 		};
 		let want = counts
 			.iter()
-			.find(|(k, _)| *k == "shcl")
-			.map(|(_, n)| *n + offset);
+			.find(|(_, k, _)| k == "shcl")
+			.map(|(_, _, n)| *n + offset);
 		if let Some(want) = want {
-			for (k, n) in &counts {
-				let got = if *k == "shcl" { *n + offset } else { *n };
+			for (tier, k, n) in &counts {
+				let got = if k == "shcl" { *n + offset } else { *n };
 				if got != want {
 					eprintln!(
-						"verify: {}/{k}: {got} scalars, shcl says {want} - the documents are not the same data",
+						"verify: {}/{tier}/{k}: {got} scalars, shcl says {want} - the documents are not the same data",
 						shape.name()
 					);
 					ok = false;
@@ -531,11 +615,15 @@ fn verify(o: &Opts) -> bool {
 		}
 		if ok {
 			println!(
-				"verify: {} agrees across all encodings ({units} units, {} scalars)",
+				"verify: {} agrees across {} libraries ({units} units, {} scalars)",
 				shape.name(),
+				counts.len(),
 				want.unwrap_or(0)
 			);
 		}
+	}
+	if let Some(work) = work {
+		let _ = std::fs::remove_dir_all(work);
 	}
 	ok
 }

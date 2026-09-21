@@ -18,8 +18,11 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +84,11 @@ SAMPLES: list[tuple[str, str, bool]] = [
 	("bareword", "trail ", False),
 	("bareword", "a,b", False),
 	("bareword", "a#b", False),
+	## The same three lines from the True direction, as values rather than as
+	## whole lines, so the tie below has both answers to check for this rule.
+	("bareword", "a]b", True),
+	("bareword", "C:\\dir\\file", True),
+	("bareword", "it's fine", True),
 	("array-elem-line", "* Bond James", True),
 	## The formatter's own shape, which nothing on the parse side reaches.
 	("fmt-bareword", "plain", True),
@@ -322,6 +330,103 @@ class Matcher:
 		return frozenset(ends)
 
 
+##	The tokenizer tie. A row above is the grammar's claim about one piece of
+##	text; what follows runs the same text through the real CLI and requires the
+##	reading to agree. Without it the rows are a second grammar written by hand,
+##	which is how the info-string rule came to be narrower than the parser.
+##	Indentation and fence termination are context ABNF cannot state, so a line
+##	rule's sample goes under a parent field, with a tab added when it carries
+##	no indent of its own - the rule's own indent is *(SP / HTAB), so that stays
+##	inside it.
+
+LINE_RULES = ("field-line", "fence-line", "array-elem-line")
+
+
+def fCli() -> Path | None:
+	"""The debug CLI, or None when nothing is built."""
+	env = os.environ.get("SHCL_CLI")
+	path = Path(env) if env else Path(__file__).resolve().parent.parent.parent / "source" / "rust" / "target" / "debug" / "shcl"
+	return path if os.access(path, os.X_OK) else None
+
+
+def fRun(cli: Path, args: list[str], work: Path) -> tuple[int, list[str]]:
+	r = subprocess.run([str(cli), *args], cwd=work, capture_output=True, encoding="utf-8", check=False)
+	return r.returncode, r.stdout.splitlines()
+
+
+def fWrite(work: Path, text: str) -> None:
+	## Bytes, so a row carrying CRLF reaches the parser as it is written.
+	(work / "s.shcl").write_bytes(text.encode("utf-8"))
+
+
+def fClean(cli: Path, work: Path) -> bool:
+	rc, out = fRun(cli, ["check", "s.shcl"], work)
+	return rc == 0 and any("0 diagnostic(s)" in ln for ln in out)
+
+
+def fFenceClose(cli: Path, work: Path, line: str) -> str:
+	"""The closer a probe needs, read off the tokenizer's own value span rather
+	than guessed from the text. Empty when the line opens no block."""
+	(work / "one.shcl").write_bytes((line + "\n").encode("utf-8"))
+	rc, out = fRun(cli, ["tokens", "one.shcl"], work)
+	if rc != 0 or not out:
+		return ""
+	m = re.search(r" value=(\d+)-(\d+)", out[0])
+	if not m:
+		return ""
+	## Spans are relative to the line with its indent taken off.
+	body = line.lstrip(" \t")
+	value = body[int(m.group(1)):int(m.group(2))]
+	for ch in ("`", "~"):
+		run = len(value) - len(value.lstrip(ch))
+		if run >= 3:
+			return ch * run
+	return ""
+
+
+def fLineProbe(cli: Path, work: Path, text: str) -> str:
+	line = text if text[:1] in (" ", "\t") else "\t" + text
+	indent = line[:len(line) - len(line.lstrip(" \t"))]
+	close = fFenceClose(cli, work, line)
+	rest = [indent + "x", indent + close] if close else []
+	return "p:\n" + "".join(ln + "\n" for ln in [line, *rest])
+
+
+def fTie(cli: Path, work: Path, rule: str, text: str) -> bool:
+	"""Does the CLI read TEXT the way the grammar row says it does?"""
+	if rule == "file":
+		fWrite(work, text)
+		return fClean(cli, work)
+	if rule == "bareword":
+		fWrite(work, f"k: {text}\n")
+		if not fClean(cli, work):
+			return False
+		rc, out = fRun(cli, ["get", "--array", "s.shcl", "k"], work)
+		return rc == 0 and out == [text]
+	if rule == "info-string":
+		fWrite(work, f"p:\n\t```{text}\n\tx\n\t```\n")
+		## The rule takes the leading blanks with it; the parser records the
+		## label trimmed, so that is what the sample is compared against.
+		rc, out = fRun(cli, ["get", "--rawinfo", "s.shcl", "p"], work)
+		return rc == 0 and out == [text.strip(" \t\r")]
+	if rule == "fmt-bareword":
+		## The formatter's class, so the formatter is what answers: the value
+		## goes in as data and the emitter picks the spelling.
+		fWrite(work, "k: placeholder\n")
+		rc, out = fRun(cli, ["set", f"--set=k={text}", "s.shcl"], work)
+		return rc == 0 and out == [f"k: {text}"]
+	fWrite(work, fLineProbe(cli, work, text))
+	if not fClean(cli, work):
+		return False
+	if rule == "field-line":
+		rc, out = fRun(cli, ["paths", "s.shcl"], work)
+		return rc == 0 and any(ln.startswith("p.") for ln in out)
+	if rule == "fence-line":
+		return fRun(cli, ["get", "--raw", "s.shcl", "p"], work)[0] == 0
+	## array-elem-line: the parent carries the element and no child field.
+	return fRun(cli, ["get", "s.shcl", "p"], work)[0] == 0 and fRun(cli, ["children", "s.shcl", "p"], work)[1] == []
+
+
 def main() -> int:
 	here = Path(__file__).resolve().parent
 	path = Path(sys.argv[1]) if len(sys.argv) > 1 else here.parent.parent / "project" / "grammar.abnf"
@@ -380,7 +485,30 @@ def main() -> int:
 	if bad:
 		print(f"check-abnf: {bad} problem(s)", file=sys.stderr)
 		return 1
-	print(f"check-abnf: OK ({len(rules) - len(CORE)} rules, {len(SAMPLES)} samples)")
+
+	cli = fCli()
+	if cli is None:
+		if os.environ.get("SHCL_GATE_STRICT"):
+			fBad("no debug binary to read the samples with, and the gate requires it")
+			print(f"check-abnf: {bad} problem(s)", file=sys.stderr)
+			return 1
+		## On stderr, since check-docs.bash drops this script's stdout.
+		print("check-abnf: SKIPPED the tokenizer tie - no debug binary (cargo build first)", file=sys.stderr)
+		with open(os.environ.get("SHCL_GATE_SKIPS") or os.devnull, "a", encoding="utf-8") as fh:
+			fh.write("check-abnf\n")
+		print(f"check-abnf: OK ({len(rules) - len(CORE)} rules, {len(SAMPLES)} samples, tie skipped)")
+		return 0
+
+	with tempfile.TemporaryDirectory() as tmp:
+		work = Path(tmp)
+		for rule, text, want in SAMPLES:
+			if fTie(cli, work, rule, text) == want:
+				continue
+			fBad(f"{rule} {text!r}: the grammar {'derives' if want else 'refuses'} it and the CLI does the opposite")
+	if bad:
+		print(f"check-abnf: {bad} problem(s)", file=sys.stderr)
+		return 1
+	print(f"check-abnf: OK ({len(rules) - len(CORE)} rules, {len(SAMPLES)} samples, {len(SAMPLES)} ties)")
 	return 0
 
 
@@ -391,3 +519,5 @@ if __name__ == "__main__":
 ##	History:
 ##		2026-09-19  Created, when the info-string rule turned out narrower than
 ##		            the fence labels the parser reads (20260918b item 51).
+##		2026-09-21  Every sample is also read by the real CLI, so the rows
+##		            cannot drift away from the parser and the formatter.

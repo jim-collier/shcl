@@ -150,23 +150,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260920b:
 
-	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1, 2, 3, 4, 5, 6 and 7 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left needs a windows box (idea 10) or is loose (ideas 8 and 11).
-
-	- 🔘 Idea 8: `check-abnf.py` has no tie to the tokenizer.
-		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
-		- Note: this is the same shape as the generator predicting what the scanner will read, which is a class this project has fixed twice elsewhere by asking the real component.
-		- Opened: 20260920-b
+	- The round's ideas that are still open. None is a defect: each is a gap in what the tests and the corpus can see, or a cost a fix left behind. Ideas 1 to 8 and 11 are done and sit under Done - Features and enhancements; idea 9 is deferred, under Future and/or deferred. What is left is idea 10, which needs a windows box.
 
 	- 🔘 Idea 10: the Windows batch this round would have wanted.
 		- Note: collected rather than run, so the next visit takes one trip. Item 19's unquoted sandbox path, on a profile whose path holds a space. The four `fCheckDevices` rows in `win-runners.bash`, which have never executed because neither box had a git-bash on PATH. Python on real Windows, which is the binding the platform defects keep turning up in and which wine does not cover.
 		- Note: nothing in this round's defects needs a Windows box to confirm except item 19, which is why the batch waits for the fix round rather than holding the filing.
 		- Opened: 20260920-b
-
-	- 🔘 Idea 11: the comparison tool's scalar count covers the rust tier only.
-		- Note: `verify()` walks `bench::ENTRIES`, and `pyworker.py` prints `scalars=0` for every library it runs. So the pre-flight equivalence check - every library parsing its own file and finding the same number of scalar values - says nothing about the seven python libraries.
-		- Note: item 17 closed the half that matters today, a partial parse measured as a timing. What is left is coverage: an escaping mistake in a python encoder would not be caught, and none of the encoders is python-side, so the exposure is small.
-		- Note: the work is a scalar walk per library shape - dict, list, scalar for json, yaml and toml, an element tree for xml - reported as `scalars=N`, and `verify()` running the python tier alongside the rust one. `design.md` says what the check covers today.
-		- Opened: 20260920-c
 
 ### Done
 
@@ -4799,6 +4788,29 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: nothing, since the skip does not fire on this box (the mode reads back as 6750 here). Watched instead: comparing against 6751 makes all four print the line.
 		- Opened: 20260920-b
 		- Closed: 20260920-204500
+
+	- ✅ Idea 8: `check-abnf.py` has no tie to the tokenizer.
+		- Note: the gate holds `grammar.abnf` to its own sample rows and never asks the real tokenizer whether a sample reads the way the row says. Every row was driven through the CLI by hand this round and all agree, so the grammar is right today; nothing keeps it right.
+		- Note: this is the same shape as the generator predicting what the scanner will read, which is a class this project has fixed twice elsewhere by asking the real component.
+		- Fixed: every sample row is now also run through the debug CLI, and the two answers have to agree. What is asked depends on the rule. A `bareword` goes in as `k: TEXT` and has to read back whole through `get --array`. An `info-string` goes in as a fence label and has to come back from `get --rawinfo`. A `fmt-bareword` is the formatter's class, so `set --set` has to emit it bare. A line rule (`field-line`, `fence-line`, `array-elem-line`) goes under a parent field and the document has to load clean with the kind of node the rule is for. A `file` row is the document.
+		- Note: indentation and fence termination are context ABNF cannot state, so a line rule's sample gets a parent field and a tab when it carries no indent of its own. The rule's own indent is `*(SP / HTAB)`, so that stays inside it. Where a probe needs a closing fence, the run to close is read off `shcl tokens` rather than guessed from the text.
+		- Note: three `bareword` rows in the true direction went in with it (`a]b`, `C:\dir\file`, `it's fine`), since all six that were there refuse. They are the value halves of field lines already listed.
+		- Note: the tie needs the debug binary. With none it says so on stderr and notes itself in `SHCL_GATE_SKIPS`, as `check-docs.bash` does for its own help checks, and under `SHCL_GATE_STRICT` it fails instead. The lint stage runs after the debug build, so a full run always has one.
+		- Pinned by: itself, watched to fail four times, each on the row it should and no other. A narrowed info string (the 20260918b item 51 defect put back) reddens `sql:pg, "v" [x]`; quoting a backslash in the emitter reddens `back\slash`; backtick-only fences redden the tilde fence line; a value scan that never splits on a comma reddens `a,b`.
+		- Opened: 20260920-b
+		- Closed: 20260921-093726
+
+	- ✅ Idea 11: the comparison tool's scalar count covers the rust tier only.
+		- Note: `verify()` walks `bench::ENTRIES`, and `pyworker.py` prints `scalars=0` for every library it runs. So the pre-flight equivalence check - every library parsing its own file and finding the same number of scalar values - says nothing about the seven python libraries.
+		- Note: item 17 closed the half that matters today, a partial parse measured as a timing. What is left is coverage: an escaping mistake in a python encoder would not be caught, and none of the encoders is python-side, so the exposure is small.
+		- Fixed: three walks in `pyworker.py`, one per document shape. `data_scalars` for json, yaml and both toml readers, over `Mapping` and `Sequence` rather than `dict` and `list`, since tomlkit hands back its own containers. `xml_scalars` for both XML readers, counting a leaf element and dropping lxml's comments and processing instructions. `shcl_scalars` for the binding, through `children()` and `instances()` the way the rust walk goes.
+		- Fixed: the count has its own worker mode, `--count KEY FILE`, so it stays out of the measured run and costs the timings and the memory figures nothing. The rust worker leaves it out the same way. `verify()` renders each pre-flight document to a file and asks every python library the tier can import.
+		- Measured: six shapes, thirteen libraries, and every one agrees. Nothing was wrong, which is what the note expected. `tomlkit` is not installed on this box, so `toml-edit` is the one python row still unchecked.
+		- Pinned by: `verify()` itself, watched to fail three times. A mapping counted as a value of its own reddens json, yaml and toml; an XML branch counted the same way reddens both XML readers; and an `shcl_scalars` blind to repeated instances reddens `records` and `ddl` alone, which is the trap the rust walk's comment warns about.
+		- Note: a first injection, a string read as a sequence, only made the worker recurse until it died, so it was thrown out and replaced. A fixture has to fail the way the check is for.
+		- Note: `design.md` says what the check covers now.
+		- Opened: 20260920-c
+		- Closed: 20260921-094852
 
 - Code review 20260920:
 
