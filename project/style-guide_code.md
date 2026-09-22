@@ -51,6 +51,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 	- Go spells the datetime type `DateTime` and the call `ParseDateTime`, where the other three spell it `datetime` as one word. Go names a constructor after its type, and the type is a deliberate deviation of its own, below.
 	- Go carries a `ZoneKind` enum and a `Zone` struct where Rust has one enum with a payload, and C carries a `shcl_zone_kind` enum beside an `off_min` field. Neither language has a payload-carrying enum, so the shape differs; the word does not.
 	- Python's zone is a `("utc", None) | ("offset", minutes)` tuple with no named type. A two-case tagged value is a tuple in Python, and a class for it would be the port reading as something the other three are not.
+	- C spells `read_bool` and `write_reason` as `shcl_read_bool_` and `shcl_write_reason_`. C gives a function and a typedef one namespace, and the result types already hold the plain names. Renaming either side would break callers for no gain in behavior.
 
 - Single file per binding, zero dependencies. That is the product ("copy this file into your tree"), so no module splits, no helper crates/packages, and no dependency however good.
 
@@ -176,7 +177,7 @@ Then there are the habits, which cost nothing to write and are not premature:
 
 - In shell, no forks inside a loop. One pass of one tool beats a thousand subshells, and the pipeline's own scripts are held to that.
 
-Optimizing early is fine when there is named evidence for it. The profiler stage runs on every non-quick pipeline run and writes a flamegraph plus a hot-spot summary, so "this path is already slow" can be a fact rather than a hunch. Without something like that, leave it alone.
+Optimizing early is fine when there is named evidence for it. The profiler stage runs on every full local pipeline run, not under `--quick` or `--ci`, and writes a flamegraph plus a hot-spot summary, so "this path is already slow" can be a fact rather than a hunch. Without something like that, leave it alone.
 
 Everything else waits for the end, and is driven by measurement only. Micro-optimization belongs here and nowhere else: profile an optimized build on a realistic workload, attack the top of the list, measure again, revert anything that did not move the number. The 20260725 performance tranche is the worked example - a 32k-node merge went from 16 seconds to 0.07, all of it accelerators rather than rewrites.
 

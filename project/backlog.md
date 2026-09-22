@@ -116,32 +116,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: the profiler stage and `[profile.profiling]`, 2026-07-12. No round has checked the attribution against a removal. Confirmed.
 		- Opened: 20260922-120717
 
-	- 🔘 Item 2: the C windows resolver's doc comment sits above `shcl_narrow`, and `shcl_resolve_target` below it has none.
-		- Reproduced: `shcl.h` near line 7150. The block explains which path a save rewrites, and the next line declares `shcl_narrow`.
-		- Note: 20260921 item 7 moved eleven misplaced comments in the C header. This one is in the windows arm, which that sweep did not reach.
-		- Sweep: the other `_WIN32` blocks in `shcl.h`, and the windows code in the other three bindings.
-		- Origin: `cd2b527` (2026-09-03). Third time for the class, after 20260904 item 30 and 20260921 item 7. Confirmed.
-		- Opened: 20260922-120717
-
-	- 🔘 Item 3: two public C calls have names the style guide's naming rule does not allow for.
-		- Reproduced: `read_bool` is `shcl_read_bool_` and `write_reason` is `shcl_write_reason_` in C. The trailing underscore is there because a typedef already has the plain name. Both are in the README and the C++ veneer too.
-		- Note: the rule says its exceptions are the whole list and a new one needs a line.
-		- Probable fix: a line in the exception list, which costs no consumer anything. The other way is a rename at the 3.0.0 cut.
-			- No problem with a rename since this is for 3.0.0. But whichever makes the most sense.
-		- Origin: `6459875` (2026-07-13) and `4df2316` (2026-08-02). The rule is from 2026-09-20, and the names were not checked against it. Confirmed.
-		- Opened: 20260922-120717
-
-	- 🔘 Item 4: the style guide says the profiler runs on every non-quick pipeline run, but `--ci` skips it too.
-		- Reproduced: `cicd.bash` sets `PROFILE_ENABLE=0` in the `--ci` block as well as under `--quick`.
-		- Probable fix: say so in the guide.
-		- Origin: `2be7d84` (2026-07-12) for the skip, `f283186` (2026-07-27) for the sentence, so it was wrong when written. Confirmed.
-		- Opened: 20260922-120717
-
-	- 🔘 Item 5: a comment in `crosscheck.bash` says one worker per core, where the code runs `CPU_CAP` workers, half the cores by default.
-		- Reproduced: line 500 against lines 548 to 551. The script's header has it right.
-		- Origin: `a3e2817` (2026-09-22), the parallel gates change. Confirmed.
-		- Opened: 20260922-120717
-
 - Code review 20260921:
 
 	- A review against the directives' code style and performance sections. It was aimed at the code merged since the last pass over them (20260830b), about 35,000 lines, and at the C rules the directives gained on 2026-09-19. Six sweeps were started: Rust, Go, Python, C and C++, the shell and PowerShell scripts, and measured performance across the four bindings.
@@ -693,6 +667,45 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260922:
+
+	- Every defect the round has closed. The ideas are under Features and enhancements.
+
+	- ✅ Item 2: the C windows resolver's doc comment sits above `shcl_narrow`, and `shcl_resolve_target` below it has none.
+		- Reproduced: `shcl.h` near line 7150. The block explains which path a save rewrites, and the next line declares `shcl_narrow`.
+		- Note: 20260921 item 7 moved eleven misplaced comments in the C header. This one is in the windows arm, which that sweep did not reach.
+		- Sweep: the other `_WIN32` blocks in `shcl.h`, and the windows code in the other three bindings.
+		- Origin: `cd2b527` (2026-09-03). Third time for the class, after 20260904 item 30 and 20260921 item 7. Confirmed.
+		- Fixed: the block is back above `shcl_resolve_target`, and `shcl_narrow` has a line of its own saying the caller frees. The other `_WIN32` blocks in `shcl.h`, `shcl_windows.go`, Rust's `cfg(windows)` items and Python's windows helpers each had their comment where it belongs.
+		- Note: no pin. A comment's place is not something a gate can read.
+		- Opened: 20260922-120717
+		- Closed: 20260922-1635
+
+	- ✅ Item 3: two public C calls have names the style guide's naming rule does not allow for.
+		- Reproduced: `read_bool` is `shcl_read_bool_` and `write_reason` is `shcl_write_reason_` in C. The trailing underscore is there because a typedef already has the plain name. Both are in the README and the C++ veneer too.
+		- Note: the rule says its exceptions are the whole list and a new one needs a line.
+		- Probable fix: a line in the exception list, which costs no consumer anything. The other way is a rename at the 3.0.0 cut.
+			- No problem with a rename since this is for 3.0.0. But whichever makes the most sense.
+		- Origin: `6459875` (2026-07-13) and `4df2316` (2026-08-02). The rule is from 2026-09-20, and the names were not checked against it. Confirmed.
+		- Fixed: a line in the exception list. Either rename breaks callers, and 2.x already has both names, for a change of spelling only.
+		- Opened: 20260922-120717
+		- Closed: 20260922-1635
+
+	- ✅ Item 4: the style guide says the profiler runs on every non-quick pipeline run, but `--ci` skips it too.
+		- Reproduced: `cicd.bash` sets `PROFILE_ENABLE=0` in the `--ci` block as well as under `--quick`.
+		- Probable fix: say so in the guide.
+		- Origin: `2be7d84` (2026-07-12) for the skip, `f283186` (2026-07-27) for the sentence, so it was wrong when written. Confirmed.
+		- Fixed: the guide says the stage runs on a full local run, not under `--quick` or `--ci`.
+		- Opened: 20260922-120717
+		- Closed: 20260922-1635
+
+	- ✅ Item 5: a comment in `crosscheck.bash` says one worker per core, where the code runs `CPU_CAP` workers, half the cores by default.
+		- Reproduced: line 500 against lines 548 to 551. The script's header has it right.
+		- Origin: `a3e2817` (2026-09-22), the parallel gates change. Confirmed.
+		- Fixed: the comment names `CPU_CAP` and the half-the-cores default, as the header does.
+		- Opened: 20260922-120717
+		- Closed: 20260922-1635
 
 - Code review 20260921:
 
