@@ -14,6 +14,7 @@
 ##		  --mib N   document size to generate, in MiB (default 100)
 ##		  --keep    leave the working directory behind for inspection
 ##		  NAME|CLI  binding label and its CLI path; the first is the reference
+##		The runs overlap as far as free memory and CPU_CAP allow (see below).
 ##	Exit: 0 = all bindings agree and stay inside their limits, 1 = they do not.
 ##	History: At bottom of script.
 
@@ -69,9 +70,10 @@ fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss, 4=rss floor); empt
 work="$(mktemp -d "${TMPDIR:-/tmp}/shcl-largedoc.XXXXXX")"
 ((keep)) || trap 'rm -rf "${work}"' EXIT
 
-## Room for the document plus the reference's formatted copy, with slack.
+## Room for the document plus every binding's formatted copy, since the runs
+## overlap, with slack.
 avail_kib="$(df -Pk "${work}" | awk 'NR==2{print $4}')"
-need_kib=$(( mib * 1024 * 3 ))
+need_kib=$(( mib * 1024 * (${#bindings[@]} + 2) ))
 ((avail_kib >= need_kib)) || {
 	echo "largedoc: need ~$((need_kib/1024)) MiB free for ${work}, have $((avail_kib/1024)) MiB" >&2
 	exit 1
@@ -97,7 +99,7 @@ fRunMeasured() {
 	local out="$1"; shift
 	local pid hwm=0 key val t0 t1
 	t0="$(date +%s.%N)"
-	"$@" > "${out}" 2>"${work}/stderr" & pid=$!
+	"$@" > "${out}" 2>"${out}.err" & pid=$!
 	while kill -0 "${pid}" 2>/dev/null; do
 		while read -r key val _; do
 			[[ "${key}" == "VmHWM:" ]] && ((val > hwm)) && hwm="${val}"
@@ -110,8 +112,90 @@ fRunMeasured() {
 	runRssMib=$(( hwm / 1024 ))
 }
 
-rc=0
 refName="${bindings[0]%%|*}"
+refCli="${bindings[0]#*|}"
+refOut="${work}/out-${refName}.shcl"
+
+## The runs overlap. Each binding's own run, plus the reference's three
+## invariant reads below, are jobs, and a job starts only while the memory
+## ceilings of everything running fit in what the machine has free, less a
+## reserve, and CPU_CAP allows it. The ceilings are the limits above, so a run
+## that would push past its share already fails the gate. One job may always
+## run, so a small machine goes one at a time, as it always did. Two of the
+## reads need the reference's output and join the queue once it exists.
+declare -A cliOf=() ceilMib=() jobOf=() jobMib=()
+maxCeil=0
+for entry in "${bindings[@]}"; do
+	name="${entry%%|*}"; cliOf["${name}"]="${entry#*|}"
+	ceilMib["${name}"]=0
+	for e in "${limits[@]}"; do
+		IFS='|' read -r lName _ lRss lFloor <<<"${e}"
+		if [[ "${lName}" == "${name}" ]]; then ceilMib["${name}"]=$((lRss * actualMib + lFloor)); fi
+	done
+	if ((ceilMib["${name}"] > maxCeil)); then maxCeil=${ceilMib["${name}"]}; fi
+done
+## An unlisted binding is not gated, so it is budgeted as the largest listed.
+for name in "${!ceilMib[@]}"; do
+	if ((ceilMib["${name}"] == 0)); then ceilMib["${name}"]=${maxCeil}; fi
+done
+budgetMib=$(( $(awk '/^MemAvailable:/{print int($2 / 1024)}' /proc/meminfo) - 2048 ))
+cap="${CPU_CAP:-}"
+[[ "${cap}" =~ ^[1-9][0-9]*$ ]] || cap=$(( $(nproc) / 2 ))
+((cap > 0)) || cap=1
+
+fJobRun() {
+	case "$1" in
+		fmt\|*)
+			local name="${1#fmt|}"
+			fRunMeasured "${work}/out-${name}.shcl" "${cliOf[${name}]}" fmt "${doc}"
+			echo "${runSecs} ${runRssMib} ${runRc}" > "${work}/res-${name}"
+			;;
+		## The generator promises a document nothing in it merges into and that
+		## loads clean; the profiler's numbers depend on it. A hint per unit once
+		## made the profile measure stderr.
+		check)
+			"${refCli}" check "${doc}" 2>/dev/null | tail -1 > "${work}/res-check" || true
+			;;
+		fixpoint)
+			if "${refCli}" fmt "${refOut}" 2>/dev/null | cmp -s - "${refOut}"; then
+				echo yes > "${work}/res-fixpoint"
+			else
+				echo no > "${work}/res-fixpoint"
+			fi
+			;;
+		wide)
+			"${refCli}" get --int --array "${refOut}" wide 2>/dev/null | grep -c '' > "${work}/res-wide" || true
+			;;
+	esac
+}
+
+queue=()
+for entry in "${bindings[@]}"; do
+	name="${entry%%|*}"
+	## A missing CLI is reported in the table; there is nothing to run.
+	if [[ -r "${cliOf[${name}]}" ]]; then queue+=("fmt|${name}"); fi
+done
+queue+=(check)
+declare -i nLive=0 usedMib=0
+while ((${#queue[@]} || nLive)); do
+	while ((${#queue[@]})); do
+		job="${queue[0]}"
+		need=${ceilMib["${refName}"]}
+		if [[ "${job}" == fmt\|* ]]; then need=${ceilMib["${job#fmt|}"]}; fi
+		if ((nLive > 0 && (nLive >= cap || usedMib + need > budgetMib))); then break; fi
+		fJobRun "${job}" &
+		jobOf[$!]="${job}"; jobMib[$!]="${need}"
+		nLive+=1; usedMib+=need
+		queue=("${queue[@]:1}")
+	done
+	donePid=""
+	wait -n -p donePid || true
+	if [[ -z "${donePid}" ]]; then break; fi
+	nLive+=-1; usedMib+=-${jobMib[${donePid}]}
+	if [[ "${jobOf[${donePid}]}" == "fmt|${refName}" && -s "${refOut}" ]]; then queue+=(fixpoint wide); fi
+done
+
+rc=0
 refSum=""
 printf '\n%-8s %8s %10s   %s\n' "binding" "secs" "peak MiB" "result"
 
@@ -120,10 +204,14 @@ for entry in "${bindings[@]}"; do
 	[[ -r "${cli}" ]] || { printf '%-8s %8s %10s   MISSING: %s\n' "${name}" - - "${cli}"; rc=1; continue; }
 
 	out="${work}/out-${name}.shcl"
-	fRunMeasured "${out}" "${cli}" fmt "${doc}"
+	runSecs=- runRssMib=- runRc=""
+	if [[ -f "${work}/res-${name}" ]]; then read -r runSecs runRssMib runRc < "${work}/res-${name}"; fi
 	note=""
-	if ((runRc != 0)); then
-		note="FAILED (exit ${runRc}): $(head -c 200 "${work}/stderr" | tr '\n' ' ')"
+	if [[ -z "${runRc}" ]]; then
+		note="FAILED: the run left no result"
+		rc=1
+	elif [[ "${runRc}" != 0 ]]; then
+		note="FAILED (exit ${runRc}): $(head -c 200 "${out}.err" | tr '\n' ' ')"
 		rc=1
 	else
 		sum="$(sha256sum "${out}" | cut -d' ' -f1)"
@@ -144,35 +232,29 @@ for entry in "${bindings[@]}"; do
 		fi
 	fi
 	printf '%-8s %8s %10s   %s\n' "${name}" "${runSecs}" "${runRssMib}" "${note}"
-
-	## Only the reference's output is kept, for the invariant checks below.
-	[[ "${name}" == "${refName}" ]] || rm -f "${out}"
 done
 
-## Reference-only invariants at this scale. Each is another full parse, so the
-## list stays short: formatting has to be a fixpoint, and a long array has to
-## read back whole - a stale buffer pointer after growth is a defect this
-## project has actually shipped, and no small case can see it.
-refOut="${work}/out-${refName}.shcl"
+## Reference-only invariants at this scale, from the reads above. Formatting has
+## to be a fixpoint, and a long array has to read back whole - a stale buffer
+## pointer after growth is a defect this project has actually shipped, and no
+## small case can see it.
 if [[ -s "${refOut}" ]]; then
-	refCli="${bindings[0]#*|}"
 	echo
-	if "${refCli}" fmt "${refOut}" 2>/dev/null | cmp -s - "${refOut}"; then
+	fixpoint=""; summary=""; wideCount=0
+	if [[ -f "${work}/res-fixpoint" ]]; then read -r fixpoint < "${work}/res-fixpoint"; fi
+	if [[ -f "${work}/res-check" ]]; then IFS= read -r summary < "${work}/res-check" || true; fi
+	if [[ -f "${work}/res-wide" ]]; then read -r wideCount < "${work}/res-wide"; fi
+	if [[ "${fixpoint}" == yes ]]; then
 		echo "largedoc: fmt is a fixpoint at ${actualMib} MiB"
 	else
 		echo "largedoc: FAILED: fmt is not a fixpoint at ${actualMib} MiB" >&2; rc=1
 	fi
-	## The generator promises a document nothing in it merges into and that
-	## loads clean; the profiler's numbers depend on it. A hint per unit once
-	## made the profile measure stderr.
-	summary="$("${refCli}" check "${doc}" 2>/dev/null | tail -1 || true)"
 	if [[ "${summary}" == "ok (0 diagnostic(s))" ]]; then
 		echo "largedoc: the generated document loads with no diagnostics"
 	else
 		echo "largedoc: FAILED: the generated document does not load clean: ${summary}" >&2; rc=1
 	fi
-	wideCount="$("${refCli}" get --int --array "${refOut}" wide | grep -c '' || true)"
-	if ((wideCount == 20000)); then
+	if [[ "${wideCount}" == 20000 ]]; then
 		echo "largedoc: long array read back whole (${wideCount} elements)"
 	else
 		echo "largedoc: FAILED: long array read back ${wideCount} of 20000 elements" >&2; rc=1
@@ -195,3 +277,5 @@ exit "${rc}"
 ##		  had no gate at all.
 ##		- 2026-08-29 JC: Generator moved to include/largedoc-gen.bash; the memory
 ##		  poll no longer forks per sample.
+##		- 2026-09-22 JC: The bindings and the invariant reads run at once, as far
+##		  as their memory ceilings fit in free memory. 188 s to 132 s here.

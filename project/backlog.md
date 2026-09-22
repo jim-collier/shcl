@@ -4310,6 +4310,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
+- ✅ `crosscheck.bash`, `sanitize-c.bash` and `largedoc.bash` each run one thing at a time, and together they are about ten minutes of the gate.
+	- Fixed: `crosscheck.bash` splits its work into units, one per corpus case and fuzz input plus the usage block, and `CPU_CAP` workers take them in turn. 229 s to 25 s here, the same 17,034 comparisons.
+	- Fixed: `sanitize-c.bash` builds its six programs at once, then runs the test programs beside a corpus pass split the same way. 91 s to 23 s, the same 2,898 CLI runs.
+	- Fixed: `largedoc.bash` runs the bindings and the reference's three reads at once, as long as their memory ceilings fit in free memory less 2 GiB. A small runner goes two at a time, and one job may always run. 188 s to 132 s here, where Python's own run is now all of it.
+	- Measured: hosted run `35734495800`, against `35685464650` before. `sanitize-c.bash` 118 s to 71 s, and `crosscheck.bash` with its fuzz dump 322 s to 130 s. `largedoc.bash` went 156 s to 184 s, since Python alone is two minutes there and this runner was slower at everything, cppcheck's cold run included. The job total did not move for the same reason.
+	- Pinned by: each was watched to fail. crosscheck on a binding that differs on one case (the same 30 of 5,342 as the old script) and on a worker killed mid-run. sanitize-c on an ASan fault in one case, a killed worker, a failing test program and a broken build. largedoc on a differing binding, a killed run and a failing reference, and its budget was traced at 400 MiB and at 1.
+	- Opened: 20260922-054500
+	- Closed: 20260922-063521
+
 - ✅ The full gate takes 33 minutes here and 42 on the hosted runner, three minutes under that job's limit.
 	- Measured: one `--ci` on dev, step by step. cppcheck 709 s, `check-c-compilers.bash` 324 s, `largedoc.bash` 305 s, `crosscheck.bash` 231 s, the Rust tests with the fuzz 161 s, `sanitize-c.bash` 91 s, and nothing else over 50. The hosted run has the same order.
 	- Fixed: cppcheck keeps a result cache in the git dir, where a pre-push worktree finds it too, and checks its two files side by side. An unchanged file replays in 0.2 s, and a changed one costs 425 s cold where both took 709. The hosted job keeps the cache between runs.
