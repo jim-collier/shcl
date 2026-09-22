@@ -2599,6 +2599,27 @@ fn run(cmd: &str, o: &Opts) -> u8 {
 	}
 }
 
+#[cfg(feature = "profiling")]
+const PROFILE_FREQ: i32 = 199;
+#[cfg(feature = "profiling")]
+const PROFILE_BLOCKLIST: [&str; 4] = ["libc", "libpthread", "vdso", "libgcc"];
+
+/// pprof files a sample under the start address of each function on its stack,
+/// then names the whole bucket from the inline frames of whichever sample
+/// opened it. Fat LTO folds most of the parser into one function, so every
+/// sample in it got one name, and the top of the graph was an accessor that
+/// happened to be first. It asks libgcc for that start address through this
+/// symbol, and a definition in the binary wins over the shared library's, so
+/// answering with the address itself files each instruction on its own and
+/// its inline frames are its own. Profiling builds only.
+#[cfg(feature = "profiling")]
+#[unsafe(no_mangle)]
+pub extern "C" fn _Unwind_FindEnclosingFunction(
+	pc: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_void {
+	pc
+}
+
 /// cicd profiler stage only (profiling builds, SHCL_PROFILE_OUT set): repeat the
 /// command under an in-process sampler for SHCL_PROFILE_SECS, then write a
 /// flamegraph SVG. Never compiled into a normal build.
@@ -2608,10 +2629,9 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 		.ok()
 		.and_then(|v| v.parse().ok())
 		.unwrap_or(8);
-	const FREQ: i32 = 199;
 	let guard = pprof::ProfilerGuardBuilder::default()
-		.frequency(FREQ)
-		.blocklist(&["libc", "libpthread", "vdso", "libgcc"])
+		.frequency(PROFILE_FREQ)
+		.blocklist(&PROFILE_BLOCKLIST)
 		.build()
 		.expect("pprof: failed to start profiler");
 	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
@@ -2634,7 +2654,7 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 	// what it cannot do is go unsaid. The count rides beside the SVG so the
 	// report can repeat it.
 	let kept: isize = report.data.values().sum();
-	let expected = secs as isize * FREQ as isize;
+	let expected = secs as isize * PROFILE_FREQ as isize;
 	std::fs::write(
 		format!("{}.samples", out),
 		format!("{} {}\n", kept, expected),
@@ -2647,6 +2667,75 @@ fn run_profiled(cmd: &str, o: &Opts, out: &str) -> u8 {
 		expected
 	);
 	code
+}
+
+/// cicd profiler stage only (SHCL_PROFILE_CHECK set): the sampler's
+/// attribution against a workload whose answer is known, so a graph is not
+/// trusted on faith. Two loops inlined into one function cost three to one,
+/// and their samples have to split about that way. When a bucket takes one
+/// name for the whole function, one of them gets everything.
+#[cfg(feature = "profiling")]
+fn profile_check() -> u8 {
+	let guard = pprof::ProfilerGuardBuilder::default()
+		.frequency(PROFILE_FREQ)
+		.blocklist(&PROFILE_BLOCKLIST)
+		.build()
+		.expect("pprof: failed to start profiler");
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+	let mut x = 0u64;
+	while std::time::Instant::now() < deadline {
+		x ^= calibrate_both(std::hint::black_box(20_000));
+	}
+	std::hint::black_box(x);
+	let report = guard
+		.report()
+		.build()
+		.expect("pprof: failed to build report");
+	let (mut three, mut one) = (0isize, 0isize);
+	for (frames, n) in &report.data {
+		let names: Vec<String> = frames.frames.iter().flatten().map(|s| s.name()).collect();
+		if names.iter().any(|n| n.contains("calibrate_three")) {
+			three += n;
+		} else if names.iter().any(|n| n.contains("calibrate_one")) {
+			one += n;
+		}
+	}
+	let share = 100 * three / (three + one).max(1);
+	let ok = three + one >= 200 && (65..=85).contains(&share);
+	errln!(
+		"shcl: profiler attribution {}: {} of {} samples in the 3-to-1 loop pair went to the larger, {}% where 75% is right",
+		if ok { "ok" } else { "WRONG" },
+		three,
+		three + one,
+		share
+	);
+	u8::from(!ok)
+}
+
+#[cfg(feature = "profiling")]
+#[inline(never)]
+fn calibrate_both(n: u64) -> u64 {
+	calibrate_three(std::hint::black_box(3 * n)) ^ calibrate_one(std::hint::black_box(n))
+}
+
+#[cfg(feature = "profiling")]
+#[inline(always)]
+fn calibrate_three(n: u64) -> u64 {
+	let mut x = 0x9e37u64;
+	for k in 0..n {
+		x = x.rotate_left(5) ^ k.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+	}
+	x
+}
+
+#[cfg(feature = "profiling")]
+#[inline(always)]
+fn calibrate_one(n: u64) -> u64 {
+	let mut x = 0x7f4au64;
+	for k in 0..n {
+		x = x.rotate_left(7) ^ k.wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+	}
+	x
 }
 
 /// Rust's runtime sets SIGPIPE to SIG_IGN, so a closed stdout comes back as an
@@ -2679,6 +2768,10 @@ fn main() -> ExitCode {
 
 fn run_cli() -> u8 {
 	reset_sigpipe();
+	#[cfg(feature = "profiling")]
+	if std::env::var_os("SHCL_PROFILE_CHECK").is_some() {
+		return profile_check();
+	}
 	let argv: Vec<String> = match std::env::args_os()
 		.skip(1)
 		.map(|a| a.into_string())

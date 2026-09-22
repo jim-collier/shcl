@@ -108,13 +108,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, commands and numbers are in `details.md` -> "Code Review 20260922 - technical detail".
 
-	- 🔘 Item 1: the flamegraph's top entry is not where the time goes, so the hot-spot summary can point at the wrong code.
-		- Reproduced: two fresh Rust profiles put about 40 percent of samples on a small inlined helper, `src_matches_display` in one and a pointer accessor in the other. Switching that call off saved a few percent at most. Switching off `fold_late_dups`, which sat under the helper in the second flame, saved 14 percent.
-		- Cause: the profiling build inherits release, so fat LTO and one codegen unit inline small calls into their callers, and the sampler credits whichever leaf it stops in.
-		- Note: the style guide says the summary makes "this path is already slow" a fact. The caller chains were right both times. The leaf share was not.
-		- Probable fix: frame pointers on the profiling build, or no LTO in `[profile.profiling]`. Then prove it with a loop of known cost before trusting a percentage.
-		- Origin: the profiler stage and `[profile.profiling]`, 2026-07-12. No round has checked the attribution against a removal. Confirmed.
-		- Opened: 20260922-120717
+	- All five defects were closed on 2026-09-22. Item 1 changes how to read every earlier flame number: before it, a Rust percentage below the function level was the name of one sample. Finished items are under Done - Bugs, in a bullet of the same name.
 
 - Code review 20260921:
 
@@ -671,6 +665,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260922:
 
 	- Every defect the round has closed. The ideas are under Features and enhancements.
+
+	- ✅ Item 1: the flamegraph's top entry is not where the time goes, so the hot-spot summary can point at the wrong code.
+		- Reproduced: two fresh Rust profiles put about 40 percent of samples on a small inlined helper, `src_matches_display` in one and a pointer accessor in the other. Switching that call off saved a few percent at most. Switching off `fold_late_dups`, which sat under the helper in the second flame, saved 14 percent.
+		- Cause: the profiling build inherits release, so fat LTO and one codegen unit inline small calls into their callers, and the sampler credits whichever leaf it stops in.
+		- Note: the style guide says the summary makes "this path is already slow" a fact. The caller chains were right both times. The leaf share was not.
+		- Probable fix: frame pointers on the profiling build, or no LTO in `[profile.profiling]`. Then prove it with a loop of known cost before trusting a percentage.
+		- Origin: the profiler stage and `[profile.profiling]`, 2026-07-12. No round has checked the attribution against a removal. Confirmed.
+		- Cause, found while fixing: not the inlining itself. The debug info and the symbol lookup both name a planted loop right. pprof files each sample under the start address of every function on its stack, then names the whole bucket from the inline frames of the sample that opened it. With fat LTO most of the parser is one function, so every sample in it took one name at random. The same merge hid `fold_late_dups` at 1 percent when it costs 14.
+		- Fixed: the profiling build answers pprof's start-address lookup with the address itself, so each instruction is filed and named on its own. No change to the release profile, since it was never the build's fault.
+		- Fixed: the report counted a name that sits inside itself once per depth, so recursive `emit_node` read 31.8 percent inclusive when the whole emit share was 15.6.
+		- Verified: a planted loop worth 33 percent of CPU time reads 32.4 in the graph, where it read 53 before. A fresh profile's top entries are the hashing that ideas 1 and 4 measured.
+		- Pinned by: a calibration run the profiler stage makes before it draws a graph, two inlined loops at three to one. It reads 72 to 75 percent, and 100 or 0 with the fix taken out. Also a nested-name fixture in `shell-regress.bash`, which the old report fails.
+		- Note: samples with a leaf in libc are still dropped, as the report says, so allocation time is still missing from every share.
+		- Opened: 20260922-120717
+		- Closed: 20260922-1735
 
 	- ✅ Item 2: the C windows resolver's doc comment sits above `shcl_narrow`, and `shcl_resolve_target` below it has none.
 		- Reproduced: `shcl.h` near line 7150. The block explains which path a save rewrites, and the next line declares `shcl_narrow`.

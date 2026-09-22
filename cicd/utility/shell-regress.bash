@@ -994,6 +994,13 @@ fFlameRun "${tmpDir}/flame/flame_20260101-000000_whole.svg"
 	|| fBad "flame-report.py invented a sample count for a graph that carries none"
 grep -q '{}.samples' "${repoDir}/source/rust/src/main.rs" \
 	|| fBad "the profiler does not record how many samples reached the graph"
+##	20260922 item 1: a name inside itself on one stack, a recursive call or one
+##	helper inlined at two depths, was counted once per depth, so recursive
+##	emit_node read twice the whole emit share. 60 samples of it, 40 nested.
+fFlame "${tmpDir}/flame/flame_20260101-000000_nest.svg" 16 'shcl::Document::emit_node|0|2|60' 'shcl::Parser::parse|60|2|40' 'shcl::Document::emit_node|0|1|40' 'shcl::emit_cell|0|0|20'
+fFlameRun "${tmpDir}/flame/flame_20260101-000000_nest.svg"
+[[ "${flameRc}" == 0 && "${flameOut}" == *" 60.0%   60  shcl::Document::emit_node"* ]] \
+	|| fBad "flame-report.py counted a recursive call more than once (rc ${flameRc}): ${flameOut@Q}"
 ##	The C corpus runner counted a case with no reads.tsv as passing, where the
 ##	other three runners stop on it. One real case, minus that file.
 if fHave cc; then

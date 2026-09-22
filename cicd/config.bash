@@ -297,6 +297,9 @@ PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CP
 PROFILE_BIN="source/rust/target/profiling/${EXE_NAME}"
 PROFILE_OUT_DIR="cicd/artifacts/profiling"   ## relative to repo root; gitignored
 PROFILE_WORKLOAD_GEN='source cicd/utility/include/largedoc-gen.bash; largedoc_gen 4 > "${PROFILE_WORKLOAD}"'
+## Two inlined loops of known cost ratio, sampled the same way; exit 1 when
+## the graph would split them wrong.
+PROFILE_CHECK='SHCL_PROFILE_CHECK=1 "${PROFILE_BIN}"'
 PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
 ## Wall-clock per surface, logged after the flamegraph: the graph shows where
 ## time goes inside fmt, these catch merge/validate/generate/set/read going
@@ -412,3 +415,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-08-26 JC: Per-os-arch dogfood dests for the cross builds; windows-x86_64 goes to the synced mswin cli dir.
 ##		- 2026-09-19 JC: green-tree.bash in the shellcheck list; shell-regress now holds the list to the tracked shell files.
 ##		- 2026-09-21 JC: cppcheck keeps a result cache in the git dir and checks its two files side by side.
+##		- 2026-09-22 JC: PROFILE_CHECK, the sampler's attribution against two loops of known cost.
