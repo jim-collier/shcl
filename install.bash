@@ -74,12 +74,12 @@ l9XHvwp0Iucfi8zCg7ozDcU3dsDnUJ8A3PtJ47jEt1n37/oiM6pWDXVVBjz4DI9i
 ACmdUphTcGhYvn91ORZVxt0CAwEAAQ==
 -----END PUBLIC KEY-----'
 
-die() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
+fDie() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
 
 ## Usage text lives here, not in a sed slice of "$0": under the documented
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
-usage() {
+fUsage() {
 	echo
 	cat <<'EOF'
 install.bash - release installer for shcl on Linux
@@ -126,26 +126,26 @@ EOF
 while (( $# )); do
 	case "$1" in
 		--release=*) release="${1#*=}" ;;
-		--release)   (( $# >= 2 )) || die "missing value for --release (try --release=VALUE)"; shift; release="$1" ;;
+		--release)   (( $# >= 2 )) || fDie "missing value for --release (try --release=VALUE)"; shift; release="$1" ;;
 		--target=*)  target="${1#*=}" ;;
-		--target)    (( $# >= 2 )) || die "missing value for --target (try --target=VALUE)"; shift; target="$1" ;;
+		--target)    (( $# >= 2 )) || fDie "missing value for --target (try --target=VALUE)"; shift; target="$1" ;;
 		-y|--yes)    assume_yes=1 ;;
 		--uninstall) uninstall=1 ;;
-		-h|--help)   usage; exit 0 ;;
-		*) die "unknown option: $1" ;;
+		-h|--help)   fUsage; exit 0 ;;
+		*) fDie "unknown option: $1" ;;
 	esac
 	shift
 done
-case "${release}" in dev|development) release="dev" ;; stable) ;; *) die "--release must be dev or stable" ;; esac
-case "${target}" in user|system) ;; *) die "--target must be user or system" ;; esac
+case "${release}" in dev|development) release="dev" ;; stable) ;; *) fDie "--release must be dev or stable" ;; esac
+case "${target}" in user|system) ;; *) fDie "--target must be user or system" ;; esac
 
 ## Platform gate: prebuilt binaries exist for Linux x86_64/arm64 only.
 os="$(uname -s)"
-[[ "${os}" == "Linux" ]] || die "no prebuilt ${os} binaries yet - build from source or use a drop-in file (see README.md)"
+[[ "${os}" == "Linux" ]] || fDie "no prebuilt ${os} binaries yet - build from source or use a drop-in file (see README.md)"
 case "$(uname -m)" in
 	x86_64|amd64)  arch="x86_64" ;;
 	aarch64|arm64) arch="arm64" ;;
-	*) die "no prebuilt binary for $(uname -m)" ;;
+	*) fDie "no prebuilt binary for $(uname -m)" ;;
 esac
 
 ## curl or wget, whichever is present. https is pinned through redirects and
@@ -153,20 +153,20 @@ esac
 ## GITHUB_TOKEN goes to the API calls alone. Every release download redirects
 ## to another host, and wget sends a --header on to it, so fetch carries none.
 if command -v curl >/dev/null; then
-	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
-	fetchApi() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} -o "$2" "$1"; }
+	fFetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+	fFetchApi() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} -o "$2" "$1"; }
 	fApiStatus() { curl -fsS -o /dev/null -w '%{http_code}' --proto '=https' --tlsv1.2 ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} "$1" 2>/dev/null || true; }
 elif command -v wget >/dev/null; then
-	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
-	fetchApi() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} -O "$2" "$1"; }
+	fFetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+	fFetchApi() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} -O "$2" "$1"; }
 	fApiStatus() { wget -q --https-only --secure-protocol=TLSv1_2 ${GITHUB_TOKEN:+--header="Authorization: Bearer ${GITHUB_TOKEN}"} --server-response -O /dev/null "$1" 2>&1 | awk '/^  HTTP/ { code = $2 } END { print code }'; }
 else
-	die "need curl or wget"
+	fDie "need curl or wget"
 fi
 ## openssl is a hard requirement, same class as curl/wget: without it the
 ## release signature cannot be checked, and installing unverified is not on
 ## offer. Verify by hand and use the DIY path if the box genuinely lacks it.
-command -v openssl >/dev/null || die "need openssl to verify the release signature (see README.md for a manual install)"
+command -v openssl >/dev/null || fDie "need openssl to verify the release signature (see README.md for a manual install)"
 
 ## Destinations.
 ## The man dir is the one man already reads for that target, so `man shcl` works
@@ -179,7 +179,7 @@ if [[ "${target}" == "system" ]]; then
 	## Check sudo is actually here before planning to use it: choosing it blind
 	## fails at the first write, after both downloads and the confirmation.
 	if [[ "$(id -u)" != 0 ]]; then
-		command -v sudo >/dev/null || die "a system install needs root: run as root, install sudo, or use --target=user"
+		command -v sudo >/dev/null || fDie "a system install needs root: run as root, install sudo, or use --target=user"
 		asroot="sudo"
 	fi
 else
@@ -220,7 +220,7 @@ if (( uninstall )); then
 	if (( ! assume_yes )); then
 		reply=""
 		if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
-			die "no terminal to confirm on - pass --yes"
+			fDie "no terminal to confirm on - pass --yes"
 		fi
 		case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 	fi
@@ -270,8 +270,8 @@ fLinkOwner(){   ## fLinkOwner LINK DEST
 owner="$(fLinkOwner "${link}" "${dest}")"
 case "${owner}" in
 	free|ours) ;;
-	file) die "${link} exists and is not a symlink - move it aside first, then re-run" ;;
-	*)    die "${link} is a symlink to ${owner#elsewhere } - move it aside first, then re-run" ;;
+	file) fDie "${link} exists and is not a symlink - move it aside first, then re-run" ;;
+	*)    fDie "${link} is a symlink to ${owner#elsewhere } - move it aside first, then re-run" ;;
 esac
 
 ## Pick the tag out of a /releases listing: highest version wins, never newest
@@ -318,13 +318,13 @@ fApiFailure(){   ## fApiFailure STATUS RELEASE
 		*)       printf 'cannot fetch the %s release (none published yet, or network down)\n' "$2" ;;
 	esac
 }
-fetchApi "${api}" "${tmp}/rel.json" || die "$(fApiFailure "$(fApiStatus "${api}")" "${release}")"
+fFetchApi "${api}" "${tmp}/rel.json" || fDie "$(fApiFailure "$(fApiStatus "${api}")" "${release}")"
 ## Every grep below may legitimately match nothing (no release, no such asset,
 ## a release cut before the drop-in payload existed). Under pipefail that is a
 ## failed substitution, which would end the script here instead of at the check
 ## that reports it - so each one swallows its own status.
 tag="$(fPickTag "${release}" "${tmp}/rel.json")"
-[[ -n "${tag}" && "${tag}" != null ]] || die "no ${release} release found"
+[[ -n "${tag}" && "${tag}" != null ]] || fDie "no ${release} release found"
 version="${tag#v}"
 
 ## State the plan; abort is the default when there is no tty to confirm on.
@@ -343,7 +343,7 @@ if (( ! assume_yes )); then
 	## unattended contexts where the read then dies on a raw shell error.
 	reply=""
 	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
-		die "no terminal to confirm on - pass --yes"
+		fDie "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
@@ -362,7 +362,7 @@ fNearestExisting(){   ## fNearestExisting PATH
 if [[ -z "${asroot}" ]]; then
 	for want in "${dest}" "$(dirname -- "${link}")" "$(dirname -- "${manlink}")"; do
 		near="$(fNearestExisting "${want}")"
-		[[ -d "${near}" && -w "${near}" ]] || die "cannot write ${want}: ${near} is not writable"
+		[[ -d "${near}" && -w "${near}" ]] || fDie "cannot write ${want}: ${near} is not writable"
 	done
 fi
 
@@ -371,19 +371,19 @@ echo
 asset="shcl-${version}-linux-${arch}"
 base="https://github.com/${REPO}/releases/download/${tag}"
 echo "downloading ${asset}..."
-fetch "${base}/${asset}" "${tmp}/shcl" || die "download failed: ${asset}"
-fetch "${base}/shcl-${version}-sha256sums.txt" "${tmp}/sums" || die "download failed: sha256sums"
-fetch "${base}/shcl-${version}-sha256sums.txt.sig" "${tmp}/sums.sig" || die "download failed: sha256sums signature"
+fFetch "${base}/${asset}" "${tmp}/shcl" || fDie "download failed: ${asset}"
+fFetch "${base}/shcl-${version}-sha256sums.txt" "${tmp}/sums" || fDie "download failed: sha256sums"
+fFetch "${base}/shcl-${version}-sha256sums.txt.sig" "${tmp}/sums.sig" || fDie "download failed: sha256sums signature"
 
 ## Check the signature before trusting anything the sums file says. Order is the
 ## whole point: a checksum read out of an unverified file proves nothing.
 printf '%s\n' "${SIGNING_KEY}" > "${tmp}/signing.pub"
 openssl dgst -sha256 -verify "${tmp}/signing.pub" -signature "${tmp}/sums.sig" "${tmp}/sums" >/dev/null 2>&1 \
-	|| die "signature check failed on sha256sums - refusing to install"
+	|| fDie "signature check failed on sha256sums - refusing to install"
 
 want="$(grep " ${asset}\$" "${tmp}/sums" | cut -d' ' -f1 || true)"
 got="$(sha256sum "${tmp}/shcl" | cut -d' ' -f1)"
-[[ -n "${want}" && "${got}" == "${want}" ]] || die "sha256 mismatch on ${asset}"
+[[ -n "${want}" && "${got}" == "${want}" ]] || fDie "sha256 mismatch on ${asset}"
 
 ## Drop-in code files and wrappers come from a release asset covered by the same
 ## signed sums file as the binary. They used to come from GitHub's generated
@@ -407,10 +407,10 @@ smoke_status=0
 "${tmp}/shcl" version >/dev/null 2>"${tmp}/smoke.err" || smoke_status=$?
 if [[ "${smoke_status}" != 0 ]]; then
 	if [[ "${smoke_status}" == 126 ]]; then
-		die "cannot execute from ${tmp} (noexec mount?) - set TMPDIR to a directory that allows execution and re-run"
+		fDie "cannot execute from ${tmp} (noexec mount?) - set TMPDIR to a directory that allows execution and re-run"
 	fi
 	head -n1 "${tmp}/smoke.err" >&2
-	die "the prebuilt linux-${arch} binary does not run here: it needs ${needs} and does not run on musl. Install from source instead: cargo install shcl"
+	fDie "the prebuilt linux-${arch} binary does not run here: it needs ${needs} and does not run on musl. Install from source instead: cargo install shcl"
 fi
 
 dropins="shcl-${version}-dropins.tar.gz"
@@ -419,9 +419,9 @@ have_dropins=0
 have_docs=0
 if [[ -n "${want_src}" ]]; then
 	echo "downloading ${dropins}..."
-	fetch "${base}/${dropins}" "${tmp}/dropins.tgz" || die "download failed: ${dropins}"
+	fFetch "${base}/${dropins}" "${tmp}/dropins.tgz" || fDie "download failed: ${dropins}"
 	got_src="$(sha256sum "${tmp}/dropins.tgz" | cut -d' ' -f1)"
-	[[ "${got_src}" == "${want_src}" ]] || die "sha256 mismatch on ${dropins}"
+	[[ "${got_src}" == "${want_src}" ]] || fDie "sha256 mismatch on ${dropins}"
 	mkdir -p "${tmp}/x" "${tmp}/code" "${tmp}/scripts" "${tmp}/man" "${tmp}/completions"
 	tar -xzf "${tmp}/dropins.tgz" -C "${tmp}/x"
 	cp "${tmp}/x/source/rust/src/lib.rs" "${tmp}/x/source/go/shcl.go" "${tmp}/x/source/python/shcl.py" \
@@ -465,7 +465,7 @@ fTopMissing(){
 ## payload without the downloads in front of them.
 fLayDown(){
 	local desttop linkdir mandir manowner
-	manNote=""
+	man_note=""
 	desttop="$(fTopMissing "${dest}")"
 	linkdir="$(fTopMissing "$(dirname "${link}")")"
 	${asroot} mkdir -p "${dest}" "$(dirname "${link}")"
@@ -489,8 +489,8 @@ fLayDown(){
 		manowner="$(fLinkOwner "${manlink}" "${dest}")"
 		case "${manowner}" in
 			free|ours) ${asroot} ln -sfn "${dest}/man/shcl.1" "${manlink}" ;;
-			file)      manNote="${manlink} is not a symlink" ;;
-			*)         manNote="${manlink} links to ${manowner#elsewhere }" ;;
+			file)      man_note="${manlink} is not a symlink" ;;
+			*)         man_note="${manlink} links to ${manowner#elsewhere }" ;;
 		esac
 	fi
 	${asroot} ln -sfn "${dest}/shcl" "${link}"
@@ -513,8 +513,8 @@ fLayDown
 
 echo
 printf 'installed shcl %s -> %s\n' "${version}" "${link}"
-if [[ -n "${manNote}" ]]; then
-	printf 'note: %s - left alone, and this install'\''s man page not linked there\n' "${manNote}"
+if [[ -n "${man_note}" ]]; then
+	printf 'note: %s - left alone, and this install'\''s man page not linked there\n' "${man_note}"
 fi
 (( have_dropins )) || printf 'note: this release ships no signed drop-in payload, so %s/code and %s/scripts were skipped - take them from the repo if you want them\n' "${dest}" "${dest}"
 ## Completions are laid down but not wired in. There is no one directory that
