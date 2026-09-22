@@ -127,6 +127,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced: `read_bool` is `shcl_read_bool_` and `write_reason` is `shcl_write_reason_` in C. The trailing underscore is there because a typedef already has the plain name. Both are in the README and the C++ veneer too.
 		- Note: the rule says its exceptions are the whole list and a new one needs a line.
 		- Probable fix: a line in the exception list, which costs no consumer anything. The other way is a rename at the 3.0.0 cut.
+			- No problem with a rename since this is for 3.0.0. But whichever makes the most sense.
 		- Origin: `6459875` (2026-07-13) and `4df2316` (2026-08-02). The rule is from 2026-09-20, and the names were not checked against it. Confirmed.
 		- Opened: 20260922-120717
 
