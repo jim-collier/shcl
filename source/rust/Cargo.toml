@@ -41,6 +41,12 @@ strip = true
 [profile.dev]
 debug = "line-tables-only"
 
+# The test binaries only. The gate's fuzz runs five times faster at 1, and
+# overflow checks and debug assertions stay on at any level. The CLI the other
+# gates run is still built by the dev profile, so their timings do not move.
+[profile.test]
+opt-level = 1
+
 # Used only by the cicd profiler stage (cargo build --profile profiling
 # --features profiling). Optimized like release so the flamegraph reflects real
 # perf, but keeps symbols + debuginfo (release strips them) so frames are named.

@@ -81,9 +81,15 @@ root="$(cd "${here}/.." && pwd)"   ## the git repo root (cicd/..)
 ## rust-toolchain.toml is meaningless and target/ fills with mixed artifacts.
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
-## Cap every stage at 50% of cores; config command arrays can consume CPU_CAP.
+## Cap every stage at 50% of cores, since a workstation is usually running
+## something else; config command arrays can consume CPU_CAP. A runner that runs
+## only this sets CPU_CAP itself. Anything but a plain count is ignored, since
+## the value goes into arithmetic.
 _cores="$(nproc 2>/dev/null || echo 2)"
-CPU_CAP=$(( _cores / 2 )); (( CPU_CAP < 1 )) && CPU_CAP=1
+if [[ ! "${CPU_CAP:-}" =~ ^[1-9][0-9]*$ ]]; then
+	CPU_CAP=$(( _cores / 2 ))
+	if (( CPU_CAP < 1 )); then CPU_CAP=1; fi
+fi
 export CPU_CAP
 
 ## Per-stage extras: eval'd strings run after the stage's primary command, so a
@@ -641,3 +647,4 @@ fEcho_Clean
 ##		- 2026-08-26 JC: Dogfood extended to the cross builds via per-os-arch dest lists; the atomic install and dest pick are helpers now.
 ##		- 2026-09-14 JC: A run that passes the tests stage records its tree for the pre-push hook; local tool skips are noted in SHCL_GATE_SKIPS and hold it back.
 ##		- 2026-09-19 JC: Clears git's local environment first, so GIT_DIR from a hook run in a linked worktree cannot reach the gates' scratch repos.
+##		- 2026-09-21 JC: CPU_CAP set by the caller wins, so a runner with nothing else on it can use every core.
