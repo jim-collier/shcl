@@ -241,6 +241,32 @@ fRunWinpathSandbox() {
 	esac
 }
 
+## install.ps1's uninstall skipped a file it could not delete in silence, then
+## blamed the dir it kept on files it never installed. A running shcl.exe is
+## what holds one; a handle opened with no sharing stops a delete the same way
+## and needs no process to manage. Under 5.1, where the one-liner lands.
+fRunUninstallLock() {
+	local dir="${work}/lockdest" ps="${work}/lock.ps1" win out
+	mkdir -p "${dir}/code"
+	printf 'x\n' > "${dir}/shcl.exe"; printf 'x\n' > "${dir}/code/lib.rs"
+	win="$(cygpath -w "${dir}")" || return 1
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Remove-ShclFile/,/^\t}/p' install.ps1
+		echo "\$exe = Join-Path -Path '${win}' -ChildPath 'shcl.exe'"
+		echo '$held = [System.IO.File]::Open($exe, "Open", "Read", "None")'
+		echo "try { \$r = Remove-ShclFile -Dest '${win}' } finally { \$held.Dispose() }"
+		echo 'Write-Output ("stuck=[{0}] foreign={1}" -f ($r.Stuck -join ","), $r.Foreign)'
+	} > "${ps}"
+	out="$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "${ps}")" 2>&1)" \
+		|| { echo "win-runners: uninstall lock: ${out}" >&2; return 1; }
+	[[ "${out}" == *"stuck=[${win}\\shcl.exe] foreign=False"* ]] \
+		|| { echo "win-runners: uninstall lock: ${out@Q}" >&2; return 1; }
+	[[ ! -e "${dir}/code" ]] || { echo "win-runners: uninstall lock: the emptied code dir was left" >&2; return 1; }
+}
+
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
 ## job, and nothing about it is platform-dependent.
 ##	A windows device name is not something a save may replace, and until
@@ -310,6 +336,7 @@ fRun "devices python" "${py}"       fDevicesPython
 ## sandbox, whose registry is thrown away with it.
 case "$(uname -s 2>/dev/null || true)" in
 	MINGW*|MSYS*|CYGWIN*)
+		fRun "uninstall lock" "" fRunUninstallLock
 		if [[ -n "${WINRUN_PARTIAL:-}" ]]; then fRunWinpathSandbox
 		else fRun "windows path" "" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
 		fi
