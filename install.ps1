@@ -332,8 +332,8 @@ file. Nothing unverified is installed.
 				return
 			}
 		}
-		## A file that would not go is a running shcl.exe, so the PATH entry
-		## stays with it and a second run finishes the job.
+		## A file that would not go is most likely a running shcl.exe, so the
+		## PATH entry stays with it and a second run finishes the job.
 		$removal = Remove-ShclFile -Dest $dest
 		if ($removal.Stuck.Count -gt 0) {
 			Exit-Install "could not remove $($removal.Stuck -join ', ') - close any running shcl and run the uninstall again"
