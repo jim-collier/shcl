@@ -499,6 +499,49 @@ SRVEOF
 	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
 		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
+	##	20260921 idea 6: a file the uninstall could not remove, which a running
+	##	shcl.exe causes on Windows, went unsaid, and the dir it kept was blamed
+	##	on files the installer never wrote. A read-only dir stands in for the
+	##	lock. The PATH entry waits for a clean second run, so this run gets as
+	##	far as the message.
+	mkdir -p "${tmpDir}/lad/Programs/Shcl/code"
+	printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/shcl.exe"; printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/code/lib.rs"
+	chmod 555 "${tmpDir}/lad/Programs/Shcl/code"
+	out="$(fNoNet -Uninstall -Target user -Yes || true)"
+	chmod 755 "${tmpDir}/lad/Programs/Shcl/code"
+	[[ "${out}" == *"could not remove ${tmpDir}/lad/Programs/Shcl/code/lib.rs"* ]] \
+		|| fBad "install.ps1 -Uninstall hid a file it could not remove: ${out@Q}"
+	[[ "${out}" == *"did not put there"* ]] && fBad "install.ps1 -Uninstall blamed its own file on someone else: ${out@Q}"
+	##	The other answers, from the function itself: a clean removal takes the
+	##	dir, and a file nobody installed keeps it and says so. The dirs are
+	##	named relative, which reads back spelled differently from the path
+	##	given, as a short 8.3 name does on windows. A file that would not go
+	##	was then counted as someone else's.
+	mkdir -p "${tmpDir}/rmfile/clean/code" "${tmpDir}/rmfile/other/scripts" "${tmpDir}/rmfile/held/code"
+	printf 'x\n' > "${tmpDir}/rmfile/clean/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/clean/code/lib.rs"
+	printf 'x\n' > "${tmpDir}/rmfile/other/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/other/scripts/mine.txt"
+	printf 'x\n' > "${tmpDir}/rmfile/held/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/held/code/lib.rs"
+	chmod 555 "${tmpDir}/rmfile/held/code"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Remove-ShclFile/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "Set-Location -LiteralPath '${tmpDir}/rmfile'"
+		echo "foreach (\$dir in 'clean', 'other', 'held') {"
+		echo '	$r = Remove-ShclFile -Dest $dir'
+		echo '	Write-Output ("{0}: stuck=[{1}] foreign={2}" -f $dir, ($r.Stuck -join ","), $r.Foreign)'
+		echo '}'
+	} > "${tmpDir}/rmfile.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/rmfile.ps1" 2>&1 || true)"
+	chmod 755 "${tmpDir}/rmfile/held/code"
+	[[ "${out}" == *"held: stuck=[held/code/lib.rs] foreign=False"* ]] \
+		|| fBad "install.ps1 -Uninstall called its own locked file someone else's: ${out@Q}"
+	[[ "${out}" == *"clean: stuck=[] foreign=False"* && ! -e "${tmpDir}/rmfile/clean" ]] \
+		|| fBad "install.ps1 -Uninstall did not remove a clean install whole: ${out@Q}"
+	[[ "${out}" == *"other: stuck=[] foreign=True"* && -e "${tmpDir}/rmfile/other/scripts/mine.txt" && ! -e "${tmpDir}/rmfile/other/shcl.exe" ]] \
+		|| fBad "install.ps1 -Uninstall mishandled a file it did not install: ${out@Q}"
+
 	##	20260909 item 38: the setup's PATH script exited 0 when it could not
 	##	write, so the setup's fallback message never showed. There is no
 	##	registry here at all, which is a failure it must report.
@@ -553,10 +596,10 @@ nBadBefore="${nBad}"
 	asroot="" tmp="${tmpDir}/stage" dest="${uhome}/.local/share/shcl" link="${uhome}/.local/bin/shcl"
 	# shellcheck disable=SC2034
 	manlink="${uhome}/.local/share/man/man1/shcl.1" target=user have_dropins=1 have_docs=1
-	manNote=""
+	man_note=""
 	fLayDown
 	[[ "$(readlink -- "${manlink}")" == "${uhome}/stow/shcl.1" ]] || fBad "install.bash repointed a man link that was not its own"
-	[[ "${manNote:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${manNote@Q}"
+	[[ "${man_note:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${man_note@Q}"
 	HOME="${uhome}" bash "${repoDir}/install.bash" --uninstall --target=user --yes >/dev/null 2>&1 || fBad "install.bash --uninstall failed"
 	[[ -L "${manlink}" && -e "${uhome}/stow/shcl.1" ]] || fBad "install.bash --uninstall removed a man link that was not its own"
 	[[ -e "${dest}/shcl" ]] && fBad "install.bash --uninstall left its own binary"
@@ -773,13 +816,13 @@ SRVEOF
 	for _ in {1..50}; do [[ -s "${tdir}/port" ]] && break; sleep 0.1; done
 	printf 'ca_certificate = %s\n' "${tdir}/cert.pem" > "${tdir}/wgetrc"
 	for tool in curl wget; do
-		defs="$(sed -n "/^\tfetch() { ${tool} /p;/^\tfetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
+		defs="$(sed -n "/^\tfFetch() { ${tool} /p;/^\tfFetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
 		(
 			eval "${defs}"
 			export GITHUB_TOKEN=regress-token CURL_CA_BUNDLE="${tdir}/cert.pem" WGETRC="${tdir}/wgetrc"
 			url="https://127.0.0.1:$(cat "${tdir}/port")"
-			fetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fetch failed" >> "${tdir}/${tool}.err"
-			fetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fetchApi failed" >> "${tdir}/${tool}.err"
+			fFetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fFetch failed" >> "${tdir}/${tool}.err"
+			fFetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fFetchApi failed" >> "${tdir}/${tool}.err"
 			[[ "$(fApiStatus "${url}/api/${tool}")" == "200" ]] || echo "fApiStatus failed" >> "${tdir}/${tool}.err"
 		) 2>/dev/null
 		[[ -s "${tdir}/${tool}.err" ]] && fBad "install.bash ${tool} arm did not complete its requests: $(tr '\n' ' ' < "${tdir}/${tool}.err")"
@@ -810,7 +853,7 @@ if fHave pwsh; then
 	sumLines="$(sed -n '/\$want = (Get-Content/p;/\$wantSrc = (Get-Content/p' "${repoDir}/install.ps1")"
 	sumCount="$(grep -c . <<<"${sumLines}" || true)"
 	[[ "${sumCount}" == 2 ]] || fBad "install.ps1's two sums lines could not be lifted: got ${sumCount}"
-	out="$(pwsh -NoProfile -Command "\$tmp = '${sdir}'; \$asset = 'shcl-9.9.9-windows-x86_64.exe'; \$dropins = 'shcl-9.9.9-dropins.tar.gz'
+	out="$(pwsh -NoProfile -Command "\$sums = '${sdir}/sums.txt'; \$asset = 'shcl-9.9.9-windows-x86_64.exe'; \$dropins = 'shcl-9.9.9-dropins.tar.gz'
 ${sumLines}
 Write-Output \"\$want \$wantSrc\"" 2>&1 || true)"
 	[[ "${out}" == "$(printf '%064d %064d' 2 4)" ]] \
@@ -1184,7 +1227,7 @@ fi
 ##	itself with Add/Remove Programs, so deleting its files from here left that
 ##	entry pointing at nothing. Windows-only, so the check is source order.
 setupTest="$( { grep -n "uninstall.exe'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
-setupWipe="$( { grep -n "Remove-Item -Force -LiteralPath (Join-Path \$dest 'shcl.exe')" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+setupWipe="$( { grep -n "Remove-ShclFile -Dest \$dest" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
 if [[ -z "${setupTest}" || -z "${setupWipe}" ]] || ((setupTest >= setupWipe)); then
 	fBad "install.ps1 removes a setup install's files without deferring to its uninstaller"
 fi
@@ -1763,8 +1806,8 @@ fi
 ##	running the real thing needs a network and a release.
 ps1="${repoDir}/install.ps1"
 if [[ -f "${ps1}" ]]; then
-	smokeLine="$({ grep -n "Invoke-ShclSmoke (Join-Path \$tmp 'shcl.exe')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
-	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path \$dest '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	smokeLine="$({ grep -n "Invoke-ShclSmoke -Exe \$tmpExe" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path -Path \$dest -ChildPath '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
 	if [[ -z "${smokeLine}" ]]; then
 		fBad "install.ps1 never runs the downloaded binary from the temp dir"
 	elif [[ -z "${publishLine}" ]]; then

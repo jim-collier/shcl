@@ -41,13 +41,13 @@ assume_yes=0
 hooks_only=0
 dir_given=0
 
-die() { printf 'install-dev.bash: %s\n' "$*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+fDie() { printf 'install-dev.bash: %s\n' "$*" >&2; exit 1; }
+fHave() { command -v "$1" >/dev/null 2>&1; }
 
 ## Usage text lives here, not in a sed slice of "$0": under the documented
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
-usage() {
+fUsage() {
 	cat <<'EOF'
 
 install-dev.bash - dev-environment setup for shcl
@@ -83,31 +83,31 @@ EOF
 while (( $# )); do
 	case "$1" in
 		--dir=*) clone_dir="${1#*=}"; dir_given=1 ;;
-		--dir)   (( $# >= 2 )) || die "missing value for --dir (try --dir=VALUE)"; shift; clone_dir="$1"; dir_given=1 ;;
+		--dir)   (( $# >= 2 )) || fDie "missing value for --dir (try --dir=VALUE)"; shift; clone_dir="$1"; dir_given=1 ;;
 		--hooks-only) hooks_only=1 ;;
 		-y|--yes) assume_yes=1 ;;
-		-h|--help) usage; exit 0 ;;
-		*) die "unknown option: $1" ;;
+		-h|--help) fUsage; exit 0 ;;
+		*) fDie "unknown option: $1" ;;
 	esac
 	shift
 done
 
-case "$(uname -s)" in Linux|Darwin) ;; *) die "Linux/macOS only (on Windows, run this under WSL)" ;; esac
-have git || die "git is required first"
+case "$(uname -s)" in Linux|Darwin) ;; *) fDie "Linux/macOS only (on Windows, run this under WSL)" ;; esac
+fHave git || fDie "git is required first"
 
 ## curl or wget, whichever is present, the same way install.bash does it; only
 ## the rustup step needs one. https is pinned through redirects and TLS floored
 ## at 1.2, so a bounced download can't silently downgrade.
-if have curl; then
-	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
-elif have wget; then
-	fetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
+if fHave curl; then
+	fFetch() { curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o "$2" "$1"; }
+elif fHave wget; then
+	fFetch() { wget -q --https-only --secure-protocol=TLSv1_2 -O "$2" "$1"; }
 fi
 
 ## Point git at the tracked hooks rather than copying them in, so an update to
 ## the hook arrives with a pull instead of needing a reinstall. -e, not -d: in
 ## a worktree .git is a file.
-setup_hooks() {
+fSetupHooks() {
 	git -C "${clone_dir}" config core.hooksPath cicd/hooks
 	echo "git hooks: core.hooksPath -> cicd/hooks (pre-push gates main)"
 	## The gate runs for minutes while git already holds the ssh session open;
@@ -134,9 +134,9 @@ fi
 ## Hooks only: no clone, no stocktaking, no installs.
 if (( hooks_only )); then
 	if (( ! in_clone )); then
-		fIsShcl "${clone_dir}" || die "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
+		fIsShcl "${clone_dir}" || fDie "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
 	fi
-	setup_hooks
+	fSetupHooks
 	exit 0
 fi
 
@@ -147,7 +147,7 @@ if (( ! in_clone )) && [[ -e "${clone_dir}" ]]; then
 	if fIsShcl "${clone_dir}"; then
 		in_clone=1; clone_dir="$(cd "${clone_dir}" && pwd)"
 	elif [[ -n "$(ls -A "${clone_dir}" 2>/dev/null)" || ! -d "${clone_dir}" ]]; then
-		die "${clone_dir} already exists and is not an shcl clone - pick another --dir"
+		fDie "${clone_dir} already exists and is not an shcl clone - pick another --dir"
 	fi
 fi
 
@@ -158,28 +158,28 @@ fi
 if (( in_clone )); then
 	pins_file="${clone_dir}/cicd/config.bash"
 else
-	have curl || have wget || die "need curl or wget"
+	fHave curl || fHave wget || fDie "need curl or wget"
 	pins_file="$(mktemp)"
 	trap 'rm -f "${pins_file}"' EXIT
-	fetch "https://raw.githubusercontent.com/jim-collier/shcl/main/cicd/config.bash" "${pins_file}" || die "cannot fetch cicd/config.bash for the tool pins"
+	fFetch "https://raw.githubusercontent.com/jim-collier/shcl/main/cicd/config.bash" "${pins_file}" || fDie "cannot fetch cicd/config.bash for the tool pins"
 fi
 ## "name|version|command" out of TOOL_PINS -> pin_ver, pin_cmd.
-pin() {
+fPin() {
 	local line
 	line="$(awk -v name="$1" '/^TOOL_PINS=\(/ { inpins=1; next } inpins && /^\)/ { exit } inpins && index($0, "\"" name "|") { sub(/^[ \t]*"/, ""); sub(/"[ \t]*$/, ""); print; exit }' "${pins_file}")"
-	[[ -n "${line}" ]] || die "no TOOL_PINS entry for $1 in cicd/config.bash"
+	[[ -n "${line}" ]] || fDie "no TOOL_PINS entry for $1 in cicd/config.bash"
 	pin_ver="${line#*|}"; pin_cmd="${pin_ver#*|}"; pin_ver="${pin_ver%%|*}"
 }
 ## The cppcheck pin names the binary; the PyPI wheel that carries it has its own
 ## version, kept beside TOOL_PINS as CPPCHECK_WHEEL so nothing here can drift.
-cppcheck_wheel() {
+fCppcheckWheel() {
 	cppcheck_wheel="$(sed -n 's/^CPPCHECK_WHEEL="\([^"]*\)".*/\1/p' "${pins_file}")"
-	[[ -n "${cppcheck_wheel}" ]] || die "no CPPCHECK_WHEEL in cicd/config.bash"
+	[[ -n "${cppcheck_wheel}" ]] || fDie "no CPPCHECK_WHEEL in cicd/config.bash"
 }
 ## Installed at the pinned version? The same test the pipeline's drift warning
 ## makes; missing and drifted both count as "install".
-at_pin() {
-	pin "$1"
+fAtPin() {
+	fPin "$1"
 	# shellcheck disable=SC2086
 	[[ "$(${pin_cmd} 2>/dev/null | head -5 | tr '\n' ' ')" == *"${pin_ver}"* ]]
 }
@@ -190,48 +190,48 @@ at_pin() {
 orig_path="${PATH}"
 [[ -d "${HOME}/.cargo/bin" ]] && PATH="${HOME}/.cargo/bin:${PATH}"
 gobin=""
-have go && gobin="$(go env GOPATH)/bin" && PATH="${gobin}:${PATH}"
+fHave go && gobin="$(go env GOPATH)/bin" && PATH="${gobin}:${PATH}"
 pkg_hint="your package manager"
-if have apt-get; then pkg_hint="sudo apt-get install"
-elif have dnf; then pkg_hint="sudo dnf install"
-elif have pacman; then pkg_hint="sudo pacman -S"
-elif have brew; then pkg_hint="brew install"
+if fHave apt-get; then pkg_hint="sudo apt-get install"
+elif fHave dnf; then pkg_hint="sudo dnf install"
+elif fHave pacman; then pkg_hint="sudo pacman -S"
+elif fHave brew; then pkg_hint="brew install"
 fi
 todo=() hints=()
 need_rustup=0
-if ! have cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
-	if have curl || have wget; then need_rustup=1; todo+=("rustup (official installer, user-space)")
+if ! fHave cargo && [[ ! -x "${HOME}/.cargo/bin/cargo" ]]; then
+	if fHave curl || fHave wget; then need_rustup=1; todo+=("rustup (official installer, user-space)")
 	else hints+=("curl/wget   - ${pkg_hint} curl  (then re-run for rustup)")
 	fi
 fi
-have go         || hints+=("go          - ${pkg_hint} golang (or https://go.dev/dl)")
-have python3    || hints+=("python3     - ${pkg_hint} python3")
-have cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gcc-c++)")
-have shellcheck || hints+=("shellcheck  - ${pkg_hint} shellcheck")
-if have pipx; then
-	for t in ruff mypy build; do at_pin "$t" || todo+=("${t} ${pin_ver} (pipx, user-space)"); done
+fHave go         || hints+=("go          - ${pkg_hint} golang (or https://go.dev/dl)")
+fHave python3    || hints+=("python3     - ${pkg_hint} python3")
+fHave cc         || hints+=("gcc/g++     - ${pkg_hint} build-essential (or gcc gcc-c++)")
+fHave shellcheck || hints+=("shellcheck  - ${pkg_hint} shellcheck")
+if fHave pipx; then
+	for t in ruff mypy build; do fAtPin "$t" || todo+=("${t} ${pin_ver} (pipx, user-space)"); done
 	## Both versions, because they are different numbers for one tool: the pin
 	## is the binary's version and the install asks pipx for the wheel's. The
 	## plan used to name the binary's and the install two blocks down fetched
 	## the other, so the two lines disagreed about what was about to happen.
-	at_pin cppcheck || { cppcheck_wheel; todo+=("cppcheck ${pin_ver} (pipx cppcheck==${cppcheck_wheel}, user-space)"); }
+	fAtPin cppcheck || { fCppcheckWheel; todo+=("cppcheck ${pin_ver} (pipx cppcheck==${cppcheck_wheel}, user-space)"); }
 else
 	hints+=("pipx        - ${pkg_hint} pipx  (then re-run for ruff/mypy/cppcheck/build)")
 fi
-if have npm; then
-	at_pin markdownlint-cli2 || todo+=("markdownlint-cli2 ${pin_ver} (npm -g --prefix ~/.local)")
+if fHave npm; then
+	fAtPin markdownlint-cli2 || todo+=("markdownlint-cli2 ${pin_ver} (npm -g --prefix ~/.local)")
 else
 	hints+=("npm         - ${pkg_hint} npm  (then re-run for markdownlint-cli2)")
 fi
 ## The supply-chain trio the gate runs. The Go pair ride the go hint when go is
 ## missing; cargo-deny builds through cargo, which may itself arrive this run.
-if have go; then
-	for t in staticcheck govulncheck; do at_pin "$t" || todo+=("${t} ${pin_ver} (go install, user-space)"); done
+if fHave go; then
+	for t in staticcheck govulncheck; do fAtPin "$t" || todo+=("${t} ${pin_ver} (go install, user-space)"); done
 fi
-if (( need_rustup )) || have cargo || [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
-	at_pin cargo-deny || todo+=("cargo-deny ${pin_ver} (cargo install, user-space - builds from source, takes a while)")
+if (( need_rustup )) || fHave cargo || [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+	fAtPin cargo-deny || todo+=("cargo-deny ${pin_ver} (cargo install, user-space - builds from source, takes a while)")
 fi
-if have pwsh; then
+if fHave pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { exit 1 }" >/dev/null 2>&1 \
 		|| todo+=("PSScriptAnalyzer (pwsh Install-Module, user-scope)")
 fi
@@ -260,7 +260,7 @@ if (( ! assume_yes )); then
 	## unattended contexts where the read then dies on a raw shell error.
 	reply=""
 	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
-		die "no terminal to confirm on - pass --yes"
+		fDie "no terminal to confirm on - pass --yes"
 	fi
 	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
@@ -289,28 +289,28 @@ fi
 echo
 if (( need_rustup )); then
 	echo "installing rustup..."
-	fetch https://sh.rustup.rs - | sh -s -- -y --no-modify-path
+	fFetch https://sh.rustup.rs - | sh -s -- -y --no-modify-path
 	PATH="${HOME}/.cargo/bin:${PATH}"
 fi
-if have pipx; then
-	for t in ruff mypy build; do at_pin "$t" || pipx install --force "${t}==${pin_ver}"; done
-	at_pin cppcheck || { cppcheck_wheel; pipx install --force "cppcheck==${cppcheck_wheel}"; }
+if fHave pipx; then
+	for t in ruff mypy build; do fAtPin "$t" || pipx install --force "${t}==${pin_ver}"; done
+	fAtPin cppcheck || { fCppcheckWheel; pipx install --force "cppcheck==${cppcheck_wheel}"; }
 fi
-if have npm; then
-	at_pin markdownlint-cli2 || npm install -g --prefix "${HOME}/.local" "markdownlint-cli2@${pin_ver}"
+if fHave npm; then
+	fAtPin markdownlint-cli2 || npm install -g --prefix "${HOME}/.local" "markdownlint-cli2@${pin_ver}"
 fi
-if have go; then
-	at_pin staticcheck || go install "honnef.co/go/tools/cmd/staticcheck@${pin_ver}"
-	at_pin govulncheck || go install "golang.org/x/vuln/cmd/govulncheck@${pin_ver}"
+if fHave go; then
+	fAtPin staticcheck || go install "honnef.co/go/tools/cmd/staticcheck@${pin_ver}"
+	fAtPin govulncheck || go install "golang.org/x/vuln/cmd/govulncheck@${pin_ver}"
 fi
-if have cargo; then
-	at_pin cargo-deny || cargo install cargo-deny --version "${pin_ver}" --locked
+if fHave cargo; then
+	fAtPin cargo-deny || cargo install cargo-deny --version "${pin_ver}" --locked
 fi
-if have pwsh; then
+if fHave pwsh; then
 	pwsh -NoProfile -Command "if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Scope CurrentUser -Force }"
 fi
 
-[[ -e "${clone_dir}/.git" ]] && setup_hooks
+[[ -e "${clone_dir}/.git" ]] && fSetupHooks
 
 echo
 echo "done. The gate is:  cicd/cicd.bash --ci"

@@ -51,12 +51,11 @@
 ##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, a faulty init schema, or --check found a rewrite to make,
-##	7 in-place write refused
-##	(--lossy overrides) or migrate left something behind, 8 a file or stream
-##	could not be read or written. A
-##	nonzero code is not an error to PowerShell - unless
-##	$PSNativeCommandUseErrorActionPreference is on under an ErrorActionPreference
-##	of Stop, where a not-found read throws instead of returning 3.
+##	7 in-place write refused (--lossy overrides) or migrate left something
+##	behind, 8 a file or stream could not be read or written. A nonzero code is
+##	not an error to PowerShell - unless $PSNativeCommandUseErrorActionPreference
+##	is on under an ErrorActionPreference of Stop, where a not-found read throws
+##	instead of returning 3.
 ##
 ##	Runs on Windows PowerShell 5.1 and PowerShell 7 on Windows; elsewhere it
 ##	needs PowerShell 7.3 or newer (the execute-bit check reads UnixFileMode).
@@ -66,6 +65,17 @@
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
+
+<#
+.SYNOPSIS
+Front end to the shcl binary, run as a script or dot-sourced for its functions.
+.DESCRIPTION
+Every argument goes to the binary as-is, and its exit code comes back in $LASTEXITCODE. Dot-sourced, it defines shcl and the shcl_* helpers, which do the same.
+.EXAMPLE
+pwsh shcl.ps1 get --int app.shcl server.port
+.EXAMPLE
+. ./shcl.ps1; $port = shcl_int app.shcl server.port
+#>
 
 ## No script-level param block on purpose: it would try to bind `get`/`--int` as
 ## parameters. Without one, every argument lands in $args verbatim, exactly what
@@ -87,9 +97,8 @@ function _shcl_executable([string]$path) {
 	if (-not (Test-Path -LiteralPath $path -PathType Leaf))       { return $false }
 	if ($PSVersionTable.PSVersion.Major -lt 6 -or $IsWindows)     { return $true }
 	$mode = (Get-Item -LiteralPath $path).UnixFileMode
-	$exec = [System.IO.UnixFileMode]::UserExecute  -bor `
-	        [System.IO.UnixFileMode]::GroupExecute -bor `
-	        [System.IO.UnixFileMode]::OtherExecute
+	$modes = [System.IO.UnixFileMode]
+	$exec = $modes::UserExecute -bor $modes::GroupExecute -bor $modes::OtherExecute
 	return ($mode -band $exec) -ne 0
 }
 
@@ -129,13 +138,13 @@ function _shcl_resolve {
 		return $false
 	}
 	if ($script:_SHCL_BIN -and (_shcl_executable $script:_SHCL_BIN)) { return $true }
-	$onPath = Get-Command shcl -CommandType Application -ErrorAction SilentlyContinue |
+	$onPath = Get-Command -Name shcl -CommandType Application -ErrorAction SilentlyContinue |
 		Select-Object -First 1 -ExpandProperty Source
 	$candidates = @(
-		(_shcl_exe (Join-Path $script:_SHCL_ROOT 'shcl')),
+		(_shcl_exe (Join-Path -Path $script:_SHCL_ROOT -ChildPath 'shcl')),
 		$onPath,
-		(_shcl_exe (Join-Path $script:_SHCL_ROOT '../rust/target/release/shcl')),
-		(_shcl_exe (Join-Path $script:_SHCL_ROOT '../rust/target/debug/shcl'))
+		(_shcl_exe (Join-Path -Path $script:_SHCL_ROOT -ChildPath '../rust/target/release/shcl')),
+		(_shcl_exe (Join-Path -Path $script:_SHCL_ROOT -ChildPath '../rust/target/debug/shcl'))
 	)
 	foreach ($candidate in $candidates) {
 		if ($candidate -and (_shcl_executable $candidate)) {
@@ -143,7 +152,7 @@ function _shcl_resolve {
 			return $true
 		}
 	}
-	_shcl_err "shcl.ps1: cannot find a shcl binary (set SHCL_BIN, or put it on PATH)"
+	_shcl_err 'shcl.ps1: cannot find a shcl binary (set SHCL_BIN, or put it on PATH)'
 	return $false
 }
 

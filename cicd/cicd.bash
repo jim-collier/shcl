@@ -625,8 +625,8 @@ if ((${#GIT_PUBLISH[@]})); then
 	## on dev is the one drift every user meets. Judged after the publish so a
 	## dev run that carries one goes red until the docs-only merge to main.
 	if [[ "$(git branch --show-current)" == dev ]] && git rev-parse -q --verify origin/main >/dev/null 2>&1; then
-		installerDrift="$(git diff --stat origin/main -- install.bash install.ps1 install-dev.bash || true)"
-		[[ -z "${installerDrift}" ]] || fDie "the installers differ from origin/main; merge them to main under the docs-only rule:"$'\n'"${installerDrift}"
+		installer_drift="$(git diff --stat origin/main -- install.bash install.ps1 install-dev.bash || true)"
+		[[ -z "${installer_drift}" ]] || fDie "the installers differ from origin/main; merge them to main under the docs-only rule:"$'\n'"${installer_drift}"
 	fi
 else
 	fEcho_Clean "publish skipped"

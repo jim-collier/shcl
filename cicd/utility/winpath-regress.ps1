@@ -15,6 +15,15 @@
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
 
+<#
+.SYNOPSIS
+Tests the Windows installers' PATH handling against the real registry.
+.DESCRIPTION
+Runs install.ps1's Update-ShclPath against HKCU and the setup's shclpath.ps1 against HKLM, and restores both values after. Exits 0 when every check passes, 1 when one fails, and 2 when it cannot set up.
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
+#>
+[CmdletBinding()]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification = 'runs the function text lifted from the shipped installer')]
 param()
 
@@ -26,16 +35,18 @@ if (-not ($env:OS -eq 'Windows_NT')) {
 	exit 2
 }
 
-$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$root = Resolve-Path -Path (Join-Path -Path $PSScriptRoot -ChildPath '..\..')
 $failures = 0
-function Test-Check([bool]$Ok, [string]$Name) {
+function Test-Check {
+	[CmdletBinding()]
+	param([bool]$Ok, [string]$Name)
 	if ($Ok) { Write-Output "winpath-regress: OK: $Name" }
 	else { Write-Output "winpath-regress: FAIL: $Name"; $script:failures++ }
 }
 
 ## Lift Update-ShclPath out of install.ps1 by name - the shipped text, so a
 ## drift in the script is a drift in the test subject.
-$lines = Get-Content (Join-Path $root 'install.ps1')
+$lines = Get-Content -LiteralPath (Join-Path -Path $root -ChildPath 'install.ps1')
 $start = -1
 for ($i = 0; $i -lt $lines.Count; $i++) {
 	if ($lines[$i] -match '^\tfunction Update-ShclPath\b') { $start = $i; break }
@@ -48,13 +59,19 @@ for ($i = $start + 1; $i -lt $lines.Count; $i++) {
 if ($end -lt 0) { Write-Output 'winpath-regress: Update-ShclPath never closes'; exit 2 }
 Invoke-Expression (($lines[$start..$end] -join "`n"))
 
-function Get-RawPath([Microsoft.Win32.RegistryKey]$Key) {
+function Get-RawPath {
+	[CmdletBinding()]
+	param([Microsoft.Win32.RegistryKey]$Key)
 	[string]$Key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 }
-function Get-PathKind([Microsoft.Win32.RegistryKey]$Key) {
+function Get-PathKind {
+	[CmdletBinding()]
+	param([Microsoft.Win32.RegistryKey]$Key)
 	if ($Key.GetValueNames() -contains 'Path') { $Key.GetValueKind('Path') } else { $null }
 }
-function Restore-PathValue([Microsoft.Win32.RegistryKey]$Key, [string]$Value, $Kind) {
+function Restore-PathValue {
+	[CmdletBinding()]
+	param([Microsoft.Win32.RegistryKey]$Key, [string]$Value, [Nullable[Microsoft.Win32.RegistryValueKind]]$Kind)
 	if ($null -eq $Kind) { if ($Key.GetValueNames() -contains 'Path') { $Key.DeleteValue('Path') } }
 	else { $Key.SetValue('Path', $Value, $Kind) }
 }
@@ -92,7 +109,7 @@ try {
 	Test-Check (Update-ShclPath -Scope User -Dir $dir) 'add onto an empty PATH reports a write'
 	Test-Check ((Get-RawPath $cu) -eq $dir) 'add onto an empty PATH leaves no leading semicolon'
 } finally {
-	Restore-PathValue $cu $savedCu $savedCuKind
+	Restore-PathValue -Key $cu -Value $savedCu -Kind $savedCuKind
 	$cu.Close()
 }
 
@@ -102,7 +119,7 @@ try {
 $lm = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $true)
 $savedLm = Get-RawPath $lm
 $savedLmKind = Get-PathKind $lm
-$script = Join-Path $root 'cicd\packaging\shclpath.ps1'
+$script = Join-Path -Path $root -ChildPath 'cicd\packaging\shclpath.ps1'
 $dir = 'C:\shcl-nsistest'
 try {
 	$before = @($savedLm -split ';' | Where-Object { $_ -ne '' })
@@ -123,14 +140,14 @@ try {
 	$shipped = [IO.File]::ReadAllText($script)
 	$keyText = "'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', `$true)"
 	if (-not $shipped.Contains($keyText)) { Write-Output 'winpath-regress: shclpath.ps1 no longer opens the key as expected'; exit 2 }
-	$broken = Join-Path ([IO.Path]::GetTempPath()) ('shclpath-fail-' + [IO.Path]::GetRandomFileName())
+	$broken = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ('shclpath-fail-' + [IO.Path]::GetRandomFileName())
 	New-Item -ItemType Directory -Path $broken | Out-Null
 	try {
-		$noKey = Join-Path $broken 'nokey.ps1'
+		$noKey = Join-Path -Path $broken -ChildPath 'nokey.ps1'
 		[IO.File]::WriteAllText($noKey, $shipped.Replace($keyText, "'SOFTWARE\shcl-winpath-regress-missing', `$true)"), [Text.UTF8Encoding]::new($true))
 		& powershell -NoProfile -ExecutionPolicy Bypass -File $noKey -Dir $dir
 		Test-Check ($LASTEXITCODE -ne 0) 'setup add fails on a missing key'
-		$readOnly = Join-Path $broken 'readonly.ps1'
+		$readOnly = Join-Path -Path $broken -ChildPath 'readonly.ps1'
 		[IO.File]::WriteAllText($readOnly, $shipped.Replace($keyText, $keyText.Replace('$true', '$false')), [Text.UTF8Encoding]::new($true))
 		& powershell -NoProfile -ExecutionPolicy Bypass -File $readOnly -Dir $dir
 		Test-Check ($LASTEXITCODE -ne 0) 'setup add fails when the write throws'
@@ -139,7 +156,7 @@ try {
 		Remove-Item -Recurse -Force -LiteralPath $broken -ErrorAction SilentlyContinue
 	}
 } finally {
-	Restore-PathValue $lm $savedLm $savedLmKind
+	Restore-PathValue -Key $lm -Value $savedLm -Kind $savedLmKind
 	$lm.Close()
 }
 

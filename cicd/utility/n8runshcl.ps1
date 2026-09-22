@@ -66,15 +66,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $exeSuffix = if ($IsWindows) { '.exe' } else { '' }
-$repoRoot  = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$sourceBin = Join-Path $repoRoot "source/rust/target/release/shcl$exeSuffix"
-$copyDir   = Join-Path $repoRoot 'cicd/artifacts/runbuilds'
+$repoRoot  = Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent
+$sourceBin = Join-Path -Path $repoRoot -ChildPath "source/rust/target/release/shcl$exeSuffix"
+$copyDir   = Join-Path -Path $repoRoot -ChildPath 'cicd/artifacts/runbuilds'
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 # Helpers
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 function Get-StagedCopy {
+	[CmdletBinding()]
+	param()
 	## Newest first. The stamp sorts lexically, so the name is the ordering.
 	## The comma keeps a one-element result an array - returning it bare would
 	## unroll to a scalar, and every caller here counts what it gets back.
@@ -82,18 +84,18 @@ function Get-StagedCopy {
 	## there on POSIX, and those sorted above every real copy.
 	if (-not (Test-Path -LiteralPath $copyDir)) { return , @() }
 	$stampName = '^shcl-\d{8}-\d{6}' + [regex]::Escape($exeSuffix) + '$'
-	$found = @(Get-ChildItem -LiteralPath $copyDir -File |
-		Where-Object { $_.Name -match $stampName } |
-		Sort-Object -Property Name -Descending)
+	$found = @(Get-ChildItem -LiteralPath $copyDir -File | Where-Object { $_.Name -match $stampName } | Sort-Object -Property Name -Descending)
 	return , $found
 }
 
-function Test-CopyInUse([string]$path) {
+function Test-CopyInUse {
+	[CmdletBinding()]
+	param([string]$Path)
 	## Windows holds an exclusive lock on a running image, so a write open that
 	## fails is the answer, and no process walk is needed.
 	if ($IsWindows) {
 		try {
-			$fs = [System.IO.File]::Open($path, 'Open', 'Write', 'None')
+			$fs = [System.IO.File]::Open($Path, 'Open', 'Write', 'None')
 			$fs.Dispose()
 			return $false
 		} catch { return $true }
@@ -101,7 +103,7 @@ function Test-CopyInUse([string]$path) {
 	## Everywhere else, ask which running image each process was started from.
 	## Processes owned by somebody else report no path rather than throwing, so
 	## the worst case is keeping a copy a moment longer than needed.
-	$resolved = (Resolve-Path -LiteralPath $path).Path
+	$resolved = (Resolve-Path -LiteralPath $Path).Path
 	$running  = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $resolved })
 	return ($running.Count -gt 0)
 }
@@ -117,7 +119,7 @@ function Remove-AgedCopy {
 	if ($all.Count -le $Keep) { return }
 	foreach ($stale in $all[$Keep..($all.Count - 1)]) {
 		if ($stale.FullName -eq $Launching) { continue }
-		if (Test-CopyInUse $stale.FullName) {
+		if (Test-CopyInUse -Path $stale.FullName) {
 			Write-Verbose "in use, keeping: $($stale.Name)"
 			continue
 		}
@@ -144,7 +146,7 @@ if ($ListCopies) {
 			Name    = $c.Name
 			Bytes   = $c.Length
 			Built   = $c.LastWriteTime
-			InUse   = (Test-CopyInUse $c.FullName)
+			InUse   = (Test-CopyInUse -Path $c.FullName)
 			Path    = $c.FullName
 		}
 	}
@@ -161,7 +163,7 @@ New-Item -ItemType Directory -Force -Path $copyDir | Out-Null
 ## Stamp from the build's own mtime, not the clock: running twice against one
 ## build should reuse that build's copy rather than pile up identical ones.
 $stamp  = (Get-Item -LiteralPath $sourceBin).LastWriteTime.ToString('yyyyMMdd-HHmmss')
-$staged = Join-Path $copyDir "shcl-$stamp$exeSuffix"
+$staged = Join-Path -Path $copyDir -ChildPath "shcl-$stamp$exeSuffix"
 
 if (-not (Test-Path -LiteralPath $staged)) {
 	Copy-Item -LiteralPath $sourceBin -Destination $staged -Force

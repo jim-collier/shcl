@@ -100,7 +100,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Deferred: `gfs-rotate.bash` forks four times per archive file when it names one. It is a shared copy, so the fix belongs in the canonical one, and the trigger is the next time the helpers are brought in line. Two Go allocations on the tokenizer path, the selector piece and a segment slice per field line, wait for a Go profile, since reusing a buffer changes helper signatures in all four bindings.
 
-	- Finished items are under Done - Bugs, in a bullet of the same name.
+	- Finished items are under Done - Bugs, and the ideas under Done - Features and enhancements, each in a bullet of the same name. The round is whole as of 2026-09-22.
 
 - Code review 20260920b:
 
@@ -165,31 +165,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
-
-- Code review 20260921:
-
-	- The round's ideas. Its defects are under Bugs, in a bullet of the same name. Ideas 3 and 4 rest on the formatter-config rule the directives gained on 2026-09-07.
-
-	- 🔘 Idea 4: turn on `PSUseConsistentIndentation` with tabs.
-		- Note: with pipeline indentation off, it flags five lines today, in `shcl.ps1`, `install.ps1` and `n8runshcl.ps1`. Fix those, then enable it.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 5: the PowerShell scripts fall short of the directive's PowerShell list in small ways.
-		- Note: five of the six have no comment-based help. Inner functions lack `[CmdletBinding()]`, and some parameters are untyped. `Join-Path` is called positionally 46 times. Two constant strings are double-quoted.
-		- Note: `cicd/packaging/shclpath.ps1` has no `Set-StrictMode` and carries a one-line copyright rather than the house block.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 6: `install.ps1 -Uninstall` hides a failed removal, then blames files it did not install.
-		- Note: plausible, read only. A running `shcl.exe` is locked, so its removal fails silently, and the message says the directory holds files the installer did not put there.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 7: two naming conventions inside one script.
-		- Note: `install-dev.bash` mixes `setup_hooks` and `have` with `fIsShcl` and `fOnPath`. `install.bash` mixes `fetch` and `die` with `fApiStatus`. `cicd.bash` has one camelCase variable among snake_case ones.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 8: `win-runners.bash` compiles the C CLI five times with the same flags.
-		- Note: a compile takes about 4.7 s here, so about 19 s per hosted windows run, likely more under mingw. Build it once and share it.
-		- Opened: 20260921-132543
 
 ### Done
 
@@ -5025,6 +5000,49 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: the config. With a `ReadRaw:` comment and the `statGid` name put back, `staticcheck ./...` exits 1 and names both. A probe function named `probeGid` in the CLI module fails the same way.
 		- Opened: 20260921-132543
 		- Closed: 20260921-185850
+
+	- ✅ Idea 4: turn on `PSUseConsistentIndentation` with tabs.
+		- Note: with pipeline indentation off, it flags five lines today, in `shcl.ps1`, `install.ps1` and `n8runshcl.ps1`. Fix those, then enable it.
+		- Fixed: `PSScriptAnalyzerSettings.psd1` turns the rule on with tabs. It checks pipeline lines too, at one tab past the first pipe, which is how the scripts already lay them out.
+		- Fixed: the two flagged spots, in `shcl.ps1` and `install.ps1`, are plain statements now rather than backtick continuations. The rule has no room for spaces lined up after the tabs.
+		- Pinned by: the lint stage. The old `shcl.ps1` and `install.ps1` fail it under the new settings and pass under the old.
+		- Opened: 20260921-132543
+		- Closed: 20260922-072651
+
+	- ✅ Idea 5: the PowerShell scripts fall short of the directive's PowerShell list in small ways.
+		- Note: five of the six have no comment-based help. Inner functions lack `[CmdletBinding()]`, and some parameters are untyped. `Join-Path` is called positionally 46 times. Two constant strings are double-quoted.
+		- Note: `cicd/packaging/shclpath.ps1` has no `Set-StrictMode` and carries a one-line copyright rather than the house block.
+		- Fixed: all six scripts have comment-based help, and `Get-Help` reads each block. Every inner function outside `shcl.ps1` is an advanced function with a typed `param()` block, and so are the scripts that take parameters.
+		- Fixed: every `Join-Path` names its parameters, and so do the other positional cmdlet calls. The two constant strings are single-quoted. `shclpath.ps1` sets strict mode and carries the house copyright block, and keeps its CRLF line ends.
+		- Keep: `shcl.ps1`'s functions stay plain, per the style guide. An advanced function has no `$args`, so the pass-through would break.
+		- Left alone: help blocks on the small inner helpers, which each have a comment already. `Write-Output` and a script's own two-argument helpers stay positional, which the analyzer allows.
+		- Pinned by: the analyzer, and shell-regress, which lifts five `install.ps1` functions and runs them. Three of its source-order checks follow the new spellings. The hosted windows job runs `winpath-regress.ps1` and `shclpath.ps1` under 5.1.
+		- Opened: 20260921-132543
+		- Closed: 20260922-072651
+
+	- ✅ Idea 6: `install.ps1 -Uninstall` hides a failed removal, then blames files it did not install.
+		- Note: plausible, read only. A running `shcl.exe` is locked, so its removal fails silently, and the message says the directory holds files the installer did not put there.
+		- Fixed: the removal is `Remove-ShclFile`, which hands back what would not go and whether anything the installer did not write is left. A file that would not go ends the run at exit 1 and is named, before the PATH entry is touched, so a second run finishes the job. The line about someone else's files shows only when there are some.
+		- Note: what is left is judged by name within its own dir. A full path read back can be spelled differently from the one given, as a short 8.3 name is, and a compare by full path counted the locked file as someone else's.
+		- Pinned by: shell-regress. The real script, with a read-only dir standing in for the lock, must name the file and must not blame anyone else. The old script passes over it in silence. More rows run the function on a clean install, on one holding a file it did not write, and on a dir named by a path spelled differently from the one read back.
+		- Pinned by: a `win-runners.bash` row that holds `shcl.exe` open with no sharing, which stops a delete the way a running copy does, and runs the function under 5.1.
+		- Opened: 20260921-132543
+		- Closed: 20260922-072651
+
+	- ✅ Idea 7: two naming conventions inside one script.
+		- Note: `install-dev.bash` mixes `setup_hooks` and `have` with `fIsShcl` and `fOnPath`. `install.bash` mixes `fetch` and `die` with `fApiStatus`. `cicd.bash` has one camelCase variable among snake_case ones.
+		- Fixed: the helpers in both installers take the `f` prefix: `fDie`, `fHave`, `fUsage`, `fFetch`, `fFetchApi`, `fSetupHooks`, `fPin`, `fAtPin` and `fCppcheckWheel`. The two stray variables are snake_case like the rest of their files, `man_note` and `installer_drift`.
+		- Pinned by: nothing new. shell-regress lifts both fetch helpers by name and runs them, and `check-install-dev.bash` runs the dev installer's default path.
+		- Opened: 20260921-132543
+		- Closed: 20260922-072651
+
+	- ✅ Idea 8: `win-runners.bash` compiles the C CLI five times with the same flags.
+		- Note: a compile takes about 4.7 s here, so about 19 s per hosted windows run, likely more under mingw. Build it once and share it.
+		- Fixed: `fBuildCcli` builds it once for all five rows. A failed build is remembered, so each row fails on it without compiling again.
+		- Measured: on the hosted windows job a build is about 5 s, and the four rows after the first no longer pay it. The long path row went from 5.3 s to 0.1 s and the C devices row from 5.1 s to 0.3 s.
+		- Pinned by: nothing new. The hosted windows job runs all five rows, and passed them on run `35742074457`.
+		- Opened: 20260921-132543
+		- Closed: 20260922-072651
 
 	- ✅ Idea 9: the hosted run spends time it need not.
 		- Note: plausible, unmeasured. `staticcheck` and `govulncheck` are built from source on every run, and the Go build cache is off. The half-the-cores cap gives the 4-core runner two jobs, while the run takes about 39 of its 45 minutes.

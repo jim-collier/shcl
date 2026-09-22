@@ -120,13 +120,25 @@ fRunMemBounds() {
 		source/c/tests/mem_bounds.c -o "${work}/mem_bounds${exe}" -lm \
 		&& "${work}/mem_bounds${exe}"
 }
+## The C CLI, built once for the five rows that run it; a compile is several
+## seconds, more under mingw. A failed build is remembered, so each of those
+## rows fails on it rather than compiling again.
+cliBuilt=""
+fBuildCcli() {
+	if [[ -z "${cliBuilt}" ]]; then
+		cliBuilt=1
+		"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+			source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || cliBuilt=0
+	fi
+	[[ "${cliBuilt}" == 1 ]]
+}
+
 ## The C CLI's argv: the narrow one arrives in the active code page, best-fit
 ## mapped, so a name the page cannot spell reached a different file. The two
 ## names here are the shapes that went wrong: one outside the page, one the
 ## page maps onto a plain letter.
 fRunCcli() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	local dir="${work}/argv"
 	mkdir -p "${dir}"
 	printf 'a: 1\n' > "${dir}/a.shcl"
@@ -146,8 +158,7 @@ fRunCcli() {
 ## follows undid it, so only a long path showed it. Nothing on linux has the
 ## limit and nothing under wine reaches this code, so the row lives here.
 fRunLongPath() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	## Two segments of 100, so the whole path is past 260 with room for the
 	## temp file's own suffix.
 	local deep
@@ -170,8 +181,7 @@ fRunLongPath() {
 fRunClosedStdin() {
 	local bad=0
 	local clis=()
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	clis+=("c|${work}/shcl-c${exe}")
 	## Each CLI drops out on its own rather than taking the row with it, so a box
 	## short one toolchain still judges the other three.
@@ -203,8 +213,7 @@ fRunClosedStdin() {
 ## with no executable bit on windows, so the three built CLIs are judged.
 fRunCliRegress() {
 	local clis=()
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	clis+=("c|${work}/shcl-c${exe}")
 	if fHave cargo; then
 		cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
@@ -230,6 +239,32 @@ fRunWinpathSandbox() {
 		2) echo "win-runners: windows path (sandbox): SKIPPED"; skipped+=("windows path (sandbox)") ;;
 		*) echo "win-runners: windows path (sandbox): FAILED" >&2; failed+=("windows path (sandbox)") ;;
 	esac
+}
+
+## install.ps1's uninstall skipped a file it could not delete in silence, then
+## blamed the dir it kept on files it never installed. A running shcl.exe is
+## what holds one; a handle opened with no sharing stops a delete the same way
+## and needs no process to manage. Under 5.1, where the one-liner lands.
+fRunUninstallLock() {
+	local dir="${work}/lockdest" ps="${work}/lock.ps1" win out
+	mkdir -p "${dir}/code"
+	printf 'x\n' > "${dir}/shcl.exe"; printf 'x\n' > "${dir}/code/lib.rs"
+	win="$(cygpath -w "${dir}")" || return 1
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Remove-ShclFile/,/^\t}/p' install.ps1
+		echo "\$exe = Join-Path -Path '${win}' -ChildPath 'shcl.exe'"
+		echo '$held = [System.IO.File]::Open($exe, "Open", "Read", "None")'
+		echo "try { \$r = Remove-ShclFile -Dest '${win}' } finally { \$held.Dispose() }"
+		echo 'Write-Output ("stuck=[{0}] foreign={1}" -f ($r.Stuck -join ","), $r.Foreign)'
+	} > "${ps}"
+	out="$(powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "${ps}")" 2>&1)" \
+		|| { echo "win-runners: uninstall lock: ${out}" >&2; return 1; }
+	[[ "${out}" == *"stuck=[${win}\\shcl.exe] foreign=False"* ]] \
+		|| { echo "win-runners: uninstall lock: ${out@Q}" >&2; return 1; }
+	[[ ! -e "${dir}/code" ]] || { echo "win-runners: uninstall lock: the emptied code dir was left" >&2; return 1; }
 }
 
 ## Fuzz iterations stay at the in-test default: the long soak is the Linux gate's
@@ -260,9 +295,8 @@ fCheckDevices() {   ## fCheckDevices CLI [ARG ...]
 }
 
 fDevicesC() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-dev-c${exe}" -lm || return 1
-	fCheckDevices "${work}/shcl-dev-c${exe}"
+	fBuildCcli || return 1
+	fCheckDevices "${work}/shcl-c${exe}"
 }
 
 fDevicesRust() {
@@ -302,6 +336,7 @@ fRun "devices python" "${py}"       fDevicesPython
 ## sandbox, whose registry is thrown away with it.
 case "$(uname -s 2>/dev/null || true)" in
 	MINGW*|MSYS*|CYGWIN*)
+		fRun "uninstall lock" "" fRunUninstallLock
 		if [[ -n "${WINRUN_PARTIAL:-}" ]]; then fRunWinpathSandbox
 		else fRun "windows path" "" powershell -NoProfile -ExecutionPolicy Bypass -File cicd/utility/winpath-regress.ps1
 		fi
