@@ -19,6 +19,8 @@
 ##		  --min N       fail unless at least N comparisons ran (default 1, so a
 ##		                collapsed corpus/dump can't pass on zero)
 ##		  NAME|CLI      binding name + its CLI path; first entry is the reference
+##		CPU_CAP in the environment sets how many workers share the work (default
+##		half the cores).
 ##	Exit: 0 all agree, 1 divergence, 2 usage/missing input or too few comparisons.
 ##	History: At bottom of script.
 
@@ -286,17 +288,11 @@ fReadRow(){
 ##	file for one with no fork.
 fHasNul(){ IFS= read -r -d '' _ <"$1"; }
 
-for caseDir in "$corpus"/*/; do
-	input="${caseDir}input.shcl"
-	## A case directory with no input.shcl is a mistake, not a non-case.
-	[[ -f "$input" ]] || { echo "crosscheck: ${caseDir} has no input.shcl" >&2; exit 2; }
-	caseName="${caseDir%/}"; caseName="${caseName##*/}"
-	# NUL-bearing cases (e.g. the merge-key NUL case) are pinned by the native
-	# conformance runners instead; skip them here, out loud.
-	if fHasNul "$input"; then
-		echo "crosscheck: skipping ${caseName} (NUL in input; native runners pin it)"
-		continue
-	fi
+##	One corpus case, every dimension it carries.
+fCase(){
+	local caseDir="$1"
+	local input="${caseDir}input.shcl" caseName="${caseDir%/}"
+	caseName="${caseName##*/}"
 	fCompare "fmt ${caseName}" fmt "$input"
 	# The lexical view and the 2.x rewrite: the tokenizer is the one reader
 	# of a line's parts, so its spans are the finest-grained parity there is,
@@ -362,8 +358,161 @@ for caseDir in "$corpus"/*/; do
 			fReadRow "$input" "$query" "$type" "${level:-}"
 		done < "$tsv"
 	fi
-done
+}
 
+##	One fuzz-dumped input.
+fExtraFile(){
+	local f="$1" reads
+	fCompare "fmt ${f##*/}" fmt "$f"
+	fCompare "tokens ${f##*/}" tokens "$f"
+	fCompare "migrate ${f##*/}" migrate "$f"
+	fCompare "migrate --from-2x ${f##*/}" migrate --from-2x "$f"
+	# The save gate over the soup as well: whether a load counted anything
+	# lost is the one parse result no read can show, and the corpus alone
+	# holds only the shapes somebody thought to pin.
+	caseSrc="$f"; fCompareWrite "fmt --write ${f##*/}" fFixCase fmt --write
+	# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
+	# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
+	reads="${f%.shcl}.reads.tsv"
+	if [[ -f "$reads" ]]; then
+		while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
+			[[ -z "$query" || "$query" == "query" ]] && continue
+			fReadRow "$f" "$query" "$type" "${level:-}"
+		done < "$reads"
+	fi
+}
+
+##	Everything that is not one input: the usage text, the fixture writes and the
+##	float spelling.
+fUsage(){
+	# Usage surface: help/version/bare/unknown are the largest user-visible output
+	# in the project and are hand-duplicated per CLI, so pin them here too.
+	fCompare "usage help" help
+	fCompare "usage help flag" --help
+	fCompare "usage version" version
+	fCompare "usage bare"
+	fCompare "usage unknown" definitely-not-a-subcommand
+	# The diagnostic code table and the per-subcommand help are hand-duplicated per
+	# CLI the way the help text is, and both are long. Every code and every
+	# subcommand is compared, since one entry going stale in one binding is the
+	# exact shape a four-way diff exists to catch. The code list comes from the
+	# reference's own listing, so a code added there is compared without a second
+	# list to keep in step.
+	fCompare "usage explain list" explain
+	fCompare "usage explain unknown code" explain E999
+	while read -r code; do
+		fCompare "usage explain ${code}" explain "${code}"
+	done < <("$refCli" explain | { grep -oE '^[EHV][0-9]+' || true ;})
+	while read -r cmd; do
+		fCompare "usage help ${cmd}" help "${cmd}"
+		fCompare "usage ${cmd} --help" "${cmd}" --help
+	done < <("$refCli" help | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | sort -u)
+	# about/donate carry both spellings and the blank-line padding; bare help above
+	# is the control, since it prints the same text with no padding.
+	fCompare "usage about" about
+	fCompare "usage about flag" --about
+	fCompare "usage donate" donate
+	fCompare "usage donate flag" --donate
+
+	# In-place writes: the rename that makes them atomic also replaces the inode, so
+	# these pin what the target keeps. Mode must survive (config files hold secrets)
+	# and a symlinked config must be written through, not replaced. The hard-link
+	# case pins the documented limitation: rename cannot preserve the other name.
+	fCompareWrite "write keeps mode" fFixMode fmt --write
+	fCompareWrite "write follows symlink" fFixSymlink fmt --write
+	fCompareWrite "write creates behind a dangling symlink" fFixDangling set --write --set=a=1
+	fCompareWrite "write breaks hard link" fFixHardlink fmt --write
+	fComparePlant "write refuses a planted temp" fmt --write
+
+	# The save gate, from the CLI side. Refusing leaves the file byte-identical, so
+	# the tree compare is what sees it; --lossy is the only way past.
+	fCompareWrite "write refuses to drop a line" fFixLost fmt --write
+	fCompareWrite "write --lossy drops it anyway" fFixLost fmt --write --lossy
+	fCompareWrite "set --write refuses to drop a line" fFixLost set --write --set a=2
+	fCompareWrite "set --write --lossy drops it anyway" fFixLost set --write --lossy --set a=2
+	fCompare "--lossy needs --write" fmt --lossy missing.shcl
+	fCompare "--lossy is not valid for get" get --lossy missing.shcl a
+
+	# `set --write --set` persists edits given as options and reads no ops from
+	# stdin, so nothing here feeds one. The gates around it are pinned too: --layer
+	# still cannot be written back anywhere, and --set stays ephemeral off 'set'.
+	fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
+	fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
+	fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
+	fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
+	# `set --write` on a FILE that is not there yet creates it; `fmt --write` has
+	# nothing to format and still refuses. The state compare covers the created
+	# file's mode too, which is umask-derived and so must match across bindings.
+	fCompareWrite "set --write creates a missing file" fFixAbsent set --write --set a=1
+	fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
+
+	# Float spelling: shortest-round-trip formatters may lawfully differ at a
+	# power of two (a lopsided rounding interval) and on an exact tie between two
+	# spellings of the shortest length. Every power of two, plus a fixed set of
+	# random doubles built as exact m * 2^e so the text reads back to the double
+	# it names, through a float write in each binding.
+	awk 'BEGIN{
+		## 2^e by exact halving and doubling from 1. `2 ^ e` is not a portable way
+		## to reach a subnormal: gawk computes a negative power as 1/(2^1074),
+		## which is 1/inf, so every subnormal row came out 0 and tested nothing.
+		v = 1;
+		for (e = 0; e <= 1023; e++) { pw[e] = v; v = v * 2 }
+		v = 1;
+		for (e = -1; e >= -1074; e--) { v = v / 2; pw[e] = v }
+		for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, pw[e];
+		## A fixed integer generator rather than srand()/rand(), whose sequence
+		## differs between awks - so the "fixed" random set was a different set on
+		## every runner. Every product here stays under 2^53, so it is exact.
+		s = 20260902;
+		for (i = 0; i < 3000; i++) {
+			s = (16807 * s) % 2147483647; a = s % 131072;
+			s = (16807 * s) % 2147483647; b = s % 131072;
+			s = (16807 * s) % 2147483647; c = s % 131072;
+			s = (16807 * s) % 2147483647;
+			m = (a * 131072 + b) * 131072 + c;
+			e = (s % 1900) - 1000;
+			printf "float\tr%d\t%.17g\n", i, m * pw[e];
+		}
+	}' > "${tmpDir}/floats.ops"
+	fCompareStdin "float spelling" "${tmpDir}/floats.ops" set -
+
+	# `set -` follows stdin, so the same spelling means two things and both are
+	# pinned: the piped document when an option holds the edits, an empty base when
+	# stdin is the ops script instead.
+	printf 'int\tx\t7\n' >"${tmpDir}/emptybase.ops"
+	fCompareStdin "set - reads the piped document" project/conformance/044-write-literal/input.shcl set - --set b=2
+	fCompareStdin "set - is an empty base for ops" "${tmpDir}/emptybase.ops" set -
+
+	# --set-literal takes value syntax, so the same text lands as an array where
+	# --set stores one quoted string; the pair is compared to pin that difference.
+	# The rejections are the parser's own, so they have to agree with it.
+	fCompareWrite "set --write applies --set-literal" fFixMode set --write --set-literal 'a=80, 443'
+	fCompare "set --set-literal array" set --set-literal 'a=80, 443' project/conformance/044-write-literal/input.shcl
+	fCompare "set --set quotes the same text" set --set 'a=80, 443' project/conformance/044-write-literal/input.shcl
+	fCompare "set --set-literal keeps a quoted element" set --set-literal 'a="x, y", z' project/conformance/044-write-literal/input.shcl
+	fCompare "set --set-literal rejects an open quote" set --set-literal 'a="oops' project/conformance/044-write-literal/input.shcl
+	fCompare "set --set-literal wants PATH=VALUE" set --set-literal noequals project/conformance/044-write-literal/input.shcl
+}
+
+##	The work, as units a worker takes whole: the usage block, each corpus case
+##	and each fuzz input. Most of the run is CLI start-up, Python's above all, and
+##	nothing is shared between units but the read-only inputs, so the units go
+##	round-robin to one background worker per core. Each worker has its own
+##	scratch directory and leaves its counts in a file there; one with no counts
+##	file did not finish, and fails the run.
+units=(usage)
+for caseDir in "$corpus"/*/; do
+	## A case directory with no input.shcl is a mistake, not a non-case.
+	[[ -f "${caseDir}input.shcl" ]] || { echo "crosscheck: ${caseDir} has no input.shcl" >&2; exit 2; }
+	# NUL-bearing cases (e.g. the merge-key NUL case) are pinned by the native
+	# conformance runners instead; skip them here, out loud.
+	if fHasNul "${caseDir}input.shcl"; then
+		caseName="${caseDir%/}"
+		echo "crosscheck: skipping ${caseName##*/} (NUL in input; native runners pin it)"
+		continue
+	fi
+	units+=("case|${caseDir}")
+done
 if [[ -n "$extra" && -d "$extra" ]]; then
 	declare -i nExtra=0
 	for f in "$extra"/*.shcl; do
@@ -371,23 +520,7 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 		nExtra+=1
 		# Same NUL limitation as the corpus loop; silently skip (a dump can be large).
 		if fHasNul "$f"; then continue; fi
-		fCompare "fmt ${f##*/}" fmt "$f"
-		fCompare "tokens ${f##*/}" tokens "$f"
-		fCompare "migrate ${f##*/}" migrate "$f"
-		fCompare "migrate --from-2x ${f##*/}" migrate --from-2x "$f"
-		# The save gate over the soup as well: whether a load counted anything
-		# lost is the one parse result no read can show, and the corpus alone
-		# holds only the shapes somebody thought to pin.
-		caseSrc="$f"; fCompareWrite "fmt --write ${f##*/}" fFixCase fmt --write
-		# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
-		# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
-		reads="${f%.shcl}.reads.tsv"
-		if [[ -f "$reads" ]]; then
-			while IFS=$'\t' read -r query type _expected _status level _rest || [[ -n "$query" ]]; do
-				[[ -z "$query" || "$query" == "query" ]] && continue
-				fReadRow "$f" "$query" "$type" "${level:-}"
-			done < "$reads"
-		fi
+		units+=("extra|${f}")
 	done
 	if ((nExtra == 0)); then
 		echo "crosscheck: --extra ${extra} matched no *.shcl (empty fuzz dump?)" >&2
@@ -395,113 +528,47 @@ if [[ -n "$extra" && -d "$extra" ]]; then
 	fi
 fi
 
-# Usage surface: help/version/bare/unknown are the largest user-visible output
-# in the project and are hand-duplicated per CLI, so pin them here too.
-fCompare "usage help" help
-fCompare "usage help flag" --help
-fCompare "usage version" version
-fCompare "usage bare"
-fCompare "usage unknown" definitely-not-a-subcommand
-# The diagnostic code table and the per-subcommand help are hand-duplicated per
-# CLI the way the help text is, and both are long. Every code and every
-# subcommand is compared, since one entry going stale in one binding is the
-# exact shape a four-way diff exists to catch. The code list comes from the
-# reference's own listing, so a code added there is compared without a second
-# list to keep in step.
-fCompare "usage explain list" explain
-fCompare "usage explain unknown code" explain E999
-while read -r code; do
-	fCompare "usage explain ${code}" explain "${code}"
-done < <("$refCli" explain | { grep -oE '^[EHV][0-9]+' || true ;})
-while read -r cmd; do
-	fCompare "usage help ${cmd}" help "${cmd}"
-	fCompare "usage ${cmd} --help" "${cmd}" --help
-done < <("$refCli" help | { grep -oE '^  shcl [a-z]+' || true ;} | awk '{print $2}' | sort -u)
-# about/donate carry both spellings and the blank-line padding; bare help above
-# is the control, since it prints the same text with no padding.
-fCompare "usage about" about
-fCompare "usage about flag" --about
-fCompare "usage donate" donate
-fCompare "usage donate flag" --donate
+fWorker(){
+	local k="$1" i=0 u
+	tmpDir="${tmpDir}/w${k}"
+	mkdir "$tmpDir"
+	for u in "${units[@]}"; do
+		if ((i % nWorkers == k)); then
+			case "$u" in
+				usage)    fUsage ;;
+				case\|*)  fCase "${u#*|}" ;;
+				extra\|*) fExtraFile "${u#*|}" ;;
+			esac
+		fi
+		i=$((i + 1))
+	done
+	echo "${nCompared} ${nBad}" >"${tmpDir}/counts"
+}
 
-# In-place writes: the rename that makes them atomic also replaces the inode, so
-# these pin what the target keeps. Mode must survive (config files hold secrets)
-# and a symlinked config must be written through, not replaced. The hard-link
-# case pins the documented limitation: rename cannot preserve the other name.
-fCompareWrite "write keeps mode" fFixMode fmt --write
-fCompareWrite "write follows symlink" fFixSymlink fmt --write
-fCompareWrite "write creates behind a dangling symlink" fFixDangling set --write --set=a=1
-fCompareWrite "write breaks hard link" fFixHardlink fmt --write
-fComparePlant "write refuses a planted temp" fmt --write
-
-# The save gate, from the CLI side. Refusing leaves the file byte-identical, so
-# the tree compare is what sees it; --lossy is the only way past.
-fCompareWrite "write refuses to drop a line" fFixLost fmt --write
-fCompareWrite "write --lossy drops it anyway" fFixLost fmt --write --lossy
-fCompareWrite "set --write refuses to drop a line" fFixLost set --write --set a=2
-fCompareWrite "set --write --lossy drops it anyway" fFixLost set --write --lossy --set a=2
-fCompare "--lossy needs --write" fmt --lossy missing.shcl
-fCompare "--lossy is not valid for get" get --lossy missing.shcl a
-
-# `set --write --set` persists edits given as options and reads no ops from
-# stdin, so nothing here feeds one. The gates around it are pinned too: --layer
-# still cannot be written back anywhere, and --set stays ephemeral off 'set'.
-fCompareWrite "set --write applies --set" fFixMode set --write --set a=2
-fCompareWrite "set --write --set adds a path" fFixMode set --write --set b.c=hello
-fCompare "set --write rejects --layer" set --write --layer=missing.shcl missing.shcl
-fCompare "fmt --write rejects --set" fmt --write --set a=1 missing.shcl
-# `set --write` on a FILE that is not there yet creates it; `fmt --write` has
-# nothing to format and still refuses. The state compare covers the created
-# file's mode too, which is umask-derived and so must match across bindings.
-fCompareWrite "set --write creates a missing file" fFixAbsent set --write --set a=1
-fCompareWrite "fmt --write still refuses a missing file" fFixAbsent fmt --write
-
-# Float spelling: shortest-round-trip formatters may lawfully differ at a
-# power of two (a lopsided rounding interval) and on an exact tie between two
-# spellings of the shortest length. Every power of two, plus a fixed set of
-# random doubles built as exact m * 2^e so the text reads back to the double
-# it names, through a float write in each binding.
-awk 'BEGIN{
-	## 2^e by exact halving and doubling from 1. `2 ^ e` is not a portable way
-	## to reach a subnormal: gawk computes a negative power as 1/(2^1074),
-	## which is 1/inf, so every subnormal row came out 0 and tested nothing.
-	v = 1;
-	for (e = 0; e <= 1023; e++) { pw[e] = v; v = v * 2 }
-	v = 1;
-	for (e = -1; e >= -1074; e--) { v = v / 2; pw[e] = v }
-	for (e = -1074; e <= 1023; e++) printf "float\tp%d\t%.17g\n", e + 1074, pw[e];
-	## A fixed integer generator rather than srand()/rand(), whose sequence
-	## differs between awks - so the "fixed" random set was a different set on
-	## every runner. Every product here stays under 2^53, so it is exact.
-	s = 20260902;
-	for (i = 0; i < 3000; i++) {
-		s = (16807 * s) % 2147483647; a = s % 131072;
-		s = (16807 * s) % 2147483647; b = s % 131072;
-		s = (16807 * s) % 2147483647; c = s % 131072;
-		s = (16807 * s) % 2147483647;
-		m = (a * 131072 + b) * 131072 + c;
-		e = (s % 1900) - 1000;
-		printf "float\tr%d\t%.17g\n", i, m * pw[e];
-	}
-}' > "${tmpDir}/floats.ops"
-fCompareStdin "float spelling" "${tmpDir}/floats.ops" set -
-
-# `set -` follows stdin, so the same spelling means two things and both are
-# pinned: the piped document when an option holds the edits, an empty base when
-# stdin is the ops script instead.
-printf 'int\tx\t7\n' >"${tmpDir}/emptybase.ops"
-fCompareStdin "set - reads the piped document" project/conformance/044-write-literal/input.shcl set - --set b=2
-fCompareStdin "set - is an empty base for ops" "${tmpDir}/emptybase.ops" set -
-
-# --set-literal takes value syntax, so the same text lands as an array where
-# --set stores one quoted string; the pair is compared to pin that difference.
-# The rejections are the parser's own, so they have to agree with it.
-fCompareWrite "set --write applies --set-literal" fFixMode set --write --set-literal 'a=80, 443'
-fCompare "set --set-literal array" set --set-literal 'a=80, 443' project/conformance/044-write-literal/input.shcl
-fCompare "set --set quotes the same text" set --set 'a=80, 443' project/conformance/044-write-literal/input.shcl
-fCompare "set --set-literal keeps a quoted element" set --set-literal 'a="x, y", z' project/conformance/044-write-literal/input.shcl
-fCompare "set --set-literal rejects an open quote" set --set-literal 'a="oops' project/conformance/044-write-literal/input.shcl
-fCompare "set --set-literal wants PATH=VALUE" set --set-literal noequals project/conformance/044-write-literal/input.shcl
+## CPU_CAP from cicd.bash, or half the cores when run alone.
+nWorkers="${CPU_CAP:-}"
+if [[ ! "$nWorkers" =~ ^[1-9][0-9]*$ ]]; then nWorkers=$(( $(nproc) / 2 )); fi
+if ((nWorkers < 1)); then nWorkers=1; fi
+if ((nWorkers > ${#units[@]})); then nWorkers=${#units[@]}; fi
+pids=()
+for ((k = 0; k < nWorkers; k++)); do
+	fWorker "$k" >"${tmpDir}/w${k}.log" 2>&1 &
+	pids+=("$!")
+done
+## Logs in worker order, so a run reads the same whichever worker ends first.
+declare -i nFailed=0 wCompared wBad
+for k in "${!pids[@]}"; do
+	wrc=0; wait "${pids[k]}" || wrc=$?
+	cat "${tmpDir}/w${k}.log"
+	if [[ -f "${tmpDir}/w${k}/counts" ]]; then
+		read -r wCompared wBad <"${tmpDir}/w${k}/counts"
+		nCompared=$((nCompared + wCompared)); nBad=$((nBad + wBad))
+	else
+		nFailed+=1
+		echo "crosscheck: worker ${k} ended at exit ${wrc} without finishing" >&2
+	fi
+done
+if ((nFailed)); then exit 2; fi
 
 if ((nBad)); then
 	echo "crosscheck: ${nBad}/${nCompared} comparison(s) diverged"
@@ -535,3 +602,6 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		- 20260829: One fork per CLI launch instead of three (stdout through a
 ##		               file and a builtin read), and no forks at all for the NUL
 ##		               probe and the case names.
+##		- 20260922: The work split into units (each case, each fuzz input, the
+##		               usage block) that CPU_CAP background workers take in
+##		               turn. 229 s to 25 s at 16 workers.

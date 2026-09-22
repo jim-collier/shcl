@@ -2060,8 +2060,8 @@ fSplitTabs "one"
 ##	of its rows were the value zero and tested nothing - and drew its "fixed"
 ##	random set from srand()/rand(), whose sequence differs between awks. The
 ##	shipped generator is lifted out of crosscheck.bash by name so the check
-##	cannot drift from it.
-gen="$(sed -n "/^awk 'BEGIN{/,/^}' > /p" "${repoDir}/cicd/utility/crosscheck.bash" | sed "1s/^awk '//; \$s/}' > .*/}/")"
+##	cannot drift from it. It sits inside a function, so the indent is allowed for.
+gen="$(sed -n "/^[[:space:]]*awk 'BEGIN{/,/^[[:space:]]*}' > /p" "${repoDir}/cicd/utility/crosscheck.bash" | sed "1s/^[[:space:]]*awk '//; \$s/}' > .*/}/")"
 [[ -n "${gen}" ]] || fBad "could not lift the float generator out of crosscheck.bash"
 printf '%s
 ' "${gen}" > "${tmpDir}/floats.awk"
