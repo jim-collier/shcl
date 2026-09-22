@@ -7147,14 +7147,8 @@ static size_t s_tmp_base(const char *b) {
 }
 
 #ifdef _WIN32
-// The path a save actually rewrites. A symlink or junction is followed, so a
-// save through a linked-in config replaces the file it points at rather than
-// the link - the same thing the POSIX side has always done. The answer comes
-// back \\?\-prefixed, which is also what carries a path past MAX_PATH, so the
-// prefix is kept only where the name would otherwise be too long for the temp
-// file beside it; a short path stays the plain name it was. A file that is not
-// there yet has no final path, so its full path is prefixed by hand. malloc'd
-// UTF-8; NULL with errno saying why.
+// The way back from shcl_widen. malloc'd UTF-8 the caller frees; NULL with
+// errno saying why.
 static char *shcl_narrow(const wchar_t *w) {
 	int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
 	char *s = n > 0 ? (char *)malloc((size_t)n) : NULL;
@@ -7192,6 +7186,14 @@ static int shcl_not_a_disk_file(const char *path) {
 	return n > 0 && n < MAX_PATH
 	       && full[0] == L'\\' && full[1] == L'\\' && full[2] == L'.' && full[3] == L'\\';
 }
+// The path a save actually rewrites. A symlink or junction is followed, so a
+// save through a linked-in config replaces the file it points at rather than
+// the link - the same thing the POSIX side has always done. The answer comes
+// back \\?\-prefixed, which is also what carries a path past MAX_PATH, so the
+// prefix is kept only where the name would otherwise be too long for the temp
+// file beside it; a short path stays the plain name it was. A file that is not
+// there yet has no final path, so its full path is prefixed by hand. malloc'd
+// UTF-8; NULL with errno saying why.
 static char *shcl_resolve_target(const char *file) {
 	wchar_t *w = shcl_widen(file);
 	if (!w) return NULL;

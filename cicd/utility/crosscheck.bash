@@ -497,9 +497,9 @@ fUsage(){
 ##	The work, as units a worker takes whole: the usage block, each corpus case
 ##	and each fuzz input. Most of the run is CLI start-up, Python's above all, and
 ##	nothing is shared between units but the read-only inputs, so the units go
-##	round-robin to one background worker per core. Each worker has its own
-##	scratch directory and leaves its counts in a file there; one with no counts
-##	file did not finish, and fails the run.
+##	round-robin to CPU_CAP background workers, half the cores by default. Each
+##	worker has its own scratch directory and leaves its counts in a file there;
+##	one with no counts file did not finish, and fails the run.
 units=(usage)
 for caseDir in "$corpus"/*/; do
 	## A case directory with no input.shcl is a mistake, not a non-case.
