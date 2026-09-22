@@ -4322,6 +4322,18 @@ mod windows_publish {
 		std::fs::write(&tmp, "new\n").unwrap();
 		let ydir = y.to_string_lossy().into_owned();
 		icacls(&[&ydir, "/deny", "*S-1-1-0:(WD)"]);
+		// The hosted runner's administrator is let through anyway, and the
+		// case cannot be set up there.
+		let probe = x.join("probe");
+		std::fs::write(&probe, "").unwrap();
+		if std::fs::rename(&probe, y.join("probe")).is_ok() {
+			icacls(&[&ydir, "/remove:d", "*S-1-1-0"]);
+			eprintln!(
+				"conformance: skipping the failed-publish fixture (a move into a denied folder went through)"
+			);
+			let _ = std::fs::remove_dir_all(&root);
+			return;
+		}
 		let published = publish_file(&tmp, &target);
 		icacls(&[&ydir, "/remove:d", "*S-1-1-0"]);
 		let msg = published.expect_err("the publish went through").to_string();

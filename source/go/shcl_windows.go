@@ -118,8 +118,8 @@ const (
 // ReplaceFile is given a backup name, because without one a failure between its
 // two moves deletes the old file (1176) or leaves it under a name nobody is
 // told (1177). With one, 1177 leaves it at the backup and nothing at the
-// target, so the old file is put back, and if even that fails, nothing that
-// holds either text is removed and the error says where they are.
+// target, so the old file is put back. If even that fails, neither file is
+// removed and the error says where they are.
 func windowsPublishFile(tmp, target string) error {
 	backup := backupName(tmp)
 	movedAway := false

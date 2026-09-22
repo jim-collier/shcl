@@ -77,6 +77,17 @@ func TestFailedPublishLosesNeitherFile(t *testing.T) {
 	if out, err := exec.Command("icacls", y, "/deny", "*S-1-1-0:(WD)").CombinedOutput(); err != nil {
 		t.Fatalf("icacls: %v %s", err, out)
 	}
+	// The hosted runner's administrator is let through anyway, and the case
+	// cannot be set up there.
+	probe := filepath.Join(x, "probe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if os.Rename(probe, filepath.Join(y, "probe")) == nil {
+		_ = exec.Command("icacls", y, "/remove:d", "*S-1-1-0").Run()
+		t.Logf("skipping the failed-publish fixture (a move into a denied folder went through)")
+		return
+	}
 	perr := windowsPublishFile(tmp, target)
 	if out, err := exec.Command("icacls", y, "/remove:d", "*S-1-1-0").CombinedOutput(); err != nil {
 		t.Fatalf("icacls: %v %s", err, out)

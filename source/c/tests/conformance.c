@@ -420,10 +420,19 @@ static void publish_failures(void) {
 	MultiByteToWideChar(CP_UTF8, 0, tmp, -1, wtmp, 320);
 	snprintf(cmd, sizeof cmd, "icacls \"%s\" /deny *S-1-1-0:(WD) >nul", y);
 	if (system(cmd) != 0) fail("publish", "icacls deny failed");
-	int published = shcl_publish_file(wtmp, wtarget);
+	// The hosted runner's administrator is let through anyway, and the case
+	// cannot be set up there.
+	char probe[300], probed[300];
+	snprintf(probe, sizeof probe, "%s\\probe", x);
+	snprintf(probed, sizeof probed, "%s\\probe", y);
+	seed(probe, "");
+	int let_in = MoveFileExA(probe, probed, 0) != 0;
+	int published = let_in ? 0 : shcl_publish_file(wtmp, wtarget);
 	snprintf(cmd, sizeof cmd, "icacls \"%s\" /remove:d *S-1-1-0 >nul", y);
 	if (system(cmd) != 0) fail("publish", "icacls remove failed");
-	if (published) fail("publish", "the publish went through");
+	remove(probe); remove(probed);
+	if (let_in) printf("conformance: skipping the failed-publish fixture (a move into a denied folder went through)\n");
+	else if (published) fail("publish", "the publish went through");
 	else if (text_is(target, "old\n")) {
 		if (there(tmp)) fail("publish", "the temp file was left");
 	} else {

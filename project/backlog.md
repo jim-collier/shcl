@@ -318,6 +318,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 		- Pinned by: two windows tests in each binding. `a_failed_publish_loses_neither_file` sets up the folder case above and checks that the old text is at the target, or at the backup with the new text in the temp file and both named in the error. `a_brief_hold_is_waited_out` holds the temp file open for 20 ms and checks that the publish goes through. Rust's are in `lib.rs`, since the publish is private. On B29W the first fails in all four with the restore-or-keep step taken out, and the second fails in all four with one try. Both pass with the fix.
 
+		- Note: the hosted windows runner's administrator is let through the denied folder, so the first test cannot set its case up there. It tries a move into the folder first and prints a skip line if that goes through. On B29W it does not skip.
+
 		- Closed: 20260921-1724
 
 - ✅ The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
