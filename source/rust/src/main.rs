@@ -220,7 +220,7 @@ const ABOUT: &str = concat!(
 	env!("CARGO_PKG_VERSION"),
 	"
 Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
-Project: https://github.com/jim-collier/shcl
+Project: https://github.com/yottacore/shcl
 Licensed under the MIT License. Full text at:
   https://spdx.org/licenses/MIT.html
 No warranty.

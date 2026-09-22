@@ -36,10 +36,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jim-collier/shcl"
-Source = "https://github.com/jim-collier/shcl"
-Issues = "https://github.com/jim-collier/shcl/issues"
-Changelog = "https://github.com/jim-collier/shcl/blob/main/changelog.md"
+Homepage = "https://github.com/yottacore/shcl"
+Source = "https://github.com/yottacore/shcl"
+Issues = "https://github.com/yottacore/shcl/issues"
+Changelog = "https://github.com/yottacore/shcl/blob/main/changelog.md"
 
 [tool.setuptools]
 py-modules = ["shcl"]

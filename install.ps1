@@ -8,9 +8,9 @@
 ##	re-running updates an existing install in place.
 ##
 ##	Usage (one-liner, defaults):
-##		irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
+##		irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1 | iex
 ##	With options (download first, or wrap in a script block):
-##		& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user -Yes
+##		& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user -Yes
 ##
 ##	Options:
 ##		-Release <dev|stable>   dev = newest release including pre-releases
@@ -52,7 +52,7 @@ Remove what an install of the same -Target laid down, and nothing else.
 .PARAMETER Help
 Print the options and exit.
 .EXAMPLE
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user -Yes
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user -Yes
 #>
 [CmdletBinding()]
 param(
@@ -84,7 +84,7 @@ param(
 shcl installer
 
 Usage:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user
 
 Options:
     -Release <dev|stable>   dev = newest release including pre-releases
@@ -107,7 +107,7 @@ file. Nothing unverified is installed.
 
 	if ($Release -eq 'development') { $Release = 'dev' }
 
-	$repo = 'jim-collier/shcl'
+	$repo = 'yottacore/shcl'
 
 	function Exit-Install {
 		[CmdletBinding()]
@@ -511,7 +511,7 @@ file. Nothing unverified is installed.
 			Write-Output "note: $dest came from the shcl setup - its Add/Remove Programs entry still shows the version it installed"
 		}
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
-		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1)))' }
+		$rerun = if ($invokedAsFile) { "& '$scriptPath'" } else { '& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1)))' }
 		Write-Output "to remove it again: $rerun -Uninstall -Target $Target"
 		## And what `shcl` actually resolves to: the receipt below runs the copy
 		## just written, so another one earlier on PATH used to be invisible

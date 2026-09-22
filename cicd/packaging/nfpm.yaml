@@ -13,7 +13,7 @@ description: |
   Simple Hierarchical Config Language.
   Reference parser, accessor, writer, and CLI, with drop-in language
   bindings (Rust, Go, Python, C/C++) and Bash/PowerShell wrappers.
-homepage: https://github.com/jim-collier/shcl
+homepage: https://github.com/yottacore/shcl
 license: MIT
 # What the binary links against, read off the binary itself by package.bash:
 # the glibc floor is its newest GLIBC_ version, and libgcc joins only when

@@ -94,7 +94,7 @@ Section "Install"
 	WriteRegStr HKLM "${REG_UNINST}" "DisplayName" "SHCL"
 	WriteRegStr HKLM "${REG_UNINST}" "DisplayVersion" "${VERSION}"
 	WriteRegStr HKLM "${REG_UNINST}" "Publisher" "Jim Collier"
-	WriteRegStr HKLM "${REG_UNINST}" "URLInfoAbout" "https://github.com/jim-collier/shcl"
+	WriteRegStr HKLM "${REG_UNINST}" "URLInfoAbout" "https://github.com/yottacore/shcl"
 	WriteRegStr HKLM "${REG_UNINST}" "InstallLocation" "$INSTDIR"
 	WriteRegStr HKLM "${REG_UNINST}" "UninstallString" '"$INSTDIR\uninstall.exe"'
 	WriteRegDWORD HKLM "${REG_UNINST}" "NoModify" 1

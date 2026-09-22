@@ -25,15 +25,15 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 
 ## Code of Conduct
 
-This project and everyone participating in it is governed by the [SHCL Code of Conduct](https://github.com/jim-collier/shcl/blob/main/code_of_conduct.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to shclⒶyottacore.com.
+This project and everyone participating in it is governed by the [SHCL Code of Conduct](https://github.com/yottacore/shcl/blob/main/code_of_conduct.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to shclⒶyottacore.com.
 
 ## I Have a Question
 
-Before you ask a question, it is best to search for existing [Issues](https://github.com/jim-collier/shcl/issues) that might help you. In case you have found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
+Before you ask a question, it is best to search for existing [Issues](https://github.com/yottacore/shcl/issues) that might help you. In case you have found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
 
 If you then still feel the need to ask a question and need clarification, we recommend the following:
 
-- Open an [Issue](https://github.com/jim-collier/shcl/issues/new).
+- Open an [Issue](https://github.com/yottacore/shcl/issues/new).
 
 - Provide as much context as you can about what you're running into.
 
@@ -56,9 +56,9 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 
 - Make sure that you are using the latest version.
 
-- Determine if your bug is really a bug and not an error on your side e.g. using incompatible environment components/versions (Make sure that you have read the [documentation](https://github.com/jim-collier/shcl/blob/main/README.md). If you are looking for support, you might want to check [this section](#i-have-a-question)).
+- Determine if your bug is really a bug and not an error on your side e.g. using incompatible environment components/versions (Make sure that you have read the [documentation](https://github.com/yottacore/shcl/blob/main/README.md). If you are looking for support, you might want to check [this section](#i-have-a-question)).
 
-- To see if other users have experienced (and potentially already solved) the same issue you are having, check if there is not already a bug report existing for your bug or error in the [bug tracker](https://github.com/jim-collier/shcl/issues?q=label%3Abug).
+- To see if other users have experienced (and potentially already solved) the same issue you are having, check if there is not already a bug report existing for your bug or error in the [bug tracker](https://github.com/yottacore/shcl/issues?q=label%3Abug).
 
 - Also search the wider internet (Stack Overflow and the like) in case someone outside GitHub has already discussed it.
 
@@ -76,7 +76,7 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 
 We use GitHub issues to track bugs and errors. If you run into an issue with the project:
 
-- Open an [Issue](https://github.com/jim-collier/shcl/issues/new). (Since we can't be sure at this point whether it is a bug or not, we ask you not to talk about a bug yet and not to label the issue.)
+- Open an [Issue](https://github.com/yottacore/shcl/issues/new). (Since we can't be sure at this point whether it is a bug or not, we ask you not to talk about a bug yet and not to label the issue.)
 
 - Explain the behavior you would expect and the actual behavior.
 
@@ -101,16 +101,16 @@ This section guides you through submitting an enhancement suggestion for SHCL, *
 
 - Make sure that you are using the latest version.
 
-- Read the [documentation](https://github.com/jim-collier/shcl/blob/main/README.md) carefully and find out if the functionality is already covered, maybe by an individual configuration.
+- Read the [documentation](https://github.com/yottacore/shcl/blob/main/README.md) carefully and find out if the functionality is already covered, maybe by an individual configuration.
 
-- Perform a [search](https://github.com/jim-collier/shcl/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
+- Perform a [search](https://github.com/yottacore/shcl/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
 
 - Find out whether your idea fits with the scope and aims of the project. It's up to you to make a strong case to convince the project's developers of the merits of this feature. Keep in mind that we want features that will be useful to the majority of our users and not just a small subset. If you're just targeting a minority of users, consider writing an add-on/plugin library.
 
 <!-- omit in toc -->
 #### How Do I Submit a Good Enhancement Suggestion?
 
-Enhancement suggestions are tracked as [GitHub issues](https://github.com/jim-collier/shcl/issues).
+Enhancement suggestions are tracked as [GitHub issues](https://github.com/yottacore/shcl/issues).
 
 - Use a **clear and descriptive title** for the issue to identify the suggestion.
 
