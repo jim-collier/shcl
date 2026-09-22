@@ -98,8 +98,8 @@ BUILD_EXTRA=(
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
 ## scripts so cicd can't rot silently. The extras gate every other binding too:
-## go vet, ruff + mypy (Python), cppcheck (C, exhaustive - minutes, not
-## seconds), markdownlint over all tracked .md (config in .markdownlint-cli2.jsonc
+## go vet, ruff + mypy (Python), cppcheck (C, exhaustive, with a result cache),
+## markdownlint over all tracked .md (config in .markdownlint-cli2.jsonc
 ## at repo root), and PSScriptAnalyzer on every tracked .ps1. shfmt is
 ## deliberately NOT here - its output fights the hand-formatted shell style, so
 ## it stays interactive-only.
@@ -124,7 +124,11 @@ LINT_EXTRA=(
 	## and the files are covered. cicd/utility/ruff.toml extends the project rule
 	## set for them.
 	'RAYON_NUM_THREADS="${CPU_CAP}" ruff check ${QUIET_FLAG} cicd/utility/flame-report.py cicd/utility/gen-demo-gif.py cicd/utility/check-abnf.py cicd/utility/comparison/pyworker.py'
-	'cppcheck --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
+	## Exhaustive over every #ifdef mix of the header is about ten minutes, and
+	## most runs change no C. The build dir keeps each file's result, keyed on its
+	## code, its comments and these options, so an unchanged file replays in well
+	## under a second. It sits in the git dir so a pre-push worktree finds it too.
+	'cbd="$(git rev-parse --git-common-dir 2>/dev/null || echo cicd/artifacts)/cppcheck-build"; mkdir -p "${cbd}"; cppcheck -j 2 --cppcheck-build-dir="${cbd}" --error-exitcode=1 --enable=warning,portability --inline-suppr --check-level=exhaustive --quiet -Isource/c source/c/cmd/shcl/main.c source/c/tests/conformance.c'
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
@@ -407,3 +411,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-07-22 JC: Packaging wired: PACKAGE_ENABLE + package.bash in the shellcheck list.
 ##		- 2026-08-26 JC: Per-os-arch dogfood dests for the cross builds; windows-x86_64 goes to the synced mswin cli dir.
 ##		- 2026-09-19 JC: green-tree.bash in the shellcheck list; shell-regress now holds the list to the tracked shell files.
+##		- 2026-09-21 JC: cppcheck keeps a result cache in the git dir and checks its two files side by side.
