@@ -201,7 +201,7 @@ static const char *HELP =
 static const char *ABOUT =
 	"shcl v" VERSION "\n"
 	"Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].\n"
-	"Project: https://github.com/jim-collier/shcl\n"
+	"Project: https://github.com/yottacore/shcl\n"
 	"Licensed under the MIT License. Full text at:\n"
 	"  https://spdx.org/licenses/MIT.html\n"
 	"No warranty.\n"

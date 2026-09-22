@@ -9,7 +9,7 @@
 ##	manager. States the plan first, with an option to abort.
 ##
 ##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
+##		curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
 ##	With options:
 ##		curl -fsSL .../install-dev.bash | bash -s -- --yes
 ##
@@ -35,7 +35,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/jim-collier/shcl"
+REPO_URL="https://github.com/yottacore/shcl"
 clone_dir="./shcl"
 assume_yes=0
 hooks_only=0
@@ -58,7 +58,7 @@ linters via pipx/npm/pwsh), and prints the exact install hint for anything that
 needs the system package manager. States the plan first, with an option to abort.
 
 Usage (one-liner):
-  curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
+  curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
 
 With options:
   curl -fsSL .../install-dev.bash | bash -s -- --yes
@@ -161,7 +161,7 @@ else
 	fHave curl || fHave wget || fDie "need curl or wget"
 	pins_file="$(mktemp)"
 	trap 'rm -f "${pins_file}"' EXIT
-	fFetch "https://raw.githubusercontent.com/jim-collier/shcl/main/cicd/config.bash" "${pins_file}" || fDie "cannot fetch cicd/config.bash for the tool pins"
+	fFetch "https://raw.githubusercontent.com/yottacore/shcl/main/cicd/config.bash" "${pins_file}" || fDie "cannot fetch cicd/config.bash for the tool pins"
 fi
 ## "name|version|command" out of TOOL_PINS -> pin_ver, pin_cmd.
 fPin() {

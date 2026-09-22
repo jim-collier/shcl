@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"unicode/utf8"
 
-	shcl "github.com/jim-collier/shcl/source/go/v2"
+	shcl "github.com/yottacore/shcl/source/go/v2"
 )
 
 // Every stdout write goes through these. A reader that closed early is not an
@@ -225,7 +225,7 @@ not be read or written.
 // concatenates from the const above so it cannot drift from `shcl version`.
 const about = "shcl v" + version + `
 Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
-Project: https://github.com/jim-collier/shcl
+Project: https://github.com/yottacore/shcl
 Licensed under the MIT License. Full text at:
   https://spdx.org/licenses/MIT.html
 No warranty.

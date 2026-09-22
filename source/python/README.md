@@ -57,12 +57,12 @@ Bindings are versioned in lockstep, so `2.x` is the same behavior in every langu
 
 ## The CLI
 
-This package is the library only. The `shcl` command comes as a prebuilt binary and as `.deb`/`.rpm`/Windows packages - see <https://github.com/jim-collier/shcl>.
+This package is the library only. The `shcl` command comes as a prebuilt binary and as `.deb`/`.rpm`/Windows packages - see <https://github.com/yottacore/shcl>.
 
 ## Docs
 
-Language spec, formal grammar, and the other bindings: <https://github.com/jim-collier/shcl>
+Language spec, formal grammar, and the other bindings: <https://github.com/yottacore/shcl>
 
 ## License
 
-MIT. SHCL™ is a trademark of Jim Collier - see the [trademark policy](https://github.com/jim-collier/shcl/blob/main/trademark.md).
+MIT. SHCL™ is a trademark of Jim Collier - see the [trademark policy](https://github.com/yottacore/shcl/blob/main/trademark.md).

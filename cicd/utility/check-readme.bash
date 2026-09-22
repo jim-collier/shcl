@@ -114,9 +114,9 @@ mkdir -p "${tmpDir}/goex"
 	echo
 	echo 'go 1.24'
 	echo
-	echo 'require github.com/jim-collier/shcl/source/go/v2 v2.0.0'
+	echo 'require github.com/yottacore/shcl/source/go/v2 v2.0.0'
 	echo
-	echo "replace github.com/jim-collier/shcl/source/go/v2 => ${repoDir}/source/go"
+	echo "replace github.com/yottacore/shcl/source/go/v2 => ${repoDir}/source/go"
 } > "${tmpDir}/goex/go.mod"
 if ! ( cd "${tmpDir}/goex" && GOFLAGS=-mod=mod go build -o goex . ) 2> "${tmpDir}/go.err"; then
 	echo "check-readme: the README's Go example does not build:" >&2

@@ -6,12 +6,12 @@
 <!-- markdownlint-disable MD026 -- Trailing punctuation in heading; the "compares to..." ellipsis is deliberate -->
 <div align="center">
 
-[![CI](https://github.com/jim-collier/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jim-collier/shcl/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/jim-collier/shcl?sort=semver)](https://github.com/jim-collier/shcl/releases)
+[![CI](https://github.com/yottacore/shcl/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yottacore/shcl/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/yottacore/shcl?sort=semver)](https://github.com/yottacore/shcl/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![crates.io](https://img.shields.io/crates/v/shcl?logo=rust&label=crates.io)](https://crates.io/crates/shcl)
 [![PyPI](https://img.shields.io/pypi/v/shcl?logo=python&logoColor=white&label=PyPI)](https://pypi.org/project/shcl/)
-[![Go module](https://pkg.go.dev/badge/github.com/jim-collier/shcl/source/go/v2.svg)](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2)
+[![Go module](https://pkg.go.dev/badge/github.com/yottacore/shcl/source/go/v2.svg)](https://pkg.go.dev/github.com/yottacore/shcl/source/go/v2)
 [![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jim-collier)
 
 <!-- TOC ignore:true -->
@@ -313,11 +313,11 @@ Field names are case-insensitive. Repeated paths merge. `site` here is not one k
 
 ## Installation
 
-The latest release, `v2.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/jim-collier/shcl/releases).
+The latest release, `v2.0.0`, has packages, prebuilt CLI binaries, and a checksums file on the [releases page](https://github.com/yottacore/shcl/releases).
 
 ### Language packages
 
-Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
+Each binding is published where its own ecosystem looks for it, all under the name `shcl`: [crates.io](https://crates.io/crates/shcl) for Rust, [PyPI](https://pypi.org/project/shcl/) for Python, and the [Go module](https://pkg.go.dev/github.com/yottacore/shcl/source/go/v2) for Go.
 
 Only the crate carries the CLI as well as the library, which is the easiest way to get the binary on a platform with no prebuilt one - macOS and the BSDs included:
 
@@ -332,7 +332,7 @@ cargo install shcl
 The module is the library by itself and installs no command, so this is a dependency, not an installation:
 
 ```sh
-go get github.com/jim-collier/shcl/source/go/v2
+go get github.com/yottacore/shcl/source/go/v2
 ```
 
 #### PyPI
@@ -386,13 +386,13 @@ The Linux installer also lays down the man page and the shell completions. It sy
 ##### Linux and WSL
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
 ```
 
 To pass options on Linux, add them after the pipe:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s -- --target=user
+curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash -s -- --target=user
 ```
 
 The prebuilt linux-x86_64 binary needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, and later). On an older system, `cargo install shcl` builds against what is there.
@@ -400,13 +400,13 @@ The prebuilt linux-x86_64 binary needs glibc 2.34 or newer (Ubuntu 22.04, Debian
 ##### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1 | iex
 ```
 
 On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock form:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user
 ```
 
 The installer unpacks the drop-in payload with `tar`, which Windows 10 1803, Server 2019 and later carry. On an older Windows, use the setup `.exe` from the releases page instead.
@@ -555,8 +555,8 @@ workers: 4
 ## This config file format is SHCL.
 ## "Simple Hierarchical Config Language"
 ##    Format   3
-##    Home     https://github.com/jim-collier/shcl
-##    Syntax   https://github.com/jim-collier/shcl/blob/v3.0.0/project/spec.md
+##    Home     https://github.com/yottacore/shcl
+##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ```
@@ -634,14 +634,14 @@ doc.save_file("server.shcl")?;
 
 ### Go
 
-- Install the module: `go get github.com/jim-collier/shcl/source/go/v2`
+- Install the module: `go get github.com/yottacore/shcl/source/go/v2`
 
-- Dependency line: `require github.com/jim-collier/shcl/source/go/v2 v2.0.0`
+- Dependency line: `require github.com/yottacore/shcl/source/go/v2 v2.0.0`
 
 - Notes: Go keeps its module in a subdirectory, so the import path ends in `/source/go` and the module's own tags carry a matching `source/go/` prefix. From 2.0 the major goes in the path too, as Go requires, so the import ends `/source/go/v2` and `go get -u` tracks `2.x` without ever crossing to a 3.x. A 1.x consumer keeps working on the old path until it edits the import.
 
 ```go
-import shcl "github.com/jim-collier/shcl/source/go/v2"
+import shcl "github.com/yottacore/shcl/source/go/v2"
 
 // One call reads and parses, and never fails (see the Rust example).
 doc, fileStatus := shcl.LoadFile("server.shcl")
@@ -924,7 +924,7 @@ One read-side companion belongs with this: canonical output lowercases field nam
 `install-dev.bash` clones the repo, installs the toolchains and linters the pipeline gates on as far as it can without sudo, and prints the package-manager hint for anything left over. It states its plan first:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install-dev.bash | bash
+curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
 ```
 
 Linux. macOS is untested for the pipeline, and some of its checks need Linux. On Windows, use WSL, since the pipeline is bash. Then, from the clone:
@@ -953,7 +953,7 @@ cicd/cicd.bash --ci
 
 - [`project/style-guide_ui-ux.md`](project/style-guide_ui-ux.md): how the command line behaves. Option spelling, the help layout, what goes to stdout and what to stderr, and the exit codes.
 
-Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/jim-collier/shcl/source/go/v2) for Go.
+Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, [pkg.go.dev](https://pkg.go.dev/github.com/yottacore/shcl/source/go/v2) for Go.
 
 ## Contributing and support
 
