@@ -5023,7 +5023,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- ✅ Idea 6: `install.ps1 -Uninstall` hides a failed removal, then blames files it did not install.
 		- Note: plausible, read only. A running `shcl.exe` is locked, so its removal fails silently, and the message says the directory holds files the installer did not put there.
 		- Fixed: the removal is `Remove-ShclFile`, which hands back what would not go and whether anything the installer did not write is left. A file that would not go ends the run at exit 1 and is named, before the PATH entry is touched, so a second run finishes the job. The line about someone else's files shows only when there are some.
-		- Pinned by: shell-regress. The real script, with a read-only dir standing in for the lock, must name the file and must not blame anyone else. The old script passes over it in silence. Two more rows run the function on a clean install and on one holding a file it did not write.
+		- Note: what is left is judged by name within its own dir. A full path read back can be spelled differently from the one given, as a short 8.3 name is, and a compare by full path counted the locked file as someone else's.
+		- Pinned by: shell-regress. The real script, with a read-only dir standing in for the lock, must name the file and must not blame anyone else. The old script passes over it in silence. More rows run the function on a clean install, on one holding a file it did not write, and on a dir named by a path spelled differently from the one read back.
 		- Pinned by: a `win-runners.bash` row that holds `shcl.exe` open with no sharing, which stops a delete the way a running copy does, and runs the function under 5.1.
 		- Opened: 20260921-132543
 		- Closed: 20260922-072651
@@ -5038,8 +5039,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- ✅ Idea 8: `win-runners.bash` compiles the C CLI five times with the same flags.
 		- Note: a compile takes about 4.7 s here, so about 19 s per hosted windows run, likely more under mingw. Build it once and share it.
 		- Fixed: `fBuildCcli` builds it once for all five rows. A failed build is remembered, so each row fails on it without compiling again.
-		- Measured: a second row's build step takes 8 ms here, where each one took about 4.7 s.
-		- Pinned by: nothing new. The hosted windows job runs all five rows.
+		- Measured: on the hosted windows job a build is about 5 s, and the four rows after the first no longer pay it. The long path row went from 5.3 s to 0.1 s and the C devices row from 5.1 s to 0.3 s.
+		- Pinned by: nothing new. The hosted windows job runs all five rows, and passed them on run `35742074457`.
 		- Opened: 20260921-132543
 		- Closed: 20260922-072651
 
