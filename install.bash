@@ -11,8 +11,8 @@
 ##	Needs curl or wget, plus openssl for the signature check.
 ##
 ##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-##		wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+##		curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
+##		wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
 ##	With options:
 ##		curl -fsSL .../install.bash | bash -s -- --target=user --yes
 ##
@@ -48,7 +48,7 @@
 
 set -euo pipefail
 
-REPO="jim-collier/shcl"
+REPO="yottacore/shcl"
 release="dev"
 target="system"
 assume_yes=0
@@ -92,8 +92,8 @@ an existing install in place.
 Needs curl or wget, plus openssl for the signature check.
 
 Usage (one-liner):
-  curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
-  wget -qO- https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash
+  curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
+  wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
 
 With options:
   curl -fsSL .../install.bash | bash -s -- --target=user --yes
@@ -532,7 +532,7 @@ elif (( have_dropins )); then
 fi
 ## Under the documented pipe $0 is "bash" (or a /dev/fd path), so the hint
 ## names the one-liner unless this really is a file on disk.
-rerun="curl -fsSL https://raw.githubusercontent.com/jim-collier/shcl/main/install.bash | bash -s --"
+rerun="curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash -s --"
 [[ -f "$0" ]] && rerun="$0"
 printf 'to remove it again: %s --uninstall --target=%s\n' "${rerun}" "${target}"
 ## Both targets: an install nobody can invoke by name looks fine to the version
