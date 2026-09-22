@@ -11,9 +11,12 @@
 package shcl
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -101,17 +104,71 @@ const replaceFileWriteThrough = 0x1
 // syscall keeps a list of the DLLs that deserve that and kernel32 is on it.
 var procReplaceFileW = syscall.NewLazyDLL("kernel32.dll").NewProc("ReplaceFileW")
 
+// A scanner or an indexer that opens the fresh temp file blocks the replace and
+// the rename both, for a moment, and one try made that a failed save.
+const (
+	publishTries   = 5
+	publishPauseMs = 50
+)
+
 // ReplaceFile needs the destination to exist, and it fails rather than skip a
 // merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
 // to the plain rename this replaces.
+//
+// ReplaceFile is given a backup name, because without one a failure between its
+// two moves deletes the old file (1176) or leaves it under a name nobody is
+// told (1177). With one, 1177 leaves it at the backup and nothing at the
+// target, so the old file is put back. If even that fails, neither file is
+// removed and the error says where they are.
 func windowsPublishFile(tmp, target string) error {
-	if _, serr := os.Stat(target); serr == nil && replaceFileW(tmp, target) == nil {
-		return nil
+	backup := backupName(tmp)
+	movedAway := false
+	var err error
+	for tries := 1; ; tries++ {
+		if !movedAway && isThere(target) {
+			if replaceFileW(tmp, target, backup) == nil {
+				os.Remove(backup)
+				return nil
+			}
+			movedAway = !isThere(target) && isThere(backup)
+		}
+		if err = os.Rename(tmp, target); err == nil {
+			if movedAway {
+				os.Remove(backup)
+			}
+			return nil
+		}
+		if tries == publishTries {
+			break
+		}
+		time.Sleep(publishPauseMs * time.Millisecond)
 	}
-	return os.Rename(tmp, target)
+	if isThere(target) || (movedAway && windowsPublishNewFile(backup, target) == nil) {
+		os.Remove(tmp)
+		return err
+	}
+	if movedAway {
+		return fmt.Errorf("%w; the old file is left at %s and the new text at %s", err, backup, tmp)
+	}
+	return fmt.Errorf("%w; the new text is left at %s", err, tmp)
 }
 
-func replaceFileW(tmp, target string) error {
+func isThere(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// The temp name with its `.tmp` swapped for `.bak`, so the two sit side by side
+// and are the same length. The last `.tmp` is the one the save added.
+func backupName(tmp string) string {
+	dir, name := filepath.Split(tmp)
+	if at := strings.LastIndex(name, ".tmp"); at >= 0 {
+		return dir + name[:at] + ".bak" + name[at+4:]
+	}
+	return tmp + ".bak"
+}
+
+func replaceFileW(tmp, target, backup string) error {
 	if ferr := procReplaceFileW.Find(); ferr != nil {
 		return ferr
 	}
@@ -123,9 +180,13 @@ func replaceFileW(tmp, target string) error {
 	if perr != nil {
 		return perr
 	}
+	kept, kerr := syscall.UTF16PtrFromString(backup)
+	if kerr != nil {
+		return kerr
+	}
 	r, _, callErr := procReplaceFileW.Call(
 		uintptr(unsafe.Pointer(replaced)), uintptr(unsafe.Pointer(replacement)),
-		0, uintptr(replaceFileWriteThrough), 0, 0)
+		uintptr(unsafe.Pointer(kept)), uintptr(replaceFileWriteThrough), 0, 0)
 	if r == 0 {
 		return callErr
 	}

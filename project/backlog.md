@@ -86,21 +86,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- 🛠️ From the SilkTerm:
-
-	- Note: Tested against shcl `dev` at f85a0d2, the 3.0.0-beta.1 candidate, and against v2.0.0 for comparison. Linux box. SilkTerm builds against dev with no source changes. 810 of 813 tests pass, and all three failures come from report 1.
-
-	<!-- markdownlint-disable-next-line MD029 -- reports keep their own numbers -->
-	3. On Windows a failed save can delete the file it was saving
-
-		Still open on dev. First drafted 2026-09-11 against 2.0.0.
-
-		- `windows_replace_file` still passes a null backup name to `ReplaceFileW`. On error 1176 the replaced file no longer exists, and on 1177 it is left under a name the caller is not told. `publish_file` then falls back to a rename, and if that fails too, the temp file is removed. Nothing is left at the path.
-
-		- Suggested: pass a backup name made like the temp name, remove it after a good replace, never remove the temp while nothing is at the target, retry the rename a few times, and return an error naming whichever file still holds the text. `REPLACEFILE_WRITE_THROUGH` is documented as unsupported and could be 0.
-
-		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
-
 - Code review 20260921:
 
 	- A review against the directives' code style and performance sections. It was aimed at the code merged since the last pass over them (20260830b), about 35,000 lines, and at the C rules the directives gained on 2026-09-19. Six sweeps were started: Rust, Go, Python, C and C++, the shell and PowerShell scripts, and measured performance across the four bindings.
@@ -116,14 +101,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Deferred: `gfs-rotate.bash` forks four times per archive file when it names one. It is a shared copy, so the fix belongs in the canonical one, and the trigger is the next time the helpers are brought in line. Two Go allocations on the tokenizer path, the selector piece and a segment slice per field line, wait for a Go profile, since reusing a buffer changes helper signatures in all four bindings.
 
 	- Finished items are under Done - Bugs, in a bullet of the same name.
-
-	- 🔘 Item 1: `winpath-sandbox.ps1` reads `ProcessStartInfo.ArgumentList`, which Windows PowerShell 5.1 does not have, and `win-runners.bash` runs it under 5.1.
-		- Reproduced: by reading only. `ArgumentList` arrived in .NET Core 2.1, and 5.1 runs on .NET Framework. The script sets strict mode, so reading the missing property throws, and the sandbox row would fail before any sandbox starts.
-		- Note: the hosted windows runner has no Windows Sandbox, so the script exits 2 at its install check and never reaches the line. No gate has run it the way `win-runners.bash` does.
-		- Note: 20260920b idea 10 saw the script pass on B29W, but does not say which PowerShell ran it.
-		- Probable fix: set `$psi.Arguments` to the quoted path, which 5.1 and 7 both have.
-		- Origin: `d5978c0` (2026-09-20), the fix for 20260920b item 19. The `Start-Process` line it replaced ran on 5.1. Plausible, and needs a Windows box.
-		- Opened: 20260921-132543
 
 - Code review 20260920b:
 
@@ -261,7 +238,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - From the SilkTerm:
 
-	- Note: reports 1 and 2. Report 3 is still open under Bugs.
+	- Note: reports 1 to 3.
 
 	1. ✅ One badly indented line drops the correctly indented siblings after it
 
@@ -320,6 +297,30 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: a later long fuzz run found one more, in the new code. A merge keeps one copy of a footer line two layers share, and dropping the top layer's copy can drop the comment the next one sat under, leaving it two levels past the line it now follows. A reload reads one. A merge now caps a footer comment it appends at one level past the comment before it. Case `140` pins it, and fails as not a fixpoint with only the cap taken out of the C merge.
 
 		- Closed: 20260921-1411
+
+	3. ✅ On Windows a failed save can delete the file it was saving
+
+		Still open on dev. First drafted 2026-09-11 against 2.0.0.
+
+		- `windows_replace_file` still passes a null backup name to `ReplaceFileW`. On error 1176 the replaced file no longer exists, and on 1177 it is left under a name the caller is not told. `publish_file` then falls back to a rename, and if that fails too, the temp file is removed. Nothing is left at the path.
+
+		- Suggested: pass a backup name made like the temp name, remove it after a good replace, never remove the temp while nothing is at the target, retry the rename a few times, and return an error naming whichever file still holds the text. `REPLACEFILE_WRITE_THROUGH` is documented as unsupported and could be 0.
+
+		- SilkTerm covers 1176 with its own restore, and 1177 except for the old file left under Windows' name.
+
+		- Fixed: `ReplaceFile` gets a backup name, `.NAME.bakPID.N`, the temp name with `.tmp` swapped for `.bak`, and a good replace removes it. When the old file is at the backup and nothing is at the target, the new one is moved in, or failing that the old one is moved back. If neither can be done, both files stay and the error names them. C can only set `errno`, so its header gives the names. The temp file is removed only while something is at the target. The publish is tried five times, 50 ms apart, the replace and then the rename each time. `publish_file` in Rust, `windowsPublishFile` in Go, `_windows_publish_file` in Python, `shcl_publish_file` in C.
+
+		- Note: measured on B29W, Windows 11 build 26200. A handle on either file, at any share mode, fails `ReplaceFile` at once with error 32 and leaves both files alone, so a hold never gives 1176 or 1177. Taking add-file away from the target's folder, with the temp file in another, does: with a backup name it is 1177, the old file at the backup and nothing at the target. Without one it is error 2 with both files in place, so the old code's loss did not show on this build. The fix goes by the documented behavior.
+
+		- Note: a stale file at the backup name is overwritten by `ReplaceFile`. Flags 0 works as well as `REPLACEFILE_WRITE_THROUGH`, which was left as it was.
+
+		- Note: with a backup name, 1176 leaves both files where they were, so SilkTerm's own restore for it should no longer be reached.
+
+		- Pinned by: two windows tests in each binding. `a_failed_publish_loses_neither_file` sets up the folder case above and checks that the old text is at the target, or at the backup with the new text in the temp file and both named in the error. `a_brief_hold_is_waited_out` holds the temp file open for 20 ms and checks that the publish goes through. Rust's are in `lib.rs`, since the publish is private. On B29W the first fails in all four with the restore-or-keep step taken out, and the second fails in all four with one try. Both pass with the fix.
+
+		- Note: the hosted windows runner's administrator is let through the denied folder, so the first test cannot set its case up there. It tries a move into the folder first and prints a skip line if that goes through. On B29W it does not skip.
+
+		- Closed: 20260921-1724
 
 - ✅ The `H001` hint quotes a value holding a line break raw, so the hint spans lines.
 	- Reproduced: two `srv` fields whose values hold a real newline. Every binding prints `line 2: Hint: H001 'srv' repeats as a bare leaf - did you mean 'srv: a` and then three more lines. `count` says 2.
@@ -593,7 +594,20 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260921:
 
-	- Every defect the round has closed. Item 1 is still open under Bugs, and the ideas under Features and enhancements.
+	- Every defect the round has closed. The ideas are under Features and enhancements.
+
+	- ✅ Item 1: `winpath-sandbox.ps1` reads `ProcessStartInfo.ArgumentList`, which Windows PowerShell 5.1 does not have, and `win-runners.bash` runs it under 5.1.
+		- Reproduced: by reading only. `ArgumentList` arrived in .NET Core 2.1, and 5.1 runs on .NET Framework. The script sets strict mode, so reading the missing property throws, and the sandbox row would fail before any sandbox starts.
+		- Note: the hosted windows runner has no Windows Sandbox, so the script exits 2 at its install check and never reaches the line. No gate has run it the way `win-runners.bash` does.
+		- Note: 20260920b idea 10 saw the script pass on B29W, but does not say which PowerShell ran it.
+		- Probable fix: set `$psi.Arguments` to the quoted path, which 5.1 and 7 both have.
+		- Origin: `d5978c0` (2026-09-20), the fix for 20260920b item 19. The `Start-Process` line it replaced ran on 5.1. Plausible, and needs a Windows box.
+		- Confirmed on B29W under 5.1.26100: reading the property throws `The property 'ArgumentList' cannot be found on this object`, and the script exits 1 there before any sandbox starts. 7.6 has it.
+		- Fixed: `$psi.Arguments` takes the path in quotes, which 5.1 and 7 both have. A windows path cannot hold a quote.
+		- Verified: B29W, `powershell.exe` 5.1, with TMP and TEMP on a folder named with a space. The old script fails at the `ArgumentList` line at exit 1, and the fixed one starts the sandbox and passes at exit 0.
+		- Note: no standing pin. The hosted windows runner has no sandbox, so the script exits 2 before the line there.
+		- Opened: 20260921-132543
+		- Closed: 20260921-1724
 
 	- ✅ Item 2: `cli-regress.bash` does not match stdout exactly, though its header says stdout is matched exactly.
 		- Reproduced: both sides of the stdout and created-file compares go through `$(...)`, which drops every trailing newline. A CLI that drops or doubles a final newline passes. `x="$(printf 'a\n\n')"` compares equal to `a`.

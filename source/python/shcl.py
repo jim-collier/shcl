@@ -4742,25 +4742,98 @@ def _publish_file(tmp, target):
 	# failure fall back to os.replace. WRITE_THROUGH is asked for and documented
 	# as unsupported by ReplaceFile, so durability rests on the file's own
 	# fsync.
-	if os.name == "nt" and os.path.exists(target):
-		import ctypes
+	#
+	# A failure removes the temp file, except where nothing is left at the
+	# target.
+	if os.name == "nt":
+		_windows_publish_file(tmp, target)
+		return
+	try:
+		os.replace(tmp, target)
+	except OSError:
+		_remove_quietly(tmp)
+		raise
 
-		REPLACEFILE_WRITE_THROUGH = 0x1
-		# WinDLL exists only on windows, and mypy checks this file against the
-		# POSIX stubs, where the name is simply absent.
-		k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-		k32.ReplaceFileW.restype = ctypes.c_int
-		k32.ReplaceFileW.argtypes = [
-			ctypes.c_wchar_p,
-			ctypes.c_wchar_p,
-			ctypes.c_wchar_p,
-			ctypes.c_ulong,
-			ctypes.c_void_p,
-			ctypes.c_void_p,
-		]
-		if k32.ReplaceFileW(target, tmp, None, REPLACEFILE_WRITE_THROUGH, None, None):
+
+# A scanner or an indexer that opens the fresh temp file blocks the replace and
+# the rename both, for a moment, and one try made that a failed save.
+_PUBLISH_TRIES = 5
+_PUBLISH_PAUSE_MS = 50
+
+
+def _windows_publish_file(tmp, target):
+	# ReplaceFile is given a backup name, because without one a failure between
+	# its two moves deletes the old file (1176) or leaves it under a name nobody
+	# is told (1177). With one, 1177 leaves it at the backup and nothing at the
+	# target, so the old file is put back. If even that fails, neither file is
+	# removed and the error says where they are.
+	import ctypes
+	import time
+
+	REPLACEFILE_WRITE_THROUGH = 0x1
+	# WinDLL exists only on windows, and mypy checks this file against the
+	# POSIX stubs, where the name is simply absent.
+	k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+	k32.ReplaceFileW.restype = ctypes.c_int
+	k32.ReplaceFileW.argtypes = [
+		ctypes.c_wchar_p,
+		ctypes.c_wchar_p,
+		ctypes.c_wchar_p,
+		ctypes.c_ulong,
+		ctypes.c_void_p,
+		ctypes.c_void_p,
+	]
+	backup = _backup_name(tmp)
+	moved_away = False
+	tries = 0
+	while True:
+		if not moved_away and os.path.exists(target):
+			if k32.ReplaceFileW(target, tmp, backup, REPLACEFILE_WRITE_THROUGH, None, None):
+				_remove_quietly(backup)
+				return
+			moved_away = not os.path.exists(target) and os.path.exists(backup)
+		try:
+			os.replace(tmp, target)
+			if moved_away:
+				_remove_quietly(backup)
 			return
-	os.replace(tmp, target)
+		except OSError as e:
+			err = e
+		tries += 1
+		if tries == _PUBLISH_TRIES:
+			break
+		time.sleep(_PUBLISH_PAUSE_MS / 1000)
+	if os.path.exists(target) or (moved_away and _moved_back(backup, target)):
+		_remove_quietly(tmp)
+		raise err
+	if moved_away:
+		raise OSError(f"{err}; the old file is left at {backup} and the new text at {tmp}") from err
+	raise OSError(f"{err}; the new text is left at {tmp}") from err
+
+
+def _moved_back(backup, target):
+	try:
+		_publish_new_file(backup, target)
+	except OSError:
+		return False
+	return True
+
+
+def _backup_name(tmp):
+	# The temp name with its `.tmp` swapped for `.bak`, so the two sit side by
+	# side and are the same length. The last `.tmp` is the one the save added.
+	d, name = os.path.split(tmp)
+	at = name.rfind(".tmp")
+	if at < 0:
+		return tmp + ".bak"
+	return os.path.join(d, name[:at] + ".bak" + name[at + 4 :])
+
+
+def _remove_quietly(path):
+	try:
+		os.remove(path)
+	except OSError:
+		pass
 
 
 def _publish_new_file(tmp, target):
@@ -5010,7 +5083,9 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 		_set_read_only(target, False)
 	try:
 		# Nothing was at the path when the save started, so nothing that turns
-		# up before the publish is written over.
+		# up before the publish is written over. A failed replace decides for
+		# itself whether the temp file can go, since on windows it may be all
+		# that is left.
 		if existing is None:
 			_publish_new_file(tmp, target)
 		else:
@@ -5020,10 +5095,8 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 			_restore_attrs(target, carried)
 		if read_only:
 			_set_read_only(target, True)
-		try:
-			os.remove(tmp)
-		except OSError:
-			pass
+		if existing is None:
+			_remove_quietly(tmp)
 		return f"{file}: {e}"
 	if carried:
 		_restore_attrs(target, carried)
