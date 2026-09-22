@@ -8,6 +8,7 @@ package shcl
 
 import (
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -48,7 +49,7 @@ func allocatedBy(f func() any) uint64 {
 func TestElementCapBoundsTheParse(t *testing.T) {
 	text := "arr: " + strings.Repeat("1, ", 200000) + "\nok: 5\n"
 	capped := allocatedBy(func() any {
-		doc, _ := ParseLimited(text, Standard, 0, 8, 0)
+		doc, _ := ParseLimited(text, Standard, 0, 8, 0) // only Strict returns an error
 		if doc.LostCount() != 1 {
 			t.Fatalf("lost %d", doc.LostCount())
 		}
@@ -68,7 +69,7 @@ func TestDiagnosticCapBoundsTheParse(t *testing.T) {
 	// cap is what bounds that.
 	text := "arr:\n" + strings.Repeat("\t* 1\n", 200000)
 	capped := heldBy(func() any {
-		doc, _ := ParseLimited(text, Standard, 0, 8, 100)
+		doc, _ := ParseLimited(text, Standard, 0, 8, 100) // only Strict returns an error
 		if len(doc.Diagnostics()) != 101 || doc.LostCount() != 200000-8 {
 			t.Fatalf("diags %d lost %d", len(doc.Diagnostics()), doc.LostCount())
 		}
@@ -76,5 +77,36 @@ func TestDiagnosticCapBoundsTheParse(t *testing.T) {
 	})
 	if capped > uint64(len(text))*8 {
 		t.Fatalf("a diagnostic-capped parse held its unlisted diagnostics: %d bytes for %d of text", capped, len(text))
+	}
+}
+
+func TestRangeFaultsCostTheirMessage(t *testing.T) {
+	// Each V004 to V006 message escapes its value, and the escape built a 6 KB
+	// replacer table per message until the replacer was shared. The same
+	// document with every value in range is the baseline, so what is left is
+	// the cost of the faults alone.
+	var schema, inRange, outOfRange strings.Builder
+	const fields = 2000
+	for i := 0; i < fields; i++ {
+		schema.WriteString("field: k" + strconv.Itoa(i) + "\n\ttype: int\n\tmax: 10\n")
+		inRange.WriteString("k" + strconv.Itoa(i) + ": 5\n")
+		outOfRange.WriteString("k" + strconv.Itoa(i) + ": 50\n")
+	}
+	clean := allocatedBy(func() any { return LoadAndValidate(inRange.String(), schema.String(), Standard) })
+	faulty := allocatedBy(func() any {
+		doc := LoadAndValidate(outOfRange.String(), schema.String(), Standard)
+		n := 0
+		for _, dg := range doc.Diagnostics() {
+			if dg.Code == "V006" {
+				n++
+			}
+		}
+		if n != fields {
+			t.Fatalf("want %d V006, got %d", fields, n)
+		}
+		return doc
+	})
+	if faulty > clean && (faulty-clean)/fields > 2048 {
+		t.Fatalf("a range fault allocated %d bytes", (faulty-clean)/fields)
 	}
 }

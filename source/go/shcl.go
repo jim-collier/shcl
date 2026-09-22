@@ -84,7 +84,8 @@ func StrictnessFromArg(s string) (Strictness, bool) {
 	return Standard, false
 }
 
-// Severity: only Error fails a strict load; Hint flags legal-but-lookalike input.
+// Severity is how much a diagnostic counts. Only Error fails a strict load; Hint
+// flags legal-but-lookalike input.
 type Severity int
 
 const (
@@ -1188,7 +1189,7 @@ func elementOf(p *Piece, text string) (element, bool) {
 
 // cellOfTokens is the value the tokenized pieces spell.
 func cellOfTokens(tok *Tokens, text string) value {
-	var els []element
+	els := make([]element, 0, len(tok.Elements))
 	for i := range tok.Elements {
 		if e, ok := elementOf(&tok.Elements[i], text); ok {
 			els = append(els, e)
@@ -1281,11 +1282,13 @@ func leadingWS(s string) string {
 
 // oneLine is value text for a diagnostic message: line breaks and tabs escaped,
 // so one diagnostic is one line. A raw block's body is the value that made this
-// necessary - it carries its own newlines.
+// necessary - it carries its own newlines. The replacer is built once, since
+// building it was most of what a validation with range faults allocated.
 func oneLine(s string) string {
-	r := strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t")
-	return r.Replace(s)
+	return oneLineReplacer.Replace(s)
 }
+
+var oneLineReplacer = strings.NewReplacer("\\", "\\\\", "\n", "\\n", "\r", "\\r", "\t", "\\t")
 
 // schemaText is schema text for a diagnostic or a generated comment: a path or
 // a type as the schema wrote it, with a line break spelled `\n`, so one
@@ -2058,7 +2061,8 @@ type segment struct {
 
 type pathScan struct {
 	segments  []segment
-	valueText *string // text after the separator colon, before any comment, trimmed
+	valueText string // text after the separator colon, before any comment, trimmed
+	hasValue  bool   // there was a separator colon
 }
 
 // parseIndex mirrors the reference's unsigned-integer parse: one optional
@@ -2164,12 +2168,11 @@ func pathOf(tok *Tokens, text string) (pathScan, error) {
 		}
 		segments = append(segments, segment{name: name, nameSrc: nameSrc, sel: sel, star: seg.Star})
 	}
-	var valueText *string
+	scan := pathScan{segments: segments}
 	if tok.Sep >= 0 {
-		v := text[tok.Value[0]:tok.Value[1]]
-		valueText = &v
+		scan.valueText, scan.hasValue = text[tok.Value[0]:tok.Value[1]], true
 	}
-	return pathScan{segments: segments, valueText: valueText}, nil
+	return scan, nil
 }
 
 // scanLookup scans a lookup path `a . b [sel] . c`: the document-line
@@ -2385,7 +2388,7 @@ func (p *parser) foldLateDups() {
 		stack = stack[:len(stack)-1]
 		kids := p.arena[parent].children
 		p.arena[parent].children = nil
-		first := map[uint64]slot{}
+		first := make(map[uint64]slot, len(kids))
 		keep := make([]int, 0, len(kids))
 		for _, c := range kids {
 			h := mergeHash(p.arena[c].name, &p.arena[c].value)
@@ -2447,8 +2450,10 @@ func (p *parser) hangDeeperPending(newIndent string) {
 	if len(p.pendMarks) > 0 {
 		start = p.pendMarks[len(p.pendMarks)-1].end
 	}
-	taken := append([]pend(nil), p.pending[start:]...)
-	p.pending = p.pending[:start]
+	// Filtered in place: a kept entry is written back at or below the one
+	// being read, so nothing unread is overwritten.
+	taken := p.pending[start:]
+	w := start
 	// A comment never goes ahead of the one written before it. Once one stays
 	// for the incoming line every later one stays too, and one whose block
 	// would be written out before the last one's goes there with it instead.
@@ -2504,8 +2509,10 @@ func (p *parser) hangDeeperPending(newIndent string) {
 		if pn.ceiling > newLen {
 			pn.ceiling = newLen
 		}
-		p.pending = append(p.pending, pn)
+		p.pending[w] = pn
+		w++
 	}
+	p.pending = p.pending[:w]
 	if n := len(p.pendMarks); n > 0 && p.pendMarks[n-1].indentLen == newLen {
 		p.pendMarks[n-1].end = len(p.pending)
 	} else {
@@ -2928,20 +2935,26 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 // a load). Groups are in first-appearance order so hint order is deterministic
 // across bindings.
 func (p *parser) emitRepeatedLeafHints() {
+	// The node list is made only when a name repeats. Nearly every name is
+	// seen once, and a list per child was most of what this pass allocated.
 	type group struct {
 		name  string
+		first int
 		nodes []int
 	}
 	for parent := range p.arena {
-		var byName []group
+		byName := make([]group, 0, len(p.arena[parent].children))
 		groupOf := make(map[string]int)
 		for _, c := range p.arena[parent].children {
 			name := p.arena[c].name
 			if g, ok := groupOf[name]; ok {
+				if byName[g].nodes == nil {
+					byName[g].nodes = []int{byName[g].first}
+				}
 				byName[g].nodes = append(byName[g].nodes, c)
 			} else {
 				groupOf[name] = len(byName)
-				byName = append(byName, group{name: name, nodes: []int{c}})
+				byName = append(byName, group{name: name, first: c})
 			}
 		}
 		for _, g := range byName {
@@ -3194,15 +3207,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		srcText, haveSrc := "", false
 		var v value
 		switch {
-		case scan.valueText == nil:
+		case !scan.hasValue:
 			// A clean path with no colon is the one defined repair: the
 			// obvious intent is that path with an empty value.
 			p.err(lineno, "E015", "missing colon; repaired as an empty value")
 			v = value{kind: vEmpty}
-		case *scan.valueText == "":
+		case scan.valueText == "":
 			v = value{kind: vEmpty}
 		default:
-			if ch, length, info, ok := fenceOpen(*scan.valueText); ok {
+			if ch, length, info, ok := fenceOpen(scan.valueText); ok {
 				// Same-line fence spelling.
 				v, next = p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 			} else {
@@ -3212,7 +3225,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 						break
 					}
 				}
-				srcText, haveSrc = *scan.valueText, true
+				srcText, haveSrc = scan.valueText, true
 				v = cellOfTokens(&tok, rest)
 			}
 		}
@@ -3846,7 +3859,7 @@ func WriteFileAtomic(file, data string) error {
 		// systems. Best effort like the mode: a caller who is not in the old
 		// group keeps its own, which is what it had before this. The owner is
 		// not carried - see the file tier in spec.md.
-		if gid, ok := statGid(existing); ok {
+		if gid, ok := statGID(existing); ok {
 			_ = f.Chown(-1, gid)
 		}
 		_ = f.Chmod(existing.Mode())
@@ -3858,7 +3871,7 @@ func WriteFileAtomic(file, data string) error {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // the write error is the one to report
 		return fmt.Errorf("%s: %w", file, err)
 	}
 	if readOnly {
@@ -3880,7 +3893,7 @@ func WriteFileAtomic(file, data string) error {
 	}
 	if rerr != nil {
 		if existErr != nil {
-			os.Remove(tmp)
+			_ = os.Remove(tmp) // the publish error is the one to report
 		}
 		return fmt.Errorf("%s: %w", file, rerr)
 	}
@@ -3964,10 +3977,10 @@ func rawDir(p string) string {
 	return p[:i-1]
 }
 
-// statGid reads the group off a stat result. syscall.Stat_t does not exist on
+// statGID reads the group off a stat result. syscall.Stat_t does not exist on
 // windows, and this file has to compile there, so the field is read through
 // reflect rather than splitting the file per platform.
-func statGid(fi os.FileInfo) (int, bool) {
+func statGID(fi os.FileInfo) (int, bool) {
 	v := reflect.ValueOf(fi.Sys())
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
@@ -3993,6 +4006,8 @@ func setReadOnly(path string, on bool) {
 		if on {
 			mode &^= 0o222
 		}
+		// Best effort, like the mode on POSIX. The caller has nothing better to
+		// do with a file whose attribute will not move.
 		_ = os.Chmod(path, mode)
 	}
 }
@@ -4011,7 +4026,7 @@ func setReadOnly(path string, on bool) {
 var publishFile = func(tmp, target string) error {
 	err := os.Rename(tmp, target)
 	if err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // the rename error is the one to report
 	}
 	return err
 }
@@ -4019,13 +4034,14 @@ var publishFile = func(tmp, target string) error {
 // publishNewFile is the publish for a save that found nothing at the path, which
 // must not replace a file that turned up since. A hard link fails on anything at
 // the target, so the check and the publish are one step, and the temp name comes
-// off after. A filesystem with no hard links gets a check and a rename, which
-// leaves only that short gap. The windows build moves without the replace flag
-// instead.
+// off after. The save has gone through by then, so a temp name that will not
+// come off is left rather than failing it. A filesystem with no hard links gets
+// a check and a rename, which leaves only that short gap. The windows build
+// moves without the replace flag instead.
 var publishNewFile = func(tmp, target string) error {
 	lerr := os.Link(tmp, target)
 	if lerr == nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return nil
 	}
 	if errors.Is(lerr, os.ErrExist) {
@@ -4688,7 +4704,7 @@ func (d *Document) resolveGroup(path string) (resolved, bool) {
 
 func (d *Document) resolveMode(path string, group bool) (resolved, bool) {
 	scan, err := scanLookup(path)
-	if err != nil || scan.valueText != nil {
+	if err != nil || scan.hasValue {
 		return resolved{}, false // a query has no value part
 	}
 	return d.resolveFrom([]int{root}, scan.segments, group), true
@@ -4970,7 +4986,7 @@ func (d *Document) WriteReason(path string) WriteReason {
 // off the existing tree - so place can create from exactly there instead of
 // scanning the path and walking the tree a second time.
 func (d *Document) probeWrite(scan pathScan) (WriteReason, []int) {
-	if scan.valueText != nil {
+	if scan.hasValue {
 		return ValueInPath, nil
 	}
 	if len(scan.segments) == 0 {
@@ -5163,7 +5179,7 @@ func (d *Document) foldDupsBelow(start int) {
 		stack = stack[:len(stack)-1]
 		kids := d.arena[parent].children
 		d.arena[parent].children = nil
-		first := map[uint64]slot{}
+		first := make(map[uint64]slot, len(kids))
 		keep := make([]int, 0, len(kids))
 		for _, c := range kids {
 			h := mergeHash(d.arena[c].name, &d.arena[c].value)
@@ -6475,7 +6491,7 @@ func (d *Document) ReadDateTime(path string) Read[DateTime] {
 	return readScalar(d, path, func(e *element) (DateTime, bool) { return ParseDateTime(e.text) })
 }
 
-// ReadString: any value reads as a string: a raw block yields its content, an
+// ReadString reads any value as a string: a raw block yields its content, an
 // array its canonical inline text. Escapes are applied.
 func (d *Document) ReadString(path string) Read[string] {
 	n, st := d.nodeAt(path)
@@ -6502,7 +6518,7 @@ func (d *Document) ReadString(path string) Read[string] {
 	return Read[string]{Value: strings.Join(parts, ", "), Status: Good, Raw: &raw}.at(line, false)
 }
 
-// ReadRaw: raw-block content (verbatim). Non-block values are BadType.
+// ReadRaw reads raw-block content verbatim. Non-block values are BadType.
 func (d *Document) ReadRaw(path string) Read[string] {
 	n, st := d.nodeAt(path)
 	if n < 0 {
@@ -6520,7 +6536,7 @@ func (d *Document) ReadRaw(path string) Read[string] {
 	return Read[string]{Status: BadType, Raw: &raw}.at(line, false)
 }
 
-// ReadRawInfo: the advisory info-string of a raw block ("" when absent).
+// ReadRawInfo reads the advisory info-string of a raw block ("" when absent).
 func (d *Document) ReadRawInfo(path string) Read[string] {
 	n, st := d.nodeAt(path)
 	if n < 0 {
@@ -7070,7 +7086,7 @@ func parseField(schema *Document, f int, faults *[]Diagnostic) (constraint, bool
 		return constraint{}, false
 	}
 	scan, err := scanLookup(path)
-	if err != nil || scan.valueText != nil {
+	if err != nil || scan.hasValue {
 		vdiag(faults, node.line, "V093", fmt.Sprintf("bad schema path: %s", schemaText(path)))
 		return constraint{}, false
 	}
@@ -7593,8 +7609,9 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	for i := range cons {
 		c := &cons[i]
 		if (!hasWild(c) || fill[i]) && !unwritable(c) && mustExist(c) && c.defaultText != nil {
-			if _, ok := parentValues[namesKey(namesOf(c.segs))]; !ok {
-				parentValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			key := namesKey(namesOf(c.segs))
+			if _, ok := parentValues[key]; !ok {
+				parentValues[key] = *c.defaultText
 			}
 		}
 	}
@@ -7609,8 +7626,9 @@ func Generate(schema *Document, noBanner bool) (string, []Diagnostic) {
 	for i := range cons {
 		c := &cons[i]
 		if !hasWild(c) && !unwritable(c) && !mustExist(c) && c.defaultText != nil {
-			if _, ok := commentedValues[namesKey(namesOf(c.segs))]; !ok {
-				commentedValues[namesKey(namesOf(c.segs))] = *c.defaultText
+			key := namesKey(namesOf(c.segs))
+			if _, ok := commentedValues[key]; !ok {
+				commentedValues[key] = *c.defaultText
 			}
 		}
 	}
@@ -7955,7 +7973,9 @@ func v007Sanctioned(message string) bool {
 func namesKey(names []string) string {
 	var b strings.Builder
 	for _, n := range names {
-		fmt.Fprintf(&b, "%d:%s", len(n), n)
+		b.WriteString(strconv.Itoa(len(n)))
+		b.WriteByte(':')
+		b.WriteString(n)
 	}
 	return b.String()
 }

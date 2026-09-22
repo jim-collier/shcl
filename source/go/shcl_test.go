@@ -1075,7 +1075,9 @@ func TestFileTierLoadSave(t *testing.T) {
 		if cerr != nil {
 			t.Fatal(cerr)
 		}
-		h.Close()
+		if cerr := h.Close(); cerr != nil {
+			t.Fatal(cerr)
+		}
 		born := dir + "/born.shcl"
 		if serr := fdoc.SaveFile(born); serr != nil {
 			t.Fatal(serr)
@@ -1376,8 +1378,8 @@ func TestSaveRefusesADirectoryShapedPath(t *testing.T) {
 			t.Errorf("save through %q was accepted", f+suffix)
 		}
 	}
-	if got, _ := os.ReadFile(f); string(got) != "a: 1\n" {
-		t.Errorf("a refused save changed the file: %q", got)
+	if got, err := os.ReadFile(f); err != nil || string(got) != "a: 1\n" {
+		t.Errorf("a refused save changed the file: %q %v", got, err)
 	}
 	if err := doc.SaveFile(f); err != nil {
 		t.Fatal(err)
@@ -1597,7 +1599,8 @@ func TestParseLimitedCaps(t *testing.T) {
 	if doc.Exists("d") {
 		t.Fatalf("the remainder must not parse")
 	}
-	// A cap crossed by the document's last content line still reports.
+	// A cap crossed by the document's last content line still reports. The
+	// Standard calls from here on drop the error, which only Strict returns.
 	doc, _ = ParseLimited("a: 1\nb: 2\nc: 3", Standard, 2, 0, 0)
 	if n, _ := codeCount(doc, "E020"); n != 1 || doc.LostCount() != 0 {
 		t.Fatalf("last-line cross: %d E020, lost %d", n, doc.LostCount())

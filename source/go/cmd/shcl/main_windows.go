@@ -32,7 +32,7 @@ func windowsNotADiskFile(path string) bool {
 		nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if herr == nil {
 		kind, kerr := syscall.GetFileType(h)
-		syscall.CloseHandle(h)
+		_ = syscall.CloseHandle(h) // opened for attributes only, so nothing is lost
 		return kerr == nil && kind != syscall.FILE_TYPE_DISK
 	}
 	full, ferr := syscall.FullPath(path)

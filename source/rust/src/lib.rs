@@ -4228,6 +4228,8 @@ fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Res
 	let mut tries = 0;
 	let err = loop {
 		if !moved_away && target.exists() {
+			// The save has gone through, so a backup that will not come off
+			// is left rather than failing it.
 			if windows_replace_file(tmp, target, &backup) {
 				let _ = std::fs::remove_file(&backup);
 				return Ok(());
@@ -4381,8 +4383,9 @@ mod windows_publish {
 /// The publish for a save that found nothing at the path, which must not
 /// replace a file that turned up since. A hard link fails on anything at the
 /// target, so the check and the publish are one step, and the temp name comes
-/// off after. A filesystem with no hard links gets a check and a rename, which
-/// leaves only that short gap.
+/// off after. The save has gone through by then, so a temp name that will not
+/// come off is left rather than failing it. A filesystem with no hard links
+/// gets a check and a rename, which leaves only that short gap.
 #[cfg(not(windows))]
 fn publish_new_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
 	match std::fs::hard_link(tmp, target) {

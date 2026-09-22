@@ -170,23 +170,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- The round's ideas. Its defects are under Bugs, in a bullet of the same name. Ideas 3 and 4 rest on the formatter-config rule the directives gained on 2026-09-07.
 
-	- 🔘 Idea 1: Go error handling falls short of the directive in a few places.
-		- Note: errors are dropped with no reason given at three `os.Remove(tmp)` calls in the save path, a `Chmod`, two `CloseHandle` calls and a `SetFileAttributes` on windows, and a few sites in the tests.
-		- Note: the one that matters most is the `os.Remove(tmp)` after a successful `os.Link`. If it fails, the temp name stays behind as a second hard link to the published file, and nothing says so.
-		- Note: the CLI's `readInput` formats its cause with `%s` at two sites, where the library uses `%w` everywhere.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 2: Go allocates on per-line and per-diagnostic paths where it need not. Unmeasured.
-		- Note: `oneLine` builds a `strings.Replacer` with a 6 KB table on every call, once per V004 to V006 diagnostic, even when there is nothing to escape. A package-level replacer is safe to share.
-		- Note: `pathScan.valueText` is a `*string`, so every value line moves a string to the heap. `cellOfTokens` grows its element list one append at a time though the count is known. The fold maps are created unsized. `hangDeeperPending` copies the pending tail on every commented binding line. `init` builds each names key twice.
-		- Note: all local, with no parity cost. Take them with a Go profile in hand.
-		- Opened: 20260921-132543
-
-	- 🔘 Idea 3: six Go sites fail staticcheck's doc-form and naming checks, which are off by default.
-		- Note: `Severity` and three `Read*` doc comments are not in the "Name does X" form, `statGid` should be `statGID`, and the windows file comment touches `package shcl`, which makes it the package doc on windows.
-		- Note: a `staticcheck.conf` turning on ST1020 and ST1021 would hold the form after the fix.
-		- Opened: 20260921-132543
-
 	- 🔘 Idea 4: turn on `PSUseConsistentIndentation` with tabs.
 		- Note: with pipeline indentation off, it flags five lines today, in `shcl.ps1`, `install.ps1` and `n8runshcl.ps1`. Fix those, then enable it.
 		- Opened: 20260921-132543
@@ -4989,6 +4972,43 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260921:
+
+	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 1: Go error handling falls short of the directive in a few places.
+		- Note: errors are dropped with no reason given at three `os.Remove(tmp)` calls in the save path, a `Chmod`, two `CloseHandle` calls and a `SetFileAttributes` on windows, and a few sites in the tests.
+		- Note: the one that matters most is the `os.Remove(tmp)` after a successful `os.Link`. If it fails, the temp name stays behind as a second hard link to the published file, and nothing says so.
+		- Note: the CLI's `readInput` formats its cause with `%s` at two sites, where the library uses `%w` everywhere.
+		- Fixed: every dropped error in `shcl.go`, `shcl_windows.go` and `cmd/shcl/main_windows.go` is spelled `_ =` with its reason beside it.
+		- Decided: the remove after a successful link keeps its behavior. The save has gone through by then, and failing it would be the bigger surprise. That reason is now in the doc comment of `publishNewFile` in Go, `publish_new_file` in Rust, `_publish_new_file` in Python and `shcl_publish_new_file` in C, and the windows backup's in each windows publish.
+		- Fixed: in the tests, a probe file's close and a read-back fail the test now, and the Standard `ParseLimited` calls say why they drop the error.
+		- Fixed: `readInput` wraps with `%w` at both sites. The message text is the same.
+		- Pinned by: nothing new, since the only code change is the wrap. `cli-regress.bash` passes all 221 rows on the new Go CLI.
+		- Opened: 20260921-132543
+		- Closed: 20260921-185850
+
+	- ✅ Idea 2: Go allocates on per-line and per-diagnostic paths where it need not. Unmeasured.
+		- Note: `oneLine` builds a `strings.Replacer` with a 6 KB table on every call, once per V004 to V006 diagnostic, even when there is nothing to escape. A package-level replacer is safe to share.
+		- Note: `pathScan.valueText` is a `*string`, so every value line moves a string to the heap. `cellOfTokens` grows its element list one append at a time though the count is known. The fold maps are created unsized. `hangDeeperPending` copies the pending tail on every commented binding line. `init` builds each names key twice.
+		- Note: all local, with no parity cost. Take them with a Go profile in hand.
+		- Fixed: `oneLine` shares one replacer. `pathScan.valueText` is a string plus `hasValue`. `cellOfTokens` and the maps in `foldLateDups` and `foldDupsBelow` are sized. `hangDeeperPending` filters the pending list in place. `namesKey` writes through `strconv`, and each of `Generate`'s two value maps builds its key once.
+		- Fixed: the profile showed one site the idea did not list. `emitRepeatedLeafHints` made a node list for every child, and makes one now only when a name repeats.
+		- Measured: 5,000 blocks (45,000 lines) parse with 37% fewer allocations, 285k to 180k. 6,000 range faults validate 23% faster in half the bytes, 88 MB to 46 MB. `init` over 4,000 fields is 13% faster with 23% fewer allocations.
+		- Pinned by: `TestRangeFaultsCostTheirMessage` in `mem_test.go`, which lets a range fault cost 2 KB over the same document in range. It measures 428 bytes now and 7,259 with the replacer built per call.
+		- Left alone: `Generate`'s rank and key loops stay two passes, as in the reference, and only the key got cheaper. The biggest site left is `pathOf`'s segment slice, which the round deferred.
+		- Opened: 20260921-132543
+		- Closed: 20260921-185850
+
+	- ✅ Idea 3: six Go sites fail staticcheck's doc-form and naming checks, which are off by default.
+		- Note: `Severity` and three `Read*` doc comments are not in the "Name does X" form, `statGid` should be `statGID`, and the windows file comment touches `package shcl`, which makes it the package doc on windows.
+		- Note: a `staticcheck.conf` turning on ST1020 and ST1021 would hold the form after the fix.
+		- Fixed: the four doc comments are in the `Name does X` form, `statGid` is `statGID`, and a blank line splits the windows file comment from `package shcl`.
+		- Fixed: `source/go/staticcheck.conf` turns on ST1000, ST1003, ST1020 and ST1021. The CLI module reads it too, from the parent directory.
+		- Pinned by: the config. With a `ReadRaw:` comment and the `statGid` name put back, `staticcheck ./...` exits 1 and names both. A probe function named `probeGid` in the CLI module fails the same way.
+		- Opened: 20260921-132543
+		- Closed: 20260921-185850
 
 - Code review 20260920b:
 

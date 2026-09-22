@@ -4788,6 +4788,8 @@ def _windows_publish_file(tmp, target):
 	tries = 0
 	while True:
 		if not moved_away and os.path.exists(target):
+			# The save has gone through, so a backup that will not come off is
+			# left rather than failing it.
 			if k32.ReplaceFileW(target, tmp, backup, REPLACEFILE_WRITE_THROUGH, None, None):
 				_remove_quietly(backup)
 				return
@@ -4840,9 +4842,10 @@ def _publish_new_file(tmp, target):
 	# The publish for a save that found nothing at the path, which must not
 	# replace a file that turned up since. A hard link fails on anything at the
 	# target, so the check and the publish are one step, and the temp name comes
-	# off after. A filesystem with no hard links gets a check and a rename, which
-	# leaves only that short gap. On windows a rename already refuses an
-	# existing target and needs no hard links.
+	# off after. The save has gone through by then, so a temp name that will not
+	# come off is left rather than failing it. A filesystem with no hard links
+	# gets a check and a rename, which leaves only that short gap. On windows a
+	# rename already refuses an existing target and needs no hard links.
 	if os.name == "nt":
 		os.rename(tmp, target)
 		return

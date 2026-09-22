@@ -7064,6 +7064,8 @@ static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
 	DWORD err = 0;
 	for (int tries = 1;; tries++) {
 		if (!moved_away && shcl_path_there(target)) {
+			// The save has gone through, so a backup that will not come off
+			// is left rather than failing it.
 			if (ReplaceFileW(target, tmp, backup, REPLACEFILE_WRITE_THROUGH, NULL, NULL)) {
 				_wremove(backup);
 				free(backup);
@@ -7363,9 +7365,10 @@ static void shcl_sync_dir(const char *target) {
 
 // The publish for a save that found nothing at the path, which must not replace
 // a file that turned up since. A hard link fails on anything at the target, so
-// the check and the publish are one step, and the temp name comes off after. A
-// filesystem with no hard links gets a check and a rename, which leaves only
-// that short gap.
+// the check and the publish are one step, and the temp name comes off after.
+// The save has gone through by then, so a temp name that will not come off is
+// left rather than failing it. A filesystem with no hard links gets a check and
+// a rename, which leaves only that short gap.
 static int shcl_publish_new_file(const char *tmp, const char *target) {
 	if (link(tmp, target) == 0) { (void)unlink(tmp); return 1; }
 	if (errno == EEXIST) return 0;
