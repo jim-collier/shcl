@@ -499,6 +499,40 @@ SRVEOF
 	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
 		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
+	##	20260921 idea 6: a file the uninstall could not remove, which a running
+	##	shcl.exe causes on Windows, went unsaid, and the dir it kept was blamed
+	##	on files the installer never wrote. A read-only dir stands in for the
+	##	lock. The PATH entry waits for a clean second run, so this run gets as
+	##	far as the message.
+	mkdir -p "${tmpDir}/lad/Programs/Shcl/code"
+	printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/shcl.exe"; printf 'x\n' > "${tmpDir}/lad/Programs/Shcl/code/lib.rs"
+	chmod 555 "${tmpDir}/lad/Programs/Shcl/code"
+	out="$(fNoNet -Uninstall -Target user -Yes || true)"
+	chmod 755 "${tmpDir}/lad/Programs/Shcl/code"
+	[[ "${out}" == *"could not remove ${tmpDir}/lad/Programs/Shcl/code/lib.rs"* ]] \
+		|| fBad "install.ps1 -Uninstall hid a file it could not remove: ${out@Q}"
+	[[ "${out}" == *"did not put there"* ]] && fBad "install.ps1 -Uninstall blamed its own file on someone else: ${out@Q}"
+	##	The other two answers, from the function itself: a clean removal takes
+	##	the dir, and a file nobody installed keeps it and says so.
+	mkdir -p "${tmpDir}/rmfile/clean/code" "${tmpDir}/rmfile/other/scripts"
+	printf 'x\n' > "${tmpDir}/rmfile/clean/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/clean/code/lib.rs"
+	printf 'x\n' > "${tmpDir}/rmfile/other/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/other/scripts/mine.txt"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		echo 'Set-StrictMode -Version Latest'
+		echo '$ErrorActionPreference = "Stop"'
+		sed -n '/^\tfunction Remove-ShclFile/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "foreach (\$dir in 'clean', 'other') {"
+		echo "	\$r = Remove-ShclFile -Dest ('${tmpDir}/rmfile/' + \$dir)"
+		echo '	Write-Output ("{0}: stuck=[{1}] foreign={2}" -f $dir, ($r.Stuck -join ","), $r.Foreign)'
+		echo '}'
+	} > "${tmpDir}/rmfile.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/rmfile.ps1" 2>&1 || true)"
+	[[ "${out}" == *"clean: stuck=[] foreign=False"* && ! -e "${tmpDir}/rmfile/clean" ]] \
+		|| fBad "install.ps1 -Uninstall did not remove a clean install whole: ${out@Q}"
+	[[ "${out}" == *"other: stuck=[] foreign=True"* && -e "${tmpDir}/rmfile/other/scripts/mine.txt" && ! -e "${tmpDir}/rmfile/other/shcl.exe" ]] \
+		|| fBad "install.ps1 -Uninstall mishandled a file it did not install: ${out@Q}"
+
 	##	20260909 item 38: the setup's PATH script exited 0 when it could not
 	##	write, so the setup's fallback message never showed. There is no
 	##	registry here at all, which is a failure it must report.
@@ -810,7 +844,7 @@ if fHave pwsh; then
 	sumLines="$(sed -n '/\$want = (Get-Content/p;/\$wantSrc = (Get-Content/p' "${repoDir}/install.ps1")"
 	sumCount="$(grep -c . <<<"${sumLines}" || true)"
 	[[ "${sumCount}" == 2 ]] || fBad "install.ps1's two sums lines could not be lifted: got ${sumCount}"
-	out="$(pwsh -NoProfile -Command "\$tmp = '${sdir}'; \$asset = 'shcl-9.9.9-windows-x86_64.exe'; \$dropins = 'shcl-9.9.9-dropins.tar.gz'
+	out="$(pwsh -NoProfile -Command "\$sums = '${sdir}/sums.txt'; \$asset = 'shcl-9.9.9-windows-x86_64.exe'; \$dropins = 'shcl-9.9.9-dropins.tar.gz'
 ${sumLines}
 Write-Output \"\$want \$wantSrc\"" 2>&1 || true)"
 	[[ "${out}" == "$(printf '%064d %064d' 2 4)" ]] \
@@ -1184,7 +1218,7 @@ fi
 ##	itself with Add/Remove Programs, so deleting its files from here left that
 ##	entry pointing at nothing. Windows-only, so the check is source order.
 setupTest="$( { grep -n "uninstall.exe'" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
-setupWipe="$( { grep -n "Remove-Item -Force -LiteralPath (Join-Path \$dest 'shcl.exe')" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
+setupWipe="$( { grep -n "Remove-ShclFile -Dest \$dest" "${repoDir}/install.ps1" || true; } | head -n1 | cut -d: -f1)"
 if [[ -z "${setupTest}" || -z "${setupWipe}" ]] || ((setupTest >= setupWipe)); then
 	fBad "install.ps1 removes a setup install's files without deferring to its uninstaller"
 fi
@@ -1763,8 +1797,8 @@ fi
 ##	running the real thing needs a network and a release.
 ps1="${repoDir}/install.ps1"
 if [[ -f "${ps1}" ]]; then
-	smokeLine="$({ grep -n "Invoke-ShclSmoke (Join-Path \$tmp 'shcl.exe')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
-	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path \$dest '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	smokeLine="$({ grep -n "Invoke-ShclSmoke -Exe \$tmpExe" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
+	publishLine="$({ grep -n "Move-Item -Force -LiteralPath (Join-Path -Path \$dest -ChildPath '.shcl.exe.new')" "${ps1}" || true ;} | head -n1 | cut -d: -f1)"
 	if [[ -z "${smokeLine}" ]]; then
 		fBad "install.ps1 never runs the downloaded binary from the temp dir"
 	elif [[ -z "${publishLine}" ]]; then

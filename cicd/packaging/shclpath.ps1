@@ -7,9 +7,26 @@
 ## suppress the append), the value is read unexpanded so %VAR% references
 ## survive, and it is written back REG_EXPAND_SZ so the type does not downgrade.
 ##
-## Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. MIT License.
-## SPDX-License-Identifier: MIT
+##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Licensed under The MIT License (MIT). Full text at:
+##		https://mit-license.org/
+##	SPDX-License-Identifier: MIT
+
+<#
+.SYNOPSIS
+Adds a directory to the machine PATH, or takes it out with -Remove.
+.DESCRIPTION
+Run by the shcl setup at install and uninstall. Exits 1 on any failure, so the setup can tell the user to edit PATH by hand.
+.PARAMETER Dir
+The directory, compared as a whole PATH segment.
+.PARAMETER Remove
+Take the directory out instead of adding it.
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File shclpath.ps1 -Dir 'C:\Program Files\Shcl'
+#>
+[CmdletBinding()]
 param([string]$Dir, [switch]$Remove)
+Set-StrictMode -Version Latest
 ## Exit 1 on any failure, since the setup only tells the user to edit PATH by
 ## hand when this exits nonzero. By default a missing key or a throwing
 ## SetValue printed an error and still exited 0.

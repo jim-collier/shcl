@@ -24,5 +24,13 @@
 			## setting here.
 			TargetVersions = @('5.1', '7.0')
 		}
+		## Tabs, per the style guide. The rule has no notion of spaces for
+		## alignment after the tabs, so a continuation line is written as its
+		## own statement rather than lined up under the one above.
+		PSUseConsistentIndentation = @{
+			Enable              = $true
+			Kind                = 'tab'
+			PipelineIndentation = 'IncreaseIndentationForFirstPipeline'
+		}
 	}
 }
