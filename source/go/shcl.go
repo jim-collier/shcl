@@ -3865,7 +3865,8 @@ func WriteFileAtomic(file, data string) error {
 		setReadOnly(target, false)
 	}
 	// Nothing was at the path when the save started, so nothing that turns up
-	// before the publish is written over.
+	// before the publish is written over. A failed replace decides for itself
+	// whether the temp file can go, since on windows it may be all that is left.
 	publish := publishFile
 	if existErr != nil {
 		publish = publishNewFile
@@ -3878,7 +3879,9 @@ func WriteFileAtomic(file, data string) error {
 		setReadOnly(target, true) // whether or not the publish went through
 	}
 	if rerr != nil {
-		os.Remove(tmp)
+		if existErr != nil {
+			os.Remove(tmp)
+		}
 		return fmt.Errorf("%s: %w", file, rerr)
 	}
 	syncDir(dir)
@@ -4003,7 +4006,15 @@ func setReadOnly(path string, on bool) {
 // A hook rather than a build-tagged pair so that this file still compiles and
 // works on its own - the drop-in story is the whole point of the single file,
 // and a tree that took the module gets the better windows publish anyway.
-var publishFile = func(tmp, target string) error { return os.Rename(tmp, target) }
+//
+// A failure removes the temp file, except where nothing is left at the target.
+var publishFile = func(tmp, target string) error {
+	err := os.Rename(tmp, target)
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
+}
 
 // publishNewFile is the publish for a save that found nothing at the path, which
 // must not replace a file that turned up since. A hard link fails on anything at

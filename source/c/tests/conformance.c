@@ -377,6 +377,82 @@ static void *validate_on_small_stack(void *unused) {
 }
 #endif
 
+#ifdef _WIN32
+static int text_is(const char *path, const char *want) {
+	size_t n; char *t = read_file(path, &n);
+	int same = t && n == strlen(want) && memcmp(t, want, n) == 0;
+	free(t);
+	return same;
+}
+
+static void seed(const char *path, const char *text) {
+	FILE *f = fopen(path, "wb");
+	if (!f || fputs(text, f) == EOF || fclose(f) != 0) fail("publish", "seed write failed");
+}
+
+static int there(const char *path) { return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
+
+static DWORD WINAPI close_later(LPVOID hold) {
+	Sleep(20);
+	CloseHandle((HANDLE)hold);
+	return 0;
+}
+
+// A save always puts its temp file beside the target, so these call the
+// publish directly.
+static void publish_failures(void) {
+	char dir[256], x[272], y[272], target[300], tmp[300], backup[300], cmd[700];
+	wchar_t wtarget[320], wtmp[320];
+	snprintf(dir, sizeof dir, "%s\\shcl-publish-%ld", tmp_root(), (long)getpid());
+	snprintf(x, sizeof x, "%s\\x", dir);
+	snprintf(y, sizeof y, "%s\\y", dir);
+	if (_mkdir(dir) != 0 || _mkdir(x) != 0 || _mkdir(y) != 0) fail("publish", "mkdir failed");
+	// Taking add-file away from the target's folder, with the temp file in
+	// another, lets ReplaceFile move the old file out to the backup and then
+	// refuses the new one its place: error 1177, with nothing at the target.
+	// Neither the move nor putting the old file back can get in either.
+	snprintf(target, sizeof target, "%s\\t.shcl", y);
+	snprintf(tmp, sizeof tmp, "%s\\.t.shcl.tmp1.0", x);
+	snprintf(backup, sizeof backup, "%s\\.t.shcl.bak1.0", x);
+	seed(target, "old\n");
+	seed(tmp, "new\n");
+	MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 320);
+	MultiByteToWideChar(CP_UTF8, 0, tmp, -1, wtmp, 320);
+	snprintf(cmd, sizeof cmd, "icacls \"%s\" /deny *S-1-1-0:(WD) >nul", y);
+	if (system(cmd) != 0) fail("publish", "icacls deny failed");
+	int published = shcl_publish_file(wtmp, wtarget);
+	snprintf(cmd, sizeof cmd, "icacls \"%s\" /remove:d *S-1-1-0 >nul", y);
+	if (system(cmd) != 0) fail("publish", "icacls remove failed");
+	if (published) fail("publish", "the publish went through");
+	else if (text_is(target, "old\n")) {
+		if (there(tmp)) fail("publish", "the temp file was left");
+	} else {
+		if (there(target)) fail("publish", "target holds neither text");
+		if (!text_is(backup, "old\n")) fail("publish", "the old file is not at the backup name");
+		if (!text_is(tmp, "new\n")) fail("publish", "the new text is not in the temp file");
+	}
+	remove(target); remove(tmp); remove(backup);
+	// Anything holding the temp file open without delete sharing fails the
+	// replace and the move both, the way a scanner looking at a fresh file
+	// does. A hold that ends in a few milliseconds must not fail the save.
+	snprintf(target, sizeof target, "%s\\t.shcl", x);
+	snprintf(backup, sizeof backup, "%s\\.t.shcl.bak1.0", x);
+	seed(target, "old\n");
+	seed(tmp, "new\n");
+	MultiByteToWideChar(CP_UTF8, 0, target, -1, wtarget, 320);
+	HANDLE hold = CreateFileW(wtmp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hold == INVALID_HANDLE_VALUE) fail("publish", "could not hold the temp file open");
+	HANDLE freer = CreateThread(NULL, 0, close_later, hold, 0, NULL);
+	if (!freer) fail("publish", "thread failed");
+	if (!shcl_publish_file(wtmp, wtarget)) fail("publish", "a brief hold failed the publish");
+	if (freer) { WaitForSingleObject(freer, INFINITE); CloseHandle(freer); }
+	if (!text_is(target, "new\n")) fail("publish", "a brief hold: the target was not replaced");
+	if (there(tmp) || there(backup)) fail("publish", "a brief hold: the temp or the backup was left behind");
+	remove(target); remove(tmp); remove(backup);
+	rmdir(x); rmdir(y); rmdir(dir);
+}
+#endif
+
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
 	/* The library has to format and read floats the same whatever locale the
@@ -1472,6 +1548,7 @@ int main(int argc, char **argv) {
 		if (hdd) closedir(hdd);
 		rmdir(hdir);
 	}
+	publish_failures();
 #endif
 	// Reads and saves must not retain: a read of a plain field hands back a
 	// slice of the retained input (a million reads once grew a document by

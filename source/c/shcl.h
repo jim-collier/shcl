@@ -240,6 +240,10 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 // parse. Save writes the canonical text through a temp file in
 // the same directory plus a rename - the same mechanics the CLI's --write
 // uses - so an interrupted save can never truncate the config it rewrites.
+// On windows a failed save can leave nothing at the path, when the old file was
+// moved aside and could not be put back. The other bindings' errors name the
+// two files then; here errno is all there is, so: the old file is
+// .NAME.bakPID.N and the new text .NAME.tmpPID.N, beside the target.
 #ifndef SHCL_NO_FILE_IO
 typedef enum {
 	SHCL_FILE_CLEAN,      /* read and parsed, no error diagnostics (hints allowed) */
@@ -7010,6 +7014,33 @@ static int shcl_errno_from_win32(DWORD e) {
 	}
 }
 
+static int shcl_publish_new_file(const wchar_t *tmp, const wchar_t *target);
+
+// A scanner or an indexer that opens the fresh temp file blocks the replace and
+// the rename both, for a moment, and one try made that a failed save.
+#define SHCL_PUBLISH_TRIES 5
+#define SHCL_PUBLISH_PAUSE_MS 50
+
+static int shcl_path_there(const wchar_t *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+
+// The temp name with its `.tmp` swapped for `.bak`, so the two sit side by side
+// and are the same length. The last `.tmp` is the one the save added. Malloc'd;
+// NULL when that fails.
+static wchar_t *shcl_backup_name(const wchar_t *tmp) {
+	size_t n = wcslen(tmp);
+	wchar_t *b = (wchar_t *)malloc((n + 5) * sizeof(wchar_t));
+	if (!b) return NULL;
+	memcpy(b, tmp, (n + 1) * sizeof(wchar_t));
+	wchar_t *name = b;
+	for (wchar_t *c = b; *c; c++)
+		if (*c == L'\\' || *c == L'/') name = c + 1;
+	wchar_t *at = NULL;
+	for (wchar_t *p = wcsstr(name, L".tmp"); p; p = wcsstr(p + 1, L".tmp")) at = p;
+	if (at) memcpy(at, L".bak", 4 * sizeof(wchar_t));
+	else memcpy(b + n, L".bak", 5 * sizeof(wchar_t));
+	return b;
+}
+
 // ReplaceFile carries the destination's ACLs, security attributes and named
 // streams onto the replacement; a move publishes a brand-new file and leaves
 // all of it behind. What it does NOT carry is the basic attributes - hidden and
@@ -7019,12 +7050,40 @@ static int shcl_errno_from_win32(DWORD e) {
 // regardless because C rename() will not replace an existing file on Windows at
 // all. WRITE_THROUGH is asked for and documented as unsupported by ReplaceFile;
 // the move's own WRITE_THROUGH is the one that means something.
+//
+// ReplaceFile is given a backup name, because without one a failure between its
+// two moves deletes the old file (1176) or leaves it under a name nobody is told
+// (1177). With one, 1177 leaves it at the backup and nothing at the target, so
+// the old file is put back. If even that fails, neither file is removed, and
+// since errno cannot say where they are, the file tier's comment at the top
+// does. Any other failure removes the temp file.
 static int shcl_publish_file(const wchar_t *tmp, const wchar_t *target) {
-	int ok = (GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES
-			&& ReplaceFileW(target, tmp, NULL, REPLACEFILE_WRITE_THROUGH, NULL, NULL))
-		|| MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-	if (!ok) errno = shcl_errno_from_win32(GetLastError());
-	return ok;
+	wchar_t *backup = shcl_backup_name(tmp);
+	if (!backup) { _wremove(tmp); errno = ENOMEM; return 0; }
+	int moved_away = 0;
+	DWORD err = 0;
+	for (int tries = 1;; tries++) {
+		if (!moved_away && shcl_path_there(target)) {
+			if (ReplaceFileW(target, tmp, backup, REPLACEFILE_WRITE_THROUGH, NULL, NULL)) {
+				_wremove(backup);
+				free(backup);
+				return 1;
+			}
+			moved_away = !shcl_path_there(target) && shcl_path_there(backup);
+		}
+		if (MoveFileExW(tmp, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			if (moved_away) _wremove(backup);
+			free(backup);
+			return 1;
+		}
+		err = GetLastError();
+		if (tries == SHCL_PUBLISH_TRIES) break;
+		Sleep(SHCL_PUBLISH_PAUSE_MS);
+	}
+	if (shcl_path_there(target) || (moved_away && shcl_publish_new_file(backup, target))) _wremove(tmp);
+	free(backup);
+	errno = shcl_errno_from_win32(err);
+	return 0;
 }
 
 // The publish for a save that found nothing at the path, which must not replace
@@ -7314,6 +7373,16 @@ static int shcl_publish_new_file(const char *tmp, const char *target) {
 	if (lstat(target, &st) == 0) { errno = EEXIST; return 0; }
 	return rename(tmp, target) == 0;
 }
+
+// Move the finished temp file over the target; see the windows one for why that
+// is a plain rename only here. A failure removes the temp file.
+static int shcl_publish_file(const char *tmp, const char *target) {
+	if (rename(tmp, target) == 0) return 1;
+	int e = errno;
+	(void)unlink(tmp);
+	errno = e;
+	return 0;
+}
 #endif
 
 /* A path that names a directory rather than a file: it ends in a separator, or
@@ -7440,11 +7509,16 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	if (ok && have_st) (void)fchmod(fileno(f), st.st_mode & 07777);
 #endif
 	ok = (fclose(f) == 0) && ok;
+	// Nothing was at the path when the save started, so nothing that turns up
+	// before the publish is written over. A failed replace decides for itself
+	// whether the temp file can go, since on windows it may be all that is left.
+	int replacing = 0;
 #ifdef _WIN32
 	if (read_only) SetFileAttributesW(wtarget, attrs & ~(DWORD)FILE_ATTRIBUTE_READONLY);
-	// Nothing was at the path when the save started, so nothing that turns up
-	// before the publish is written over.
-	ok = ok && (attrs != INVALID_FILE_ATTRIBUTES ? shcl_publish_file(wtmp, wtarget) : shcl_publish_new_file(wtmp, wtarget));
+	if (ok) {
+		replacing = attrs != INVALID_FILE_ATTRIBUTES;
+		ok = replacing ? shcl_publish_file(wtmp, wtarget) : shcl_publish_new_file(wtmp, wtarget);
+	}
 	if (read_only || carried) {
 		DWORD now = GetFileAttributesW(wtarget);
 		if (now != INVALID_FILE_ATTRIBUTES)
@@ -7452,13 +7526,14 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	}
 	#undef SHCL_CARRIED_ATTRS
 #else
-	// Nothing was at the path when the save started, so nothing that turns up
-	// before the publish is written over.
-	ok = ok && (have_st ? rename(tmp, target) == 0 : shcl_publish_new_file(tmp, target));
+	if (ok) {
+		replacing = have_st;
+		ok = replacing ? shcl_publish_file(tmp, target) : shcl_publish_new_file(tmp, target);
+	}
 	if (ok) shcl_sync_dir(target);
 #endif
 	// The unlink must not overwrite the errno the failure left behind.
-	if (!ok) { int e = errno; SHCL_FILE_UNLINK(); errno = e; }
+	if (!ok && !replacing) { int e = errno; SHCL_FILE_UNLINK(); errno = e; }
 	free(tmp);
 	SHCL_FILE_CLEANUP();
 #undef SHCL_FILE_CLEANUP

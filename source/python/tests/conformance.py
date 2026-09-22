@@ -372,6 +372,97 @@ def soup_inputs():
 	return out
 
 
+def _text_or_none(path):
+	try:
+		return _read(path)
+	except OSError:
+		return None
+
+
+def windows_publish_failures(td):
+	# A save always puts its temp file beside the target, so these call the
+	# publish directly.
+	import subprocess
+	import threading
+
+	# Taking add-file away from the target's folder, with the temp file in
+	# another, lets ReplaceFile move the old file out to the backup and then
+	# refuses the new one its place: error 1177, with nothing at the target.
+	# Neither the rename nor putting the old file back can get in either.
+	x, y = os.path.join(td, "px"), os.path.join(td, "py")
+	os.makedirs(x)
+	os.makedirs(y)
+	target, tmp = os.path.join(y, "t.shcl"), os.path.join(x, ".t.shcl.tmp1.0")
+	backup = os.path.join(x, ".t.shcl.bak1.0")
+	for path, text in ((target, "old\n"), (tmp, "new\n")):
+		with open(path, "w", encoding="utf-8", newline="") as fh:
+			fh.write(text)
+	subprocess.run(["icacls", y, "/deny", "*S-1-1-0:(WD)"], check=True, capture_output=True)
+	msg = None
+	try:
+		shcl._publish_file(tmp, target)
+	except OSError as e:
+		msg = str(e)
+	subprocess.run(["icacls", y, "/remove:d", "*S-1-1-0"], check=True, capture_output=True)
+	if msg is None:
+		raise SystemExit("the publish went through")
+	if _text_or_none(target) == "old\n":
+		if os.path.exists(tmp):
+			raise SystemExit(f"the temp file was left: {msg}")
+	else:
+		if _text_or_none(target) is not None:
+			raise SystemExit(f"target holds neither text: {msg}")
+		if _text_or_none(backup) != "old\n" or _text_or_none(tmp) != "new\n":
+			raise SystemExit(f"a failed publish lost a file: {msg}")
+		if backup not in msg or tmp not in msg:
+			raise SystemExit(f"the error does not name both files: {msg}")
+
+	# Anything holding the temp file open without delete sharing fails the
+	# replace and the rename both, the way a scanner looking at a fresh file
+	# does. A hold that ends in a few milliseconds must not fail the save.
+	import ctypes
+
+	k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+	k32.CreateFileW.restype = ctypes.c_void_p
+	k32.CreateFileW.argtypes = [
+		ctypes.c_wchar_p,
+		ctypes.c_ulong,
+		ctypes.c_ulong,
+		ctypes.c_void_p,
+		ctypes.c_ulong,
+		ctypes.c_ulong,
+		ctypes.c_void_p,
+	]
+	k32.CloseHandle.argtypes = [ctypes.c_void_p]
+	h = os.path.join(td, "ph")
+	os.makedirs(h)
+	target, tmp = os.path.join(h, "t.shcl"), os.path.join(h, ".t.shcl.tmp1.0")
+	for path, text in ((target, "old\n"), (tmp, "new\n")):
+		with open(path, "w", encoding="utf-8", newline="") as fh:
+			fh.write(text)
+	# GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING
+	hold = k32.CreateFileW(tmp, 0x80000000, 0x1, None, 3, 0, None)
+	if hold in (None, ctypes.c_void_p(-1).value):
+		raise SystemExit("could not hold the temp file open")
+
+	def free():
+		time.sleep(0.02)
+		k32.CloseHandle(hold)
+
+	freed = threading.Thread(target=free)
+	freed.start()
+	try:
+		shcl._publish_file(tmp, target)
+	except OSError as e:
+		raise SystemExit(f"a brief hold failed the publish: {e}") from None
+	finally:
+		freed.join()
+	if _read(target) != "new\n":
+		raise SystemExit("a brief hold: the target was not replaced")
+	if os.path.exists(tmp) or os.path.exists(os.path.join(h, ".t.shcl.bak1.0")):
+		raise SystemExit("a brief hold: the temp or the backup was left behind")
+
+
 def setters_write_only_what_reads_back():
 	# A setter writes only what reads back. Each one builds its text through the
 	# emitter and hands it to the tokenizer before the document is touched, so
@@ -1447,6 +1538,7 @@ def main():
 			if not after & 0x4:
 				raise SystemExit("file did not come back system")
 			k32.SetFileAttributesW(ro, 0x80)
+			windows_publish_failures(td)
 		# A document holding a lone surrogate has no UTF-8 spelling; the save
 		# fails like any other failed write, and leaves no temp file behind.
 		surdoc = shcl.Document.parse("a: 1\n")

@@ -76,12 +76,14 @@ $result = Join-Path $out 'result.txt'
 $failed = 0
 try {
 	Write-Output "winpath-sandbox: starting a sandbox on $root"
-	# ProcessStartInfo.ArgumentList quotes each argument itself. Start-Process
-	# -ArgumentList does not, so a profile path holding a space arrived as two
-	# arguments, the sandbox never started, and the run waited out its timeout
-	# and reported the test as failed rather than the setup.
+	# Start-Process -ArgumentList does not quote, so a profile path holding a
+	# space arrived as two arguments, the sandbox never started, and the run
+	# waited out its timeout and reported the test as failed rather than the
+	# setup. The quotes go on by hand: ProcessStartInfo.ArgumentList would do
+	# it, but 5.1 runs on .NET Framework, which does not have it, and
+	# win-runners.bash runs this under 5.1. A path cannot hold a quote.
 	$psi = [Diagnostics.ProcessStartInfo]::new($sandboxExe)
-	$psi.ArgumentList.Add($wsbPath)
+	$psi.Arguments = '"' + $wsbPath + '"'
 	$psi.UseShellExecute = $false
 	[Diagnostics.Process]::Start($psi) | Out-Null
 	$deadline = (Get-Date).AddSeconds($TimeoutSeconds)

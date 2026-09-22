@@ -3997,11 +3997,14 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 		set_read_only(&target, false);
 	}
 	// Nothing was at the path when the save started, so nothing that turns up
-	// before the publish is written over.
+	// before the publish is written over. A failed replace decides for itself
+	// whether the temp file can go, since on windows it may be all that is left.
 	let published = if existing.is_some() {
 		publish_file(&tmp, &target)
 	} else {
-		publish_new_file(&tmp, &target)
+		publish_new_file(&tmp, &target).inspect_err(|_| {
+			let _ = std::fs::remove_file(&tmp);
+		})
 	};
 	#[cfg(windows)]
 	if carried != 0 {
@@ -4011,10 +4014,7 @@ pub fn write_file_atomic(file: &str, data: &str) -> Result<(), String> {
 	if read_only {
 		set_read_only(&target, true); // whether or not the publish went through
 	}
-	published.map_err(|e| {
-		let _ = std::fs::remove_file(&tmp);
-		format!("{}: {}", file, e)
-	})?;
+	published.map_err(|e| format!("{}: {}", file, e))?;
 	sync_dir(dir);
 	Ok(())
 }
@@ -4200,12 +4200,170 @@ fn set_attributes(path: &std::path::Path, bits: u32) {
 /// merge it cannot do (no WRITE_DAC, say), so a create and any failure fall back
 /// to the rename. WRITE_THROUGH is asked for and documented as unsupported by
 /// ReplaceFile, so the durability here rests on the file's own fsync.
+///
+/// A failure removes the temp file, except where nothing is left at the target.
+#[cfg(not(windows))]
 fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-	#[cfg(windows)]
-	if target.exists() && windows_replace_file(tmp, target) {
-		return Ok(());
+	std::fs::rename(tmp, target).inspect_err(|_| {
+		let _ = std::fs::remove_file(tmp);
+	})
+}
+
+/// A scanner or an indexer that opens the fresh temp file blocks the replace and
+/// the rename both, for a moment, and one try made that a failed save.
+#[cfg(windows)]
+const PUBLISH_TRIES: u32 = 5;
+#[cfg(windows)]
+const PUBLISH_PAUSE_MS: u64 = 50;
+
+/// ReplaceFile is given a backup name, because without one a failure between
+/// its two moves deletes the old file (1176) or leaves it under a name nobody
+/// is told (1177). With one, 1177 leaves it at the backup and nothing at the
+/// target, so the old file is put back. If even that fails, neither file is
+/// removed and the error says where they are.
+#[cfg(windows)]
+fn publish_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+	let backup = backup_name(tmp);
+	let mut moved_away = false;
+	let mut tries = 0;
+	let err = loop {
+		if !moved_away && target.exists() {
+			if windows_replace_file(tmp, target, &backup) {
+				let _ = std::fs::remove_file(&backup);
+				return Ok(());
+			}
+			moved_away = !target.exists() && backup.exists();
+		}
+		let e = match std::fs::rename(tmp, target) {
+			Ok(()) => {
+				if moved_away {
+					let _ = std::fs::remove_file(&backup);
+				}
+				return Ok(());
+			}
+			Err(e) => e,
+		};
+		tries += 1;
+		if tries == PUBLISH_TRIES {
+			break e;
+		}
+		std::thread::sleep(std::time::Duration::from_millis(PUBLISH_PAUSE_MS));
+	};
+	if target.exists() || (moved_away && publish_new_file(&backup, target).is_ok()) {
+		let _ = std::fs::remove_file(tmp);
+		return Err(err);
 	}
-	std::fs::rename(tmp, target)
+	let kept = if moved_away {
+		format!(
+			"{}; the old file is left at {} and the new text at {}",
+			err,
+			backup.display(),
+			tmp.display()
+		)
+	} else {
+		format!("{}; the new text is left at {}", err, tmp.display())
+	};
+	Err(std::io::Error::new(err.kind(), kept))
+}
+
+/// The temp name with its `.tmp` swapped for `.bak`, so the two sit side by
+/// side and are the same length. The last `.tmp` is the one the save added.
+#[cfg(windows)]
+fn backup_name(tmp: &std::path::Path) -> std::path::PathBuf {
+	let name = tmp
+		.file_name()
+		.map(|n| n.to_string_lossy().into_owned())
+		.unwrap_or_default();
+	match name.rfind(".tmp") {
+		Some(at) => tmp.with_file_name(format!("{}.bak{}", &name[..at], &name[at + 4..])),
+		None => tmp.with_file_name(format!("{}.bak", name)),
+	}
+}
+
+// Here rather than under tests/, since the publish is private. A save always
+// puts its temp file beside the target, so these call the publish directly.
+#[cfg(all(test, windows))]
+mod windows_publish {
+	use super::publish_file;
+	use std::path::Path;
+
+	fn scratch(tag: &str) -> std::path::PathBuf {
+		let d = std::env::temp_dir().join(format!("shcl-publish-{}-{}", tag, std::process::id()));
+		let _ = std::fs::remove_dir_all(&d);
+		std::fs::create_dir_all(&d).unwrap();
+		d
+	}
+
+	fn text(p: &Path) -> Option<String> {
+		std::fs::read_to_string(p).ok()
+	}
+
+	fn icacls(args: &[&str]) {
+		let ok = std::process::Command::new("icacls")
+			.args(args)
+			.output()
+			.is_ok_and(|o| o.status.success());
+		assert!(ok, "icacls {:?} failed", args);
+	}
+
+	// Taking add-file away from the target's folder, with the temp file in
+	// another, lets ReplaceFile move the old file out to the backup and then
+	// refuses the new one its place: error 1177, with nothing at the target.
+	// Neither the rename nor putting the old file back can get in either.
+	#[test]
+	fn a_failed_publish_loses_neither_file() {
+		let root = scratch("kept");
+		let (x, y) = (root.join("x"), root.join("y"));
+		std::fs::create_dir_all(&x).unwrap();
+		std::fs::create_dir_all(&y).unwrap();
+		let (target, tmp) = (y.join("t.shcl"), x.join(".t.shcl.tmp1.0"));
+		let backup = x.join(".t.shcl.bak1.0");
+		std::fs::write(&target, "old\n").unwrap();
+		std::fs::write(&tmp, "new\n").unwrap();
+		let ydir = y.to_string_lossy().into_owned();
+		icacls(&[&ydir, "/deny", "*S-1-1-0:(WD)"]);
+		let published = publish_file(&tmp, &target);
+		icacls(&[&ydir, "/remove:d", "*S-1-1-0"]);
+		let msg = published.expect_err("the publish went through").to_string();
+		if text(&target).as_deref() == Some("old\n") {
+			assert!(!tmp.exists(), "the temp file was left: {}", msg);
+		} else {
+			assert_eq!(text(&target), None, "{}", msg);
+			assert_eq!(text(&backup).as_deref(), Some("old\n"), "{}", msg);
+			assert_eq!(text(&tmp).as_deref(), Some("new\n"), "{}", msg);
+			assert!(msg.contains(&*backup.to_string_lossy()), "{}", msg);
+			assert!(msg.contains(&*tmp.to_string_lossy()), "{}", msg);
+		}
+		let _ = std::fs::remove_dir_all(&root);
+	}
+
+	// Anything holding the temp file open without delete sharing fails the
+	// replace and the rename both, the way a scanner looking at a fresh file
+	// does. A hold that ends in a few milliseconds must not fail the save.
+	#[test]
+	fn a_brief_hold_is_waited_out() {
+		use std::os::windows::fs::OpenOptionsExt;
+		let root = scratch("hold");
+		let (target, tmp) = (root.join("t.shcl"), root.join(".t.shcl.tmp1.0"));
+		std::fs::write(&target, "old\n").unwrap();
+		std::fs::write(&tmp, "new\n").unwrap();
+		let hold = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(1) // FILE_SHARE_READ
+			.open(&tmp)
+			.unwrap();
+		let freed = std::thread::spawn(move || {
+			std::thread::sleep(std::time::Duration::from_millis(20));
+			drop(hold);
+		});
+		let published = publish_file(&tmp, &target);
+		freed.join().unwrap();
+		published.unwrap();
+		assert_eq!(text(&target).as_deref(), Some("new\n"));
+		assert!(!tmp.exists());
+		assert!(!root.join(".t.shcl.bak1.0").exists());
+		let _ = std::fs::remove_dir_all(&root);
+	}
 }
 
 /// The publish for a save that found nothing at the path, which must not
@@ -4253,7 +4411,11 @@ fn publish_new_file(tmp: &std::path::Path, target: &std::path::Path) -> std::io:
 }
 
 #[cfg(windows)]
-fn windows_replace_file(tmp: &std::path::Path, target: &std::path::Path) -> bool {
+fn windows_replace_file(
+	tmp: &std::path::Path,
+	target: &std::path::Path,
+	backup: &std::path::Path,
+) -> bool {
 	use std::os::windows::ffi::OsStrExt;
 	const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
 	// Declared here rather than pulled from a crate: this file has no
@@ -4275,12 +4437,12 @@ fn windows_replace_file(tmp: &std::path::Path, target: &std::path::Path) -> bool
 			.chain(std::iter::once(0))
 			.collect()
 	}
-	let (replaced, replacement) = (wide(target), wide(tmp));
+	let (replaced, replacement, kept) = (wide(target), wide(tmp), wide(backup));
 	unsafe {
 		ReplaceFileW(
 			replaced.as_ptr(),
 			replacement.as_ptr(),
-			std::ptr::null(),
+			kept.as_ptr(),
 			REPLACEFILE_WRITE_THROUGH,
 			std::ptr::null_mut(),
 			std::ptr::null_mut(),
