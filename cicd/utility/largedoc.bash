@@ -278,4 +278,4 @@ exit "${rc}"
 ##		- 2026-08-29 JC: Generator moved to include/largedoc-gen.bash; the memory
 ##		  poll no longer forks per sample.
 ##		- 2026-09-22 JC: The bindings and the invariant reads run at once, as far
-##		  as their memory ceilings fit in free memory. 305 s to 132 s here.
+##		  as their memory ceilings fit in free memory. 188 s to 132 s here.
