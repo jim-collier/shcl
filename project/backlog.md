@@ -191,11 +191,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: a compile takes about 4.7 s here, so about 19 s per hosted windows run, likely more under mingw. Build it once and share it.
 		- Opened: 20260921-132543
 
-	- 🔘 Idea 9: the hosted run spends time it need not.
-		- Note: plausible, unmeasured. `staticcheck` and `govulncheck` are built from source on every run, and the Go build cache is off. The half-the-cores cap gives the 4-core runner two jobs, while the run takes about 39 of its 45 minutes.
-		- Note: the Rust cache holds only stale shcl artifacts, since the library has no dependencies. Low value.
-		- Opened: 20260921-132543
-
 ### Done
 
 #### Done - Bugs
@@ -4315,6 +4310,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
+- ✅ The full gate takes 33 minutes here and 42 on the hosted runner, three minutes under that job's limit.
+	- Measured: one `--ci` on dev, step by step. cppcheck 709 s, `check-c-compilers.bash` 324 s, `largedoc.bash` 305 s, `crosscheck.bash` 231 s, the Rust tests with the fuzz 161 s, `sanitize-c.bash` 91 s, and nothing else over 50. The hosted run has the same order.
+	- Fixed: cppcheck keeps a result cache in the git dir, where a pre-push worktree finds it too, and checks its two files side by side. An unchanged file replays in 0.2 s, and a changed one costs 425 s cold where both took 709. The hosted job keeps the cache between runs.
+	- Note: the cache is keyed on each file's code, its comments and the options. Each was checked: a defect planted in `shcl.h`, a suppression comment added above it, and one more check class turned on all made cppcheck analyze again, and the defect was reported.
+	- Fixed: `check-c-compilers.bash` runs its builds `CPU_CAP` at a time and builds a compiler once when two names reach it (`gcc` is `gcc-14` here). 324 s to 22 s, and 80 builds where it was 96.
+	- Fixed: the test binaries build at opt-level 1. The fuzz goes from 161 s to 29 s with overflow checks and debug assertions still on. The CLI is still the dev profile's, so `perf-gate.bash` measures what it was sized against.
+	- Measured: the whole local `--ci` went from 33 minutes to 14, `largedoc.bash` included, with no C change since the cache was filled. The hosted job went from 2530 s to 1456 s with the cache still empty, on run `35685464650`.
+	- Pinned by: `check-c-compilers.bash` was watched to fail two ways. A build refused at one optimization level failed 5 of 80 and named each, and jobs killed without a word failed 16 of 80 and said each ended without a result.
+	- Left alone: `crosscheck.bash`, which is mostly Python start-up over 17,034 comparisons, and `sanitize-c.bash`. Both could be split across cores, and neither is a quick change. `largedoc.bash` too, which is mostly Python and the debug Rust CLI on 100 MiB. It runs the four one at a time on purpose, since four at once would need 14 GB, and the pre-push gate skips it anyway.
+	- Opened: 20260921-194500
+	- Closed: 20260921-210438
+
 - ✅ An unknown option is the one usage error that does not end with `(see --help)`.
 	- Reproduced: `shcl fmt --zzzzzz f` prints `unknown option: --zzzzzz`, where `shcl zzzzzz f` prints `unknown command: zzzzzz (see --help)` and `--lossy` without `--write` ends the same way. The did-you-mean form, `unknown option: --stricness=strict; did you mean '--strictness'?`, has no pointer either.
 	- Note: found writing `project/style-guide_ui-ux.md`, which says a usage error ends with the pointer. It is a message change in all four CLIs, plus any `cli-regress` row that pins the old text.
@@ -5009,6 +5016,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: the config. With a `ReadRaw:` comment and the `statGid` name put back, `staticcheck ./...` exits 1 and names both. A probe function named `probeGid` in the CLI module fails the same way.
 		- Opened: 20260921-132543
 		- Closed: 20260921-185850
+
+	- ✅ Idea 9: the hosted run spends time it need not.
+		- Note: plausible, unmeasured. `staticcheck` and `govulncheck` are built from source on every run, and the Go build cache is off. The half-the-cores cap gives the 4-core runner two jobs, while the run takes about 39 of its 45 minutes.
+		- Note: the Rust cache holds only stale shcl artifacts, since the library has no dependencies. Low value.
+		- Measured: the gate step took 2441 s of a 2530 s job on run `35673180418`, against the 45-minute limit. The two tool builds took under a minute between them.
+		- Fixed: the engine takes a `CPU_CAP` the caller sets, and the hosted job sets it to every core. The loose item about the gate's run time, under Done - Features and enhancements, covers the rest.
+		- Left alone: the tool builds and the Go build cache, at under a minute.
+		- Opened: 20260921-132543
+		- Closed: 20260921-210438
 
 - Code review 20260920b:
 
