@@ -86,6 +86,61 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260922:
+
+	- A review against the directives' code style and performance sections. It picks up where 20260921 stopped: Rust, Python, C and C++, and measured performance across the four bindings. It also covers everything merged since that round's base (`f85a0d2`), in every language and script, which is the last round's own fixes with no soak time. Five sweeps, one area each.
+
+	- Five defects here and fourteen ideas under Features and enhancements. None loses data or gives a wrong answer at exit 0, so none holds the 3.0.0 cut. Measured that way, this round is clean.
+
+	- The last round's fixes held. Each was read against its Rust twin in the other three bindings, and the new parallel gate code was run with a fault injected into each kind of job. Nothing measured got slower since `f85a0d2`, and Go got faster.
+
+	- Two classes came back. A doc comment above the wrong declaration is back a third time (item 2). And the last round's Go allocation fixes went into Go only, so this round found the same sites in the other three (ideas 6, 7 and 9).
+
+	- Deferred, each with its trigger:
+		- The two Go tokenizer allocations the last round deferred now have a profile: 16 and 7 percent of allocated objects, but about 3 percent of CPU each. Reusing the buffer changes helper signatures in all four. Re-measure after idea 2, the bigger Go win.
+		- `largedoc.bash` uses `wait -n -p`, which needs bash 5.1, and no floor is stated. An older bash fails the gate with the wrong message. Trigger: a gate host with an older bash.
+		- `largedoc.bash`'s time ceilings are now taken with other bindings running at once. Trigger: a time failure on the hosted runner with no code change behind it.
+		- Four C costs want a C profile taken after ideas 1 and 6: `cmap_put` at 10 to 18 percent, the per-write output check, a `[value]` selector building a display string per candidate (all four do that), and an extra copy per cell on emit.
+		- Python's `_children_named` re-checks every chain node against its exact key. Trigger: a Python profile where it tops the list.
+		- Dataclasses in the Python binding need the floor at 3.10. Trigger: the floor moving.
+
+	- Decided against: the C++ veneer staying C++17 with `#ifndef` guards, `os.path` over `pathlib` in Python, enums for Python's string tags, and clippy pedantic beyond the sites named in ideas 8 and 13. Each is a recorded decision or has no rule behind it. The round's private notes list the rest.
+
+	- Exact sites, commands and numbers are in `details.md` -> "Code Review 20260922 - technical detail".
+
+	- 🔘 Item 1: the flamegraph's top entry is not where the time goes, so the hot-spot summary can point at the wrong code.
+		- Reproduced: two fresh Rust profiles put about 40 percent of samples on a small inlined helper, `src_matches_display` in one and a pointer accessor in the other. Switching that call off saved a few percent at most. Switching off `fold_late_dups`, which sat under the helper in the second flame, saved 14 percent.
+		- Cause: the profiling build inherits release, so fat LTO and one codegen unit inline small calls into their callers, and the sampler credits whichever leaf it stops in.
+		- Note: the style guide says the summary makes "this path is already slow" a fact. The caller chains were right both times. The leaf share was not.
+		- Probable fix: frame pointers on the profiling build, or no LTO in `[profile.profiling]`. Then prove it with a loop of known cost before trusting a percentage.
+		- Origin: the profiler stage and `[profile.profiling]`, 2026-07-12. No round has checked the attribution against a removal. Confirmed.
+		- Opened: 20260922-120717
+
+	- 🔘 Item 2: the C windows resolver's doc comment sits above `shcl_narrow`, and `shcl_resolve_target` below it has none.
+		- Reproduced: `shcl.h` near line 7150. The block explains which path a save rewrites, and the next line declares `shcl_narrow`.
+		- Note: 20260921 item 7 moved eleven misplaced comments in the C header. This one is in the windows arm, which that sweep did not reach.
+		- Sweep: the other `_WIN32` blocks in `shcl.h`, and the windows code in the other three bindings.
+		- Origin: `cd2b527` (2026-09-03). Third time for the class, after 20260904 item 30 and 20260921 item 7. Confirmed.
+		- Opened: 20260922-120717
+
+	- 🔘 Item 3: two public C calls have names the style guide's naming rule does not allow for.
+		- Reproduced: `read_bool` is `shcl_read_bool_` and `write_reason` is `shcl_write_reason_` in C. The trailing underscore is there because a typedef already has the plain name. Both are in the README and the C++ veneer too.
+		- Note: the rule says its exceptions are the whole list and a new one needs a line.
+		- Probable fix: a line in the exception list, which costs no consumer anything. The other way is a rename at the 3.0.0 cut.
+		- Origin: `6459875` (2026-07-13) and `4df2316` (2026-08-02). The rule is from 2026-09-20, and the names were not checked against it. Confirmed.
+		- Opened: 20260922-120717
+
+	- 🔘 Item 4: the style guide says the profiler runs on every non-quick pipeline run, but `--ci` skips it too.
+		- Reproduced: `cicd.bash` sets `PROFILE_ENABLE=0` in the `--ci` block as well as under `--quick`.
+		- Probable fix: say so in the guide.
+		- Origin: `2be7d84` (2026-07-12) for the skip, `f283186` (2026-07-27) for the sentence, so it was wrong when written. Confirmed.
+		- Opened: 20260922-120717
+
+	- 🔘 Item 5: a comment in `crosscheck.bash` says one worker per core, where the code runs `CPU_CAP` workers, half the cores by default.
+		- Reproduced: line 500 against lines 548 to 551. The script's header has it right.
+		- Origin: `a3e2817` (2026-09-22), the parallel gates change. Confirmed.
+		- Opened: 20260922-120717
+
 - Code review 20260921:
 
 	- A review against the directives' code style and performance sections. It was aimed at the code merged since the last pass over them (20260830b), about 35,000 lines, and at the C rules the directives gained on 2026-09-19. Six sweeps were started: Rust, Go, Python, C and C++, the shell and PowerShell scripts, and measured performance across the four bindings.
@@ -165,6 +220,99 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
+
+- Code review 20260922:
+
+	- The round's ideas. Its defects and its header are under Bugs, in a bullet of the same name. Timings were taken on a shared box, run alternately against the unchanged build.
+
+	- 🔘 Idea 1: every parse walks every parent a second time to fold duplicates, and in Rust that is about 14 percent of `fmt`.
+		- Measured: Rust `fmt` on a 16 MB, 1.2M-line document, pass on and off: about 1200 ms against 1040. On a 32 MB comment-heavy document, 1070 against 850. Neither document holds a late duplicate, so the pass finds nothing. Go spends about 7 percent there, Python 3.
+		- Note: late duplicates come only from a fence fill and a stacked-list close, as the doc comment says. Folding just the parents those touched gives the same answer without the walk.
+		- Note: all four, inside the parser. No function or output changes.
+		- Origin: `f127185` (2026-08-03).
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 2: Go never sizes its node arena, and growing it costs about 12 percent of `fmt` and 16 percent of peak memory.
+		- Measured: sized to the line count, `fmt` on the 16 MB document went from about 1150 to 1020 ms and peak memory from 591 to 499 MiB. On the comment-heavy document time dropped 7 percent but memory rose 3, since it has far more lines than nodes.
+		- Note: Go only. Rust and C gained nothing from the same change.
+		- Origin: `e2a57f7` (2026-08-17).
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 3: Rust's emitter allocates about three strings per node, and returning the borrowed text where nothing changes takes a third off emit time.
+		- Measured: emit alone on the 16 MB document went from about 155 to 105 ms, and allocations from 4.0M to 1.15M. Output is byte-identical and every test passes on the patched copy.
+		- Note: `emit_element`, `escape_name` and `emit_name` copy text that needs no escaping, `emit_node` builds the inside pad for every node, and each cell is built as its own string before it is copied in. `emit_element`'s clone gives no reason.
+		- Note: Rust only. The other three already share strings or write into the output. No function or output changes.
+		- Origin: `5756a59` (2026-07-12) and later. 20260829 item 47 trimmed the pads and did not measure this.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 4: Rust runs its 64-bit keys through a second hash in every lookup map.
+		- Measured: an identity hasher on the eight `HashMap<u64, ...>` maps took 40,000 writes from about 70 to 62 ms, and parse plus emit of the same file from 43 to 38. `fmt --layer` on the 16 MB document was about 5 percent faster. Output identical.
+		- Note: Rust only. Go's runtime, C's buckets and Python's int hash use the value as is.
+		- Note: try a document of many short names first, since the map takes its control bits from the top of the hash.
+		- Origin: `082c917` (2026-08-21) and `5321e38` (2026-09-19).
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
+		- Measured: `fmt --layer` on the 16 MB document takes 2.9 times as long as plain `fmt` in Rust, 2.4 in Go, 2.3 in C and Python. The key strings' share was not separated out.
+		- Note: 20260829 item 46 moved the writer's fold to hash-and-verify. The merge's own map is the last one keyed on built strings.
+		- Note: all four: `overlay` in Rust and Go, `_overlay_level` in Python, `w_overlay` in C.
+		- Origin: `66c7e5e` (2026-07-25). 20260918b item 58 added the name index beside it and left this map alone.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 6: the repeated-leaf hint pass makes a list for every child in Rust, C and Python. Go stopped doing that last round.
+		- Measured: Rust `fmt` is 3 to 10 percent faster with the pass off, and C spends about 7.6 percent there.
+		- Note: 20260921 idea 2 fixed Go only, so Go's `emitRepeatedLeafHints` now carries a field the reference does not. Taking the same change in the other three puts them back in step.
+		- Origin: `5756a59` (2026-07-12) in Rust. 20260829 item 47 left it with no number.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 7: Rust copies text on the parse path that the other three slice.
+		- Measured: 17 percent fewer allocations parsing the 16 MB document, 8.2M to 6.8M. Time was within the noise of a shared box.
+		- Note: the value text is copied into `PathScan` per value line, and a name is copied into its segment and then again into the node. The new comment filing copies each comment's indent and collects the pending list per binding line, where Go and C filter in place. The parser's stack copies the indent per nested line.
+		- Note: Rust only. Go made the same changes last round.
+		- Origin: `e58fe9f` (2026-09-07), `5756a59` (2026-07-12), and `0165a83` (2026-09-21) for the comment filing.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 8: Rust copies strings with no reason given on per-lookup and per-element paths. Unmeasured.
+		- Note: four sites copy a selector's text only to compare it: `find_by_value`, `resolve_from`, `probe_write` and `v_contexts`. `Value::display` clones every element to join them, `read_string`'s array arm collects before joining, and `v_node` clones each element to test it against a set. The CLI's `do_tokens` pushes a `format!` per token.
+		- Note: borrow at each site, or say why the copy is needed.
+		- Origin: mostly `e58fe9f` (2026-09-07) and `5756a59` (2026-07-12). No directive pass had read them.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 9: containers whose size is known are grown one push at a time. Unmeasured.
+		- Note: the duplicate-fold maps in Rust (`fold_late_dups` and the writer's fold) and in C (`fold_late_dups`, `w_fold_dups_below`), which Go sized last round. Rust's `cell_of_tokens`. Four loops in the C++ veneer, one of them run once per tokenized line.
+		- Origin: 2026-07 to 2026-09.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 10: the C header falls short of three of the C rules added to the directives on 2026-09-19.
+		- Note: `sprintf`, `strcpy`, `wcscpy` and `wcscat` at seven sites. Each is bounded by construction, so nothing can overflow, but the rule says never.
+		- Note: one `goto` that is not a cleanup unwind, in the windows `shcl_resolve_target`.
+		- Note: `shcl_narrow`, `shcl_widen` and `shcl_backup_name` allocate without saying who frees.
+		- Origin: 2026-07-13 to 2026-09-19, all before the rules.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 11: the C builds could gate on `-Wshadow`, `-Wvla`, `-Wconversion` and `-Wsign-conversion`, since the tree nearly takes them now.
+		- Measured: gcc 14, gcc 15 and clang 19 give one `-Wshadow` warning in `shcl.h`, in `generate_in`'s rank loop, and two in `conformance.c`. Nothing else.
+		- Note: rename the three locals, then add the flags in `config.bash` and `check-c-compilers.bash`.
+		- Origin: the directive's C section, 2026-09-19.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 12: Python's typed reads come back as `Any`.
+		- Note: `Read.value` is `Any`, where Rust and Go carry the element type. Under `mypy --strict` that makes 34 `get_*` calls return `Any`. Six private helpers with no return hint make 32 more public calls return `Any`. `Piece.__eq__` and `__repr__` have no hints at all.
+		- Note: a generic `Read` costs nothing at run time.
+		- Origin: `68ba5ab` (2026-07-21) and `d78cb8b` (2026-08-29).
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 13: two Rust style rules each miss a spot or two.
+		- Note: `Migration` is the one public type without `Debug`.
+		- Note: `diag_value`, `desc` and `emit_value_inline` end on a `_` arm that stands for two named variants.
+		- Origin: `7040ab7` (2026-09-16) and earlier.
+		- Opened: 20260922-120717
+
+	- 🔘 Idea 14: small Python consistency gaps.
+		- Note: the last round added `_remove_quietly` and moved one site to it, but two older `try: os.remove` blocks still spell it out, one in the same function.
+		- Note: twelve loops build a list one append at a time where `extend` or a comprehension fits on one line, and `do_explain` builds its text with `+=`.
+		- Origin: `9db870a` (2026-09-21) for the helper, and 2026-07 to 2026-09 for the loops.
+		- Opened: 20260922-120717
 
 ### Done
 
