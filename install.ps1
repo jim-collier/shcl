@@ -251,33 +251,33 @@ file. Nothing unverified is installed.
 	## had put there, and a populated dir stays, since the setup .exe installs
 	## here too. Hands back what would not go and whether anything this
 	## installer did not write is left, since a locked file left behind used
-	## to be reported as someone else's.
+	## to be reported as someone else's. What is left is judged by name within
+	## its own dir: a full path read back can be spelled differently from the
+	## one given, as a short 8.3 name is.
 	function Remove-ShclFile {
 		[CmdletBinding()]
 		[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
 		param([string]$Dest)
-		$codeDir = Join-Path -Path $Dest -ChildPath 'code'
-		$scriptsDir = Join-Path -Path $Dest -ChildPath 'scripts'
-		$files = [System.Collections.Generic.List[string]]::new()
-		foreach ($name in 'shcl.exe', '.shcl.exe.new') { $files.Add((Join-Path -Path $Dest -ChildPath $name)) }
-		foreach ($name in 'lib.rs', 'shcl.go', 'shcl.py', 'shcl.h', 'shcl.hpp') { $files.Add((Join-Path -Path $codeDir -ChildPath $name)) }
-		foreach ($name in 'shcl.ps1', 'shcl.bash') { $files.Add((Join-Path -Path $scriptsDir -ChildPath $name)) }
+		$layout = @(
+			@{ Dir = (Join-Path -Path $Dest -ChildPath 'code'); Names = @('lib.rs', 'shcl.go', 'shcl.py', 'shcl.h', 'shcl.hpp') },
+			@{ Dir = (Join-Path -Path $Dest -ChildPath 'scripts'); Names = @('shcl.ps1', 'shcl.bash') },
+			@{ Dir = $Dest; Names = @('shcl.exe', '.shcl.exe.new', 'code', 'scripts') }
+		)
 		$stuck = [System.Collections.Generic.List[string]]::new()
-		foreach ($path in $files) {
-			if (-not (Test-Path -LiteralPath $path)) { continue }
-			try { Remove-Item -Force -LiteralPath $path -ErrorAction Stop } catch { $stuck.Add($path) }
-		}
 		$foreign = $false
-		foreach ($dir in $codeDir, $scriptsDir, $Dest) {
-			if (-not (Test-Path -LiteralPath $dir)) { continue }
-			$entries = @(Get-ChildItem -Force -LiteralPath $dir)
-			if ($entries.Count -eq 0) {
-				try { Remove-Item -Force -LiteralPath $dir -ErrorAction Stop } catch { $stuck.Add($dir) }
-				continue
+		foreach ($part in $layout) {
+			if (-not (Test-Path -LiteralPath $part.Dir)) { continue }
+			foreach ($name in $part.Names) {
+				$path = Join-Path -Path $part.Dir -ChildPath $name
+				if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+				try { Remove-Item -Force -LiteralPath $path -ErrorAction Stop } catch { $stuck.Add($path) }
 			}
-			## A stuck file is ours, and so is an install dir left holding one.
-			$others = @($entries | Where-Object { $stuck -notcontains $_.FullName -and $_.FullName -ne $codeDir -and $_.FullName -ne $scriptsDir })
-			if ($others.Count -gt 0) { $foreign = $true }
+			$entries = @(Get-ChildItem -Force -LiteralPath $part.Dir)
+			if ($entries.Count -eq 0) {
+				try { Remove-Item -Force -LiteralPath $part.Dir -ErrorAction Stop } catch { $stuck.Add($part.Dir) }
+			} elseif (@($entries | Where-Object { $part.Names -notcontains $_.Name }).Count -gt 0) {
+				$foreign = $true
+			}
 		}
 		[PSCustomObject]@{ Stuck = $stuck.ToArray(); Foreign = $foreign }
 	}

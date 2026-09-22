@@ -512,22 +512,31 @@ SRVEOF
 	[[ "${out}" == *"could not remove ${tmpDir}/lad/Programs/Shcl/code/lib.rs"* ]] \
 		|| fBad "install.ps1 -Uninstall hid a file it could not remove: ${out@Q}"
 	[[ "${out}" == *"did not put there"* ]] && fBad "install.ps1 -Uninstall blamed its own file on someone else: ${out@Q}"
-	##	The other two answers, from the function itself: a clean removal takes
-	##	the dir, and a file nobody installed keeps it and says so.
-	mkdir -p "${tmpDir}/rmfile/clean/code" "${tmpDir}/rmfile/other/scripts"
+	##	The other answers, from the function itself: a clean removal takes the
+	##	dir, and a file nobody installed keeps it and says so. The dirs are
+	##	named relative, which reads back spelled differently from the path
+	##	given, as a short 8.3 name does on windows. A file that would not go
+	##	was then counted as someone else's.
+	mkdir -p "${tmpDir}/rmfile/clean/code" "${tmpDir}/rmfile/other/scripts" "${tmpDir}/rmfile/held/code"
 	printf 'x\n' > "${tmpDir}/rmfile/clean/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/clean/code/lib.rs"
 	printf 'x\n' > "${tmpDir}/rmfile/other/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/other/scripts/mine.txt"
+	printf 'x\n' > "${tmpDir}/rmfile/held/shcl.exe"; printf 'x\n' > "${tmpDir}/rmfile/held/code/lib.rs"
+	chmod 555 "${tmpDir}/rmfile/held/code"
 	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
 	{
 		echo 'Set-StrictMode -Version Latest'
 		echo '$ErrorActionPreference = "Stop"'
 		sed -n '/^\tfunction Remove-ShclFile/,/^\t}/p' "${repoDir}/install.ps1"
-		echo "foreach (\$dir in 'clean', 'other') {"
-		echo "	\$r = Remove-ShclFile -Dest ('${tmpDir}/rmfile/' + \$dir)"
+		echo "Set-Location -LiteralPath '${tmpDir}/rmfile'"
+		echo "foreach (\$dir in 'clean', 'other', 'held') {"
+		echo '	$r = Remove-ShclFile -Dest $dir'
 		echo '	Write-Output ("{0}: stuck=[{1}] foreign={2}" -f $dir, ($r.Stuck -join ","), $r.Foreign)'
 		echo '}'
 	} > "${tmpDir}/rmfile.ps1"
 	out="$(pwsh -NoProfile -File "${tmpDir}/rmfile.ps1" 2>&1 || true)"
+	chmod 755 "${tmpDir}/rmfile/held/code"
+	[[ "${out}" == *"held: stuck=[held/code/lib.rs] foreign=False"* ]] \
+		|| fBad "install.ps1 -Uninstall called its own locked file someone else's: ${out@Q}"
 	[[ "${out}" == *"clean: stuck=[] foreign=False"* && ! -e "${tmpDir}/rmfile/clean" ]] \
 		|| fBad "install.ps1 -Uninstall did not remove a clean install whole: ${out@Q}"
 	[[ "${out}" == *"other: stuck=[] foreign=True"* && -e "${tmpDir}/rmfile/other/scripts/mine.txt" && ! -e "${tmpDir}/rmfile/other/shcl.exe" ]] \

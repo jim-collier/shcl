@@ -5024,6 +5024,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: plausible, read only. A running `shcl.exe` is locked, so its removal fails silently, and the message says the directory holds files the installer did not put there.
 		- Fixed: the removal is `Remove-ShclFile`, which hands back what would not go and whether anything the installer did not write is left. A file that would not go ends the run at exit 1 and is named, before the PATH entry is touched, so a second run finishes the job. The line about someone else's files shows only when there are some.
 		- Pinned by: shell-regress. The real script, with a read-only dir standing in for the lock, must name the file and must not blame anyone else. The old script passes over it in silence. Two more rows run the function on a clean install and on one holding a file it did not write.
+		- Pinned by: a `win-runners.bash` row that holds `shcl.exe` open with no sharing, which stops a delete the way a running copy does, and runs the function under 5.1.
 		- Opened: 20260921-132543
 		- Closed: 20260922-072651
 
