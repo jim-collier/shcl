@@ -36,6 +36,24 @@
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
 
+<#
+.SYNOPSIS
+Installs, updates or removes the shcl release binary on Windows.
+.DESCRIPTION
+Downloads a release from GitHub, checks the signed sha256sums file before trusting a checksum out of it, and installs the binary, the drop-in source files and the wrappers. Re-running updates an install in place.
+.PARAMETER Release
+dev (the default) takes the newest release, pre-releases included. stable takes the newest full release.
+.PARAMETER Target
+system (the default) installs under Program Files and adds it to the machine PATH, which needs an elevated shell. user installs under LOCALAPPDATA\Programs and adds it to the user PATH.
+.PARAMETER Yes
+Skip the confirmation prompt.
+.PARAMETER Uninstall
+Remove what an install of the same -Target laid down, and nothing else.
+.PARAMETER Help
+Print the options and exit.
+.EXAMPLE
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jim-collier/shcl/main/install.ps1))) -Target user -Yes
+#>
 [CmdletBinding()]
 param(
 	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'dev',
@@ -91,7 +109,9 @@ file. Nothing unverified is installed.
 
 	$repo = 'jim-collier/shcl'
 
-	function Exit-Install([string]$Message) {
+	function Exit-Install {
+		[CmdletBinding()]
+		param([string]$Message)
 		if ($invokedAsFile) {
 			[Console]::Error.WriteLine("install.ps1: $Message")
 			exit 1
@@ -117,6 +137,7 @@ file. Nothing unverified is installed.
 	function Update-ShclPath {
 		## The installer's own confirm prompt is the gate; a nested -WhatIf
 		## plumbing would dead-end at the irm|iex one-liner anyway.
+		[CmdletBinding()]
 		[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
 		param([string]$Scope, [string]$Dir, [switch]$Remove)
 		$hive = if ($Scope -eq 'Machine') { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
@@ -144,7 +165,9 @@ file. Nothing unverified is installed.
 	## HttpRequestException with no Response member and 5.1 a WebException whose
 	## Response is null, and strict mode throws on reading either, so the
 	## network-down message could never be reached.
-	function Get-HttpStatus($ErrorRecord) {
+	function Get-HttpStatus {
+		[CmdletBinding()]
+		param([System.Management.Automation.ErrorRecord]$ErrorRecord)
 		$response = $ErrorRecord.Exception.PSObject.Properties['Response']
 		if (-not $response -or -not $response.Value) { return 0 }
 		return [int]$response.Value.StatusCode
@@ -155,36 +178,43 @@ file. Nothing unverified is installed.
 	## PATH was written, and reading .Source off nothing threw under strict mode
 	## after a good install, at exit 1. An Application, so a dot-sourced shcl
 	## wrapper function is not taken for a program.
-	function Get-ShclShadow([string]$Installed) {
-		$cmd = Get-Command shcl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+	function Get-ShclShadow {
+		[CmdletBinding()]
+		param([string]$Installed)
+		$cmd = Get-Command -Name shcl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 		if ($cmd -and $cmd.Source -ne $Installed) { return $cmd.Source }
 		return $null
 	}
 
-	function Select-ReleaseTag([string]$Channel, $Releases) {
+	function Select-ReleaseTag {
+		[CmdletBinding()]
+		param([string]$Channel, [object[]]$Releases)
 		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
 		$all = @($all) | Where-Object { -not $_.draft }
 		if ($Channel -eq 'stable') { $all = @($all) | Where-Object { -not $_.prerelease } }
-		@($all) | Sort-Object `
-			@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } }, `
-			@{ Expression = { $_.tag_name -notmatch '-' } }, `
-			@{ Expression = { [regex]::Replace((($_.tag_name -split '-', 2) + '')[1], '\d+', [Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.PadLeft(10, '0') }) } } |
-			Select-Object -Last 1
+		$order = @(
+			@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } },
+			@{ Expression = { $_.tag_name -notmatch '-' } },
+			@{ Expression = { [regex]::Replace((($_.tag_name -split '-', 2) + '')[1], '\d+', [Text.RegularExpressions.MatchEvaluator]{ param($m) $m.Value.PadLeft(10, '0') }) } }
+		)
+		@($all) | Sort-Object -Property $order | Select-Object -Last 1
 	}
 
 	## Detached PKCS#1 v1.5 / SHA-256 signature over a file. Any failure - malformed
 	## key, unreadable signature, bad maths - comes back false, never an exception
 	## that a caller might mistake for a pass.
-	function Test-ReleaseSignature([string]$file, [string]$sigFile) {
+	function Test-ReleaseSignature {
+		[CmdletBinding()]
+		param([string]$Path, [string]$SignaturePath)
 		try {
 			$rsa = [System.Security.Cryptography.RSA]::Create()
-			$rsaParams = New-Object System.Security.Cryptography.RSAParameters
+			$rsaParams = New-Object -TypeName System.Security.Cryptography.RSAParameters
 			$rsaParams.Modulus  = [Convert]::FromBase64String($signingModulus)
 			$rsaParams.Exponent = [Convert]::FromBase64String($signingExponent)
 			$rsa.ImportParameters($rsaParams)
 			return $rsa.VerifyData(
-				[System.IO.File]::ReadAllBytes($file),
-				[System.IO.File]::ReadAllBytes($sigFile),
+				[System.IO.File]::ReadAllBytes($Path),
+				[System.IO.File]::ReadAllBytes($SignaturePath),
 				[System.Security.Cryptography.HashAlgorithmName]::SHA256,
 				[System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
 		} catch {
@@ -201,7 +231,9 @@ file. Nothing unverified is installed.
 	## starts (blocked by AV or AppLocker) does not touch $LASTEXITCODE, and the
 	## 0 tar left there read as a pass. So it is set to -1 first, and a start
 	## failure that throws comes back as -1 too.
-	function Invoke-ShclSmoke([string]$Exe) {
+	function Invoke-ShclSmoke {
+		[CmdletBinding()]
+		param([string]$Exe)
 		$ErrorActionPreference = 'Continue'
 		## The global is the one a native command sets; a local would shadow it.
 		$global:LASTEXITCODE = -1
@@ -211,6 +243,43 @@ file. Nothing unverified is installed.
 		} catch {
 			return @{ Code = -1; Out = $_.Exception.Message }
 		}
+	}
+
+	## Removes the files an install writes, by name, the staging name an
+	## interrupted install leaves, and each install dir once it is empty.
+	## Deleting the whole code\ and scripts\ trees took whatever else someone
+	## had put there, and a populated dir stays, since the setup .exe installs
+	## here too. Hands back what would not go and whether anything this
+	## installer did not write is left, since a locked file left behind used
+	## to be reported as someone else's. What is left is judged by name within
+	## its own dir: a full path read back can be spelled differently from the
+	## one given, as a short 8.3 name is.
+	function Remove-ShclFile {
+		[CmdletBinding()]
+		[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '')]
+		param([string]$Dest)
+		$layout = @(
+			@{ Dir = (Join-Path -Path $Dest -ChildPath 'code'); Names = @('lib.rs', 'shcl.go', 'shcl.py', 'shcl.h', 'shcl.hpp') },
+			@{ Dir = (Join-Path -Path $Dest -ChildPath 'scripts'); Names = @('shcl.ps1', 'shcl.bash') },
+			@{ Dir = $Dest; Names = @('shcl.exe', '.shcl.exe.new', 'code', 'scripts') }
+		)
+		$stuck = [System.Collections.Generic.List[string]]::new()
+		$foreign = $false
+		foreach ($part in $layout) {
+			if (-not (Test-Path -LiteralPath $part.Dir)) { continue }
+			foreach ($name in $part.Names) {
+				$path = Join-Path -Path $part.Dir -ChildPath $name
+				if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+				try { Remove-Item -Force -LiteralPath $path -ErrorAction Stop } catch { $stuck.Add($path) }
+			}
+			$entries = @(Get-ChildItem -Force -LiteralPath $part.Dir)
+			if ($entries.Count -eq 0) {
+				try { Remove-Item -Force -LiteralPath $part.Dir -ErrorAction Stop } catch { $stuck.Add($part.Dir) }
+			} elseif (@($entries | Where-Object { $part.Names -notcontains $_.Name }).Count -gt 0) {
+				$foreign = $true
+			}
+		}
+		[PSCustomObject]@{ Stuck = $stuck.ToArray(); Foreign = $foreign }
 	}
 
 	## Windows only; elsewhere install.bash (Linux) or build from source.
@@ -229,13 +298,13 @@ file. Nothing unverified is installed.
 		## the wrong home for a 64-bit binary. ProgramW6432 is the 64-bit one and
 		## is only set where the two differ.
 		$programFiles = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
-		$dest = Join-Path $programFiles 'Shcl'
+		$dest = Join-Path -Path $programFiles -ChildPath 'Shcl'
 		$pathScope = 'Machine'
 		$pathDir = $dest
 	} else {
 		## Per-user apps belong under LOCALAPPDATA\Programs - it is where Windows
 		## itself puts them, and it is already excluded from roaming profiles.
-		$dest = Join-Path $env:LOCALAPPDATA 'Programs\Shcl'
+		$dest = Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Programs\Shcl'
 		$pathScope = 'User'
 		$pathDir = $dest
 	}
@@ -249,7 +318,7 @@ file. Nothing unverified is installed.
 		## The setup .exe writes this same directory and registers itself with
 		## Add/Remove Programs. Deleting its files here would leave that entry
 		## pointing at nothing, so its own uninstaller has to run instead.
-		$setupUninstaller = Join-Path $dest 'uninstall.exe'
+		$setupUninstaller = Join-Path -Path $dest -ChildPath 'uninstall.exe'
 		if (Test-Path -LiteralPath $setupUninstaller) {
 			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
 		}
@@ -263,24 +332,14 @@ file. Nothing unverified is installed.
 				return
 			}
 		}
-		## The files the install writes, by name, and the staging name an
-		## interrupted install leaves. Deleting the whole code\ and scripts\ trees
-		## took whatever else someone had put there.
-		Remove-Item -Force -LiteralPath (Join-Path $dest 'shcl.exe'), (Join-Path $dest '.shcl.exe.new') -ErrorAction SilentlyContinue
-		Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $dest 'code\lib.rs'), (Join-Path $dest 'code\shcl.go'), (Join-Path $dest 'code\shcl.py'), (Join-Path $dest 'code\shcl.h'), (Join-Path $dest 'code\shcl.hpp'), (Join-Path $dest 'scripts\shcl.ps1'), (Join-Path $dest 'scripts\shcl.bash')
-		## Only an empty dir goes: the setup .exe installs here too, and a Remove-Item
-		## on a populated dir would offer to take everything in it.
-		$leftDest = $false
-		foreach ($dir in (Join-Path $dest 'code'), (Join-Path $dest 'scripts'), $dest) {
-			if (-not (Test-Path -LiteralPath $dir)) { continue }
-			if (@(Get-ChildItem -Force -LiteralPath $dir).Count -eq 0) {
-				Remove-Item -Force -LiteralPath $dir -ErrorAction SilentlyContinue
-			} else {
-				$leftDest = $true
-			}
+		## A file that would not go is most likely a running shcl.exe, so the
+		## PATH entry stays with it and a second run finishes the job.
+		$removal = Remove-ShclFile -Dest $dest
+		if ($removal.Stuck.Count -gt 0) {
+			Exit-Install "could not remove $($removal.Stuck -join ', ') - close any running shcl and run the uninstall again"
 		}
 		$null = Update-ShclPath -Scope $pathScope -Dir $pathDir -Remove
-		if ($leftDest) {
+		if ($removal.Foreign) {
 			Write-Output 'removed what this installer laid down'
 			Write-Output "left $dest in place: it holds files this installer did not put there"
 		} else {
@@ -325,7 +384,7 @@ file. Nothing unverified is installed.
 	try {
 		$rel = Invoke-RestMethod -Uri $api -UseBasicParsing -Headers $apiHeaders
 	} catch {
-		$status = Get-HttpStatus $_
+		$status = Get-HttpStatus -ErrorRecord $_
 		if ($status -eq 403 -or $status -eq 429) {
 			Exit-Install "GitHub's API refused the request (rate limit). Wait, or set GITHUB_TOKEN to a token with public read access and re-run"
 		}
@@ -334,20 +393,20 @@ file. Nothing unverified is installed.
 		}
 		Exit-Install "cannot fetch the $Release release (none published yet, or network down)"
 	}
-	$rel = Select-ReleaseTag $Release $rel
+	$rel = Select-ReleaseTag -Channel $Release -Releases $rel
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name
 	$version = $tag.TrimStart('v')
 
 	## The drop-in payload is a tar.gz. Windows 10 1803 and Server 2019 ship tar;
 	## anything older finds out here, before a download, not after.
-	if (-not (Get-Command tar -ErrorAction SilentlyContinue)) {
+	if (-not (Get-Command -Name tar -ErrorAction SilentlyContinue)) {
 		Exit-Install 'needs tar to unpack the drop-in payload (Windows 10 1803, Server 2019 and later ship it) - on an older Windows use the setup .exe from the releases page'
 	}
 
 	## State the plan, then confirm.
 	Write-Output ''
-	$existing = if (Test-Path -LiteralPath (Join-Path $dest 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
+	$existing = if (Test-Path -LiteralPath (Join-Path -Path $dest -ChildPath 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
 	Write-Output "shcl $version ($Release, windows-$arch) -> $dest ($existing)"
 	Write-Output "  binary   $dest\shcl.exe"
 	Write-Output "  drop-ins $dest\code\, wrappers $dest\scripts\"
@@ -361,29 +420,32 @@ file. Nothing unverified is installed.
 		}
 	}
 
-	$tmp = Join-Path ([IO.Path]::GetTempPath()) ("shcl-install-" + [IO.Path]::GetRandomFileName())
+	$tmp = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ('shcl-install-' + [IO.Path]::GetRandomFileName())
 	New-Item -ItemType Directory -Path $tmp | Out-Null
 	try {
 		## Download and verify the binary.
 		Write-Output ''
 		$asset = "shcl-$version-windows-$arch.exe"
+		$tmpExe = Join-Path -Path $tmp -ChildPath 'shcl.exe'
+		$sums = Join-Path -Path $tmp -ChildPath 'sums.txt'
+		$sumsSig = Join-Path -Path $tmp -ChildPath 'sums.txt.sig'
 		$base = "https://github.com/$repo/releases/download/$tag"
 		Write-Output "downloading $asset..."
-		Invoke-WebRequest -Uri "$base/$asset" -OutFile (Join-Path $tmp 'shcl.exe') -UseBasicParsing
-		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile (Join-Path $tmp 'sums.txt') -UseBasicParsing
-		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile (Join-Path $tmp 'sums.txt.sig') -UseBasicParsing
+		Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmpExe -UseBasicParsing
+		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile $sums -UseBasicParsing
+		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile $sumsSig -UseBasicParsing
 
 		## Check the signature before trusting anything the sums file says. Order is
 		## the whole point: a checksum read out of an unverified file proves nothing.
-		if (-not (Test-ReleaseSignature (Join-Path $tmp 'sums.txt') (Join-Path $tmp 'sums.txt.sig'))) {
+		if (-not (Test-ReleaseSignature -Path $sums -SignaturePath $sumsSig)) {
 			Exit-Install 'signature check failed on sha256sums - refusing to install'
 		}
 
 		## Anchored on the name, the way install.bash greps it: the sums file has a
 		## line per binary and per package, and an unanchored match would take
 		## whichever of those came first once one asset name contains another.
-		$want = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($asset) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
-		$got = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp 'shcl.exe')).Hash.ToLower()
+		$want = (Get-Content -LiteralPath $sums | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($asset) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+		$got = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmpExe).Hash.ToLower()
 		if (-not $want -or $got -ne $want.ToLower()) { Exit-Install "sha256 mismatch on $asset" }
 
 		## Drop-in code files and wrappers come from a release asset covered by the
@@ -391,17 +453,17 @@ file. Nothing unverified is installed.
 		## generated source zipball, which carries neither a signature nor a
 		## checksum. Releases predating the asset install the binary alone.
 		$dropins = "shcl-$version-dropins.tar.gz"
-		$wantSrc = (Get-Content -LiteralPath (Join-Path $tmp 'sums.txt') | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($dropins) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+		$wantSrc = (Get-Content -LiteralPath $sums | Where-Object { $_ -cmatch ('\s' + [regex]::Escape($dropins) + '$') } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
 		$haveDropins = $false
 		$srcroot = $null
 		if ($wantSrc) {
 			Write-Output "downloading $dropins..."
-			Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path $tmp 'dropins.tgz') -UseBasicParsing
-			$gotSrc = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp 'dropins.tgz')).Hash.ToLower()
+			Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path -Path $tmp -ChildPath 'dropins.tgz') -UseBasicParsing
+			$gotSrc = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path -Path $tmp -ChildPath 'dropins.tgz')).Hash.ToLower()
 			if ($gotSrc -ne $wantSrc.ToLower()) { Exit-Install "sha256 mismatch on $dropins" }
-			$unpackDir = Join-Path $tmp 'x'
+			$unpackDir = Join-Path -Path $tmp -ChildPath 'x'
 			New-Item -ItemType Directory -Path $unpackDir | Out-Null
-			tar -xzf (Join-Path $tmp 'dropins.tgz') -C $unpackDir
+			tar -xzf (Join-Path -Path $tmp -ChildPath 'dropins.tgz') -C $unpackDir
 			if ($LASTEXITCODE -ne 0) { Exit-Install "cannot unpack $dropins" }
 			$srcroot = Get-Item -LiteralPath $unpackDir
 			$haveDropins = $true
@@ -410,7 +472,7 @@ file. Nothing unverified is installed.
 		## Run it from the temp dir before anything is written, the way the Linux
 		## installer does: a binary that will not start here should never become
 		## an install.
-		$smoke = Invoke-ShclSmoke (Join-Path $tmp 'shcl.exe')
+		$smoke = Invoke-ShclSmoke -Exe $tmpExe
 		$smokeOut = $smoke.Out
 		if ($smoke.Code -ne 0) {
 			Exit-Install "the downloaded shcl.exe does not run here: $($smokeOut -join ' ')"
@@ -419,13 +481,13 @@ file. Nothing unverified is installed.
 		## Install. The binary goes in via a temp name + Move-Item in the same dir,
 		## so a running copy only ever sees the complete old or new file.
 		New-Item -ItemType Directory -Force -Path $dest | Out-Null
-		Copy-Item -LiteralPath (Join-Path $tmp 'shcl.exe') -Destination (Join-Path $dest '.shcl.exe.new')
-		Move-Item -Force -LiteralPath (Join-Path $dest '.shcl.exe.new') -Destination (Join-Path $dest 'shcl.exe')
+		Copy-Item -LiteralPath $tmpExe -Destination (Join-Path -Path $dest -ChildPath '.shcl.exe.new')
+		Move-Item -Force -LiteralPath (Join-Path -Path $dest -ChildPath '.shcl.exe.new') -Destination (Join-Path -Path $dest -ChildPath 'shcl.exe')
 		if ($haveDropins) {
-			New-Item -ItemType Directory -Force -Path (Join-Path $dest 'code'), (Join-Path $dest 'scripts') | Out-Null
+			New-Item -ItemType Directory -Force -Path (Join-Path -Path $dest -ChildPath 'code'), (Join-Path -Path $dest -ChildPath 'scripts') | Out-Null
 			$payloadRoot = $srcroot.FullName
-			Copy-Item -LiteralPath "$payloadRoot\source\rust\src\lib.rs", "$payloadRoot\source\go\shcl.go", "$payloadRoot\source\python\shcl.py", "$payloadRoot\source\c\shcl.h", "$payloadRoot\source\c\shcl.hpp" -Destination (Join-Path $dest 'code')
-			Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path $dest 'scripts')
+			Copy-Item -LiteralPath "$payloadRoot\source\rust\src\lib.rs", "$payloadRoot\source\go\shcl.go", "$payloadRoot\source\python\shcl.py", "$payloadRoot\source\c\shcl.h", "$payloadRoot\source\c\shcl.hpp" -Destination (Join-Path -Path $dest -ChildPath 'code')
+			Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path -Path $dest -ChildPath 'scripts')
 		}
 
 		if (Update-ShclPath -Scope $pathScope -Dir $pathDir) {
@@ -445,7 +507,7 @@ file. Nothing unverified is installed.
 		Write-Output "installed shcl $version -> $dest\shcl.exe"
 		## Written over a setup install: its Add/Remove Programs entry still
 		## names the version it put there, which is no longer what is on disk.
-		if (Test-Path -LiteralPath (Join-Path $dest 'uninstall.exe')) {
+		if (Test-Path -LiteralPath (Join-Path -Path $dest -ChildPath 'uninstall.exe')) {
 			Write-Output "note: $dest came from the shcl setup - its Add/Remove Programs entry still shows the version it installed"
 		}
 		if (-not $haveDropins) { Write-Output "note: this release ships no signed drop-in payload, so $dest\code and $dest\scripts were skipped - take them from the repo if you want them" }
@@ -456,7 +518,7 @@ file. Nothing unverified is installed.
 		## here. A user install cannot get ahead of a machine one - windows puts
 		## the machine entries first - so a setup.exe install shadows it until
 		## that one is removed, and saying so is all this can do.
-		$onPath = Get-ShclShadow "$dest\shcl.exe"
+		$onPath = Get-ShclShadow -Installed "$dest\shcl.exe"
 		if ($onPath) {
 			Write-Output "note: shcl on your PATH is $onPath, not the copy just installed - it comes first on PATH"
 		}
