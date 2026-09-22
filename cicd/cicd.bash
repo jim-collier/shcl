@@ -417,6 +417,12 @@ if ((PROFILE_ENABLE)); then
 	fEcho_Clean "building: ${PROFILE_BUILD_CMD[*]}"
 	"${PROFILE_BUILD_CMD[@]}" || fDie "profiler build failed (app problem)"
 	[[ -f "${PROFILE_BIN}" ]] || fDie "profiler binary missing: ${PROFILE_BIN}"
+	## The sampler's attribution against a workload of known shape (config
+	## PROFILE_CHECK), before any graph is drawn: a graph that names the wrong
+	## code is worse than none.
+	if [[ -n "${PROFILE_CHECK:-}" ]]; then
+		eval "${PROFILE_CHECK}" || fDie "profiler attribution check failed; its graph would name the wrong code"
+	fi
 	profile_dir="${root}/${PROFILE_OUT_DIR}"
 	mkdir -p "${profile_dir}"
 	export PROFILE_WORKLOAD="${profile_dir}/workload.shcl"
@@ -648,3 +654,4 @@ fEcho_Clean
 ##		- 2026-09-14 JC: A run that passes the tests stage records its tree for the pre-push hook; local tool skips are noted in SHCL_GATE_SKIPS and hold it back.
 ##		- 2026-09-19 JC: Clears git's local environment first, so GIT_DIR from a hook run in a linked worktree cannot reach the gates' scratch repos.
 ##		- 2026-09-21 JC: CPU_CAP set by the caller wins, so a runner with nothing else on it can use every core.
+##		- 2026-09-22 JC: The profiler stage runs the config's attribution check before it draws a graph.

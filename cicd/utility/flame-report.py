@@ -179,7 +179,13 @@ def fAnalyze(total: int, frames: list[Frame], top: int) -> None:
 	for fr in frames:
 		name = fr[0]
 		byName.setdefault(name, []).append(fr)
-		inclBy[name] = inclBy.get(name, 0.0) + fr[3]
+		##	Once per stack: a recursive call, or one name inlined at two depths,
+		##	sits inside itself and would be counted again.
+		up = parent(fr)
+		while up and up[0] != name:
+			up = parent(up)
+		if not up:
+			inclBy[name] = inclBy.get(name, 0.0) + fr[3]
 		s = selfOf[fr]
 		selfBy[name] = selfBy.get(name, 0.0) + s
 		if s <= 0:
@@ -309,3 +315,4 @@ if __name__ == "__main__":
 ##		  reporting a fraction of it; the row height is read off the rows.
 ##		- 20260914: The marker moves only on the newest graph, and SEEN needs an
 ##		  exact match. A sidecar left under an old role is found by timestamp.
+##		- 20260922: A name inside itself on one stack counts once in the inclusive list.
