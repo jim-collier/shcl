@@ -182,6 +182,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- On Windows, a save that fails can no longer leave nothing at the path. `ReplaceFile` was given no backup name, and on some failures it deletes the old file or leaves it under a name the caller is never told, after which the save removed its temp file too. The old file now goes to a backup name beside the target. If the new one cannot be moved in, the old one is put back, and if even that fails, both files are kept and the error names them. The C binding can only set `errno`, so its header gives the two names. A short hold on the new file, such as a virus scanner reading it, no longer fails the save either: the publish is tried five times, 50 ms apart.
+
 - A load no longer drops a comment or a malformed line written under a stacked list whose field ends up equal to an earlier instance. The field folds into that instance at the end of the load, and what sat under it was filed on the instance that went away, so a save wrote the file without them at exit 0.
 
 - Merging a layer and merging its formatted copy put a comment in the same place. A comment written inside a block after its children, at an indent none of them has, was filed on the block, while a reload of the same text files it on the last child. When the other layer added children to that block, the comment landed after them one way and before them the other.
