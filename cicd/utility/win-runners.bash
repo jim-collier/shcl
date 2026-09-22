@@ -120,13 +120,25 @@ fRunMemBounds() {
 		source/c/tests/mem_bounds.c -o "${work}/mem_bounds${exe}" -lm \
 		&& "${work}/mem_bounds${exe}"
 }
+## The C CLI, built once for the five rows that run it; a compile is several
+## seconds, more under mingw. A failed build is remembered, so each of those
+## rows fails on it rather than compiling again.
+cliBuilt=""
+fBuildCcli() {
+	if [[ -z "${cliBuilt}" ]]; then
+		cliBuilt=1
+		"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
+			source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || cliBuilt=0
+	fi
+	[[ "${cliBuilt}" == 1 ]]
+}
+
 ## The C CLI's argv: the narrow one arrives in the active code page, best-fit
 ## mapped, so a name the page cannot spell reached a different file. The two
 ## names here are the shapes that went wrong: one outside the page, one the
 ## page maps onto a plain letter.
 fRunCcli() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	local dir="${work}/argv"
 	mkdir -p "${dir}"
 	printf 'a: 1\n' > "${dir}/a.shcl"
@@ -146,8 +158,7 @@ fRunCcli() {
 ## follows undid it, so only a long path showed it. Nothing on linux has the
 ## limit and nothing under wine reaches this code, so the row lives here.
 fRunLongPath() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	## Two segments of 100, so the whole path is past 260 with room for the
 	## temp file's own suffix.
 	local deep
@@ -170,8 +181,7 @@ fRunLongPath() {
 fRunClosedStdin() {
 	local bad=0
 	local clis=()
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	clis+=("c|${work}/shcl-c${exe}")
 	## Each CLI drops out on its own rather than taking the row with it, so a box
 	## short one toolchain still judges the other three.
@@ -203,8 +213,7 @@ fRunClosedStdin() {
 ## with no executable bit on windows, so the three built CLIs are judged.
 fRunCliRegress() {
 	local clis=()
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-c${exe}" -lm || return 1
+	fBuildCcli || return 1
 	clis+=("c|${work}/shcl-c${exe}")
 	if fHave cargo; then
 		cargo build --quiet --manifest-path source/rust/Cargo.toml || return 1
@@ -260,9 +269,8 @@ fCheckDevices() {   ## fCheckDevices CLI [ARG ...]
 }
 
 fDevicesC() {
-	"${cc}" -std=c11 -O2 -Wall -Wextra -Werror -Isource/c \
-		source/c/cmd/shcl/main.c -o "${work}/shcl-dev-c${exe}" -lm || return 1
-	fCheckDevices "${work}/shcl-dev-c${exe}"
+	fBuildCcli || return 1
+	fCheckDevices "${work}/shcl-c${exe}"
 }
 
 fDevicesRust() {

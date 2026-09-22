@@ -587,10 +587,10 @@ nBadBefore="${nBad}"
 	asroot="" tmp="${tmpDir}/stage" dest="${uhome}/.local/share/shcl" link="${uhome}/.local/bin/shcl"
 	# shellcheck disable=SC2034
 	manlink="${uhome}/.local/share/man/man1/shcl.1" target=user have_dropins=1 have_docs=1
-	manNote=""
+	man_note=""
 	fLayDown
 	[[ "$(readlink -- "${manlink}")" == "${uhome}/stow/shcl.1" ]] || fBad "install.bash repointed a man link that was not its own"
-	[[ "${manNote:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${manNote@Q}"
+	[[ "${man_note:-}" == *"links to ${uhome}/stow/shcl.1"* ]] || fBad "install.bash left someone else's man link without saying so: ${man_note@Q}"
 	HOME="${uhome}" bash "${repoDir}/install.bash" --uninstall --target=user --yes >/dev/null 2>&1 || fBad "install.bash --uninstall failed"
 	[[ -L "${manlink}" && -e "${uhome}/stow/shcl.1" ]] || fBad "install.bash --uninstall removed a man link that was not its own"
 	[[ -e "${dest}/shcl" ]] && fBad "install.bash --uninstall left its own binary"
@@ -807,13 +807,13 @@ SRVEOF
 	for _ in {1..50}; do [[ -s "${tdir}/port" ]] && break; sleep 0.1; done
 	printf 'ca_certificate = %s\n' "${tdir}/cert.pem" > "${tdir}/wgetrc"
 	for tool in curl wget; do
-		defs="$(sed -n "/^\tfetch() { ${tool} /p;/^\tfetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
+		defs="$(sed -n "/^\tfFetch() { ${tool} /p;/^\tfFetchApi() { ${tool} /p;/^\tfApiStatus() { ${tool} /p" "${repoDir}/install.bash")"
 		(
 			eval "${defs}"
 			export GITHUB_TOKEN=regress-token CURL_CA_BUNDLE="${tdir}/cert.pem" WGETRC="${tdir}/wgetrc"
 			url="https://127.0.0.1:$(cat "${tdir}/port")"
-			fetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fetch failed" >> "${tdir}/${tool}.err"
-			fetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fetchApi failed" >> "${tdir}/${tool}.err"
+			fFetch "${url}/download/${tool}" "${tdir}/out-${tool}" || echo "fFetch failed" >> "${tdir}/${tool}.err"
+			fFetchApi "${url}/api/${tool}" "${tdir}/api-${tool}" || echo "fFetchApi failed" >> "${tdir}/${tool}.err"
 			[[ "$(fApiStatus "${url}/api/${tool}")" == "200" ]] || echo "fApiStatus failed" >> "${tdir}/${tool}.err"
 		) 2>/dev/null
 		[[ -s "${tdir}/${tool}.err" ]] && fBad "install.bash ${tool} arm did not complete its requests: $(tr '\n' ' ' < "${tdir}/${tool}.err")"

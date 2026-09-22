@@ -51,12 +51,11 @@
 ##	Exit codes (straight from the binary): 0 good, 1 usage error, 2 empty,
 ##	3 not found, 4 bad type, 5 multiple instances, 6 check failed, strict
 ##	load failure, a faulty init schema, or --check found a rewrite to make,
-##	7 in-place write refused
-##	(--lossy overrides) or migrate left something behind, 8 a file or stream
-##	could not be read or written. A
-##	nonzero code is not an error to PowerShell - unless
-##	$PSNativeCommandUseErrorActionPreference is on under an ErrorActionPreference
-##	of Stop, where a not-found read throws instead of returning 3.
+##	7 in-place write refused (--lossy overrides) or migrate left something
+##	behind, 8 a file or stream could not be read or written. A nonzero code is
+##	not an error to PowerShell - unless $PSNativeCommandUseErrorActionPreference
+##	is on under an ErrorActionPreference of Stop, where a not-found read throws
+##	instead of returning 3.
 ##
 ##	Runs on Windows PowerShell 5.1 and PowerShell 7 on Windows; elsewhere it
 ##	needs PowerShell 7.3 or newer (the execute-bit check reads UnixFileMode).
