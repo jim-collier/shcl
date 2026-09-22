@@ -8,6 +8,7 @@
 // onto the replacement. shcl.go is deliberately droppable on its own and so
 // cannot reach a windows-only symbol, which is why this arrives as a hook: with
 // this file the module upgrades the publish, without it a rename still works.
+
 package shcl
 
 import (
@@ -46,7 +47,7 @@ func windowsNotADiskFile(path string) bool {
 		nil, syscall.OPEN_EXISTING, syscall.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if herr == nil {
 		kind, kerr := syscall.GetFileType(h)
-		syscall.CloseHandle(h)
+		_ = syscall.CloseHandle(h) // opened for attributes only, so nothing is lost
 		return kerr == nil && kind != syscall.FILE_TYPE_DISK
 	}
 	full, ferr := syscall.FullPath(path)
@@ -91,6 +92,7 @@ func windowsRestoreAttrs(path string, bits uint32) {
 	if aerr != nil {
 		return
 	}
+	// Best effort, like the mode on POSIX: the save itself went through.
 	_ = syscall.SetFileAttributes(p, now|bits)
 }
 
@@ -126,15 +128,17 @@ func windowsPublishFile(tmp, target string) error {
 	var err error
 	for tries := 1; ; tries++ {
 		if !movedAway && isThere(target) {
+			// The save has gone through, so a backup that will not come off
+			// is left rather than failing it.
 			if replaceFileW(tmp, target, backup) == nil {
-				os.Remove(backup)
+				_ = os.Remove(backup)
 				return nil
 			}
 			movedAway = !isThere(target) && isThere(backup)
 		}
 		if err = os.Rename(tmp, target); err == nil {
 			if movedAway {
-				os.Remove(backup)
+				_ = os.Remove(backup)
 			}
 			return nil
 		}
@@ -144,7 +148,7 @@ func windowsPublishFile(tmp, target string) error {
 		time.Sleep(publishPauseMs * time.Millisecond)
 	}
 	if isThere(target) || (movedAway && windowsPublishNewFile(backup, target) == nil) {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // the old file is in place, and err is the one to report
 		return err
 	}
 	if movedAway {

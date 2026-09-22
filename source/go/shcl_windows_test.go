@@ -44,7 +44,7 @@ func TestSaveKeepsHiddenAndSystem(t *testing.T) {
 	if after&syscall.FILE_ATTRIBUTE_SYSTEM == 0 {
 		t.Error("file did not come back system")
 	}
-	_ = syscall.SetFileAttributes(p, syscall.FILE_ATTRIBUTE_NORMAL)
+	_ = syscall.SetFileAttributes(p, syscall.FILE_ATTRIBUTE_NORMAL) // cleanup; the checks above are the test
 }
 
 func readText(p string) (string, bool) {
@@ -84,6 +84,7 @@ func TestFailedPublishLosesNeitherFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Rename(probe, filepath.Join(y, "probe")) == nil {
+		// Undo the deny so the temp dir can go. If it stays, that removal says so.
 		_ = exec.Command("icacls", y, "/remove:d", "*S-1-1-0").Run()
 		t.Logf("skipping the failed-publish fixture (a move into a denied folder went through)")
 		return

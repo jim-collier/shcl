@@ -1313,7 +1313,7 @@ func readInput(file string) (string, error) {
 			// A stdin that is not attached at all reads as an empty document.
 			// POSIX gives EOF for that; windows answers "invalid handle".
 			if !stdinUnattached(err) {
-				return "", fmt.Errorf("stdin: %s", err)
+				return "", fmt.Errorf("stdin: %w", err)
 			}
 			b = nil
 		}
@@ -1325,7 +1325,7 @@ func readInput(file string) (string, error) {
 		}
 		b, err = os.ReadFile(file)
 		if err != nil {
-			return "", fmt.Errorf("%s: %s", file, err)
+			return "", fmt.Errorf("%s: %w", file, err)
 		}
 	}
 	// The reference reads as UTF-8 and fails on bad bytes; match its exit path.
