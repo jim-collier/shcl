@@ -108,7 +108,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, commands and numbers are in `details.md` -> "Code Review 20260922 - technical detail".
 
-	- All five defects were closed on 2026-09-22. Item 1 changes how to read every earlier flame number: before it, a Rust percentage below the function level was the name of one sample. Finished items are under Done - Bugs, in a bullet of the same name.
+	- All five defects were closed on 2026-09-22. Item 1 changes how to read every earlier flame number: before it, a Rust percentage below the function level was the name of one sample. Finished items are under Done - Bugs, in a bullet of the same name. The round is whole as of 2026-09-23.
 
 - Code review 20260921:
 
@@ -189,17 +189,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
-
-- Code review 20260922:
-
-	- The round's ideas. Its defects and its header are under Bugs, in a bullet of the same name. Timings were taken on a shared box, run alternately against the unchanged build.
-
-	- 🔘 Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
-		- Measured: `fmt --layer` on the 16 MB document takes 2.9 times as long as plain `fmt` in Rust, 2.4 in Go, 2.3 in C and Python. The key strings' share was not separated out.
-		- Note: 20260829 item 46 moved the writer's fold to hash-and-verify. The merge's own map is the last one keyed on built strings.
-		- Note: all four: `overlay` in Rust and Go, `_overlay_level` in Python, `w_overlay` in C.
-		- Origin: `66c7e5e` (2026-07-25). 20260918b item 58 added the name index beside it and left this map alone.
-		- Opened: 20260922-120717
 
 ### Done
 
@@ -5113,6 +5102,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `082c917` (2026-08-21) and `5321e38` (2026-09-19).
 		- Opened: 20260922-120717
 		- Closed: 20260922-195049
+
+	- ✅ Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
+		- Measured: `fmt --layer` on the 16 MB document takes 2.9 times as long as plain `fmt` in Rust, 2.4 in Go, 2.3 in C and Python. The key strings' share was not separated out.
+		- Note: 20260829 item 46 moved the writer's fold to hash-and-verify. The merge's own map is the last one keyed on built strings.
+		- Note: all four: `overlay` in Rust and Go, `_overlay_level` in Python, `w_overlay` in C.
+		- Note, found while fixing: C already hashed and verified this map. Three bindings, not four.
+		- Fixed: the map is keyed on the (name, merge key) hash and checked on a hit, in Rust and Go, the way the fold does it. Python keys it on the exact tuple `_merge_key` builds from the value's own strings. The value's `key()` had no other caller and is gone, with its injectivity note moved to the hash. Rust also borrows the over side's names rather than copying them.
+		- Measured: 5 to 7 alternating runs against dev. Rust `fmt --layer` on the 16 MB document 2.64 s to 2.43, on the 32 MB comment-heavy one 2.20 to 1.91, on the 250 KB pair 62 ms to 51. Go 2 to 6 percent faster, Python 1 to 3. Plain `fmt` did not move.
+		- Pinned by: nothing new. Output was byte-identical against dev on the four timing merges and on raw-fill edge cases in all three bindings. `056-merge-empty-fill` fails with the fill taken out.
+		- Origin: `66c7e5e` (2026-07-25). 20260918b item 58 added the name index beside it and left this map alone.
+		- Opened: 20260922-120717
+		- Closed: 20260923-123508
 
 	- ✅ Idea 6: the repeated-leaf hint pass makes a list for every child in Rust, C and Python. Go stopped doing that last round.
 		- Measured: Rust `fmt` is 3 to 10 percent faster with the pass off, and C spends about 7.6 percent there.
