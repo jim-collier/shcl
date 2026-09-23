@@ -136,35 +136,40 @@ fMain(){
 	local -r dirPath_Rar="${dirPath_Top}/versions"
 	local -r filePath_Rar="${dirPath_Rar}/${dirName_Top}_${serialDT}.rar"
 
-	## Backup excludes, generic first: intermediates and dev builds that a build
-	## regenerates. Release builds, installers, packages, source, project docs, and
-	## the repo's own assets/ (the README demo gif) all stay in.
-	baseCmdArgs+=("-x*/.git/*" "-x*/versions/*")
+	## Backup excludes, generic first: intermediates, test builds and scratch that
+	## a build regenerates. Release builds, installers, packages, source, project
+	## docs, and the repo's own assets/ (the README demo gif) all stay in. A plain
+	## dir name drops the dir and everything in it, so no '/*' twin is needed. A
+	## wildcard in the last part matches files only, unless it ends in '/', which
+	## then matches dirs only.
+	baseCmdArgs+=("-x*/.git" "-x*/versions")
 	## Rust: keep the final release binaries, drop debug profiles and every
 	## intermediate. rar's '*' spans '/', so the '*/target/*/' forms also cover
 	## per-target cross-compile trees.
-	baseCmdArgs+=("-x*/target/debug/*" "-x*/target/*/debug/*" "-x*/target/lint/*" "-x*/target/profiling/*")
-	baseCmdArgs+=("-x*/target/*/deps/*" "-x*/target/*/build/*" "-x*/target/*/incremental/*" "-x*/target/*/.fingerprint/*" "-x*/target/*/examples/*")
+	baseCmdArgs+=("-x*/target/debug" "-x*/target/*/debug" "-x*/target/lint" "-x*/target/profiling" "-x*/target/doc" "-x*/target/tmp" "-x*/target/*/tmp")
+	baseCmdArgs+=("-x*/target/*/deps" "-x*/target/*/build" "-x*/target/*/incremental" "-x*/target/*/.fingerprint" "-x*/target/*/examples")
+	baseCmdArgs+=("-x*/target/*.d" "-x*/target/*.rlib" "-x*/target/.*" "-x*/target/*/.cargo-*" "-x*/CACHEDIR.TAG")
+	## cargo package unpacks each crate into a versioned dir to test it. The .crate
+	## files themselves sit in tmp-crate, which has no dot in its name.
+	baseCmdArgs+=("-x*/target/package/*.*.*/")
 	## The pre-push hook's own target dir: debug builds only, nothing to keep.
-	baseCmdArgs+=("-x*/target-gate/*")
+	baseCmdArgs+=("-x*/target-gate")
 	## Python and Node: fetched or regenerated wholesale. 'dist' is deliberately
 	## absent - that's where the release packages land.
-	baseCmdArgs+=("-x*/__pycache__/*" "-x*/.venv/*" "-x*/.mypy_cache/*" "-x*/.pytest_cache/*" "-x*/.ruff_cache/*" "-x*/node_modules/*")
-	## Compiler and build caches, all regenerated on demand. Excluding the dir as
-	## well as its contents stops rar walking in to test every entry.
-	baseCmdArgs+=("-x*/.zig-cache" "-x*/.zig-cache/*" "-x*/zig-cache" "-x*/zig-cache/*")
-	baseCmdArgs+=("-x*/.ccache" "-x*/.ccache/*" "-x*/.ccls-cache" "-x*/.ccls-cache/*" "-x*/CMakeFiles" "-x*/CMakeFiles/*")
-	baseCmdArgs+=("-x*/.cache" "-x*/.cache/*" "-x*/.gradle" "-x*/.gradle/*" "-x*/.dart_tool" "-x*/.dart_tool/*")
-	baseCmdArgs+=("-x*/.next" "-x*/.next/*" "-x*/.turbo" "-x*/.turbo/*" "-x*/.parcel-cache" "-x*/.parcel-cache/*" "-x*/.sass-cache" "-x*/.sass-cache/*")
-	baseCmdArgs+=("-x*/.stack-work" "-x*/.stack-work/*" "-x*/.tox" "-x*/.tox/*" "-x*/.nox" "-x*/.nox/*")
+	baseCmdArgs+=("-x*/__pycache__" "-x*/.venv" "-x*/.mypy_cache" "-x*/.pytest_cache" "-x*/.ruff_cache" "-x*.egg-info/" "-x*/node_modules")
+	## Compiler and build caches, all regenerated on demand.
+	baseCmdArgs+=("-x*/.zig-cache" "-x*/zig-cache" "-x*/.ccache" "-x*/.ccls-cache" "-x*/CMakeFiles")
+	baseCmdArgs+=("-x*/.cache" "-x*/.gradle" "-x*/.dart_tool" "-x*/.next" "-x*/.turbo" "-x*/.parcel-cache" "-x*/.sass-cache")
+	baseCmdArgs+=("-x*/.stack-work" "-x*/.tox" "-x*/.nox")
+	## Hand-made backup copies and merge leftovers.
+	baseCmdArgs+=("-x*.bak" "-x*.bak-*" "-x*.orig" "-x*.rej")
 	## Audit scratch trees: each holds a full copy of the build, so this runs to
 	## hundreds of MB. The reports beside them are small and stay in.
-	baseCmdArgs+=("-x*/panoplia/working/audit-*")
+	baseCmdArgs+=("-x*/panoplia/working/audit-*/")
 	## Wallpaper-sized source stills that never ship.
-	baseCmdArgs+=("-x*/private/backgrounds/*")
+	baseCmdArgs+=("-x*/private/backgrounds")
 	## The linked-in vault of external resources (GBs of game assets and the like).
-	## Excluding the dir too, not just its contents, stops rar walking into it.
-	baseCmdArgs+=("-x*/assets-vault" "-x*/assets-vault/*")
+	baseCmdArgs+=("-x*/assets-vault")
 	## GFS-rotated history (demo gifs/videos, logs). Matching the timestamp+role
 	## shape that gfs-rotate.bash writes keeps this to its own output, and the
 	## newest of each set is named '_latest', which is deliberately not listed.
@@ -624,3 +629,6 @@ fMain  "${@}"
 ##		- 20260917: Backup excludes now cover compiler and build caches: .zig-cache,
 ##		  ccache, CMakeFiles, .cache and the JS/Haskell/Python ones, dir and contents
 ##		  both. Also audit scratch trees, which each hold a whole build.
+##		- 20260922: Backup excludes name each dir once, since a bare dir takes its
+##		  contents with it. Also rustdoc, cargo's .d/.rlib/lock files and package
+##		  unpack dirs, egg-info, and .bak/.orig/.rej copies. Built .crate files stay.
