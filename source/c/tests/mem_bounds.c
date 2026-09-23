@@ -339,8 +339,8 @@ int main(void) {
 		shcl_free(d); free(txt);
 	}
 	{
-		size_t big = 4u * 1024 * 1024;
-		char *blob = (char *)malloc(big);
+		big = 4u * 1024 * 1024;
+		blob = (char *)malloc(big);
 		memset(blob, 'x', big);
 		d = shcl_parse("a: 1\n", 5);
 		held = arena_bytes(&d->arena);
@@ -379,15 +379,15 @@ int main(void) {
 	// the one that grew for the value. One 4 MB string default held 12 MB until
 	// shcl_free, and the array form 40.
 	{
-		size_t big = (size_t)4 << 20;
-		char *blob = (char *)malloc(big);
+		big = (size_t)4 << 20;
+		blob = (char *)malloc(big);
 		memset(blob, 'x', big);
-		shcl_doc *d = shcl_parse("b: 1\n", 5);
+		d = shcl_parse("b: 1\n", 5);
 		const char *arr[2] = {blob, blob};
 		size_t lens[2] = {big, big};
 		if (!shcl_set_string_default(d, "b", 1, blob, big)) fail("default probe: the string was refused");
 		if (!shcl_set_string_array_default(d, "b", 1, arr, lens, 2)) fail("default probe: the array was refused");
-		size_t held = arena_caps(&d->arena) + arena_caps(&d->scratch) + arena_caps(&d->reads);
+		held = arena_caps(&d->arena) + arena_caps(&d->scratch) + arena_caps(&d->reads);
 		if (d->probe_doc) held += arena_caps(&d->probe_doc->arena) + arena_caps(&d->probe_doc->scratch) + arena_caps(&d->probe_doc->reads);
 		printf("mem_bounds: default probe: %zu bytes held after two 4 MB defaults\n", held);
 		if (held > 1024 * 1024) fail("a default form that wrote nothing kept the value's working set");

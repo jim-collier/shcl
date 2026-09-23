@@ -31,7 +31,7 @@ import sys
 from collections.abc import Callable
 from decimal import Decimal
 from enum import Enum
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 # The public surface, stated rather than inferred: without this `from shcl
 # import *` hands out this module's own imports (math, os, stat, Decimal, Enum)
@@ -144,7 +144,10 @@ class Diagnostic:
 		return f"Diagnostic(line={self.line}, severity={self.severity}, message={self.message!r}, code={self.code!r})"
 
 
-class Read:
+T = TypeVar("T")
+
+
+class Read(Generic[T]):
 	"""Value plus status plus the original raw text (when the path resolved).
 	Array reads also carry one status per slot (element, or wildcard instance)
 	in .slots; .status is then the worst slot. Scalar reads leave .slots empty.
@@ -156,14 +159,14 @@ class Read:
 	plain string. Arrays, raw blocks, and empties leave it False. A written
 	value counts as quoted when a save would quote it."""
 	__slots__ = ("value", "status", "raw", "slots", "line", "quoted")
-	value: Any
+	value: T
 	status: Status
 	raw: str | None
 	slots: list[Status]
 	line: int
 	quoted: bool
 
-	def __init__(self, value: Any, status: Status, raw: str | None, slots: list[Status] | None = None):
+	def __init__(self, value: T, status: Status, raw: str | None, slots: list[Status] | None = None):
 		self.value = value
 		self.status = status
 		self.raw = raw
@@ -179,7 +182,7 @@ class Read:
 		return (f"Read(value={self.value!r}, status={self.status}, raw={self.raw!r}, "
 			f"slots=[{slots}], line={self.line}, quoted={self.quoted})")
 
-	def _at(self, line, quoted):
+	def _at(self, line: int, quoted: bool) -> Read[T]:
 		self.line = line
 		self.quoted = quoted
 		return self
@@ -602,7 +605,7 @@ class _Node:
 		"trivia", "blank_before", "src_set", "src", "name_src",
 	)
 
-	def __init__(self, name, value, parent, line, name_src=""):
+	def __init__(self, name: str, value, parent, line: int, name_src: str = "") -> None:
 		# ASCII-folded to lower; non-ASCII never folds. Interned: siblings and
 		# repeated sections share one string object instead of one per node.
 		self.name = sys.intern(name)
@@ -613,7 +616,7 @@ class _Node:
 		# the duplicate per-node string never allocates.
 		self.name_src = self.name if name_src == name else sys.intern(name_src)
 		self.value = value
-		self.children = []
+		self.children: list[int] = []
 		self.parent = parent
 		self.line = line
 		self.star_list = False    # value built from stacked "* " lines
@@ -858,10 +861,10 @@ class Piece:
 		self.end = end
 		self.quote = quote
 
-	def __eq__(self, other):
+	def __eq__(self, other: object) -> bool:
 		return isinstance(other, Piece) and (self.start, self.end, self.quote) == (other.start, other.end, other.quote)
 
-	def __repr__(self):
+	def __repr__(self) -> str:
 		return f"Piece({self.start}, {self.end}, {self.quote.name})"
 
 
@@ -2489,7 +2492,7 @@ class _Parser:
 		for line, message in hints:
 			self._diag(Diagnostic(line, Severity.Hint, message, "H001"))
 
-	def parse(self, text, strictness):
+	def parse(self, text: str, strictness: Strictness) -> Document:
 		# UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		if text.startswith("﻿"):
 			text = text[1:]
@@ -3230,8 +3233,7 @@ class Document:
 					if not tail:
 						out.extend(nxt)
 					else:
-						for c in reversed(nxt):
-							stack.append(([c], tail))
+						stack.extend(([c], tail) for c in reversed(nxt))
 					split = True
 					break
 				if sel is None:
@@ -3292,8 +3294,7 @@ class Document:
 			if path not in seen:
 				seen.add(path)
 				out.append(path)
-			for c in reversed(self.arena[node].children):
-				stack.append((c, path))
+			stack.extend((c, path) for c in reversed(self.arena[node].children))
 		return out
 
 	def line(self, path: str) -> int:
@@ -3399,7 +3400,7 @@ class Document:
 			return WriteReason.BadPath
 		return self._probe_write(segments, value_text)[0]
 
-	def _probe_write(self, segments, value_text, trail=None):
+	def _probe_write(self, segments, value_text, trail=None) -> tuple[WriteReason, list | None]:
 		"""The validation walk write_reason and _place share. `trail`, when a
 		list is passed, collects where each segment landed - None from the point
 		the path falls off the existing tree - so _place can create from exactly
@@ -3488,7 +3489,7 @@ class Document:
 				return None
 		return cur
 
-	def _set_value(self, path, value):
+	def _set_value(self, path: str, value) -> bool:
 		if not _value_reads_back(value):
 			return False
 		if self._probe:
@@ -3940,12 +3941,10 @@ class Document:
 					# Off the index, not a scan of every base child: N leaves
 					# overridden by the same N names made this quadratic
 					# (20260918b item 58).
-					kept = []
+					kept: list[_Lead] = []
 					for b in by_name.get(name, ()):
 						nd = self.arena[b]
-						for lead in nd.leading() + nd.inside() + nd.after():
-							if not lead.text.startswith("#"):
-								kept.append(_Lead(lead.text, lead.blank_before, lead.depth))
+						kept.extend(_Lead(lead.text, lead.blank_before, lead.depth) for lead in nd.leading() + nd.inside() + nd.after() if not lead.text.startswith("#"))
 					if kept:
 						t = self.arena[clones[0][1]]._triv()
 						t.leading = kept + t.leading
@@ -4069,7 +4068,7 @@ class Document:
 			return ("ok", v.els[0])
 		return ("err", Status.BadType)   # an array is not one scalar
 
-	def _read_scalar(self, path, coerce, default):
+	def _read_scalar(self, path: str, coerce: Callable[[Any], T | None], default: T) -> Read[T]:
 		na = self._node_at(path)
 		if na[0] == "err":
 			return Read(default, na[1], None)
@@ -4084,22 +4083,22 @@ class Document:
 			return Read(default, Status.BadType, raw)._at(line, se[1].quoted)
 		return Read(v, Status.Good, raw)._at(line, se[1].quoted)
 
-	def read_int(self, path: str) -> Read:
+	def read_int(self, path: str) -> Read[int]:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_int_text(e, lvl), 0)
 
-	def read_float(self, path: str) -> Read:
+	def read_float(self, path: str) -> Read[float]:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_float_text(e, lvl), 0.0)
 
-	def read_bool(self, path: str) -> Read:
+	def read_bool(self, path: str) -> Read[bool]:
 		lvl = self._strictness
 		return self._read_scalar(path, lambda e: _parse_bool_text(e.text, lvl), False)
 
-	def read_datetime(self, path: str) -> Read:
+	def read_datetime(self, path: str) -> Read[ShclDateTime]:
 		return self._read_scalar(path, lambda e: parse_datetime(e.text), ShclDateTime())
 
-	def read_string(self, path: str) -> Read:
+	def read_string(self, path: str) -> Read[str]:
 		"""Any value reads as a string: a raw block yields its content, an array its
 		canonical inline text. Escapes are applied."""
 		na = self._node_at(path)
@@ -4118,7 +4117,7 @@ class Document:
 		# re-parses to the same array - not the bare display join.
 		return Read(", ".join(_emit_element(e) for e in value.els), Status.Good, raw)._at(line, False)
 
-	def read_raw(self, path: str) -> Read:
+	def read_raw(self, path: str) -> Read[str]:
 		"""Raw-block content (verbatim). Non-block values are BadType."""
 		na = self._node_at(path)
 		if na[0] == "err":
@@ -4132,7 +4131,7 @@ class Document:
 			return Read("", Status.Empty, raw)._at(line, False)
 		return Read("", Status.BadType, raw)._at(line, False)
 
-	def read_raw_info(self, path: str) -> Read:
+	def read_raw_info(self, path: str) -> Read[str]:
 		"""The advisory info-string of a raw block ("" when absent)."""
 		na = self._node_at(path)
 		if na[0] == "err":
@@ -4147,7 +4146,7 @@ class Document:
 			return Read("", Status.Empty, raw)._at(line, False)
 		return Read("", Status.BadType, raw)._at(line, False)
 
-	def _read_array(self, path, coerce, default):
+	def _read_array(self, path: str, coerce: Callable[[Any], T | None], default: T) -> Read[list[T]]:
 		r = self._resolve(path)
 		tag = r[0]
 		if tag == "err":
@@ -4182,10 +4181,11 @@ class Document:
 		value = self.arena[r[1]].value
 		raw = self._raw_of(r[1])
 		line = self.arena[r[1]].line
+		nothing: list[T] = []
 		if value.kind == "empty":
-			return Read([], Status.Empty, raw)._at(line, False)
+			return Read(nothing, Status.Empty, raw)._at(line, False)
 		if value.kind == "raw":
-			return Read([], Status.BadType, raw)._at(line, False)
+			return Read(nothing, Status.BadType, raw)._at(line, False)
 		out = []
 		sts = []
 		for el in value.els:
@@ -4198,22 +4198,22 @@ class Document:
 		quoted = len(value.els) == 1 and value.els[0].quoted
 		return Read(out, status, raw, sts)._at(line, quoted)
 
-	def read_int_array(self, path: str) -> Read:
+	def read_int_array(self, path: str) -> Read[list[int]]:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_int_text(e, lvl), 0)
 
-	def read_float_array(self, path: str) -> Read:
+	def read_float_array(self, path: str) -> Read[list[float]]:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_float_text(e, lvl), 0.0)
 
-	def read_bool_array(self, path: str) -> Read:
+	def read_bool_array(self, path: str) -> Read[list[bool]]:
 		lvl = self._strictness
 		return self._read_array(path, lambda e: _parse_bool_text(e.text, lvl), False)
 
-	def read_datetime_array(self, path: str) -> Read:
+	def read_datetime_array(self, path: str) -> Read[list[ShclDateTime]]:
 		return self._read_array(path, lambda e: parse_datetime(e.text), ShclDateTime())
 
-	def read_string_array(self, path: str) -> Read:
+	def read_string_array(self, path: str) -> Read[list[str]]:
 		return self._read_array(path, lambda e: e.text, "")
 
 	# Convenience/get tier: value on Good, else the call-site default. Pass a
@@ -4223,7 +4223,7 @@ class Document:
 	# forms fall back to the whole default list; per-slot substitution is the
 	# read_*_array tier or the CLI --default.
 
-	def _get(self, r, default):
+	def _get(self, r: Read[T], default: Any) -> T:
 		if r.status == Status.Good:
 			return r.value
 		if default is _NO_DEFAULT:
@@ -4371,8 +4371,7 @@ class Document:
 					if i + 1 == len(segs):
 						out.append((anchor, nxt))
 					else:
-						for inst in reversed(nxt):
-							stack.append(([inst], i + 1, self.arena[inst].line))
+						stack.extend(([inst], i + 1, self.arena[inst].line) for inst in reversed(nxt))
 					done = True
 					break
 				if sel is None:
@@ -4414,8 +4413,7 @@ class Document:
 					n = len(found)
 					if n < lo or n > hi:
 						_vdiag(out, anchor, "V007", f"instance count out of bounds at '{_schema_text(c.path)}': {n} not in {lo}..{hi}")
-				for n in reversed(found):
-					stack.append(("node", c, n))
+				stack.extend(("node", c, n) for n in reversed(found))
 			else:
 				_, c, n = job
 				self._v_node(c, n, out)
@@ -4429,8 +4427,7 @@ class Document:
 						# document level, so each pair is done once.
 						if (c.inherits, n) not in mounted:
 							mounted.add((c.inherits, n))
-							for fc in reversed(fcs):
-								stack.append(("check", fc, n, self.arena[n].line))
+							stack.extend(("check", fc, n, self.arena[n].line) for fc in reversed(fcs))
 
 	def _v_node(self, c, n, out):
 		node = self.arena[n]
@@ -4582,8 +4579,7 @@ class Document:
 				hint = _v_suggest(siblings, pchain, node.name)
 				_vdiag(out, node.line, "V001", f"unknown field '{shown}'{hint}")
 				continue
-			for k in reversed(node.children):
-				stack.append((k, chain, shown))
+			stack.extend((k, chain, shown) for k in reversed(node.children))
 
 
 class StatusError(Exception):
@@ -4596,7 +4592,7 @@ class StatusError(Exception):
 		super().__init__(status.name)
 
 
-def _escape_name(name):
+def _escape_name(name: str) -> str:
 	"""Emit a stored (escape-resolved) name in a spelling that reads back as the
 	same name: bare when it can be, else quoted with the escapes _apply_escapes
 	undoes. This is a true inverse of the name parse, which _quote_text is not -
@@ -4623,7 +4619,7 @@ def _escape_name(name):
 	return "".join(out)
 
 
-def _emit_name(name):
+def _emit_name(name: str) -> str:
 	return _escape_name(name)
 
 
@@ -4858,10 +4854,7 @@ def _publish_new_file(tmp, target):
 			raise FileExistsError("File exists") from None
 		os.rename(tmp, target)
 		return
-	try:
-		os.remove(tmp)
-	except OSError:
-		pass
+	_remove_quietly(tmp)
 
 
 def _sync_dir(d):
@@ -5077,10 +5070,7 @@ def write_file_atomic(file: str | os.PathLike[str], data: str) -> str | None:
 	# one from write(), and it is a failed save like any other - the same
 	# message shape, and no temp file left behind.
 	except (OSError, ValueError) as e:
-		try:
-			os.remove(tmp)
-		except OSError:
-			pass
+		_remove_quietly(tmp)
 		return f"{file}: {e}"
 	if read_only:
 		_set_read_only(target, False)
@@ -6015,7 +6005,7 @@ def _days_from_civil(y, m, d):
 	return era * 146097 + doe - 719468
 
 
-def _build_schema(schema):
+def _build_schema(schema: Document) -> tuple[_SchemaDef, list]:
 	"""Interpret a parsed schema document into constraints and fragments, plus
 	any schema faults (V09x, schema-file lines). Whatever parsed cleanly is
 	kept even when faults are present - a broken key drops that key, a broken
@@ -6518,10 +6508,9 @@ def generate(schema: Document, no_banner: bool = False) -> tuple[str, list[Diagn
 			continue
 		else:
 			emitted[path].add(dval)
-		block = []
+		block: list[str] = []
 		if c.desc is not None:
-			for line in c.desc.split("\n"):
-				block.append(("## " if line else "##") + line + "\n")
+			block.extend(("## " if line else "##") + line + "\n" for line in c.desc.split("\n"))
 		# The annotation is a comment: a newline smuggled in via an allowed
 		# string value must not break out of it.
 		block.append("## " + _schema_text(_gen_annotation(c, tyname)) + "\n")
@@ -6827,8 +6816,7 @@ def _expand_mounts(sdef):
 				fcs = sdef.frags.get(c.inherits)
 				if fcs is not None:
 					below = chain + (c.inherits,)
-					for fc in reversed(fcs):
-						work.append((fc, (path, segs), below))
+					work.extend((fc, (path, segs), below) for fc in reversed(fcs))
 	return out, cuts
 
 

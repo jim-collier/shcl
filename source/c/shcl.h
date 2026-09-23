@@ -5422,7 +5422,7 @@ static int f64_reads_back(const char *tmp, const ShclF64Interval *iv) {
 // "%.*e" text in tmp by delta (with carry) and reading it back does the same.
 // A carry past the leading digit is a shorter spelling, already tried.
 static int f64_neighbor(const char *tmp, const ShclF64Interval *iv, int delta, char *out) {
-	strcpy(out, tmp);
+	memcpy(out, tmp, strlen(tmp) + 1);
 	char *e = strchr(out, 'e');
 	if (!e || e == out) return 0;
 	char *p = e - 1;
@@ -5482,10 +5482,10 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out) {
 	// the frac cap), so their output is unchanged.
 	char b[128];
 	char *o = b;
-	if (dt->has_date) { o += sprintf(o, "%04d-%02u-%02u", dt->year, dt->month, dt->day); if (dt->has_time) *o++ = 'T'; }
+	if (dt->has_date) { o += snprintf(o, sizeof b, "%04d-%02u-%02u", dt->year, dt->month, dt->day); if (dt->has_time) *o++ = 'T'; }
 	if (dt->has_time) {
-		o += sprintf(o, "%02u:%02u", dt->hour, dt->minute);
-		if (dt->has_sec) o += sprintf(o, ":%02u", dt->sec);
+		o += snprintf(o, (size_t)(b + sizeof b - o), "%02u:%02u", dt->hour, dt->minute);
+		if (dt->has_sec) o += snprintf(o, (size_t)(b + sizeof b - o), ":%02u", dt->sec);
 		if (dt->has_frac) {
 			// frac keeps its own cap: the fixed parts plus 30 digits stay
 			// inside the clamp for every parsed value.
@@ -5497,7 +5497,7 @@ size_t shcl_datetime_str(const shcl_datetime *dt, char *out) {
 	else if (dt->zone == SHCL_ZONE_OFFSET) {
 		// widen before negating: INT32_MIN has no 32-bit negation
 		long long off = dt->off_min; char sign = off < 0 ? '-' : '+'; long long ao = off < 0 ? -off : off;
-		o += sprintf(o, "%c%02lld:%02lld", sign, ao / 60, ao % 60);
+		o += snprintf(o, (size_t)(b + sizeof b - o), "%c%02lld:%02lld", sign, ao / 60, ao % 60);
 	}
 	size_t n = (size_t)(o - b);
 	if (n > SHCL_DT_BUF) n = SHCL_DT_BUF;
@@ -6984,7 +6984,7 @@ shcl_doc *shcl_load_and_validate(const char *text, size_t len, const char *schem
 // with anything outside it cannot be opened - or worse, opens a mojibake name
 // that round-trips through the same mistake. Convert once and use the wide
 // forms. Bad UTF-8 fails (EINVAL) rather than folding to U+FFFD, which would
-// quietly name a different file.
+// quietly name a different file. malloc'd, and the caller frees it.
 static wchar_t *shcl_widen(const char *s) {
 	int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
 	wchar_t *w = n > 0 ? (wchar_t *)malloc((size_t)n * sizeof(wchar_t)) : NULL;
@@ -7024,8 +7024,8 @@ static int shcl_publish_new_file(const wchar_t *tmp, const wchar_t *target);
 static int shcl_path_there(const wchar_t *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
 
 // The temp name with its `.tmp` swapped for `.bak`, so the two sit side by side
-// and are the same length. The last `.tmp` is the one the save added. Malloc'd;
-// NULL when that fails.
+// and are the same length. The last `.tmp` is the one the save added. Malloc'd
+// and the caller frees it; NULL when that fails.
 static wchar_t *shcl_backup_name(const wchar_t *tmp) {
 	size_t n = wcslen(tmp);
 	wchar_t *b = (wchar_t *)malloc((n + 5) * sizeof(wchar_t));
@@ -7238,37 +7238,37 @@ static char *shcl_resolve_target(const char *file) {
 			CloseHandle(ch);
 			if (!full) { free(w); errno = EIO; return NULL; }
 			DeleteFileW(full);
-			free(w);
-			goto narrow;
+		} else {
+			// Not there yet (or not openable): build the long-path spelling from
+			// the full path instead. \\server\share becomes \\?\UNC\server\share.
+			DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
+			if (!need) { free(w); errno = shcl_errno_from_win32(GetLastError()); return NULL; }
+			wchar_t *fp = (wchar_t *)malloc((size_t)need * sizeof *fp);
+			if (!fp) { free(w); errno = ENOMEM; return NULL; }
+			if (!GetFullPathNameW(w, need, fp, NULL)) {
+				DWORD e = GetLastError();
+				free(fp); free(w); errno = shcl_errno_from_win32(e); return NULL;
+			}
+			// Already prefixed (`\\?\` or `\\.\`): it is the spelling a caller
+			// reaches for past MAX_PATH, and prefixing it again built
+			// `\\?\UNC\?\C:\...`, which no create can open. Under MAX_PATH the
+			// strip below happened to undo that, so it bit only long paths.
+			int pref = fp[0] == L'\\' && fp[1] == L'\\' && (fp[2] == L'?' || fp[2] == L'.') && fp[3] == L'\\';
+			int unc = !pref && fp[0] == L'\\' && fp[1] == L'\\';
+			size_t fn = wcslen(fp);
+			full = (wchar_t *)malloc((fn + 10) * sizeof *full);
+			if (!full) { free(fp); free(w); errno = ENOMEM; return NULL; }
+			if (pref) wmemcpy(full, fp, fn + 1);
+			else {
+				const wchar_t *head = unc ? L"\\\\?\\UNC" : L"\\\\?\\";
+				size_t hn = wcslen(head), skip = unc ? 1 : 0;
+				wmemcpy(full, head, hn);
+				wmemcpy(full + hn, fp + skip, fn - skip + 1);
+			}
+			free(fp);
 		}
-		// Not there yet (or not openable): build the long-path spelling from
-		// the full path instead. \\server\share becomes \\?\UNC\server\share.
-		DWORD need = GetFullPathNameW(w, 0, NULL, NULL);
-		if (!need) { free(w); errno = shcl_errno_from_win32(GetLastError()); return NULL; }
-		wchar_t *fp = (wchar_t *)malloc((size_t)need * sizeof *fp);
-		if (!fp) { free(w); errno = ENOMEM; return NULL; }
-		if (!GetFullPathNameW(w, need, fp, NULL)) {
-			DWORD e = GetLastError();
-			free(fp); free(w); errno = shcl_errno_from_win32(e); return NULL;
-		}
-		// Already prefixed (`\\?\` or `\\.\`): it is the spelling a caller
-		// reaches for past MAX_PATH, and prefixing it again built
-		// `\\?\UNC\?\C:\...`, which no create can open. Under MAX_PATH the
-		// strip below happened to undo that, so it bit only long paths.
-		int pref = fp[0] == L'\\' && fp[1] == L'\\' && (fp[2] == L'?' || fp[2] == L'.') && fp[3] == L'\\';
-		int unc = !pref && fp[0] == L'\\' && fp[1] == L'\\';
-		full = (wchar_t *)malloc((wcslen(fp) + 10) * sizeof *full);
-		if (!full) { free(fp); free(w); errno = ENOMEM; return NULL; }
-		if (pref) wcscpy(full, fp);
-		else {
-			wcscpy(full, unc ? L"\\\\?\\UNC" : L"\\\\?\\");
-			wcscat(full, unc ? fp + 1 : fp);
-		}
-		free(fp);
 	}
 	free(w);
-narrow:
-	;
 	char *out = shcl_narrow(full);
 	free(full);
 	if (!out) return NULL;
@@ -7445,7 +7445,8 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 	#define SHCL_FILE_UNLINK() _wremove(wtmp)
 #endif
 	const char *slash = shcl_last_sep(target);
-	char *tmp = (char *)malloc(strlen(target) + 48);
+	size_t tmpcap = strlen(target) + 48;
+	char *tmp = (char *)malloc(tmpcap);
 	if (!tmp) { SHCL_FILE_CLEANUP(); return 0; }
 	// Exclusive create: anything already sitting at the predictable name -
 	// including a planted symlink - must fail rather than be written through.
@@ -7480,8 +7481,8 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n) {
 #endif
 	int fd = -1;
 	for (int attempt = 0; attempt < 8; attempt++) {
-		if (slash) sprintf(tmp, "%.*s.%.*s.tmp%ld.%d", (int)(slash - target + 1), target, (int)s_tmp_base(slash + 1), slash + 1, (long)getpid(), attempt);
-		else sprintf(tmp, ".%.*s.tmp%ld.%d", (int)s_tmp_base(target), target, (long)getpid(), attempt);
+		if (slash) snprintf(tmp, tmpcap, "%.*s.%.*s.tmp%ld.%d", (int)(slash - target + 1), target, (int)s_tmp_base(slash + 1), slash + 1, (long)getpid(), attempt);
+		else snprintf(tmp, tmpcap, ".%.*s.tmp%ld.%d", (int)s_tmp_base(target), target, (long)getpid(), attempt);
 #ifdef _WIN32
 		free(wtmp);
 		if (!(wtmp = shcl_widen(tmp))) break;
@@ -8250,9 +8251,9 @@ static shcl_str generate_in(shcl_doc *schema, int no_banner, int *ok, ShclGenOwn
 		for (size_t k = 0; k < segs->len; k++) {
 			h = fnv_str(fnv_dec(h, segs->data[k].name.n), segs->data[k].name);
 			ShclCMapEnt *e = cmap_first(&rank, h);
-			size_t r = e ? e->val : rank.len;
-			if (!e) cmap_put(a, &rank, h, r);
-			keys[pos++] = r;
+			size_t rk = e ? e->val : rank.len;
+			if (!e) cmap_put(a, &rank, h, rk);
+			keys[pos++] = rk;
 		}
 	}
 	key_at[nblk] = pos;

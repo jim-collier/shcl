@@ -88,12 +88,12 @@ CPPCHECK_WHEEL="1.5.1"
 ## GOMAXPROCS, which they all honor.
 ## The Go and C binding CLIs build here too - crosscheck needs them in stage 4.
 ## C has no separate fmt/lint stage (no committed zero-dep formatter); the
-## -Wall -Wextra -Werror compile is its quality gate, same spirit as clippy.
+## strict-warning compile is its quality gate, same spirit as clippy.
 BUILD_CMD=(cargo build -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
 BUILD_EXTRA=(
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd build -o ../shcl ./shcl'
 	'python3 -m py_compile source/python/shcl.py source/python/cmd/shcl/main.py source/python/tests/conformance.py'
-	'cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o source/c/shcl -lm -s'
+	'cc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/cmd/shcl/main.c -o source/c/shcl -lm -s'
 )
 
 ## Stage 3: lint. clippy gates (-D warnings); shellcheck covers the pipeline's own
@@ -211,11 +211,11 @@ TEST_EXTRA=(
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go test -count=1 ./...'
 	'GOMAXPROCS="${CPU_CAP}" go -C source/go/cmd test -count=1 ./...'
 	'python3 source/python/tests/conformance.py'
-	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
-	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
-	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
-	'rbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/oom_recover.c -o "${rbin}" -lm && "${rbin}"; rrc=$?; rm -f "${rbin}"; ((rrc==0))'
-	'mbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/tests/mem_bounds.c -o "${mbin}" -lm && "${mbin}"; mrc=$?; rm -f "${mbin}"; ((mrc==0))'
+	'cbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/tests/conformance.c -o "${cbin}" -lm -lpthread && "${cbin}" project/conformance; crc=$?; rm -f "${cbin}"; ((crc==0))'
+	'vbin="$(mktemp)"; g++ -std=c++17 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/tests/veneer_smoke.cpp -o "${vbin}" -lm && "${vbin}"; vrc=$?; rm -f "${vbin}"; ((vrc==0))'
+	'obin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/tests/oom_hook.c -o "${obin}" -lm && "${obin}"; orc=$?; rm -f "${obin}"; ((orc==0))'
+	'rbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/tests/oom_recover.c -o "${rbin}" -lm && "${rbin}"; rrc=$?; rm -f "${rbin}"; ((rrc==0))'
+	'mbin="$(mktemp)"; cc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c source/c/tests/mem_bounds.c -o "${mbin}" -lm && "${mbin}"; mrc=$?; rm -f "${mbin}"; ((mrc==0))'
 	## CLI behavior the corpus cannot reach: closed streams, '-' twice on one
 	## command line, a carriage return ending an ops line, error-message shape.
 	'cicd/utility/cli-regress.bash "${BINDING_CLIS[@]}"'
@@ -331,9 +331,11 @@ CROSS_TARGETS=(
 ## "label|command" shape as CROSS_TARGETS, minus the artifact. These run under
 ## --ci as well, since they are checks rather than artifacts; ci.yml has to
 ## carry whatever they need, which today means mingw's gcc.
+## No -Wconversion for mingw: its isfinite and isnan macros convert to float in
+## the branch they do not take.
 CROSS_CHECKS=(
-	"C library + CLI for Windows x86_64 (mingw)|wbin=\"\$(mktemp -u)\".exe; x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Werror -Isource/c source/c/cmd/shcl/main.c -o \"\${wbin}\"; wrc=\$?; rm -f \"\${wbin}\"; ((wrc==0))"
-	"C library with file I/O compiled out|printf '#define SHCL_NO_FILE_IO\\n#define SHCL_IMPLEMENTATION\\n#include \"shcl.h\"\\n' | cc -x c -std=c11 -O2 -Wall -Wextra -Werror -Isource/c -c - -o /dev/null"
+	"C library + CLI for Windows x86_64 (mingw)|wbin=\"\$(mktemp -u)\".exe; x86_64-w64-mingw32-gcc -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Werror -Isource/c source/c/cmd/shcl/main.c -o \"\${wbin}\"; wrc=\$?; rm -f \"\${wbin}\"; ((wrc==0))"
+	"C library with file I/O compiled out|printf '#define SHCL_NO_FILE_IO\\n#define SHCL_IMPLEMENTATION\\n#include \"shcl.h\"\\n' | cc -x c -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -Isource/c -c - -o /dev/null"
 	## Go's windows publish path lives in its own build-tagged file, so the lint
 	## stage's vet and staticcheck - which only ever see the host's GOOS - walk
 	## straight past it. These are the only thing that compiles it at all.
