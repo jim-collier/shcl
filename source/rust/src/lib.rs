@@ -368,26 +368,31 @@ impl Lead {
 /// comments' indents with their depths, innermost last. A line kept for being
 /// malformed always sits at the place's level and leaves the chain alone: it
 /// holds its level on a reload, so written deeper it would move what follows.
-fn comment_depth(chain: &mut Vec<(String, usize)>, base: &str, text: &str, indent: &str) -> usize {
+fn comment_depth<'a>(
+	chain: &mut Vec<(&'a str, usize)>,
+	base: &str,
+	text: &str,
+	indent: &'a str,
+) -> usize {
 	if !text.starts_with('#') {
 		return 0;
 	}
 	if !(indent.len() > base.len() && indent.starts_with(base)) {
 		chain.clear();
-		chain.push((indent.to_string(), 0));
+		chain.push((indent, 0));
 		return 0;
 	}
 	while let Some((ind, depth)) = chain.last() {
-		if ind == indent {
+		if *ind == indent {
 			return *depth;
 		}
-		if indent.len() > ind.len() && indent.starts_with(ind.as_str()) {
+		if indent.len() > ind.len() && indent.starts_with(*ind) {
 			break;
 		}
 		chain.pop();
 	}
 	let depth = chain.last().map_or(0, |(_, d)| d + 1);
-	chain.push((indent.to_string(), depth));
+	chain.push((indent, depth));
 	depth
 }
 
@@ -395,9 +400,9 @@ fn comment_depth(chain: &mut Vec<(String, usize)>, base: &str, text: &str, inden
 /// to decide whether it hangs on a deeper block), and the blank it consumed.
 /// `ceiling` is the shortest incoming indent already checked against it: a
 /// later check can only hang it from a shorter one, so a longer one skips it.
-struct Pend {
+struct Pend<'a> {
 	text: String,
-	indent: String,
+	indent: &'a str,
 	blank_before: bool,
 	ceiling: usize,
 }
@@ -449,11 +454,16 @@ impl Value {
 	fn display(&self) -> String {
 		match self {
 			Value::Empty => String::new(),
-			Value::Cell(els) => els
-				.iter()
-				.map(|e| e.text.clone())
-				.collect::<Vec<_>>()
-				.join(", "),
+			Value::Cell(els) => {
+				let mut s = String::new();
+				for (i, e) in els.iter().enumerate() {
+					if i > 0 {
+						s.push_str(", ");
+					}
+					s.push_str(&e.text);
+				}
+				s
+			}
 			Value::Raw(r) => r.content.clone(),
 		}
 	}
@@ -538,11 +548,11 @@ impl NodeData {
 
 /// Store a name's authored spelling: the empty sentinel when it matches the
 /// folded name, so the duplicate string never gets allocated.
-fn spelled(name: &str, name_src: &str) -> String {
+fn spelled(name: &str, name_src: String) -> String {
 	if name_src == name {
 		String::new()
 	} else {
-		name_src.to_string()
+		name_src
 	}
 }
 
@@ -1211,10 +1221,6 @@ fn fold_name(s: &str) -> std::borrow::Cow<'_, str> {
 	}
 }
 
-fn is_bare_name_char(c: char) -> bool {
-	c.is_ascii_alphanumeric() || c == '-' || c == '_'
-}
-
 /// The grammar's `wsp`: a space, a tab or a carriage return. The parser trims
 /// with this and nothing wider - a no-break space or a line separator after a
 /// value is content, and a Unicode trim used to delete it with no diagnostic.
@@ -1711,6 +1717,7 @@ fn migrate_spelling(logical: &str, bare: bool) -> String {
 			text: logical.to_string(),
 			quoted: false,
 		})
+		.into_owned()
 	} else {
 		quote_text(logical)
 	}
@@ -1792,7 +1799,7 @@ fn migrate_line(
 					edits.push((
 						seg.name.start - 1,
 						seg.name.end + 1,
-						escape_name(&apply_escapes(name)),
+						escape_name(&apply_escapes(name)).into_owned(),
 					));
 				} else {
 					st.ambiguous += 1;
@@ -1914,7 +1921,7 @@ struct Segment {
 
 struct PathScan {
 	segments: Vec<Segment>,
-	value_text: Option<String>, // text after the separator colon, before any comment, trimmed
+	value: Option<(usize, usize)>, // span of the text after the separator colon, before any comment, trimmed
 }
 
 /// The spelling of an index selector - an optional `#`, an optional `+`, then
@@ -2019,7 +2026,7 @@ fn path_of(tok: &Tokens, text: &str) -> Result<PathScan, String> {
 	}
 	Ok(PathScan {
 		segments,
-		value_text: tok.sep.map(|_| text[tok.value.0..tok.value.1].to_string()),
+		value: tok.sep.map(|_| tok.value),
 	})
 }
 
@@ -2037,11 +2044,11 @@ fn scan_lookup(input: &str) -> Result<PathScan, String> {
 // Parser
 // ---------------------------------------------------------------------------
 
-struct Parser {
+struct Parser<'a> {
 	arena: Vec<NodeData>,
 	diags: Vec<Diagnostic>,
 	// (indent string, node) for each open level; [0] is the virtual root.
-	stack: Vec<(String, usize)>,
+	stack: Vec<(&'a str, usize)>,
 	// Per-node hash-of-(name, value-key) -> matching children, parallel to
 	// arena and lazily boxed so leaves never allocate one. Pure lookup
 	// accelerator for select_or_create; children keeps the order. No key
@@ -2058,7 +2065,7 @@ struct Parser {
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
-	pending: Vec<Pend>,
+	pending: Vec<Pend<'a>>,
 	// (end index, indent length): every pending entry before `end` has a
 	// ceiling at or under that length. Lengths rise along the stack, so a
 	// hang check pops the marks above its own indent and walks only what
@@ -2102,8 +2109,8 @@ enum Outcome<'a> {
 	Stopped(&'a [&'a str]),
 }
 
-impl Parser {
-	fn new() -> Parser {
+impl<'a> Parser<'a> {
+	fn new() -> Parser<'a> {
 		Parser {
 			arena: vec![NodeData {
 				name: String::new(),
@@ -2120,7 +2127,7 @@ impl Parser {
 				name_src: String::new(),
 			}],
 			diags: Vec::new(),
-			stack: vec![(String::new(), ROOT)],
+			stack: vec![("", ROOT)],
 			child_map: vec![None],
 			disp_map: vec![None],
 			pending: Vec::new(),
@@ -2136,7 +2143,7 @@ impl Parser {
 		}
 	}
 
-	fn limited(max_nodes: usize, max_elements: usize, max_diags: usize) -> Parser {
+	fn limited(max_nodes: usize, max_elements: usize, max_diags: usize) -> Parser<'a> {
 		let mut p = Parser::new();
 		p.max_nodes = max_nodes;
 		p.max_elements = max_elements;
@@ -2177,7 +2184,7 @@ impl Parser {
 		code: &'static str,
 		msg: impl Into<String>,
 		outcome: Outcome,
-		indent: &str,
+		indent: &'a str,
 	) {
 		self.err(line, code, msg);
 		let holds = matches!(outcome, Outcome::Retained { .. } | Outcome::Dropped);
@@ -2189,7 +2196,7 @@ impl Parser {
 		if let Outcome::Retained { text, blank_before } = outcome {
 			self.pending.push(Pend {
 				text,
-				indent: indent.to_string(),
+				indent,
 				blank_before,
 				ceiling: indent.len(),
 			});
@@ -2197,8 +2204,8 @@ impl Parser {
 		// A refused line owns its indent, so what is written deeper is skipped
 		// with it (E018). An indent that matched no level already holds an
 		// unopened one, which refuses a sibling the same way; that one stays.
-		if holds && !matches!(self.stack.last(), Some((i, n)) if i == indent && *n == UNOPENED) {
-			self.stack.push((indent.to_string(), DEAD));
+		if holds && !matches!(self.stack.last(), Some((i, n)) if *i == indent && *n == UNOPENED) {
+			self.stack.push((indent, DEAD));
 		}
 	}
 
@@ -2206,24 +2213,25 @@ impl Parser {
 	fn select_or_create(
 		&mut self,
 		parent: usize,
-		name: &str,
-		name_src: &str,
+		name: String,
+		name_src: String,
 		value: Value,
 		line: usize,
 	) -> usize {
 		self.star_flush();
-		let h = merge_hash(name, &value);
+		let h = merge_hash(&name, &value);
 		if let Some(slot) = self.child_map[parent].as_deref().and_then(|m| m.get(&h))
 			&& let Some(c) = slot
-				.first_match(|c| merge_eq(&self.arena[c].name, &self.arena[c].value, name, &value))
+				.first_match(|c| merge_eq(&self.arena[c].name, &self.arena[c].value, &name, &value))
 		{
 			return c;
 		}
 		let idx = self.arena.len();
-		let hd = disp_hash(name, &value);
+		let hd = disp_hash(&name, &value);
+		let name_src = spelled(&name, name_src);
 		self.arena.push(NodeData {
-			name: name.to_string(),
-			name_src: spelled(name, name_src),
+			name,
+			name_src,
 			value,
 			children: Vec::new(),
 			parent,
@@ -2370,7 +2378,7 @@ impl Parser {
 			let mut chain = Vec::new();
 			for p in self.pending.drain(..) {
 				t.leading.push(Lead {
-					depth: comment_depth(&mut chain, indent, &p.text, &p.indent),
+					depth: comment_depth(&mut chain, indent, &p.text, p.indent),
 					text: p.text,
 					blank_before: p.blank_before,
 				});
@@ -2405,7 +2413,10 @@ impl Parser {
 			self.pend_marks.pop();
 		}
 		let start = self.pend_marks.last().map_or(0, |m| m.0);
-		let taken: Vec<Pend> = self.pending.drain(start..).collect();
+		// Filtered in place: a kept entry is swapped back to the write mark,
+		// which never passes the one being read.
+		let mut pending = std::mem::take(&mut self.pending);
+		let mut w = start;
 		// A comment never goes ahead of the one written before it. Once one
 		// stays for the incoming line every later one stays too, and one
 		// whose block would be written out before the last one's goes there
@@ -2414,8 +2425,9 @@ impl Parser {
 		let mut kept = start > 0;
 		// Where the last comment went: (stack index, node, at its own level).
 		let mut last: Option<(usize, usize, bool)> = None;
-		let mut chain: Vec<(String, usize)> = Vec::new();
-		for mut p in taken {
+		let mut chain: Vec<(&str, usize)> = Vec::new();
+		for r in start..pending.len() {
+			let p = &mut pending[r];
 			if !kept && p.ceiling > new_len {
 				// A level shallower than the incoming line stays open and may
 				// still gain children, so a comment must not hang there - it
@@ -2429,7 +2441,7 @@ impl Parser {
 						*node != ROOT
 							&& *node != DEAD && *node != UNOPENED
 							&& ind.len() >= new_indent.len()
-							&& p.indent.starts_with(ind.as_str())
+							&& p.indent.starts_with(*ind)
 					})
 					.map(|(si, (ind, n))| (si, *n, ind.len() == p.indent.len()));
 				// A root node's trailing comment emits at column zero, which
@@ -2455,8 +2467,8 @@ impl Parser {
 					last = Some(at);
 					let base = &self.stack[at.0].0;
 					let lead = Lead {
-						depth: comment_depth(&mut chain, base, &p.text, &p.indent),
-						text: p.text,
+						depth: comment_depth(&mut chain, base, &p.text, p.indent),
+						text: std::mem::take(&mut p.text),
 						blank_before: p.blank_before,
 					};
 					if at.2 {
@@ -2469,8 +2481,11 @@ impl Parser {
 			}
 			kept = true;
 			p.ceiling = p.ceiling.min(new_len);
-			self.pending.push(p);
+			pending.swap(w, r);
+			w += 1;
 		}
+		pending.truncate(w);
+		self.pending = pending;
 		match self.pend_marks.last_mut() {
 			Some(m) if m.1 == new_len => m.0 = self.pending.len(),
 			_ => self.pend_marks.push((self.pending.len(), new_len)),
@@ -2481,11 +2496,11 @@ impl Parser {
 	/// top. Equal to a level is its sibling. Deeper than a level is its child,
 	/// unless a level opened under that one is still open, in which case the
 	/// line falls between the two. Anything else is a recoverable error.
-	fn resolve_parent(&mut self, indent: &str) -> Option<usize> {
+	fn resolve_parent(&mut self, indent: &'a str) -> Option<usize> {
 		let mut hold = None;
 		for i in (0..self.stack.len()).rev() {
 			let (ind, node) = (&self.stack[i].0, self.stack[i].1);
-			if ind == indent {
+			if *ind == indent {
 				if node == UNOPENED {
 					// Back at a skipped line's column: refused the same way.
 					self.stack.truncate(i + 1);
@@ -2497,7 +2512,7 @@ impl Parser {
 				self.stack.truncate(i.max(1));
 				return Some(if parent == UNOPENED { DEAD } else { parent });
 			}
-			if indent.len() > ind.len() && indent.starts_with(ind.as_str()) {
+			if indent.len() > ind.len() && indent.starts_with(*ind) {
 				// A skipped line's unopened level sits on top without opening
 				// anything, so it does not count as a level in between.
 				if self.stack.get(i + 1).is_some_and(|e| e.1 != UNOPENED) {
@@ -2519,13 +2534,13 @@ impl Parser {
 		if let Some(h) = hold {
 			self.stack.truncate(h);
 		}
-		self.stack.push((indent.to_string(), UNOPENED));
+		self.stack.push((indent, UNOPENED));
 		None
 	}
 
 	/// Diagnose a line written under a skipped line, and skip it too. Its own
 	/// level stays dead so deeper lines go the same way.
-	fn skip_under_dead(&mut self, line: usize, indent: &str) {
+	fn skip_under_dead(&mut self, line: usize, indent: &'a str) {
 		self.refuse(
 			line,
 			"E018",
@@ -2570,10 +2585,10 @@ impl Parser {
 	fn attach_path(
 		&mut self,
 		parent: usize,
-		segs: &[Segment],
+		segs: Vec<Segment>,
 		value: Value,
 		line: usize,
-		indent: &str,
+		indent: &'a str,
 	) -> Option<usize> {
 		// Owned here and handed to the last segment once; Option so the loop
 		// can move it out without a clone.
@@ -2603,9 +2618,10 @@ impl Parser {
 			return None;
 		}
 		let mut cur = parent;
-		for (i, seg) in segs.iter().enumerate() {
-			let is_last = i + 1 == segs.len();
-			match (&seg.selector, is_last) {
+		let nsegs = segs.len();
+		for (i, seg) in segs.into_iter().enumerate() {
+			let is_last = i + 1 == nsegs;
+			match (seg.selector, is_last) {
 				(Some(Selector::ByValue { text, quoted }), _) => {
 					// Same escape-applied display predicate resolve_from uses, so
 					// a selector also selects an array-valued instance instead of
@@ -2617,12 +2633,18 @@ impl Parser {
 					// child, which may be the non-scalar one. An unquoted selector takes
 					// whatever the accelerator holds and does not scan, so it can bind a
 					// raw block where a quoted selector picks the scalar sibling.
-					let found = self.find_by_value(cur, &seg.name, text, *quoted);
+					let found = self.find_by_value(cur, &seg.name, &text, quoted);
 					cur = match found {
 						Some(c) => c,
 						None => {
-							let disc = Value::Cell(vec![new_element(text.clone())]);
-							self.select_or_create(cur, &seg.name, &seg.name_src, disc, line)
+							let disc = Value::Cell(vec![new_element(text)]);
+							self.select_or_create(
+								cur,
+								seg.name.clone(),
+								seg.name_src.clone(),
+								disc,
+								line,
+							)
 						}
 					};
 					if is_last && value.as_ref().is_some_and(|v| !v.is_empty()) {
@@ -2638,7 +2660,7 @@ impl Parser {
 					}
 				}
 				(Some(Selector::ByIndex(n)), _) => {
-					let found = index_usize(*n).and_then(|i| {
+					let found = index_usize(n).and_then(|i| {
 						self.arena[cur]
 							.children
 							.iter()
@@ -2681,13 +2703,13 @@ impl Parser {
 					return None;
 				}
 				(None, false) => {
-					cur = self.select_or_create(cur, &seg.name, &seg.name_src, Value::Empty, line);
+					cur = self.select_or_create(cur, seg.name, seg.name_src, Value::Empty, line);
 				}
 				(None, true) => {
 					let parent = cur;
 					let before = self.arena.len();
 					let v = value.take().unwrap_or(Value::Empty);
-					cur = self.select_or_create(cur, &seg.name, &seg.name_src, v, line);
+					cur = self.select_or_create(cur, seg.name, seg.name_src, v, line);
 					// Two separately-written bindings just combined: legal (the
 					// merge rule), but only the parser can see it happened, so
 					// say so. Adjacent re-mentions (still the newest binding at
@@ -2704,15 +2726,15 @@ impl Parser {
 							.is_some_and(|&rl| self.arena[cur].line < rl);
 						if non_last || cross_region {
 							let at = self.arena[cur].line;
-							let name = seg.name.clone();
+							let message = format!(
+								"{}line {} (same name and value combine)",
+								h002_head(&self.arena[cur].name),
+								at
+							);
 							self.diag(Diagnostic {
 								line,
 								severity: Severity::Hint,
-								message: format!(
-									"{}line {} (same name and value combine)",
-									h002_head(&name),
-									at
-								),
+								message,
 								code: "H002",
 							});
 							self.reentered.insert(cur, line);
@@ -2727,10 +2749,10 @@ impl Parser {
 	/// The child of `cur` named `name` whose display form is the selector text
 	/// (escapes applied), or None. Quoted selectors only match a single scalar.
 	fn find_by_value(&self, cur: usize, name: &str, text: &str, quoted: bool) -> Option<usize> {
-		let want = text.to_string();
+		let want = text;
 		self.disp_map[cur]
 			.as_deref()
-			.and_then(|m| m.get(&disp_hash_text(name, &want)))
+			.and_then(|m| m.get(&disp_hash_text(name, want)))
 			.copied()
 			.filter(|&c| self.arena[c].name == name && disp_key(&self.arena[c].value) == want)
 			.filter(|&c| !quoted || single_scalar(&self.arena[c].value))
@@ -2743,7 +2765,7 @@ impl Parser {
 				if !quoted {
 					return None;
 				}
-				let disc = Value::Cell(vec![new_element(want.clone())]);
+				let disc = Value::Cell(vec![new_element(want.to_string())]);
 				self.child_map[cur]
 					.as_deref()
 					.and_then(|m| m.get(&merge_hash(name, &disc)))
@@ -2806,7 +2828,7 @@ impl Parser {
 		parent: usize,
 		value: Value,
 		line: usize,
-		indent: &str,
+		indent: &'a str,
 	) -> Option<usize> {
 		if parent == ROOT {
 			self.refuse(
@@ -2831,7 +2853,7 @@ impl Parser {
 				self.arena[parent].authored().to_string(),
 				self.arena[parent].parent,
 			);
-			Some(self.select_or_create(grandparent, &name, &name_src, value, line))
+			Some(self.select_or_create(grandparent, name, name_src, value, line))
 		}
 	}
 
@@ -2842,7 +2864,7 @@ impl Parser {
 		tok: &Tokens,
 		text: &str,
 		line: usize,
-		indent: &str,
+		indent: &'a str,
 	) {
 		if parent == ROOT {
 			self.refuse(
@@ -2943,7 +2965,7 @@ impl Parser {
 		// and a line back at the element's column is its sibling, where no level
 		// had been opened there and every later sibling was E012 (20260918b
 		// item 28).
-		self.stack.push((indent.to_string(), parent));
+		self.stack.push((indent, parent));
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare
@@ -2951,22 +2973,35 @@ impl Parser {
 	fn emit_repeated_leaf_hints(&mut self) {
 		let mut hints: Vec<(usize, String)> = Vec::new();
 		for parent in 0..self.arena.len() {
+			let children = &self.arena[parent].children;
+			if children.len() < 2 {
+				continue;
+			}
 			// Group by name in first-appearance order: hint order must be
 			// deterministic or the cross-binding check can't compare `check` output.
+			// The member list is made only when a name repeats. Nearly every
+			// name is seen once, and a list per child was most of what this
+			// pass allocated.
 			let mut group_of: HashMap<&str, usize> = HashMap::new();
-			let mut by_name: Vec<(&str, Vec<usize>)> = Vec::new();
-			for &c in &self.arena[parent].children {
+			let mut by_name: Vec<(&str, usize, Vec<usize>)> = Vec::new();
+			for &c in children {
 				let name = self.arena[c].name.as_str();
 				match group_of.get(name) {
-					Some(&g) => by_name[g].1.push(c),
+					Some(&g) => {
+						let grp = &mut by_name[g];
+						if grp.2.is_empty() {
+							grp.2.push(grp.1);
+						}
+						grp.2.push(c);
+					}
 					None => {
 						group_of.insert(name, by_name.len());
-						by_name.push((name, vec![c]));
+						by_name.push((name, c, Vec::new()));
 					}
 				}
 			}
-			for (name, group) in by_name {
-				if group.len() < 2 {
+			for (name, _, group) in by_name {
+				if group.is_empty() {
 					continue;
 				}
 				let all_scalar_leaves = group.iter().all(|&c| {
@@ -2995,7 +3030,7 @@ impl Parser {
 		}
 	}
 
-	fn parse(mut self, text: &str, strictness: Strictness) -> Document {
+	fn parse(mut self, text: &'a str, strictness: Strictness) -> Document {
 		// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 		// Lines borrow `text`: they are only read, so no owned copies needed.
 		// The whole trailing CR run goes, not just one: a raw block keeps its
@@ -3055,7 +3090,7 @@ impl Parser {
 			if rest.starts_with('#') {
 				self.pending.push(Pend {
 					text: rest.to_string(),
-					indent: indent.to_string(),
+					indent,
 					blank_before: std::mem::take(&mut self.saw_blank),
 					ceiling: indent.len(),
 				});
@@ -3156,7 +3191,7 @@ impl Parser {
 					} else if let Some(c) = comment {
 						self.pending.push(Pend {
 							text: c.to_string(),
-							indent: indent.to_string(),
+							indent,
 							blank_before: had_blank,
 							ceiling: indent.len(),
 						});
@@ -3296,14 +3331,15 @@ impl Parser {
 			// The verbatim value span, kept for reads' `raw` (only the plain
 			// scalar/inline-array case has a one-line source spelling).
 			let mut src_text: Option<&str> = None;
-			let value = match &scan.value_text {
+			let value_text = scan.value.map(|(a, b)| &rest[a..b]);
+			let value = match value_text {
 				None => {
 					// A clean path with no colon is the one defined repair: the
 					// obvious intent is that path with an empty value.
 					self.err(lineno, "E015", "missing colon; repaired as an empty value");
 					Value::Empty
 				}
-				Some(v) if v.is_empty() => Value::Empty,
+				Some("") => Value::Empty,
 				Some(v) => {
 					if let Some(fence) = fence_open(v) {
 						// Same-line fence spelling.
@@ -3314,7 +3350,7 @@ impl Parser {
 						if tok.elements.iter().any(|p| p.quote == Quote::Open) {
 							self.err(lineno, "E017", "unterminated quote in value");
 						}
-						src_text = Some(v.as_str());
+						src_text = Some(v);
 						cell_of_tokens(&tok, rest)
 					}
 				}
@@ -3323,7 +3359,7 @@ impl Parser {
 			// (a merge into an equal-valued node keeps the first line's span;
 			// a value dropped after a last-segment selector records nothing).
 			let vkey = src_text.as_ref().map(|_| value_hash(&value));
-			if let Some(node) = self.attach_path(parent, &scan.segments, value, lineno, indent) {
+			if let Some(node) = self.attach_path(parent, scan.segments, value, lineno, indent) {
 				if let (Some(s), Some(k)) = (src_text, vkey)
 					&& !self.arena[node].src_set
 					&& value_hash(&self.arena[node].value) == k
@@ -3337,7 +3373,7 @@ impl Parser {
 					self.arena[node].blank_before = true;
 				}
 				self.attach_trivia(node, indent, comment);
-				self.stack.push((indent.to_string(), node));
+				self.stack.push((indent, node));
 			}
 			i = next;
 		}
@@ -3365,7 +3401,7 @@ impl Parser {
 			.pending
 			.drain(..)
 			.map(|p| Lead {
-				depth: comment_depth(&mut chain, "", &p.text, &p.indent),
+				depth: comment_depth(&mut chain, "", &p.text, p.indent),
 				text: p.text,
 				blank_before: p.blank_before,
 			})
@@ -3662,7 +3698,7 @@ impl Document {
 			}
 			Value::Cell(els) => {
 				out.push(' ');
-				out.push_str(&emit_cell(els));
+				emit_cell_into(out, els);
 				push_trailing(out, node.trailing());
 				out.push('\n');
 			}
@@ -3702,12 +3738,11 @@ impl Document {
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, out);
 		// Comments this block owns with no child to carry them, one deeper.
-		let ipad: String = "\t".repeat(depth + 1);
 		for c in self.arena[idx].inside() {
 			if c.blank_before && !out.is_empty() {
 				out.push('\n');
 			}
-			out.push_str(&ipad);
+			out.extend(std::iter::repeat_n('\t', depth + 1));
 			out.extend(std::iter::repeat_n('\t', c.depth));
 			out.push_str(&c.text);
 			out.push('\n');
@@ -3739,9 +3774,9 @@ fn push_trailing(out: &mut String, trailing: &str) {
 /// that one picks a quote style to AVOID escaping and never escapes a
 /// backslash, which is right for a value (stored in its escaped spelling) and
 /// wrong for a name (stored resolved).
-fn escape_name(name: &str) -> String {
-	if !name.is_empty() && name.chars().all(is_bare_name_char) {
-		return name.to_string();
+fn escape_name(name: &str) -> std::borrow::Cow<'_, str> {
+	if !name.is_empty() && name.bytes().all(is_bare_name_byte) {
+		return std::borrow::Cow::Borrowed(name);
 	}
 	let mut out = String::with_capacity(name.len() + 2);
 	out.push('"');
@@ -3755,10 +3790,10 @@ fn escape_name(name: &str) -> String {
 		}
 	}
 	out.push('"');
-	out
+	std::borrow::Cow::Owned(out)
 }
 
-fn emit_name(name: &str) -> String {
+fn emit_name(name: &str) -> std::borrow::Cow<'_, str> {
 	escape_name(name)
 }
 
@@ -3780,7 +3815,7 @@ fn diag_element(e: &Element) -> String {
 	if s.contains('\r') {
 		return quote_double(&e.text).replace('\r', "\\r");
 	}
-	s
+	s.into_owned()
 }
 
 /// A value for a diagnostic message. Only a cell reaches this today, from the
@@ -3848,7 +3883,7 @@ pub fn format_float(v: f64) -> String {
 /// path injection - a dotted name silently reads as nesting. Same spelling
 /// `paths()` and the canonical emitter produce.
 pub fn quote_segment(name: &str) -> String {
-	emit_name(name)
+	emit_name(name).into_owned()
 }
 
 /// The file tier's read half on its own: the text of PATH, or the status that
@@ -4597,10 +4632,14 @@ fn needs_quotes(t: &str) -> bool {
 /// (readers type the value either way), but quoting a plain string is the escape and
 /// must survive canonicalization. This clause only ever adds quoting, so a bare emit
 /// stays safe.
-fn emit_element(e: &Element) -> String {
+fn emit_element(e: &Element) -> std::borrow::Cow<'_, str> {
 	let t = &e.text;
 	let needs = needs_quotes(t) || (e.quoted && !is_data_format(e));
-	if needs { quote_text(t) } else { t.clone() }
+	if needs {
+		std::borrow::Cow::Owned(quote_text(t))
+	} else {
+		std::borrow::Cow::Borrowed(t)
+	}
 }
 
 /// An element no source spelled. It counts as quoted when canonical output will
@@ -4676,13 +4715,17 @@ fn quote_double(t: &str) -> String {
 /// The value half of a binding line, the way `emit_node` writes it.
 fn emit_cell(els: &[Element]) -> String {
 	let mut out = String::new();
+	emit_cell_into(&mut out, els);
+	out
+}
+
+fn emit_cell_into(out: &mut String, els: &[Element]) {
 	for (i, e) in els.iter().enumerate() {
 		if i > 0 {
 			out.push_str(", ");
 		}
 		out.push_str(&emit_element(e));
 	}
-	out
 }
 
 /// The opening fence line of a raw block: the fence run, then the info string
@@ -4882,7 +4925,7 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = text.to_string();
+					let want = text.as_str();
 					cur = next
 						.into_iter()
 						.filter(|&c| {
@@ -4941,7 +4984,7 @@ impl Document {
 
 	fn resolve_mode(&self, path: &str, group: bool) -> Result<Resolved, Status> {
 		let scan = scan_lookup(path).map_err(|_| Status::NotFound)?;
-		if scan.value_text.is_some() {
+		if scan.value.is_some() {
 			return Err(Status::NotFound); // a query has no value part
 		}
 		Ok(self.resolve_from(&[ROOT], &scan.segments, group))
@@ -4974,7 +5017,7 @@ impl Document {
 		while let Some((node, prefix)) = stack.pop() {
 			let seg = emit_name(&self.arena[node].name);
 			let path = if prefix.is_empty() {
-				seg
+				seg.into_owned()
 			} else {
 				format!("{}.{}", prefix, seg)
 			};
@@ -5137,7 +5180,7 @@ impl Document {
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
 			name: name.to_string(),
-			name_src: spelled(name, name_src),
+			name_src: spelled(name, name_src.to_string()),
 			value,
 			children: Vec::new(),
 			parent,
@@ -5174,7 +5217,7 @@ impl Document {
 	/// scanning the path and walking the tree a second time.
 	fn probe_write(&self, scan: &PathScan, trail: &mut Vec<Option<usize>>) -> WriteReason {
 		trail.clear();
-		if scan.value_text.is_some() {
+		if scan.value.is_some() {
 			return WriteReason::ValueInPath;
 		}
 		if scan.segments.is_empty() {
@@ -5213,7 +5256,7 @@ impl Document {
 					}
 				}
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = text.to_string();
+					let want = text.as_str();
 					probe = probe.and_then(|c| {
 						self.children_named(c, &seg.name).into_iter().find(|&n| {
 							disp_key(&self.arena[n].value) == want
@@ -5327,12 +5370,13 @@ impl Document {
 		} else {
 			(node, other)
 		};
-		let moved: Vec<usize> = self.arena[loser].children.clone();
+		// The fold appends, so what moved is the survivor's new tail.
+		let kept = self.arena[survivor].children.len();
 		fold_node_into(&mut self.arena, survivor, loser);
 		self.arena[parent].children.retain(|&c| c != loser);
 		if let Some(ix) = self.index.get_mut() {
 			ix.unlink(name_key(parent, &self.arena[loser].name), loser);
-			for &k in &moved {
+			for &k in &self.arena[survivor].children[kept..] {
 				let name = &self.arena[k].name;
 				ix.unlink(name_key(loser, name), k);
 				ix.append(name_key(survivor, name), k);
@@ -5365,11 +5409,11 @@ impl Document {
 				});
 				match survivor {
 					Some(s) => {
-						let moved: Vec<usize> = self.arena[c].children.clone();
+						let kept = self.arena[s].children.len();
 						fold_node_into(&mut self.arena, s, c);
 						if let Some(ix) = self.index.get_mut() {
 							ix.unlink(name_key(parent, &self.arena[c].name), c);
-							for &k in &moved {
+							for &k in &self.arena[s].children[kept..] {
 								let name = &self.arena[k].name;
 								ix.unlink(name_key(c, name), k);
 								ix.append(name_key(s, name), k);
@@ -6526,12 +6570,7 @@ impl Document {
 			}
 			// Canonical inline form (quoting + escapes intact), so the string
 			// re-parses to the same array - not the bare display join.
-			Value::Cell(els) => Read::new(
-				els.iter().map(emit_element).collect::<Vec<_>>().join(", "),
-				Status::Good,
-				raw,
-			)
-			.at(line, false),
+			Value::Cell(els) => Read::new(emit_cell(els), Status::Good, raw).at(line, false),
 		}
 	}
 
@@ -7068,7 +7107,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 		return None;
 	};
 	let segs = match scan_lookup(&path) {
-		Ok(s) if s.value_text.is_none() => s.segments,
+		Ok(s) if s.value.is_none() => s.segments,
 		_ => {
 			vdiag(
 				faults,
@@ -8270,7 +8309,7 @@ impl Document {
 			match &seg.selector {
 				None => cur = next,
 				Some(Selector::ByValue { text, quoted }) => {
-					let want = text.to_string();
+					let want = text.as_str();
 					cur = next
 						.into_iter()
 						.filter(|&c| {
@@ -8306,14 +8345,14 @@ impl Document {
 	// node's own checks, in fragment order - depth-first, so diagnostic order
 	// stays derivable. Termination is structural: every mount descends at
 	// least one document level, and the document is finite.
-	fn v_check_from(
+	fn v_check_from<'d>(
 		&self,
-		c: &Constraint,
-		def: &SchemaDef,
+		c: &'d Constraint,
+		def: &'d SchemaDef,
 		start: usize,
 		anchor0: usize,
 		out: &mut Vec<Diagnostic>,
-		mounted: &mut std::collections::HashSet<(String, usize)>,
+		mounted: &mut std::collections::HashSet<(&'d str, usize)>,
 	) {
 		let mut ctxs: Vec<(usize, Vec<usize>)> = Vec::new();
 		self.v_contexts(vec![start], &c.segs, anchor0, &mut ctxs);
@@ -8353,7 +8392,7 @@ impl Document {
 					// first's work and its diagnostics, and repeating it per
 					// level is what makes a recursive schema cost double per
 					// document level, so each pair is done once.
-					if mounted.insert((fr.clone(), n)) {
+					if mounted.insert((fr.as_str(), n)) {
 						for fc in fcs {
 							self.v_check_from(fc, def, n, self.arena[n].line, out, mounted);
 						}
@@ -8581,10 +8620,7 @@ impl Document {
 					// allowed set can fail, in logical-string space.
 					_ => {
 						if let Some(AllowedSet::Strings(set)) = &c.allowed {
-							let bad = els
-								.iter()
-								.map(|e| e.text.clone())
-								.find(|s| !set.contains(s));
+							let bad = els.iter().find(|e| !set.contains(&e.text));
 							if let Some(b) = bad {
 								vdiag(
 									out,
@@ -8593,7 +8629,7 @@ impl Document {
 									format!(
 										"value not allowed at '{}': {}",
 										schema_text(&c.path),
-										one_line(&b)
+										one_line(&b.text)
 									),
 								);
 							}

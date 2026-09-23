@@ -3301,10 +3301,17 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 	   unwinds straight out of here - still has something to free it with. */
 	ShclArena *tmp = P->hints;
 	arena_guard(tmp, a->panic);
+	/* The member list is made only when a name repeats. Nearly every name is
+	   seen once, and a list per child was most of what this pass allocated. */
+	typedef struct { size_t first; ShclVecSize nodes; } Group;
 	for (size_t parent = 0; parent < P->d->nodes.len; parent++) {
-		ShclVecS names = {0}; ShclVecSize *groups = NULL; size_t ngroups = 0, cgroups = 0;
-		ShclCMap group_of; memset(&group_of, 0, sizeof group_of);
 		ShclVecSize ch = NODE(P->d, parent).children;
+		if (ch.len < 2) continue;
+		/* p_diag copies the message out, so nothing from one parent is needed
+		   by the next. */
+		arena_reset(tmp);
+		ShclVecS names = {0}; Group *groups = NULL; size_t ngroups = 0, cgroups = 0;
+		ShclCMap group_of; memset(&group_of, 0, sizeof group_of);
 		for (size_t k = 0; k < ch.len; k++) {
 			size_t c = ch.data[k]; ShclStr nm = NODE(P->d, c).name;
 			uint64_t h = cmap_hash(nm, s_empty());
@@ -3313,14 +3320,17 @@ static void emit_repeated_leaf_hints(ShclParser *P) {
 				if (s_eq(names.data[e->val], nm)) { g = e->val; break; }
 			if (g == (size_t)-1) {
 				ShclVecS_push(tmp, &names, nm);
-				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (ShclVecSize *)arena_grow(tmp, groups, cgroups, nc, sizeof(ShclVecSize)); cgroups = nc; }
-				memset(&groups[ngroups], 0, sizeof(ShclVecSize)); g = ngroups++;
-				cmap_put(tmp, &group_of, h, g);
+				if (ngroups == cgroups) { size_t nc = cgroups ? cgroups * 2 : 8; groups = (Group *)arena_grow(tmp, groups, cgroups, nc, sizeof(Group)); cgroups = nc; }
+				memset(&groups[ngroups], 0, sizeof(Group)); groups[ngroups].first = c;
+				cmap_put(tmp, &group_of, h, ngroups++);
+			} else {
+				Group *grp = &groups[g];
+				if (grp->nodes.len == 0) ShclVecSize_push(tmp, &grp->nodes, grp->first);
+				ShclVecSize_push(tmp, &grp->nodes, c);
 			}
-			ShclVecSize_push(tmp, &groups[g], c);
 		}
 		for (size_t gi = 0; gi < ngroups; gi++) {
-			ShclVecSize grp = groups[gi];
+			ShclVecSize grp = groups[gi].nodes;
 			if (grp.len < 2) continue;
 			int all_scalar = 1; size_t maxline = 0;
 			for (size_t k = 0; k < grp.len; k++) {

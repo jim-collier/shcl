@@ -2464,20 +2464,28 @@ class _Parser:
 		scalar leaf. Mandatory hint per spec (never fails a load)."""
 		hints = []
 		for parent in range(len(self.arena)):
+			children = self.arena[parent].children
+			if len(children) < 2:
+				continue
 			# Group by name in first-appearance order: hint order must be
 			# deterministic or the cross-binding check can't compare `check` output.
+			# The member list is made only when a name repeats. Nearly every
+			# name is seen once, and a list per child was most of what this
+			# pass allocated.
 			by_name: list = []
 			group_of: dict = {}
-			for c in self.arena[parent].children:
+			for c in children:
 				name = self.arena[c].name
 				g = group_of.get(name)
-				if g is not None:
-					by_name[g][1].append(c)
-				else:
+				if g is None:
 					group_of[name] = len(by_name)
-					by_name.append((name, [c]))
-			for name, group in by_name:
-				if len(group) < 2:
+					by_name.append([name, c, None])
+				elif by_name[g][2] is None:
+					by_name[g][2] = [by_name[g][1], c]
+				else:
+					by_name[g][2].append(c)
+			for name, _, group in by_name:
+				if group is None:
 					continue
 				all_scalar_leaves = all(
 					not self.arena[c].children
