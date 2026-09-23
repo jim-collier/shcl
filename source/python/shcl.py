@@ -2050,6 +2050,26 @@ class _Parser:
 			self.arena[nd.children[-1]]._triv().after.extend(t.inside)
 			t.inside = []
 
+	def _after_to_next_sibling(self):
+		"""A block reopened later in the file gains children after the one that
+		was last, and that child's comments at its own level now sit right above
+		a sibling, where a reload files them as the sibling's leading ones. Move
+		them there, from the first one at that level on, which is where a reload
+		splits the run."""
+		arena = self.arena
+		for nd in arena:
+			kids = nd.children
+			for i in range(1, len(kids)):
+				t = arena[kids[i - 1]].trivia
+				if t is None:
+					continue
+				at = next((k for k, c in enumerate(t.after) if c.depth == 0), None)
+				if at is None:
+					continue
+				nt = arena[kids[i]]._triv()
+				nt.leading[:0] = t.after[at:]
+				del t.after[at:]
+
 	def _fold_late_dups(self):
 		"""A value that mutates after its sibling group was keyed - an empty field
 		filled by a fence, a stacked list closed - can land on a key an earlier
@@ -2759,6 +2779,7 @@ class _Parser:
 		self._hang_deeper_pending("")
 		self._fold_late_dups()
 		self._inside_to_last_child()
+		self._after_to_next_sibling()
 		self._emit_repeated_leaf_hints()
 		chain: list[tuple[str, int]] = []
 		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent)) for p in self.pending]

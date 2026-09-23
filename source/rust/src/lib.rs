@@ -2409,6 +2409,29 @@ impl<'a> Parser<'a> {
 		}
 	}
 
+	/// A block reopened later in the file gains children after the one that
+	/// was last, and that child's comments at its own level now sit right
+	/// above a sibling, where a reload files them as the sibling's leading
+	/// ones. Move them there, from the first one at that level on, which is
+	/// where a reload splits the run.
+	fn after_to_next_sibling(&mut self) {
+		for n in 0..self.arena.len() {
+			for i in 1..self.arena[n].children.len() {
+				let (prev, next) = (self.arena[n].children[i - 1], self.arena[n].children[i]);
+				let Some(t) = self.arena[prev].trivia.as_deref_mut() else {
+					continue;
+				};
+				let Some(at) = t.after.iter().position(|c| c.depth == 0) else {
+					continue;
+				};
+				let mut moved = t.after.split_off(at);
+				let nt = self.arena[next].triv_mut();
+				moved.append(&mut nt.leading);
+				nt.leading = moved;
+			}
+		}
+	}
+
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
 	fn attach_trivia(&mut self, node: usize, indent: &str, trailing: Option<&str>) {
@@ -3434,6 +3457,7 @@ impl<'a> Parser<'a> {
 		self.hang_deeper_pending("");
 		self.fold_late_dups();
 		self.inside_to_last_child();
+		self.after_to_next_sibling();
 		self.emit_repeated_leaf_hints();
 		let mut chain = Vec::new();
 		let mut orphans: Vec<Lead> = self

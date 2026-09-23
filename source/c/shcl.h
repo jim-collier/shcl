@@ -2770,6 +2770,31 @@ static void inside_to_last_child(ShclParser *P) {
 	}
 }
 
+/* A block reopened later in the file gains children after the one that was
+   last, and that child's comments at its own level now sit right above a
+   sibling, where a reload files them as the sibling's leading ones. Move them
+   there, from the first one at that level on, which is where a reload splits
+   the run. */
+static void after_to_next_sibling(ShclParser *P) {
+	ShclArena *a = &P->d->arena;
+	for (size_t n = 0; n < P->d->nodes.len; n++) {
+		ShclVecSize *kids = &NODE(P->d, n).children;
+		for (size_t i = 1; i < kids->len; i++) {
+			ShclTrivia *t = NODE(P->d, kids->data[i - 1]).trivia;
+			if (!t) continue;
+			size_t at = 0;
+			while (at < t->after.len && t->after.data[at].depth != 0) at++;
+			if (at == t->after.len) continue;
+			ShclTrivia *nt = triv_mut(a, &NODE(P->d, kids->data[i]));
+			ShclVecLead lead = {0};
+			for (size_t k = at; k < t->after.len; k++) ShclVecLead_push(a, &lead, t->after.data[k]);
+			for (size_t k = 0; k < nt->leading.len; k++) ShclVecLead_push(a, &lead, nt->leading.data[k]);
+			nt->leading = lead;
+			t->after.len = at;
+		}
+	}
+}
+
 /* A value that mutates after its sibling group was keyed - an empty field
    filled by a fence, a stacked list closed - can land on a key an earlier
    sibling already holds, which the keyed lookup can no longer catch. Fold
@@ -3618,6 +3643,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	hang_deeper_pending(&P, s_empty());
 	fold_late_dups(&P);
 	inside_to_last_child(&P);
+	after_to_next_sibling(&P);
 	emit_repeated_leaf_hints(&P);
 	P.depth_chain.len = 0;
 	for (size_t k = 0; k < P.pending.len; k++)
