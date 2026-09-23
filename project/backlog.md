@@ -98,6 +98,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Items 8, 9 and 10 were run on vm925w, once each, in both PowerShell 5.1 and 7. Everything else was reproduced on this box.
 
+	- Plan to converge on the 3.0.0 cut, decided 2026-09-23:
+		- Before the cut: items 1, 2, 3, 5, 6 and 7, and the doc items 13, 20, 21 and 22. The rest waits until after 3.0.0.
+		- Three fuzz properties in all four bindings, each closing a class rather than a site. Whatever a setter accepts saves and loads back (item 2, 20260902 item 40). A merge or edit then save gives the same tree and comments as a reload of that text (item 3). A check in `check-docs.bash` that fails on a doc comment above the wrong declaration (item 22).
+		- Each fix names its twins in all four bindings on its sub-bullet.
+		- Then a review of this fix round's diff and its siblings only. No release-bar item means the cut goes.
+
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
 
 	- 🔘 Item 1: the gate records a tree as passed before the cross checks run, and `--no-cross` records one too.
