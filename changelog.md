@@ -54,6 +54,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Rust formats a large file in about a tenth less time, and a comment-heavy one in about a quarter less. It copies far less text while it parses and writes. C's `fmt` uses about a quarter less peak memory on a large file, since its check for repeated leaves no longer keeps every level's working lists until it ends.
 
+- Every binding formats a large file in about a tenth less time. The end of a parse walked the whole tree looking for repeated fields that only a raw block filling an empty field or a closed stacked list can leave behind. It now looks only where one of those happened.
+
 - Go formats a large file in about a tenth less time and a fifth less memory. Its parser sizes the node table up front rather than growing it one node at a time. Rust's lookup maps no longer hash keys that are hashes already.
 
 - Python's `Read` is generic, so a type checker sees `read_int(...).value` as an `int` and `get_string_array` as a `list[str]`, the way Rust and Go already typed them. It used to be `Any`. Nothing changes at run time.

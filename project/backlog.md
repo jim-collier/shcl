@@ -86,6 +86,13 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- 🔘 A layer merges differently from its canonical form when a comment sits between two instances of a block.
+	- Reproduced: in Rust, on `dev` as well. Base `m:` with `\ts: 3` under it. The layer is `m:`, `\tp: 1`, `\t# c`, then `m:` again with `\ts: 3`. Merged as written, `# c` comes out after `p`, at the end of `m`. Merged after `fmt`, it comes out above `s`.
+	- Cause: the load files `# c` after `p`. The canonical form writes it just above the reopened block's `s`, and a reload files it as `s`'s leading comment. `s` matches the base's `s`, so the two merges put it in different places.
+	- Note: a comment moves, nothing is lost. The same class as the inside-comment item of 20260921, in reverse.
+	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 412,493, past the gate's 200,000, once corpus case 141 shifted the seeds. The reduced inputs are kept with the private notes, under `fuzz-20260923`.
+	- Opened: 20260923-102629
+
 - Code review 20260922:
 
 	- A review against the directives' code style and performance sections. It picks up where 20260921 stopped: Rust, Python, C and C++, and measured performance across the four bindings. It also covers everything merged since that round's base (`f85a0d2`), in every language and script, which is the last round's own fixes with no soak time. Five sweeps, one area each.
@@ -193,13 +200,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260922:
 
 	- The round's ideas. Its defects and its header are under Bugs, in a bullet of the same name. Timings were taken on a shared box, run alternately against the unchanged build.
-
-	- 🔘 Idea 1: every parse walks every parent a second time to fold duplicates, and in Rust that is about 14 percent of `fmt`.
-		- Measured: Rust `fmt` on a 16 MB, 1.2M-line document, pass on and off: about 1200 ms against 1040. On a 32 MB comment-heavy document, 1070 against 850. Neither document holds a late duplicate, so the pass finds nothing. Go spends about 7 percent there, Python 3.
-		- Note: late duplicates come only from a fence fill and a stacked-list close, as the doc comment says. Folding just the parents those touched gives the same answer without the walk.
-		- Note: all four, inside the parser. No function or output changes.
-		- Origin: `f127185` (2026-08-03).
-		- Opened: 20260922-120717
 
 	- 🔘 Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
 		- Measured: `fmt --layer` on the 16 MB document takes 2.9 times as long as plain `fmt` in Rust, 2.4 in Go, 2.3 in C and Python. The key strings' share was not separated out.
@@ -5063,6 +5063,19 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260922:
 
 	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 1: every parse walks every parent a second time to fold duplicates, and in Rust that is about 14 percent of `fmt`.
+		- Measured: Rust `fmt` on a 16 MB, 1.2M-line document, pass on and off: about 1200 ms against 1040. On a 32 MB comment-heavy document, 1070 against 850. Neither document holds a late duplicate, so the pass finds nothing. Go spends about 7 percent there, Python 3.
+		- Note: late duplicates come only from a fence fill and a stacked-list close, as the doc comment says. Folding just the parents those touched gives the same answer without the walk.
+		- Note: all four, inside the parser. No function or output changes.
+		- Fixed: the remap after a fence fill or a list close is the one place a value changes after it was keyed, so it notes the parent when the new key is already taken. The end of the parse folds only those parents, shallowest first, and then only the survivors under them. `remap_child` and `fold_late_dups` plus `fold_dups_from` in Rust and C, `remapChild`, `foldLateDups` and `foldDupsFrom` in Go, `_remap_child`, `_fold_late_dups` and `_fold_dups_from` in Python.
+		- Note: the order matters. A deeper parent folded before its ancestor puts two demoted trailing comments in the other order.
+		- Note: survivors are marked beside the kept list rather than sorted and deduplicated, which kept Rust's binary 4 KB smaller.
+		- Measured: `fmt` on the 16 MB document, Rust from about 916 to 820 ms, Go 1016 to 900, C 640 to 570. The comment-heavy document in Rust, 711 to 613. Output identical.
+		- Pinned by: corpus case `141-nested-late-fold`, a fold inside a fold with a trailing comment on each side. A build that folds deepest first fails it. Old and new Rust also gave the same output on 20,000 random documents built around fences and stacked lists, some merged.
+		- Origin: `f127185` (2026-08-03).
+		- Opened: 20260922-120717
+		- Closed: 20260923-102629
 
 	- ✅ Idea 2: Go never sizes its node arena, and growing it costs about 12 percent of `fmt` and 16 percent of peak memory.
 		- Measured: sized to the line count, `fmt` on the 16 MB document went from about 1150 to 1020 ms and peak memory from 591 to 499 MiB. On the comment-heavy document time dropped 7 percent but memory rose 3, since it has far more lines than nodes.
