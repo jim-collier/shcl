@@ -1423,6 +1423,25 @@ func TestSetStringRefusesInvalidUTF8(t *testing.T) {
 	if d.SetStringArray("k", []string{"ok", bad}) {
 		t.Error("SetStringArray accepted an element that is not UTF-8")
 	}
+	// Every other way text reaches the page. Each used to save and then fail
+	// the next load of the whole file.
+	for name, set := range map[string]func() bool{
+		"SetRaw content":    func() bool { return d.SetRaw("k", bad, "") },
+		"SetRaw info":       func() bool { return d.SetRaw("k", "x", bad) },
+		"SetRawDefault":     func() bool { return d.SetRawDefault("k", bad, "") },
+		"SetComment":        func() bool { return d.SetComment("a", bad) },
+		"SetLiteral bare":   func() bool { return d.SetLiteral("k", bad) },
+		"SetLiteral quoted": func() bool { return d.SetLiteral("k", `"`+bad+`"`) },
+		"SetLiteralDefault": func() bool { return d.SetLiteralDefault("k", bad) },
+		"SetStringDefault":  func() bool { return d.SetStringDefault("k", bad) },
+		"a name":            func() bool { return d.SetInt(bad, 1) },
+		"a quoted name":     func() bool { return d.SetInt(`"`+bad+`"`, 1) },
+		"a selector":        func() bool { return d.SetInt("s["+bad+"].x", 1) },
+	} {
+		if set() {
+			t.Errorf("%s accepted text that is not UTF-8", name)
+		}
+	}
 	if d.ToCanonical() != "a: 1\n" {
 		t.Errorf("a refused write changed the document: %q", d.ToCanonical())
 	}
@@ -1617,6 +1636,20 @@ func TestParseLimitedCaps(t *testing.T) {
 	doc, _ = ParseLimited(text, Standard, 0, 0, 0)
 	if len(doc.Diagnostics()) != 0 {
 		t.Fatalf("uncapped: %v", doc.Diagnostics())
+	}
+	// A cap near MaxInt is as good as none, and a negative one stops at the
+	// first line. Sizing the arena from either used to panic.
+	for _, capAt := range []int{math.MaxInt, math.MaxInt - 1, math.MaxInt - 2} {
+		doc, _ = ParseLimited(text, Standard, capAt, 0, 0)
+		if len(doc.Diagnostics()) != 0 {
+			t.Fatalf("cap %d: %v", capAt, doc.Diagnostics())
+		}
+	}
+	for _, capAt := range []int{-1, -3, math.MinInt} {
+		doc, _ = ParseLimited(text, Standard, capAt, 0, 0)
+		if n, line := codeCount(doc, "E020"); n != 1 || line != 1 {
+			t.Fatalf("cap %d: %d E020 at %d", capAt, n, line)
+		}
 	}
 	// Element cap, inline spelling: the whole line is refused, the rest of
 	// the document is untouched.

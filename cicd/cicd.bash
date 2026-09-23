@@ -52,10 +52,10 @@
 ##	   -h, --help          show this help
 ##	- If neither -q/-y nor -m is given, the run prompts once for a commit message
 ##	  (blank = git editor; Ctrl+C aborts the whole run), then finishes unattended.
-##	- A run that passes the tests stage records the tree it tested
-##	  (utility/green-tree.bash), and the pre-push hook lets a commit with that
-##	  tree through without running the gate again. --quick, --no-fmt, --no-lint
-##	  and a skipped tool each keep a run from recording.
+##	- A run that passes the tests and the cross checks records the tree it
+##	  tested (utility/green-tree.bash), and the pre-push hook lets a commit with
+##	  that tree through without running the gate again. --quick, --no-fmt,
+##	  --no-lint, --no-cross and a skipped tool each keep a run from recording.
 ##	- Reuse: copy the cicd/ directory into another project and edit config.bash.
 
 ##	History: At bottom of script.
@@ -118,7 +118,7 @@ while (($#)); do case "$1" in
 	--no-sync)                sync_enable=0; shift ;;
 	--no-fmt)                 FMT_CMD=(); FMT_CHECK_CMD=(); FMT_EXTRA=(); FMT_CHECK_EXTRA=(); gate_partial=1; shift ;;
 	--no-lint)                LINT_CMD=(); SHELLCHECK_TARGETS=(); LINT_EXTRA=(); gate_partial=1; shift ;;
-	--no-cross)               CROSS_TARGETS=(); CROSS_CHECKS=(); shift ;;
+	--no-cross)               CROSS_TARGETS=(); CROSS_CHECKS=(); gate_partial=1; shift ;;
 	--no-package)             PACKAGE_ENABLE=0; shift ;;
 	--no-largedoc)            LARGEDOC_MIB=0; shift ;;
 	--no-profile)             PROFILE_ENABLE=0; shift ;;
@@ -160,7 +160,7 @@ if ((quick)); then
 fi
 
 ## A run at least as thorough as the pre-push hook's records the tree it tested
-## once the tests pass, and the hook lets a commit with that tree through. A gate
+## once the tests and the cross checks pass, and the hook lets a commit with that tree through. A gate
 ## that skips a missing tool locally notes it in SHCL_GATE_SKIPS. Under --ci the
 ## same skip is a failure, so a run with anything noted there records nothing.
 record_green=1
@@ -399,14 +399,6 @@ if ((${#BINDING_CLIS[@]})); then
 		"${here}/utility/largedoc.bash" --mib "${LARGEDOC_MIB}" "${BINDING_CLIS[@]}"
 	fi
 fi
-if [[ -n "${green_tree}" ]]; then
-	if [[ -s "${SHCL_GATE_SKIPS}" ]]; then
-		fEcho_Clean "tree not recorded for the pre-push hook, since this run skipped: $(sort -u "${SHCL_GATE_SKIPS}" | paste -sd ' ')"
-	elif "${here}/utility/green-tree.bash" record "${root}" "${green_tree}"; then
-		fEcho "OK: tree ${green_tree:0:12} recorded; a push of it skips the pre-push gate"
-	fi
-fi
-
 ## Stage 5: profiler. Non-gating artifact, not a pass/fail test: an optimized
 ## build with symbols runs a heavy workload under an in-process sampler (kernel
 ## perf is locked down on this box) and writes a flamegraph SVG, gfs-rotated like
@@ -485,6 +477,16 @@ for c in "${CROSS_CHECKS[@]}"; do
 	eval "${c_cmd}" || fDie "cross check failed: ${c_label}"
 	fEcho "OK: ${c_label}"
 done
+## The record waits for the cross checks, the last gate a --ci run has. It sat at
+## the end of stage 4 once they moved under --ci, so a run that then failed one
+## had already let its tree through the hook.
+if [[ -n "${green_tree}" ]]; then
+	if [[ -s "${SHCL_GATE_SKIPS}" ]]; then
+		fEcho_Clean "tree not recorded for the pre-push hook, since this run skipped: $(sort -u "${SHCL_GATE_SKIPS}" | paste -sd ' ')"
+	elif "${here}/utility/green-tree.bash" record "${root}" "${green_tree}"; then
+		fEcho "OK: tree ${green_tree:0:12} recorded; a push of it skips the pre-push gate"
+	fi
+fi
 if ((${#RELEASE_NATIVE_CMD[@]})); then
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
@@ -655,3 +657,4 @@ fEcho_Clean
 ##		- 2026-09-19 JC: Clears git's local environment first, so GIT_DIR from a hook run in a linked worktree cannot reach the gates' scratch repos.
 ##		- 2026-09-21 JC: CPU_CAP set by the caller wins, so a runner with nothing else on it can use every core.
 ##		- 2026-09-22 JC: The profiler stage runs the config's attribution check before it draws a graph.
+##		- 2026-09-23 JC: The record waits for the cross checks, and --no-cross holds it back.

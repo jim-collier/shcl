@@ -199,6 +199,8 @@ public:
 	// read on the same document.
 	shcl_doc *c() const noexcept { return d_.get(); }
 
+	// A parse never fails on the document's account: bad lines are skipped and
+	// diagnosed.
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 	// Parse with resource caps (E020 stops the parse past max_nodes, E021
@@ -289,6 +291,7 @@ public:
 	static void suppress_declared_repeats(const Document &schema, Document &doc) { shcl_suppress_declared_repeats(schema.d_.get(), doc.d_.get()); }
 	static void suppress_declared_reopens(const Document &schema, Document &doc) { shcl_suppress_declared_reopens(schema.d_.get(), doc.d_.get()); }
 
+	// True when a strict load would fail: strict, and an error diagnostic exists.
 	bool strict_failed() const { return shcl_strict_failed(d_.get()) != 0; }
 	Strictness strictness() const { return static_cast<Strictness>(shcl_strictness_of(d_.get())); }
 	// The canonical text lives in the read arena like every other result, so
@@ -296,6 +299,7 @@ public:
 	// holds every copy until the Document goes.
 	std::string to_canonical() const { shcl_reads_release(d_.get()); return to_str(shcl_to_canonical(d_.get())); }
 
+	// Diagnostics in emission order: parse-time ones, then repeated-leaf hints.
 	std::vector<Diagnostic> diagnostics() const {
 		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_.get());
 		v.reserve(n);
@@ -359,17 +363,21 @@ public:
 		return {std::move(s), ok != 0};
 	}
 
+	// Instance count at a path (0 when nothing matches).
 	std::size_t count(std::string_view p) const { return shcl_count(d_.get(), p.data(), p.size()); }
-	// Every field path, file order, deduplicated (bare-name-safe segments only).
-	// Quote one path segment for splicing into a lookup path (injection-safe).
+
 	// Each read below hands back the previous one's core memory first: the
 	// veneer copies every result into owned std types, so the arena behind it is
 	// dead as soon as the copy is made, and a long-lived Document stays flat
 	// instead of holding every result until it is destroyed. The one thing to
 	// know when mixing APIs: a shcl_str taken from the C core on the same handle
 	// does not survive the next veneer read.
+
+	// Quote one path segment for splicing into a lookup path (injection-safe).
 	std::string quote_segment(std::string_view name) const { shcl_reads_release(d_.get()); return to_str(shcl_quote_segment(d_.get(), name.data(), name.size())); }
 
+	// Every field path, file order, deduplicated. A segment that is not
+	// bare-name-safe comes back quoted, so each path reads back as a lookup.
 	std::vector<std::string> paths() const {
 		shcl_reads_release(d_.get());
 		shcl_str *v; std::size_t n = shcl_paths(d_.get(), &v);
@@ -378,6 +386,7 @@ public:
 		return r;
 	}
 
+	// Instance display values at a path, in file order.
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_reads_release(d_.get());
 		shcl_str *a; std::size_t n = shcl_instances(d_.get(), p.data(), p.size(), &a);
@@ -502,6 +511,7 @@ public:
 		return v;
 	}
 
+	// Typed reads: the value and why it is missing or unreadable, if it is.
 	Read<int64_t> read_int(std::string_view p) const { auto r = shcl_read_int(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<double> read_float(std::string_view p) const { auto r = shcl_read_float(d_.get(), p.data(), p.size()); return {r.value, st(r.status)}; }
 	Read<bool> read_bool(std::string_view p) const { auto r = shcl_read_bool_(d_.get(), p.data(), p.size()); return {r.value != 0, st(r.status)}; }

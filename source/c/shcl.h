@@ -319,6 +319,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 // bytes may contain NUL - never hand them to a strlen-based API.
 shcl_str shcl_to_canonical(shcl_doc *d);
 
+// Instance count at a path (0 when nothing matches).
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen);
 // Instance display values, in file order. Writes an arena-owned array to *out.
 size_t shcl_instances(shcl_doc *d, const char *path, size_t plen, shcl_str **out);

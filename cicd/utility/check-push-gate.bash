@@ -245,7 +245,8 @@ BUILD_CMD=(true); BUILD_EXTRA=()
 LINT_CMD=(true); LINT_EXTRA=(); SHELLCHECK_TARGETS=()
 TEST_CMD=(true); TEST_QUICK_CMD=(true)
 TEST_EXTRA=('if [[ -n "${STUB_SKIP:-}" ]]; then echo stub >> "${SHCL_GATE_SKIPS}"; fi' 'echo "${GIT_DIR:-unset}" > "${STUB_GITDIR:-/dev/null}"')
-BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); CROSS_CHECKS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
+CROSS_CHECKS=('stub|[[ -z "${STUB_CROSS_FAIL:-}" ]]')
+BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
 DOGFOOD_FIXED_DESTS=(); GIT_PUBLISH=(); RELEASE_NATIVE_CMD=()
 CFG
 { git -C "${eng}" add --all && git -C "${eng}" commit -q -m base; } || { echo "check-push-gate: engine repo commit failed" >&2; exit 2; }
@@ -268,6 +269,12 @@ fEngine -- --ci --no-fmt
 ((engRc == 0 && engRecorded == 0)) || fail "a run with the format check left out: exit ${engRc}, recorded ${engRecorded}"
 fEngine STUB_SKIP=1 -- --ci
 ((engRecorded == 0)) || fail "a run whose gate noted a skip recorded its tree"
+## 20260923 item 1: the cross checks are the last gate, so a run failing one
+## records nothing, and a run leaving them out is partial.
+fEngine STUB_CROSS_FAIL=1 -- --ci
+((engRc != 0 && engRecorded == 0)) || fail "a run failing a cross check: exit ${engRc}, recorded ${engRecorded}"
+fEngine -- --ci --no-cross
+((engRc == 0 && engRecorded == 0)) || fail "a run with the cross checks left out: exit ${engRc}, recorded ${engRecorded}"
 ## 20260918b item 2: a direct run with GIT_DIR exported clears it too.
 fEngine GIT_DIR="${eng}/.git" STUB_GITDIR="${work}/eng.gitdir" -- --ci
 [[ "$(cat "${work}/eng.gitdir" 2>/dev/null || true)" == unset ]] \

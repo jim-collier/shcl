@@ -87,6 +87,8 @@ Usage:
                                          it would change with --check)
   shcl tokens FILE                       each line's lexical spans, for seeing
                                          why the parser read a line as it did
+                                         (every line on its own, raw bodies
+                                         included)
   shcl explain [CODE]                    what a diagnostic code means (every
                                          code, one line each, when CODE is
                                          left out)
@@ -145,10 +147,10 @@ Options (the subcommands each belongs to are in parentheses):
                                          it those are left alone and migrate
                                          exits 7
   --check                                (fmt/migrate) print nothing and exit 6
-                                         when a rewrite would change the file,
-                                         or 7 when --write would refuse it;
-                                         migrate names each line it would
-                                         change on stderr
+                                         when fmt would change the file or
+                                         migrate would rewrite a line (named on
+                                         stderr), or 7 when --write would
+                                         refuse it
   --strictness=loose|standard|strict     (get/set/fmt/check/count/instances/
                                          children/paths) or 1|2|3 (default
                                          standard)

@@ -128,4 +128,20 @@ func TestArenaSizedToTheDocument(t *testing.T) {
 	if cap(doc.arena) > 2*len(doc.arena) {
 		t.Fatalf("sparse: %d nodes in an arena of %d", len(doc.arena), cap(doc.arena))
 	}
+	// The sparse case never reaches the trim, since the count already skips
+	// its lines. Refused lines are counted and make no node, so these do.
+	doc = Parse("a: 1\n" + strings.Repeat(": x\n", 20000))
+	if cap(doc.arena) > 2*len(doc.arena) {
+		t.Fatalf("refused: %d nodes in an arena of %d", len(doc.arena), cap(doc.arena))
+	}
+	// A raw body makes no node either, and the trim would hide one counted,
+	// since what it costs is the peak before the trim.
+	for _, raw := range []string{
+		"a: 1\nb: ```\n" + strings.Repeat("\tbody: x\n", 20000) + "```\n",
+		"a: 1\nb:\n\t~~~~ sql\n" + strings.Repeat("\t~~~\n", 20000) + "\t~~~~\nc: 2\n",
+	} {
+		if n := trimCountingNodeLines(strings.Split(raw, "\n")); n > 4 {
+			t.Fatalf("a raw body counted as %d node lines", n)
+		}
+	}
 }
