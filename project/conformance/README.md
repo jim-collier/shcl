@@ -305,6 +305,8 @@ Case `140` pins where a comment inside a block goes when the block has children.
 
 Case `141` pins the order of a fold inside a fold. The second `x` fills from a fence and folds into the first, and inside it the second `a` does the same to the first `a`. Each `a` has a trailing comment, and so does the surviving one. The two demoted comments come out as `# A` then `# B`. Folding the inner pair before the outer one gives them the other way round.
 
+Case `142` pins a comment left above a block's later instance. `# c` follows `p` at `p`'s level, and then `m` opens again and adds `s`. A reload of the canonical text files `# c` on `s`, so the load does too, and the merged golden has it just above `s`. Left on `p`, it went after `p` at the end of `m`, while the canonical form merged with it above `s`.
+
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 
 Not yet modeled natively (as golden files): the on-bad/default outputs (covered cross-binding via the harness above, not by per-row `expected`). Diagnostic expectations are modeled natively via `expected-diags.txt` (above) and cross-binding via the `load` rows.

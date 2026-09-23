@@ -86,13 +86,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- 🔘 A layer merges differently from its canonical form when a comment sits between two instances of a block.
-	- Reproduced: in Rust, on `dev` as well. Base `m:` with `\ts: 3` under it. The layer is `m:`, `\tp: 1`, `\t# c`, then `m:` again with `\ts: 3`. Merged as written, `# c` comes out after `p`, at the end of `m`. Merged after `fmt`, it comes out above `s`.
-	- Cause: the load files `# c` after `p`. The canonical form writes it just above the reopened block's `s`, and a reload files it as `s`'s leading comment. `s` matches the base's `s`, so the two merges put it in different places.
-	- Note: a comment moves, nothing is lost. The same class as the inside-comment item of 20260921, in reverse.
-	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 412,493, past the gate's 200,000, once corpus case 141 shifted the seeds. The reduced inputs are kept with the private notes, under `fuzz-20260923`.
-	- Opened: 20260923-102629
-
 - Code review 20260922:
 
 	- A review against the directives' code style and performance sections. It picks up where 20260921 stopped: Rust, Python, C and C++, and measured performance across the four bindings. It also covers everything merged since that round's base (`f85a0d2`), in every language and script, which is the last round's own fixes with no soak time. Five sweeps, one area each.
@@ -211,6 +204,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ A layer merges differently from its canonical form when a comment sits between two instances of a block.
+	- Reproduced: in Rust, on `dev` as well. Base `m:` with `\ts: 3` under it. The layer is `m:`, `\tp: 1`, `\t# c`, then `m:` again with `\ts: 3`. Merged as written, `# c` comes out after `p`, at the end of `m`. Merged after `fmt`, it comes out above `s`.
+	- Cause: the load files `# c` after `p`. The canonical form writes it just above the reopened block's `s`, and a reload files it as `s`'s leading comment. `s` matches the base's `s`, so the two merges put it in different places.
+	- Note: a comment moves, nothing is lost. The same class as the inside-comment item of 20260921, in reverse.
+	- Note: found by `merge_never_panics_and_stays_fixpoint` at iteration 412,493, past the gate's 200,000, once corpus case 141 shifted the seeds. The reduced inputs are kept with the private notes, under `fuzz-20260923`.
+	- Fixed: once the tree is final, a non-last child's comments at its own level move onto the next sibling's leading list, from the first one at that level on. `after_to_next_sibling` in Rust and C, `afterToNextSibling` in Go, `_after_to_next_sibling` in Python.
+	- Pinned by: corpus case `142-comment-before-reopened`, whose merged golden has the comment just above `s`. The old C runner fails its merge dimension.
+	- Note: the 2,000,000 fuzz is clean on both seed sets, with case 142 and without it.
+	- Opened: 20260923-102629
+	- Closed: 20260923-1135
 
 - ✅ A malformed line kept as trivia is lost when its block folds into an earlier instance at the end of the load.
 	- Reproduced: in all four, on the old code as well. `"q.k": 3`, then `"q.k":` with `\t* 3` under it and two `\t\t*: 6` style lines (`E013`) under that. The stacked list makes the second instance `3`, which folds into the first, and neither `E013` line is written back. `check` reports them, the lost count stays 0, so `fmt --write` drops them at exit 0. A comment in the same place is lost the same way.

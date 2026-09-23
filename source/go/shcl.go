@@ -2381,6 +2381,34 @@ func (p *parser) insideToLastChild() {
 	}
 }
 
+// afterToNextSibling: a block reopened later in the file gains children after
+// the one that was last, and that child's comments at its own level now sit
+// right above a sibling, where a reload files them as the sibling's leading
+// ones. Move them there, from the first one at that level on, which is where
+// a reload splits the run.
+func (p *parser) afterToNextSibling() {
+	for n := range p.arena {
+		kids := p.arena[n].children
+		for i := 1; i < len(kids); i++ {
+			t := p.arena[kids[i-1]].trivia
+			if t == nil {
+				continue
+			}
+			at := 0
+			for at < len(t.after) && t.after[at].depth != 0 {
+				at++
+			}
+			if at == len(t.after) {
+				continue
+			}
+			nt := p.arena[kids[i]].trivMut()
+			moved := make([]lead, 0, len(t.after)-at+len(nt.leading))
+			nt.leading = append(append(moved, t.after[at:]...), nt.leading...)
+			t.after = t.after[:at:at]
+		}
+	}
+}
+
 // foldLateDups: a value that mutates after its sibling group was keyed - an
 // empty field filled by a fence, a stacked list closed - can land on a key an
 // earlier sibling already holds, which the keyed lookup can no longer catch.
@@ -3326,6 +3354,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	p.hangDeeperPending("")
 	p.foldLateDups()
 	p.insideToLastChild()
+	p.afterToNextSibling()
 	p.emitRepeatedLeafHints()
 	orphans := make([]lead, 0, len(p.pending))
 	var chain []depthEnt
