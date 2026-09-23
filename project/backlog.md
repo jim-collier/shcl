@@ -252,37 +252,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: 2026-07 to 2026-09.
 		- Opened: 20260922-120717
 
-	- 🔘 Idea 10: the C header falls short of three of the C rules added to the directives on 2026-09-19.
-		- Note: `sprintf`, `strcpy`, `wcscpy` and `wcscat` at seven sites. Each is bounded by construction, so nothing can overflow, but the rule says never.
-		- Note: one `goto` that is not a cleanup unwind, in the windows `shcl_resolve_target`.
-		- Note: `shcl_narrow`, `shcl_widen` and `shcl_backup_name` allocate without saying who frees.
-		- Origin: 2026-07-13 to 2026-09-19, all before the rules.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 11: the C builds could gate on `-Wshadow`, `-Wvla`, `-Wconversion` and `-Wsign-conversion`, since the tree nearly takes them now.
-		- Measured: gcc 14, gcc 15 and clang 19 give one `-Wshadow` warning in `shcl.h`, in `generate_in`'s rank loop, and two in `conformance.c`. Nothing else.
-		- Note: rename the three locals, then add the flags in `config.bash` and `check-c-compilers.bash`.
-		- Origin: the directive's C section, 2026-09-19.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 12: Python's typed reads come back as `Any`.
-		- Note: `Read.value` is `Any`, where Rust and Go carry the element type. Under `mypy --strict` that makes 34 `get_*` calls return `Any`. Six private helpers with no return hint make 32 more public calls return `Any`. `Piece.__eq__` and `__repr__` have no hints at all.
-		- Note: a generic `Read` costs nothing at run time.
-		- Origin: `68ba5ab` (2026-07-21) and `d78cb8b` (2026-08-29).
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 13: two Rust style rules each miss a spot or two.
-		- Note: `Migration` is the one public type without `Debug`.
-		- Note: `diag_value`, `desc` and `emit_value_inline` end on a `_` arm that stands for two named variants.
-		- Origin: `7040ab7` (2026-09-16) and earlier.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 14: small Python consistency gaps.
-		- Note: the last round added `_remove_quietly` and moved one site to it, but two older `try: os.remove` blocks still spell it out, one in the same function.
-		- Note: twelve loops build a list one append at a time where `extend` or a comprehension fits on one line, and `do_explain` builds its text with `+=`.
-		- Origin: `9db870a` (2026-09-21) for the helper, and 2026-07 to 2026-09 for the loops.
-		- Opened: 20260922-120717
-
 ### Done
 
 #### Done - Bugs
@@ -5134,6 +5103,54 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260922:
+
+	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 10: the C header falls short of three of the C rules added to the directives on 2026-09-19.
+		- Note: `sprintf`, `strcpy`, `wcscpy` and `wcscat` at seven sites. Each is bounded by construction, so nothing can overflow, but the rule says never.
+		- Note: one `goto` that is not a cleanup unwind, in the windows `shcl_resolve_target`.
+		- Note: `shcl_narrow`, `shcl_widen` and `shcl_backup_name` allocate without saying who frees.
+		- Fixed: `f64_neighbor` copies with `memcpy`, `shcl_datetime_str` and the temp name use `snprintf` against their buffers, and the windows prefix is built with `wmemcpy`. The `goto` became an `else` arm. `shcl_widen` and `shcl_backup_name` now say the caller frees; `shcl_narrow` already did.
+		- Pinned by: nothing new. The conformance suite, `mem_bounds`, `oom_hook` and `oom_recover` pass, and the windows build saved a new file, an existing one, a `\\?\` path and a path past `MAX_PATH` under wine.
+		- Origin: 2026-07-13 to 2026-09-19, all before the rules.
+		- Opened: 20260922-120717
+		- Closed: 20260922-190014
+
+	- ✅ Idea 11: the C builds could gate on `-Wshadow`, `-Wvla`, `-Wconversion` and `-Wsign-conversion`, since the tree nearly takes them now.
+		- Measured: gcc 14, gcc 15 and clang 19 give one `-Wshadow` warning in `shcl.h`, in `generate_in`'s rank loop, and two in `conformance.c`. Nothing else.
+		- Note: rename the three locals, then add the flags in `config.bash` and `check-c-compilers.bash`.
+		- Fixed: the three locals are renamed, and eight more in `mem_bounds.c` and `oom_hook.c` that the review did not build. The four flags are on every Linux C build in `config.bash` and `check-c-compilers.bash`. The mingw check takes `-Wshadow -Wvla` only, since its `isfinite` and `isnan` macros trip `-Wconversion`.
+		- Pinned by: `check-c-compilers.bash`, 80 builds on gcc 12 to 15 and clang. With the `shcl.h` shadow put back it failed 75 of them.
+		- Origin: the directive's C section, 2026-09-19.
+		- Opened: 20260922-120717
+		- Closed: 20260922-190014
+
+	- ✅ Idea 12: Python's typed reads come back as `Any`.
+		- Note: `Read.value` is `Any`, where Rust and Go carry the element type. Under `mypy --strict` that makes 34 `get_*` calls return `Any`. Six private helpers with no return hint make 32 more public calls return `Any`. `Piece.__eq__` and `__repr__` have no hints at all.
+		- Note: a generic `Read` costs nothing at run time.
+		- Fixed: `Read` is `Generic[T]`, and the read tier returns `Read[int]`, `Read[list[str]]` and so on. The six helpers and `Piece` have hints. `mypy --strict` goes from 66 `no-any-return` to 3, all inside the module, and a consumer file sees `int` and `list[str]`.
+		- Measured: `Read` still has no `__dict__`, and 200,000 `read_int` calls took the same time.
+		- Origin: `68ba5ab` (2026-07-21) and `d78cb8b` (2026-08-29).
+		- Opened: 20260922-120717
+		- Closed: 20260922-190014
+
+	- ✅ Idea 13: two Rust style rules each miss a spot or two.
+		- Note: `Migration` is the one public type without `Debug`.
+		- Note: `diag_value`, `desc` and `emit_value_inline` end on a `_` arm that stands for two named variants.
+		- Fixed: `Migration` derives `Debug`, and the three arms name `Value::Empty | Value::Raw(_)`.
+		- Origin: `7040ab7` (2026-09-16) and earlier.
+		- Opened: 20260922-120717
+		- Closed: 20260922-190014
+
+	- ✅ Idea 14: small Python consistency gaps.
+		- Note: the last round added `_remove_quietly` and moved one site to it, but two older `try: os.remove` blocks still spell it out, one in the same function.
+		- Note: twelve loops build a list one append at a time where `extend` or a comprehension fits on one line, and `do_explain` builds its text with `+=`.
+		- Fixed: both removes go through `_remove_quietly`. Nine library loops and three CLI loops use `extend` or a comprehension, and `do_explain` joins a list. `explain` output is unchanged against the Rust CLI, and `cli-regress.bash` passes.
+		- Origin: `9db870a` (2026-09-21) for the helper, and 2026-07 to 2026-09 for the loops.
+		- Opened: 20260922-120717
+		- Closed: 20260922-190014
 
 - Code review 20260921:
 

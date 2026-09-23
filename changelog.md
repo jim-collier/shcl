@@ -52,6 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Python's `Read` is generic, so a type checker sees `read_int(...).value` as an `int` and `get_string_array` as a `list[str]`, the way Rust and Go already typed them. It used to be `Any`. Nothing changes at run time.
+
 - The project moved to <https://github.com/yottacore/shcl>. Old `jim-collier/shcl` links, clones and release downloads redirect there. The Go module path moves with it, so Go imports change from `github.com/jim-collier/shcl/...` to `github.com/yottacore/shcl/...`. The `Home` and `Syntax` links in the info block that `init` and a creating `set --write` put at the foot of a new file point at the new address.
 
 - The float formatter is `format_float` in every binding, which is what Go and Python already called it. Rust's `format_f64` and C's `shcl_format_f64` are gone, and C's `SHCL_F64_BUF` is `SHCL_FLOAT_BUF`. A name in a cross-binding contract should not be spelled after one language's type. Rust's zone enum is `Zone` rather than `ZoneSpec` for the same reason: Go, Python and C all say zone.

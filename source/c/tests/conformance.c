@@ -539,7 +539,7 @@ int main(int argc, char **argv) {
 		{
 			size_t ndiag = shcl_diag_count(d), nlost = shcl_lost_count(d), nerr = shcl_error_count(d);
 			shcl_strictness st = shcl_strictness_of(d);
-			char *canon = (char *)xrealloc(NULL, got.n + 1); memcpy(canon, got.p, got.n); size_t cn = got.n;
+			char *canon = (char *)xrealloc(NULL, got.n + 1); memcpy(canon, got.p, got.n); size_t canon_n = got.n;
 			char *dj = xrealloc(NULL, 64); size_t jl = 0, jc = 64;
 			for (size_t i = 0; i < ndiag; i++) {
 				shcl_str m = shcl_diag_message(d, i);
@@ -558,7 +558,7 @@ int main(int argc, char **argv) {
 				kl += (size_t)w + m.n + 1;
 			}
 			shcl_str after = shcl_to_canonical(d);
-			if (after.n != cn || (cn && memcmp(after.p, canon, cn) != 0)) fail(names[ci], "compaction changed the canonical output");
+			if (after.n != canon_n || (canon_n && memcmp(after.p, canon, canon_n) != 0)) fail(names[ci], "compaction changed the canonical output");
 			free(canon); free(dj);
 		}
 		shcl_free(d);
@@ -604,8 +604,8 @@ int main(int argc, char **argv) {
 					free(joined); shcl_free(rd); continue;
 				}
 				if (!strcmp(kind, "children")) {
-					shcl_str *names; size_t n = shcl_children(rd, query, qn, &names);
-					char *joined = join_pipe(names, n);
+					shcl_str *kids; size_t n = shcl_children(rd, query, qn, &kids);
+					char *joined = join_pipe(kids, n);
 					if (strcmp(joined, exp)) fail(at, "children mismatch");
 					free(joined); shcl_free(rd); continue;
 				}

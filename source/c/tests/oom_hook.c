@@ -231,10 +231,10 @@ int main(void) {
 		}
 		if (!reached_end) { fprintf(stderr, "FAIL oom_hook: load_and_validate did not finish inside 4000 allocations\n"); failures++; }
 		reached_end = 0;
-		const char *wide = "a: 1\n# c\nb:\n\tc: [x]\n\td: 2, 3\nbad line\n";
+		const char *mixed = "a: 1\n# c\nb:\n\tc: [x]\n\td: 2, 3\nbad line\n";
 		for (long k = 1; k < 4000 && !reached_end; k++) {
 			long before = live_blocks;
-			shcl_doc *d = shcl_parse(wide, strlen(wide));
+			shcl_doc *d = shcl_parse(mixed, strlen(mixed));
 			shcl_str c0 = shcl_to_canonical(d);
 			char *was = (char *)malloc(c0.n + 1);
 			memcpy(was, c0.p, c0.n);

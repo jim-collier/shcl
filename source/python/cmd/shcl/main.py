@@ -846,9 +846,7 @@ def load_layered_from(o, file, given):
 	# creates a file or takes an empty document, and FILE's text handed back.
 	# `set` kept its own copy of the fold, and twice a fix to this one missed
 	# it. Returns (doc, text, None) or (None, "", code).
-	texts = []
-	for lf in o.layers:
-		texts.append(read_input(lf))
+	texts = [read_input(lf) for lf in o.layers]
 	texts.append(read_input(file) if given is None else given)
 	# Lowest layer first, each labelled with its own file when there is more than
 	# one: the line numbers share a space on the screen otherwise, and two layers
@@ -1368,11 +1366,8 @@ def code_heads():
 
 def do_explain(o):
 	if not o.args:
-		body = "Diagnostic codes:\n\n"
-		for h in code_heads():
-			body += code_line(h) + "\n"
-		body += "\n'shcl explain CODE' has the rule behind one of them.\n"
-		sys.stdout.write("\n" + body + "\n")
+		heads = "".join(code_line(h) + "\n" for h in code_heads())
+		sys.stdout.write("\nDiagnostic codes:\n\n" + heads + "\n'shcl explain CODE' has the rule behind one of them.\n\n")
 		return 0
 	if len(o.args) > 1:
 		sys.stderr.write("usage: shcl explain [CODE] (see --help)\n")
@@ -1380,7 +1375,7 @@ def do_explain(o):
 	code = _ascii_upper(o.args[0])
 	# The entry runs from its head line to the next one. Built up first, since a
 	# code the table does not carry prints nothing at all.
-	body = ""
+	body = []
 	found = False
 	for line in CODES.rstrip("\n").split("\n"):
 		if not line.startswith(" "):
@@ -1388,17 +1383,17 @@ def do_explain(o):
 				break
 			found = line.split("|", 1)[0] == code
 			if found:
-				body += code_line(line) + "\n"
+				body.append(code_line(line))
 			continue
 		if found:
-			body += line + "\n"
+			body.append(line)
 	if not found:
 		names = [h.split("|", 1)[0] for h in code_heads()]
 		sys.stderr.write(
 			f"unknown diagnostic code: {code}{suggest(names, code)} (shcl explain lists them all)\n"
 		)
 		return 1
-	sys.stdout.write("\n" + body + "\n")
+	sys.stdout.write("\n" + "\n".join(body) + "\n\n")
 	return 0
 
 
@@ -1445,8 +1440,7 @@ def do_tokens(o):
 			shcl.tokenize_value(rest, lead + int(star), shcl.RULES_CURRENT, tok)
 			out.append(" star" if star else " fence")
 			out.append(f" value={tok.value[0]}-{tok.value[1]}")
-			for p in tok.elements:
-				out.append(f" elem={_span(p)}")
+			out.extend(f" elem={_span(p)}" for p in tok.elements)
 			if tok.comment is not None:
 				out.append(f" comment={tok.comment}")
 			out.append("\n")
@@ -1458,8 +1452,7 @@ def do_tokens(o):
 				out.append(f" sel={_span(seg.selector)}")
 		if tok.sep is not None:
 			out.append(f" sep={tok.sep} value={tok.value[0]}-{tok.value[1]}")
-			for p in tok.elements:
-				out.append(f" elem={_span(p)}")
+			out.extend(f" elem={_span(p)}" for p in tok.elements)
 		if tok.comment is not None:
 			out.append(f" comment={tok.comment}")
 		if tok.fault is not None:

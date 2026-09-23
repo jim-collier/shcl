@@ -117,7 +117,7 @@ New bindings (Tier 3) follow the same recipe: port the reference function-for-fu
 
 ### C (and the C++ veneer)
 
-- C11, single header, STB-style (`#define SHCL_IMPLEMENTATION` in one TU). The gate is `-Wall -Wextra -Werror` plus cppcheck.
+- C11, single header, STB-style (`#define SHCL_IMPLEMENTATION` in one TU). The gate is `-Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror` plus cppcheck.
 
 - Memory model: one bump arena per document, `shcl_free` frees everything, no per-object ownership. Raw pointers are fine here - this is C working as designed, not a RAII gap. The one exception is the node vector, which lives in malloc/realloc storage: a bump arena cannot reclaim the abandoned half of each doubling, and the node array is the biggest thing that doubles.
 

@@ -145,7 +145,7 @@ GitHub CI runs on pushes to `main`, on pull requests, and by hand from the Actio
 
 - Python 3.9+ - the binding and its tests are stdlib-only.
 
-- C - gcc and g++; the build gate is a plain `-std=c11 -Wall -Wextra -Werror` compile.
+- C - gcc and g++; the build gate is a `-std=c11 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror` compile.
 
 - PowerShell 7+ - required: the lint stage runs PSScriptAnalyzer through `pwsh` on every run, including `--ci`.
 

@@ -72,7 +72,7 @@ compilers=("${kept[@]}")
 fBuild(){  ## fBuild CC OPT SRC [FLAG...]
 	local cc="$1" opt="$2" src="$3" out
 	shift 3
-	if ! out="$("${cc}" -std=c11 "${opt}" "$@" -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+	if ! out="$("${cc}" -std=c11 "${opt}" "$@" -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -I"${repoDir}/source/c" \
 		"${repoDir}/${src}" -o "${tmpDir}/out.${BASHPID}" -lm -lpthread 2>&1)"; then
 		echo "check-c-compilers: ${cc} ${opt} ${*:+$* }refuses ${src}:" >&2
 		## Not a pipe: head quits after 8 lines, and under pipefail the writer's
@@ -85,7 +85,7 @@ fBuild(){  ## fBuild CC OPT SRC [FLAG...]
 
 fRefuse(){  ## fRefuse CC SRC WANT - a build that must fail, and fail saying WANT
 	local cc="$1" src="$2" want="$3" out
-	if out="$("${cc}" -std=c11 -O2 -Wall -Wextra -Werror -I"${repoDir}/source/c" \
+	if out="$("${cc}" -std=c11 -O2 -Wall -Wextra -Wshadow -Wvla -Wconversion -Wsign-conversion -Werror -I"${repoDir}/source/c" \
 		"${src}" -o "${tmpDir}/out.${BASHPID}" -lm -lpthread 2>&1)"; then
 		echo "check-c-compilers: ${cc} accepted ${src##*/}, which must not compile" >&2
 		return 1

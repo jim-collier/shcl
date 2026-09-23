@@ -1491,6 +1491,7 @@ fn strip_common<'a>(line: &'a str, common: &str) -> &'a str {
 // ---------------------------------------------------------------------------
 
 /// What `migrate` produced, and what it could not carry across.
+#[derive(Debug)]
 pub struct Migration {
 	pub text: String,
 	/// The file already names its format, so there was nothing to migrate and
@@ -3765,7 +3766,7 @@ fn diag_element(e: &Element) -> String {
 fn diag_value(v: &Value) -> String {
 	match v {
 		Value::Cell(els) => els.iter().map(diag_element).collect::<Vec<_>>().join(", "),
-		_ => v.display(),
+		Value::Empty | Value::Raw(_) => v.display(),
 	}
 }
 
@@ -7218,7 +7219,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 								.collect::<Vec<_>>()
 								.join(", "),
 						),
-						_ => None,
+						Value::Empty | Value::Raw(_) => None,
 					};
 				}
 			}
@@ -7372,7 +7373,7 @@ fn parse_field(schema: &Document, f: usize, faults: &mut Vec<Diagnostic>) -> Opt
 fn emit_value_inline(v: &Value) -> Option<String> {
 	match v {
 		Value::Cell(els) => Some(emit_cell(els)),
-		_ => None,
+		Value::Empty | Value::Raw(_) => None,
 	}
 }
 
