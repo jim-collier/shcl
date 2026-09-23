@@ -86,6 +86,18 @@ static void soup_fail(const char *msg, int kind, const char *in, size_t n) {
 	fprintf(stderr, ")\n");
 	nfail++;
 }
+/* One setter of the round-trip fixture, by number, so the shared document
+   takes exactly what the one-off did. */
+static int soup_set(shcl_doc *d, int kind, const char *p, size_t pn, const char *in, size_t inn) {
+	switch (kind) {
+	case 0: return shcl_set_string(d, p, pn, in, inn);
+	case 1: return shcl_set_literal(d, p, pn, in, inn);
+	case 2: return shcl_set_comment(d, p, pn, in, inn);
+	case 3: return shcl_set_raw(d, p, pn, in, inn, "t", 1);
+	case 4: return shcl_set_raw(d, p, pn, "body", 4, in, inn);
+	default: { const char *av[2]; size_t al[2]; av[0] = "x"; al[0] = 1; av[1] = in; al[1] = inn; return shcl_set_string_array(d, p, pn, av, al, 2); }
+	}
+}
 // Substring search over a length-delimited buffer (memmem is GNU-only).
 static int contains(const char *p, size_t n, const char *needle) {
 	size_t m = strlen(needle);
@@ -1970,9 +1982,14 @@ int main(int argc, char **argv) {
 	   touched, so for every input either the call refuses and the document is
 	   byte-identical, or the canonical text reloads to itself and the read
 	   gives the value back. Twelve review items were one setter's own trim,
-	   carriage-return or `#` rule disagreeing with the parser's. Same fixture
-	   in every runner. */
+	   carriage-return or `#` rule disagreeing with the parser's. Every
+	   accepted write also goes into one document that is saved and loaded back
+	   at the end, since the file tier checks what an in-memory reload does
+	   not: a setter once took bytes the save wrote and the next load refused.
+	   Same fixture in every runner. */
 	{
+		shcl_doc *every = shcl_parse("", 0);
+		size_t slot = 0;
 		/* The alphabet: every character that means something to the
 		   tokenizer, plus a blank the load trims and a no-break space it does
 		   not. Every string of one and two characters over it, and the empty
@@ -1987,14 +2004,10 @@ int main(int argc, char **argv) {
 				shcl_doc *sd = shcl_parse("k: 1\n", 5);
 				char before[SOUP_BUF]; size_t bn;
 				soup_text(sd, before, &bn);
-				int applied;
-				switch (kind) {
-				case 0: applied = shcl_set_string(sd, "k", 1, in, inn); break;
-				case 1: applied = shcl_set_literal(sd, "k", 1, in, inn); break;
-				case 2: applied = shcl_set_comment(sd, "k", 1, in, inn); break;
-				case 3: applied = shcl_set_raw(sd, "k", 1, in, inn, "t", 1); break;
-				case 4: applied = shcl_set_raw(sd, "k", 1, "body", 4, in, inn); break;
-				default: { const char *av[2]; size_t al[2]; av[0] = "x"; al[0] = 1; av[1] = in; al[1] = inn; applied = shcl_set_string_array(sd, "k", 1, av, al, 2); } break;
+				int applied = soup_set(sd, kind, "k", 1, in, inn);
+				if (applied) {
+					char sp[24]; int spn = snprintf(sp, sizeof sp, "k%zu", ++slot);
+					if (!soup_set(every, kind, sp, (size_t)spn, in, inn)) soup_fail("a slot refused what k took", kind, in, inn);
 				}
 				char text[SOUP_BUF]; size_t tn;
 				soup_text(sd, text, &tn);
@@ -2047,6 +2060,7 @@ int main(int argc, char **argv) {
 			char before[SOUP_BUF]; size_t bn;
 			soup_text(nd, before, &bn);
 			int wrote = shcl_set_string(nd, qp, qn, "v", 1);
+			if (wrote && !shcl_set_string(every, qp, qn, "v", 1)) soup_fail("the name was refused the second time", -1, in, inn);
 			char text[SOUP_BUF]; size_t tn;
 			soup_text(nd, text, &tn);
 			if (!wrote) {
@@ -2062,6 +2076,24 @@ int main(int argc, char **argv) {
 			}
 			shcl_free(nd);
 		}
+		char ef[288];
+		snprintf(ef, sizeof ef, "%s/shcl-setters-%ld.shcl", tmp_root(), (long)getpid());
+		if (shcl_save_file(every, ef) != SHCL_SAVE_OK) fail("setters_read_back", "every accepted write together would not save");
+		else {
+			shcl_file_status est;
+			shcl_doc *eb = shcl_load_file(ef, &est);
+			if (est != SHCL_FILE_CLEAN) fail("setters_read_back", "every accepted write together did not load clean");
+			else {
+				shcl_str et = shcl_to_canonical(every);
+				char *ec = xrealloc(NULL, et.n + 1); memcpy(ec, et.p, et.n);
+				shcl_str bt = shcl_to_canonical(eb);
+				if (bt.n != et.n || memcmp(bt.p, ec, et.n) != 0) fail("setters_read_back", "every accepted write together changed on a save and load");
+				free(ec);
+			}
+			shcl_free(eb);
+			remove(ef);
+		}
+		shcl_free(every);
 	}
 	edits_and_merges_match_a_reload();
 

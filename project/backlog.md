@@ -103,6 +103,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Three fuzz properties in all four bindings, each closing a class rather than a site. Whatever a setter accepts saves and loads back (item 2, 20260902 item 40). A merge or edit then save gives the same tree and comments as a reload of that text (item 3). A check in `check-docs.bash` that fails on a doc comment above the wrong declaration (item 22).
 		- Each fix names its twins in all four bindings on its sub-bullet.
 		- Then a review of this fix round's diff and its siblings only. No release-bar item means the cut goes.
+		- Done: all three properties, as of 2026-09-23. The doc-comment check came with part 1. The merge-or-edit property came with item 3. The setter property is the existing setter fixture in all four, with every accepted write also saved and loaded once. Go's soup gains a byte that is not UTF-8, the one input only Go can hold and refuse. It fails on item 2's bug put back.
 
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
 

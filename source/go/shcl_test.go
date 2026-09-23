@@ -2253,8 +2253,10 @@ func TestPathsEnumerationShape(t *testing.T) {
 
 // setterSoup is the alphabet the setter round-trip fixture draws from: every
 // character that means something to the tokenizer, plus a blank the load trims
-// and a no-break space it does not. Same fixture in every runner.
-var setterSoup = []string{"\"", "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\u00a0", "a"}
+// and a no-break space it does not. Same fixture in every runner, except the
+// last entry: a Go string can hold bytes that are not UTF-8, which Rust cannot
+// hold, Python refuses at save and C leaves to its caller.
+var setterSoup = []string{"\"", "'", "\\", "#", ",", "[", "]", "\r", "\n", " ", "\t", "\u00a0", "a", "\xff"}
 
 // soupInputs is every string of one and two characters over that alphabet, and
 // the empty string.
@@ -2274,27 +2276,39 @@ func soupInputs() []string {
 // the document is touched, so for every input either the call refuses and the
 // document is byte-identical, or the canonical text reloads to itself and the
 // read gives the value back. Twelve review items were one setter's own trim,
-// carriage-return or `#` rule disagreeing with the parser's. Same fixture in
-// every runner.
+// carriage-return or `#` rule disagreeing with the parser's. Every accepted
+// write also goes into one document that is saved and loaded back at the end,
+// since the file tier checks what an in-memory reload does not: a setter once
+// took bytes the save wrote and the next load refused. Same fixture in every
+// runner.
 func TestSettersWriteOnlyWhatReadsBack(t *testing.T) {
+	all := Parse("")
+	slot := 0
 	for _, s := range soupInputs() {
 		for kind := 0; kind < 6; kind++ {
 			doc := Parse("k: 1\n")
 			before := doc.ToCanonical()
-			applied := false
-			switch kind {
-			case 0:
-				applied = doc.SetString("k", s)
-			case 1:
-				applied = doc.SetLiteral("k", s)
-			case 2:
-				applied = doc.SetComment("k", s)
-			case 3:
-				applied = doc.SetRaw("k", s, "t")
-			case 4:
-				applied = doc.SetRaw("k", "body", s)
-			default:
-				applied = doc.SetStringArray("k", []string{"x", s})
+			set := func(d *Document, p string) bool {
+				switch kind {
+				case 0:
+					return d.SetString(p, s)
+				case 1:
+					return d.SetLiteral(p, s)
+				case 2:
+					return d.SetComment(p, s)
+				case 3:
+					return d.SetRaw(p, s, "t")
+				case 4:
+					return d.SetRaw(p, "body", s)
+				}
+				return d.SetStringArray(p, []string{"x", s})
+			}
+			applied := set(doc, "k")
+			if applied {
+				slot++
+				if !set(all, "k"+strconv.Itoa(slot)) {
+					t.Fatalf("slot %d refused what k took (setter %d, input %q)", slot, kind, s)
+				}
 			}
 			if !applied {
 				if doc.ToCanonical() != before {
@@ -2342,7 +2356,11 @@ func TestSettersWriteOnlyWhatReadsBack(t *testing.T) {
 		path := QuoteSegment(s)
 		doc := Parse("k: 1\n")
 		before := doc.ToCanonical()
-		if !doc.SetString(path, "v") {
+		applied := doc.SetString(path, "v")
+		if applied && !all.SetString(path, "v") {
+			t.Fatalf("the name %q was refused the second time", s)
+		}
+		if !applied {
 			if doc.ToCanonical() != before {
 				t.Fatalf("a refused name write changed the document (%q)", s)
 			}
@@ -2356,6 +2374,17 @@ func TestSettersWriteOnlyWhatReadsBack(t *testing.T) {
 		if r := back.ReadString(path); r.Value != "v" {
 			t.Fatalf("name %q did not read back:\n%s", s, text)
 		}
+	}
+	f := filepath.Join(t.TempDir(), "all.shcl")
+	if err := all.SaveFile(f); err != nil {
+		t.Fatalf("every accepted write together would not save: %v", err)
+	}
+	back, st := LoadFile(f)
+	if st != FileClean {
+		t.Fatalf("every accepted write together loaded %v", st)
+	}
+	if back.ToCanonical() != all.ToCanonical() {
+		t.Fatalf("every accepted write together changed on a save and load")
 	}
 }
 
