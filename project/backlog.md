@@ -112,13 +112,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: the record point is from 2026-09-14; the hole opened when 20260920 item 2 moved the cross checks under `--ci`. Not seen before. Confirmed.
 		- Opened: 20260923-145138
 
-	- 🔘 Item 2: Go's `SetRaw`, `SetComment` and `SetLiteral` accept invalid UTF-8, and the saved file then will not load.
-		- Reproduced: each returns ok, `SaveFile` returns nil, and `LoadFile` then gives `Unreadable`. Every CLI exits 8 on the file. `SetLiteral` refuses the same bytes in quotes and takes them bare.
-		- Cause: 20260902 item 40 put a UTF-8 gate on `SetString` and `SetStringArray` only.
-		- Note: Go only. Rust cannot hold such a string, Python refuses at save, and C's header defines its text as UTF-8, so a C caller passing bad bytes is misuse.
-		- Origin: `SetRaw` from 2026-07-25; the gate from 2026-09-02 left these out. A sibling of item 40. Confirmed.
-		- Opened: 20260923-145138
-
 	- 🔘 Item 3: comments are filed differently after a merge or an edit than after a reload of the same text.
 		- Reproduced, all four: three layers merged at once put a comment after the last child; merged in two steps it lands above the second. `fmt --layer=A2 --remove a.c B2` drops a comment at exit 0 that the same steps through a pipe keep. Two edits in one `set` and the same two in two runs place a comment differently.
 		- Cause: the end-of-load passes from the corpus 140 and 142 fixes run only after a parse. A merge, a new child and the writer's fold add children after a block's last one and never run them.
@@ -130,24 +123,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced, all four: `n: "a\nb", c` gives three lines for two elements, and under `--slots` one line has no status.
 		- Note: 20260920b item 26 fixed `instances` for this, since a script splitting on newlines miscounts. Each CLI already has the one-line helper.
 		- Origin: 2026-07-18 and 2026-09-02. The sibling of 20260920b item 26. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 5: Go's `ParseLimited` panics when the node cap is near `MaxInt` or below -2.
-		- Reproduced: `ParseLimited(text, Standard, math.MaxInt, 0, 0)` panics with `makeslice: cap out of range`. So do `MaxInt-1` and `-3`. The doc says 0 disables a cap and gives no range.
-		- Cause: the new reserve adds 2 to the cap before comparing, which overflows.
-		- Origin: `a134efe` (2026-09-22), the last round's idea 2. Regression. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 6: Go's arena reserve counts raw block bodies, so peak memory rises about 60 percent on documents with embedded blocks.
-		- Measured: 20,000 sections each with a 20-line block, 105 to 169 MB. One 500k-line block, about 100 to 165 MB. A 60 MB block, 1.47 to 2.32 GB, where Rust takes 1.04. Time unchanged. The flat 1M-key file still improves, 702 to 546 MB.
-		- Cause: the count takes every non-blank line not starting with `#` or `*`, fence and body lines included.
-		- Origin: `a134efe` (2026-09-22), idea 2, which measured only documents without blocks. Regression. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 7: `TestArenaSizedToTheDocument` passes with the arena trim removed.
-		- Reproduced: with the trim deleted the test still passes. A document of one 20,000-line raw block fails it.
-		- Cause: its sparse case uses only comment, blank and `*` lines, which the count already skips, so the trim never runs.
-		- Origin: `a134efe` (2026-09-22). Regression in the test. Confirmed.
 		- Opened: 20260923-145138
 
 	- 🔘 Item 8: on Windows, the C binding creates and deletes a file when it reads through a dangling symlink.
@@ -179,12 +154,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced, all four: `a:` then `\t* ` gives `fault=0:expected a field name`, while `check` gives `E009 empty list element`. `*\t` and `*\r` do the same.
 		- Cause: `tokens` decides on the star after trimming the trailing blanks, and the parser decides before.
 		- Origin: 2026-09-10. Not seen before. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 13: the help and man page say `migrate --check` exits 6 when a rewrite would change the file, but a file that only gains the Format line exits 0.
-		- Reproduced, all four: on `x: 1`, `--check` exits 0, and `--write` then appends the stamp and exits 0.
-		- Note: `design.md` and `spec.md` say 6 means a line to rewrite, which is what the code does, and `cli-regress` pins it. So the fix is the help and man page wording.
-		- Origin: 2026-09-16. Confirmed.
 		- Opened: 20260923-145138
 
 	- 🔘 Item 14: the sync stage does not count untracked files when it decides to stash.
@@ -221,21 +190,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced under ASan: tokenize, `shcl_compact`, tokenize again with the same struct, and the second call writes to the freed reads arena.
 		- Note: a doc fix. The per-document serial was declined in 20260918b item 23.
 		- Origin: the tokens contract, 2026-09-19. The fourth time this handle's lifetime has come up. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 20: the help, man page and README say `tokens` shows how the parser reads a line, but a raw body line is tokenized as a field line.
-		- Reproduced: a body line `\tbody` prints `name=0-4`. The code comment says the lexical view is on purpose, so the docs need one clause.
-		- Origin: 2026-09-07. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 21: the man page still links to `jim-collier/shcl`.
-		- Reproduced: SEE ALSO and BUGS. The troff source spells it `jim\-collier`, so the org-move replace missed it. The old URL still redirects.
-		- Origin: `300c6b6` (2026-09-22). Regression. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 22: the veneer's `paths()` has no doc comment, and its one line sits above the wrong function and says quoted segments are dropped.
-		- Reproduced: `paths` lists `"q x"`. The line sits between `count()` and `quote_segment()`.
-		- Origin: 2026-07-25, stale since paths quoting on 2026-08-02. The misplaced doc comment class again. Confirmed.
 		- Opened: 20260923-145138
 
 - Code review 20260922:
@@ -743,6 +697,85 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260923:
+
+	- Every defect the round has closed so far.
+
+	- ✅ Item 2: Go's `SetRaw`, `SetComment` and `SetLiteral` accept invalid UTF-8, and the saved file then will not load.
+		- Reproduced: each returns ok, `SaveFile` returns nil, and `LoadFile` then gives `Unreadable`. Every CLI exits 8 on the file. `SetLiteral` refuses the same bytes in quotes and takes them bare.
+		- Cause: 20260902 item 40 put a UTF-8 gate on `SetString` and `SetStringArray` only.
+		- Note: Go only. Rust cannot hold such a string, Python refuses at save, and C's header defines its text as UTF-8, so a C caller passing bad bytes is misuse.
+		- Origin: `SetRaw` from 2026-07-25; the gate from 2026-09-02 left these out. A sibling of item 40. Confirmed.
+		- Fixed: the UTF-8 test moved into the one read-back gate every setter passes through: `valueReadsBack` for a value, raw body and fence info, `nameReadsBack` for a created name or selector, and `commentLine`. The two per-setter copies in `SetString` and `SetStringArray` went, since the gate covers them.
+		- Sweep: every Go setter and its `*Default` form, the path's names and selectors. Rust cannot hold such a string, Python refuses at save and C's header makes it the caller's contract, as the item says.
+		- Pinned by: `TestSetStringRefusesInvalidUTF8`, now over every setter and a bad name, quoted name and selector. With the gate lines taken out, nine of its probes are accepted.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 5: Go's `ParseLimited` panics when the node cap is near `MaxInt` or below -2.
+		- Reproduced: `ParseLimited(text, Standard, math.MaxInt, 0, 0)` panics with `makeslice: cap out of range`. So do `MaxInt-1` and `-3`. The doc says 0 disables a cap and gives no range.
+		- Cause: the new reserve adds 2 to the cap before comparing, which overflows.
+		- Origin: `a134efe` (2026-09-22), the last round's idea 2. Regression. Confirmed.
+		- Fixed: the cap is compared without adding to it, and a negative cap sizes nothing, since it stops the parse at the first line anyway.
+		- Sweep: the reserve is Go only; Rust, Python and C grow their arenas as they go.
+		- Pinned by: `TestParseLimitedCaps`, with caps at `MaxInt`, `MaxInt-1`, `MaxInt-2`, -1, -3 and `MinInt`. The old compare panics it.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 6: Go's arena reserve counts raw block bodies, so peak memory rises about 60 percent on documents with embedded blocks.
+		- Measured: 20,000 sections each with a 20-line block, 105 to 169 MB. One 500k-line block, about 100 to 165 MB. A 60 MB block, 1.47 to 2.32 GB, where Rust takes 1.04. Time unchanged. The flat 1M-key file still improves, 702 to 546 MB.
+		- Cause: the count takes every non-blank line not starting with `#` or `*`, fence and body lines included.
+		- Origin: `a134efe` (2026-09-22), idea 2, which measured only documents without blocks. Regression. Confirmed.
+		- Fixed: the count, now `trimCountingNodeLines`, skips a raw body from its opening fence to the close, same-line and child-indent spellings both.
+		- Measured against the binary before the reserve: `raw20` 96 MB before, 101 now (169 in the review). The flat 1M-key file keeps the gain, 705 to 570 MB.
+		- Sweep: Go only, as item 5.
+		- Pinned by: `TestArenaSizedToTheDocument` counts a 20,000-line body of each fence kind. Counting bodies again fails it.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 7: `TestArenaSizedToTheDocument` passes with the arena trim removed.
+		- Reproduced: with the trim deleted the test still passes. A document of one 20,000-line raw block fails it.
+		- Cause: its sparse case uses only comment, blank and `*` lines, which the count already skips, so the trim never runs.
+		- Origin: `a134efe` (2026-09-22). Regression in the test. Confirmed.
+		- Fixed: the test gained a document of 20,000 refused lines, which are counted and make no node, so the trim is what keeps the arena small.
+		- Pinned by: the same test. With the trim deleted it now fails at 2 nodes in an arena of 20,002.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 13: the help and man page say `migrate --check` exits 6 when a rewrite would change the file, but a file that only gains the Format line exits 0.
+		- Reproduced, all four: on `x: 1`, `--check` exits 0, and `--write` then appends the stamp and exits 0.
+		- Note: `design.md` and `spec.md` say 6 means a line to rewrite, which is what the code does, and `cli-regress` pins it. So the fix is the help and man page wording.
+		- Origin: 2026-09-16. Confirmed.
+		- Fixed: the help in all four CLIs and the man page now say `fmt` exits 6 when the file would change and `migrate` when a line would be rewritten. The man page adds that a file only lacking the Format line is 0.
+		- Sweep: `design.md`, `spec.md` and the README already said a line to rewrite. The EXIT STATUS entry's "a rewrite to make" was left, since it names both subcommands.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 20: the help, man page and README say `tokens` shows how the parser reads a line, but a raw body line is tokenized as a field line.
+		- Reproduced: a body line `\tbody` prints `name=0-4`. The code comment says the lexical view is on purpose, so the docs need one clause.
+		- Origin: 2026-09-07. Confirmed.
+		- Fixed: one clause in the help (all four CLIs), the man page and the README: each line is read on its own, so a raw body line is tokenized as a field line.
+		- Sweep: the code comments in the four `tokens` commands already said so.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 21: the man page still links to `jim-collier/shcl`.
+		- Reproduced: SEE ALSO and BUGS. The troff source spells it `jim\-collier`, so the org-move replace missed it. The old URL still redirects.
+		- Origin: `300c6b6` (2026-09-22). Regression. Confirmed.
+		- Fixed: both links point at `yottacore/shcl`.
+		- Sweep: every tracked file outside the changelog and backlog for `jim` and `collier` with up to four characters between, then `/shcl`. None left.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
+
+	- ✅ Item 22: the veneer's `paths()` has no doc comment, and its one line sits above the wrong function and says quoted segments are dropped.
+		- Reproduced: `paths` lists `"q x"`. The line sits between `count()` and `quote_segment()`.
+		- Origin: 2026-07-25, stale since paths quoting on 2026-08-02. The misplaced doc comment class again. Confirmed.
+		- Fixed: `paths()` has its own comment, saying quoted segments come back quoted. The shared note on reads is its own block, and `quote_segment()` keeps its line. `count()` had none in the veneer or the C header, and has one in both now. Five more veneer declarations heading a group had none (`parse`, `strict_failed`, `diagnostics`, `instances`, `read_int`), and each has one.
+		- Pinned by: `check-docs.bash` now fails on a Go doc comment opening with another declared name, and on a veneer declaration heading a group with no comment. This reverses 20260904 item 30's "nothing mechanical", after four rounds of the same class. Watched fail: a function inserted under `oneLine`'s comment in the library and under `doTokens`' in the CLI, and `paths()`'s comment removed, each reported.
+		- Not covered: Rust, Python and the C header carry no naming convention in their comments, so a stranded comment there is still a reading check.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1514
 
 - Code review 20260922:
 
