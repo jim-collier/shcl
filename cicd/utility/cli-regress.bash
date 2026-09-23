@@ -504,6 +504,9 @@ rows=(
 	'write-stdin-set|set --write -|-|1|-|cannot rewrite stdin'
 	'tokens-line|tokens %F%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n|-'
 	'tokens-fault|tokens %B%|-|0|1:0 name=0-1 sep=1 value=3-4 elem=3-4\n2:2 name=0-3\n3:0 name=0-1 fault=2:unexpected character after the path\n|-'
+	## 20260923 item 20: the help and man page say each line is read on its own,
+	## so a raw body line comes out as a field line.
+	'tokens-raw-body|tokens %R%|-|0|1:0 name=0-1 sep=1 value=2-2 elem=2-2\n2:1 fence value=0-3 elem=0-3\n3:1 name=0-4 fault=5:unexpected character after the path\n4:1 name=0-4 fault=5:unexpected character after the path\n5:1 fence value=0-3 elem=0-3\n|-'
 	## 20260830b item 18: a read below strict returned the value and said nothing
 	## about a line the load had dropped, so a damaged file read clean at exit 0.
 	'get-diags|get %B% a|-|0|1\n|E015 missing colon'

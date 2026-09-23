@@ -447,6 +447,7 @@ public:
 	// in CR fails the write, since a load takes that CR off.
 	[[nodiscard]] bool set_raw(std::string_view p, std::string_view content, std::string_view info) { return shcl_set_raw(d_.get(), p.data(), p.size(), content.data(), content.size(), info.data(), info.size()) != 0; }
 
+	// Inline arrays, one per call.
 	[[nodiscard]] bool set_int_array(std::string_view p, const std::vector<int64_t> &v) { return shcl_set_int_array(d_.get(), p.data(), p.size(), v.data(), v.size()) != 0; }
 	[[nodiscard]] bool set_float_array(std::string_view p, const std::vector<double> &v) { return shcl_set_float_array(d_.get(), p.data(), p.size(), v.data(), v.size()) != 0; }
 	[[nodiscard]] bool set_bool_array(std::string_view p, const std::vector<bool> &v) { auto b = bool_args(v); return shcl_set_bool_array(d_.get(), p.data(), p.size(), b.data(), b.size()) != 0; }
@@ -459,6 +460,7 @@ public:
 	// `#` outside quotes ends the value as it would in a file.
 	[[nodiscard]] bool set_literal(std::string_view p, std::string_view text) { return shcl_set_literal(d_.get(), p.data(), p.size(), text.data(), text.size()) != 0; }
 
+	// Default (only-if-absent) forms of each setter above.
 	[[nodiscard]] bool set_int_default(std::string_view p, int64_t v) { return shcl_set_int_default(d_.get(), p.data(), p.size(), v) != 0; }
 	[[nodiscard]] bool set_float_default(std::string_view p, double v) { return shcl_set_float_default(d_.get(), p.data(), p.size(), v) != 0; }
 	[[nodiscard]] bool set_bool_default(std::string_view p, bool v) { return shcl_set_bool_default(d_.get(), p.data(), p.size(), v ? 1 : 0) != 0; }

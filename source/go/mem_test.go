@@ -135,13 +135,17 @@ func TestArenaSizedToTheDocument(t *testing.T) {
 		t.Fatalf("refused: %d nodes in an arena of %d", len(doc.arena), cap(doc.arena))
 	}
 	// A raw body makes no node either, and the trim would hide one counted,
-	// since what it costs is the peak before the trim.
-	for _, raw := range []string{
-		"a: 1\nb: ```\n" + strings.Repeat("\tbody: x\n", 20000) + "```\n",
-		"a: 1\nb:\n\t~~~~ sql\n" + strings.Repeat("\t~~~\n", 20000) + "\t~~~~\nc: 2\n",
+	// since what it costs is the peak before the trim. Exact counts, with a
+	// field after each close, so a count that never finds the close fails.
+	for _, c := range []struct {
+		raw  string
+		want int
+	}{
+		{"a: 1\nb: ```\n" + strings.Repeat("\tbody: x\n", 20000) + "```\nc: 2\n", 3},
+		{"a: 1\nb:\n\t~~~~ sql\n" + strings.Repeat("\t~~~\n", 20000) + "\t~~~~\nc: 2\n", 4},
 	} {
-		if n := trimCountingNodeLines(strings.Split(raw, "\n")); n > 4 {
-			t.Fatalf("a raw body counted as %d node lines", n)
+		if n := trimCountingNodeLines(strings.Split(c.raw, "\n")); n != c.want {
+			t.Fatalf("a raw body document counted %d node lines, want %d", n, c.want)
 		}
 	}
 }

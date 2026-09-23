@@ -99,7 +99,8 @@ fi
 ##	can be read mechanically. A Go comment opens with the name it documents, so
 ##	one opening with another name declared in the package has moved. And every
 ##	veneer declaration that starts a group carries a comment, so the one left
-##	bare when its comment moved shows.
+##	bare when its comment moved shows. The attribute and a signature that wraps
+##	still count as a declaration.
 while IFS= read -r problem; do fBad "${problem}"; done < <(
 	for pkg in "${repoDir}/source/go" "${repoDir}/source/go/cmd/shcl"; do
 		LC_ALL=C awk -v root="${repoDir}/" '
@@ -121,7 +122,7 @@ while IFS= read -r problem; do fBad "${problem}"; done < <(
 	LC_ALL=C awk '
 		/^class Document/ { inDoc = 1 }
 		inDoc && /^};/ { inDoc = 0 }
-		inDoc && /^\t[A-Za-z].*\(.*\).*[{;}]$/ && !/^\t(return|if|for|while|public|private)/ {
+		inDoc && /^\t(\[\[nodiscard\]\] )?[A-Za-z][^(]*\(/ && !/^\t(return|if|for|while|public|private)/ {
 			if (prev ~ /^[ \t]*$/ || prev ~ /^\t(public|private):/) print "source/c/shcl.hpp:" FNR ": a declaration heads a group with no comment above it"
 		}
 		{ prev = $0 }' "${repoDir}/source/c/shcl.hpp"
@@ -262,6 +263,16 @@ if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	done < <(((${#mkFiles[@]})) && LC_ALL=C awk '
 		FNR > 80 { nextfile }
 		/Copyright.*ID:/ { print FILENAME "\t" $0; nextfile }' "${mkFiles[@]}")
+fi
+
+##	The repo moved to the yottacore org, and a sweep for the old owner path
+##	missed the man page's troff spelling. The old path redirects, so nothing
+##	breaks when one comes back; it just goes stale. Past changelog entries and
+##	the backlog name it on purpose.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	while IFS= read -r hit; do
+		fBad "${hit%%:*}: names the old repo path, not yottacore/shcl (line ${hit#*:})"
+	done < <(git -C "${repoDir}" grep -nIE -o 'jim.{0,4}collier/shcl' -- . ':!changelog.md' ':!project/backlog.md' | cut -d: -f1,2 || true)
 fi
 
 ##	The grammar is the oracle harnesses are written against. It has to read as
