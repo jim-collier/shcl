@@ -106,12 +106,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
 
-	- 🔘 Item 1: the gate records a tree as passed before the cross checks run, and `--no-cross` records one too.
-		- Reproduced: a stubbed engine repo with one cross check that fails. `--ci` prints "tree recorded", then fails the cross check and exits 1. `green-tree.bash passed` then says yes for that tree, so a retried push to main skips the gate. `--ci --no-cross` records the tree with no cross check run.
-		- Cause: the record is at the end of stage 4 and the cross checks moved to stage 6. `--no-cross` does not count as a partial run.
-		- Origin: the record point is from 2026-09-14; the hole opened when 20260920 item 2 moved the cross checks under `--ci`. Not seen before. Confirmed.
-		- Opened: 20260923-145138
-
 	- 🔘 Item 3: comments are filed differently after a merge or an edit than after a reload of the same text.
 		- Reproduced, all four: three layers merged at once put a comment after the last child; merged in two steps it lands above the second. `fmt --layer=A2 --remove a.c B2` drops a comment at exit 0 that the same steps through a pipe keep. Two edits in one `set` and the same two in two runs place a comment differently.
 		- Cause: the end-of-load passes from the corpus 140 and 142 fixes run only after a parse. A merge, a new child and the writer's fold add children after a block's last one and never run them.
@@ -701,6 +695,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260923:
 
 	- Every defect the round has closed so far.
+
+	- ✅ Item 1: the gate records a tree as passed before the cross checks run, and `--no-cross` records one too.
+		- Reproduced: a stubbed engine repo with one cross check that fails. `--ci` prints "tree recorded", then fails the cross check and exits 1. `green-tree.bash passed` then says yes for that tree, so a retried push to main skips the gate. `--ci --no-cross` records the tree with no cross check run.
+		- Cause: the record is at the end of stage 4 and the cross checks moved to stage 6. `--no-cross` does not count as a partial run.
+		- Origin: the record point is from 2026-09-14; the hole opened when 20260920 item 2 moved the cross checks under `--ci`. Not seen before. Confirmed.
+		- Fixed: the record moved to just after the cross checks, the last gate a `--ci` run has, and `--no-cross` counts as a partial run. The help, `contributing.md` and `design.md` say so.
+		- Sweep: nothing gating runs after stage 6's cross checks under `--ci`. `--no-largedoc` stays a full run for the record, since the hook itself passes it.
+		- Pinned by: two rows in `check-push-gate.bash`'s stubbed engine, a failing cross check and `--no-cross`. Against the old engine both record the tree and fail.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1541
 
 	- ✅ Item 2: Go's `SetRaw`, `SetComment` and `SetLiteral` accept invalid UTF-8, and the saved file then will not load.
 		- Reproduced: each returns ok, `SaveFile` returns nil, and `LoadFile` then gives `Unreadable`. Every CLI exits 8 on the file. `SetLiteral` refuses the same bytes in quotes and takes them bare.
