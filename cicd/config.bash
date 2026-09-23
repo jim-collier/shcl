@@ -399,6 +399,11 @@ LINT_LOG_DIR="cicd/artifacts/lint"
 ## Stage 9: backup + publish via the standalone publisher (versioned RAR backup of
 ## the whole project dir, then stash/pull/pop, add, commit, push).
 GIT_PUBLISH=(cicd/utility/n8git_backup-and-publish)
+## Backup excludes only this project has, on top of the publisher's own: review
+## scratch (crMMDD) and gate worktrees beside the repo, the C and Go CLIs and the
+## comparison tool (none ship), the 2.x build for check-migrate, dogfood copies
+## of the release build, crosscheck's fuzz dumps and the profiler's workload.
+export GIT_BACKUP_AND_PUBLISH_RAR_EXCLUDES="'-x*/cr0???/' '-x*/cr1???/' '-x*/gatewt-*/' '-x*/source/c/shcl' '-x*/source/go/shcl' '-x*/source/python/build' '-x*/comparison/target' '-x*/target-migrate' '-x*/cicd/artifacts/runbuilds' '-x*/cicd/artifacts/crosscheck' '-x*/cicd/artifacts/profiling/workload.shcl'"
 PUBLISH_AUTO_MESSAGE=""
 
 
