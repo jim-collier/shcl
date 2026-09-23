@@ -462,6 +462,115 @@ static void publish_failures(void) {
 }
 #endif
 
+/* The sequence fixture's generator: xorshift64* on a fixed seed, so every
+   runner builds the same documents and the same steps. */
+static uint64_t seq_s;
+static size_t seq_below(size_t n) {
+	uint64_t x = seq_s;
+	x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+	seq_s = x;
+	return (size_t)((x * 0x2545F4914F6CDD1DULL) % n);
+}
+typedef struct { char *p; size_t n, cap; } SeqBuf;
+static void seq_put(SeqBuf *b, const char *s, size_t n) {
+	if (b->n + n + 1 > b->cap) { b->cap = (b->n + n + 1) * 2; b->p = xrealloc(b->p, b->cap); }
+	memcpy(b->p + b->n, s, n); b->n += n; b->p[b->n] = 0;
+}
+static void seq_puts(SeqBuf *b, const char *s) { seq_put(b, s, strlen(s)); }
+static void seq_num(SeqBuf *b, size_t n) { char t[24]; snprintf(t, sizeof t, "%zu", n); seq_puts(b, t); }
+static const char *const seq_names[] = {"a", "b", "m"};
+
+/* Lines that carry comments and blanks somewhere a later step can move them:
+   comments at every depth, empty and reopened blocks, and a same-line fence
+   with a comment after an empty binding. */
+static void seq_doc(SeqBuf *b) {
+	b->n = 0; seq_put(b, "", 0);
+	size_t depth = 0;
+	for (size_t n = 1 + seq_below(10); n > 0; n--) {
+		size_t r = seq_below(6);
+		if (r == 0) depth = 0;
+		else if (r == 1) { if (depth) depth--; }
+		else if (r == 2) { if (depth < 3) depth++; }
+		char ind[4];
+		memset(ind, '\t', depth); ind[depth] = 0;
+		const char *name = seq_names[seq_below(3)];
+		switch (seq_below(8)) {
+		case 0: seq_puts(b, ind); seq_puts(b, "# c"); seq_num(b, seq_below(3)); break;
+		case 1: break;
+		case 2: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ":"); break;
+		case 3: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ": "); seq_num(b, seq_below(3)); break;
+		case 4:
+			seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ": ```x  # t\n");
+			seq_puts(b, ind); seq_puts(b, "\tbody\n"); seq_puts(b, ind); seq_puts(b, "\t```");
+			break;
+		case 5: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ": "); seq_num(b, seq_below(3)); seq_puts(b, "  # t"); break;
+		case 6: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, "."); seq_puts(b, name); seq_puts(b, ": 1"); break;
+		default: seq_puts(b, ind); seq_puts(b, "\t# deep"); break;
+		}
+		seq_puts(b, "\n");
+	}
+}
+
+/* A merge or an edit leaves the document its own saved text reloads as,
+   comments included, so the next step lands the same whether or not the file
+   was saved in between. Comments were filed one way by a load and another by a
+   merge, a new child or the writer's fold three times in three days, and the
+   text fixpoint cannot see it, since both placements are fixpoints. Same
+   fixture in every runner. */
+static void edits_and_merges_match_a_reload(void) {
+	seq_s = 0x5EED0923C0DE0003ULL;
+	SeqBuf base = {0}, layer = {0}, log = {0}, path = {0}, a = {0}, b = {0};
+	int bad = 0;
+	for (int i = 0; i < 3000 && !bad; i++) {
+		seq_doc(&base);
+		shcl_doc *live = shcl_parse(base.p, base.n);
+		log.n = 0; seq_puts(&log, "base:\n"); seq_put(&log, base.p, base.n);
+		for (size_t steps = 2 + seq_below(3); steps > 0 && !bad; steps--) {
+			shcl_str t = shcl_to_canonical(live);
+			shcl_doc *back = shcl_parse(t.p, t.n);
+			shcl_str *paths; size_t np = shcl_paths(live, &paths);
+			path.n = 0; seq_put(&path, "", 0);
+			if (np == 0 || seq_below(3) == 0) {
+				seq_puts(&path, seq_names[seq_below(3)]); seq_puts(&path, ".");
+				seq_puts(&path, seq_names[seq_below(3)]);
+			} else {
+				shcl_str pick = paths[seq_below(np)];
+				seq_put(&path, pick.p, pick.n);
+			}
+			char v[8]; snprintf(v, sizeof v, "v%zu", seq_below(3));
+			size_t op = seq_below(9);
+			seq_doc(&layer);
+			shcl_doc *docs[2] = {live, back};
+			int applied = 0;
+			for (int k = 0; k < 2; k++) {
+				shcl_doc *d = docs[k];
+				switch (op) {
+				case 0: case 1: { shcl_doc *l = shcl_parse(layer.p, layer.n); shcl_merge(d, l); shcl_free(l); break; }
+				case 2: applied += shcl_set_int(d, path.p, path.n, 7); break;
+				case 3: applied += shcl_set_string(d, path.p, path.n, v, strlen(v)); break;
+				case 4: applied += (int)shcl_remove(d, path.p, path.n); break;
+				case 5: applied += shcl_set_comment(d, path.p, path.n, v, strlen(v)); break;
+				case 6: applied += shcl_set_empty(d, path.p, path.n); break;
+				case 7: applied += shcl_set_raw(d, path.p, path.n, "body", 4, v, strlen(v)); break;
+				default: applied += shcl_set_int_default(d, path.p, path.n, 1); break;
+				}
+			}
+			(void)applied;
+			if (op <= 1) { seq_puts(&log, "merge:\n"); seq_put(&log, layer.p, layer.n); }
+			else { seq_puts(&log, "op "); seq_num(&log, op); seq_puts(&log, " at "); seq_put(&log, path.p, path.n); seq_puts(&log, "\n"); }
+			t = shcl_to_canonical(live); a.n = 0; seq_put(&a, t.p, t.n);
+			t = shcl_to_canonical(back); b.n = 0; seq_put(&b, t.p, t.n);
+			if (a.n != b.n || memcmp(a.p, b.p, a.n) != 0) {
+				fprintf(stderr, "FAIL edits_and_merges: a step on the document and on its reload differ at iteration %d:\n%s--- live\n%s--- reload\n%s", i, log.p, a.p, b.p);
+				nfail++; bad = 1;
+			}
+			shcl_free(back);
+		}
+		shcl_free(live);
+	}
+	free(base.p); free(layer.p); free(log.p); free(path.p); free(a.p); free(b.p);
+}
+
 int main(int argc, char **argv) {
 	setlocale(LC_ALL, "C");
 	/* The library has to format and read floats the same whatever locale the
@@ -1954,6 +2063,7 @@ int main(int argc, char **argv) {
 			shcl_free(nd);
 		}
 	}
+	edits_and_merges_match_a_reload();
 
 #ifdef _WIN32
 	/* Windows-only, and wine cannot show either one: it maps onto a filesystem

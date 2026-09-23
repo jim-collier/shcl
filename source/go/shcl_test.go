@@ -2358,3 +2358,117 @@ func TestSettersWriteOnlyWhatReadsBack(t *testing.T) {
 		}
 	}
 }
+
+// seqGen is the sequence fixture's generator: xorshift64* on a fixed seed, so
+// every runner builds the same documents and the same steps.
+type seqGen struct{ s uint64 }
+
+func (g *seqGen) below(n int) int {
+	x := g.s
+	x ^= x >> 12
+	x ^= x << 25
+	x ^= x >> 27
+	g.s = x
+	return int((x * 0x2545F4914F6CDD1D) % uint64(n))
+}
+
+var seqNames = []string{"a", "b", "m"}
+
+// doc builds a small document out of the lines that carry comments and blanks
+// somewhere a later step can move them: comments at every depth, empty and
+// reopened blocks, and a same-line fence with a comment after an empty binding.
+func (g *seqGen) doc() string {
+	var out strings.Builder
+	depth := 0
+	for n := 1 + g.below(10); n > 0; n-- {
+		switch g.below(6) {
+		case 0:
+			depth = 0
+		case 1:
+			if depth > 0 {
+				depth--
+			}
+		case 2:
+			if depth < 3 {
+				depth++
+			}
+		}
+		ind := strings.Repeat("\t", depth)
+		name := seqNames[g.below(3)]
+		switch g.below(8) {
+		case 0:
+			out.WriteString(ind + "# c" + strconv.Itoa(g.below(3)))
+		case 1:
+		case 2:
+			out.WriteString(ind + name + ":")
+		case 3:
+			out.WriteString(ind + name + ": " + strconv.Itoa(g.below(3)))
+		case 4:
+			out.WriteString(ind + name + ": ```x  # t\n" + ind + "\tbody\n" + ind + "\t```")
+		case 5:
+			out.WriteString(ind + name + ": " + strconv.Itoa(g.below(3)) + "  # t")
+		case 6:
+			out.WriteString(ind + name + "." + name + ": 1")
+		default:
+			out.WriteString(ind + "\t# deep")
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+// TestEditsAndMergesMatchAReload: a merge or an edit leaves the document its own
+// saved text reloads as, comments included, so the next step lands the same
+// whether or not the file was saved in between. Comments were filed one way by
+// a load and another by a merge, a new child or the writer's fold three times
+// in three days, and the text fixpoint cannot see it, since both placements
+// are fixpoints. Same fixture in every runner.
+func TestEditsAndMergesMatchAReload(t *testing.T) {
+	g := seqGen{s: 0x5EED0923C0DE0003}
+	for i := 0; i < 3000; i++ {
+		base := g.doc()
+		live := Parse(base)
+		log := "base:\n" + base
+		for steps := 2 + g.below(3); steps > 0; steps-- {
+			back := Parse(live.ToCanonical())
+			paths := live.Paths()
+			var path string
+			if len(paths) == 0 || g.below(3) == 0 {
+				path = seqNames[g.below(3)] + "." + seqNames[g.below(3)]
+			} else {
+				path = paths[g.below(len(paths))]
+			}
+			v := "v" + strconv.Itoa(g.below(3))
+			op := g.below(9)
+			layer := g.doc()
+			for _, d := range []*Document{live, back} {
+				switch op {
+				case 0, 1:
+					d.Merge(Parse(layer))
+				case 2:
+					d.SetInt(path, 7)
+				case 3:
+					d.SetString(path, v)
+				case 4:
+					d.Remove(path)
+				case 5:
+					d.SetComment(path, v)
+				case 6:
+					d.SetEmpty(path)
+				case 7:
+					d.SetRaw(path, "body", v)
+				default:
+					d.SetIntDefault(path, 1)
+				}
+			}
+			if op <= 1 {
+				log += "merge:\n" + layer
+			} else {
+				log += fmt.Sprintf("op %d at %q\n", op, path)
+			}
+			if a, b := live.ToCanonical(), back.ToCanonical(); a != b {
+				t.Fatalf("a step on the document and on its reload differ at iteration %d:\n%s--- live\n%s--- reload\n%s", i, log, a, b)
+			}
+		}
+	}
+}

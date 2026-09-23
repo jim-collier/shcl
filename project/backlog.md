@@ -106,13 +106,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
 
-	- 🔘 Item 3: comments are filed differently after a merge or an edit than after a reload of the same text.
-		- Reproduced, all four: three layers merged at once put a comment after the last child; merged in two steps it lands above the second. `fmt --layer=A2 --remove a.c B2` drops a comment at exit 0 that the same steps through a pipe keep. Two edits in one `set` and the same two in two runs place a comment differently.
-		- Cause: the end-of-load passes from the corpus 140 and 142 fixes run only after a parse. A merge, a new child and the writer's fold add children after a block's last one and never run them.
-		- Note: a comment moves or goes with a removed node. No value changes.
-		- Origin: the sibling of `6651739` (2026-09-23) and of the corpus 140 fix. Confirmed.
-		- Opened: 20260923-145138
-
 	- 🔘 Item 4: `get --array` and `--slots` print an element holding a line break across several lines.
 		- Reproduced, all four: `n: "a\nb", c` gives three lines for two elements, and under `--slots` one line has no status.
 		- Note: 20260920b item 26 fixed `instances` for this, since a script splitting on newlines miscounts. Each CLI already has the one-line helper.
@@ -770,6 +763,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: `TestSetStringRefusesInvalidUTF8`, now over every setter and a bad name, quoted name and selector. With the gate lines taken out, nine of its probes are accepted.
 		- Opened: 20260923-145138
 		- Closed: 20260923-1514
+
+	- ✅ Item 3: comments are filed differently after a merge or an edit than after a reload of the same text.
+		- Reproduced, all four: three layers merged at once put a comment after the last child; merged in two steps it lands above the second. `fmt --layer=A2 --remove a.c B2` drops a comment at exit 0 that the same steps through a pipe keep. Two edits in one `set` and the same two in two runs place a comment differently.
+		- Cause: the end-of-load passes from the corpus 140 and 142 fixes run only after a parse. A merge, a new child and the writer's fold add children after a block's last one and never run them.
+		- Note: a comment moves or goes with a removed node. No value changes.
+		- Origin: the sibling of `6651739` (2026-09-23) and of the corpus 140 fix. Confirmed.
+		- Fixed: one settle step per block, used by the load and run again wherever a child list changes after it: a merge settles the whole tree, a new child settles its last pair, and the writer's fold settles each block it folded. The blank the emitter drops on the first line is cleared after every write and merge too. The fuzz property found one more rule of the same kind: a raw block's trailing comment goes above it when an empty binding of its name comes first, so that is filed as a leading comment.
+		- Swept: Rust `settle_block`, Go `settleBlock`, Python `_settle_block`, C `settle_block`, each called from the parse, merge, new child, collapse, fold, and the set, comment and remove calls for the first blank. `shcl_compact` copies a settled tree as it is, `init` builds through the setters, and nothing else changes a child list.
+		- Pinned by: corpus case `143-comments-after-edits`, a three-layer merge and a write script. Old Python fails both dimensions. A property in all four: a step on a document and on a reload of its saved text give the same text. It is `edits_and_merges_match_a_reload` in the Rust fuzz, and one fixed-seed fixture in the Go, Python and C runners, which fail at iteration 30 on the old code.
+		- Verified: the three reproductions agree in all four, the 2,000,000 fuzz is clean, and so is the new property at that count.
+		- Opened: 20260923-145138
+		- Closed: 20260923-1635
 
 	- ✅ Item 5: Go's `ParseLimited` panics when the node cap is near `MaxInt` or below -2.
 		- Reproduced: `ParseLimited(text, Standard, math.MaxInt, 0, 0)` panics with `makeslice: cap out of range`. So do `MaxInt-1` and `-3`. The doc says 0 disables a cap and gives no range.

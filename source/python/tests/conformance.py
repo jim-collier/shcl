@@ -542,6 +542,105 @@ def setters_write_only_what_reads_back():
 			raise SystemExit(f"name {s!r} did not read back:\n{text}")
 
 
+class SeqGen:
+	"""The sequence fixture's generator: xorshift64* on a fixed seed, so every
+	runner builds the same documents and the same steps."""
+
+	def __init__(self, seed):
+		self.s = seed
+
+	def below(self, n):
+		x = self.s
+		x ^= x >> 12
+		x ^= (x << 25) & 0xFFFFFFFFFFFFFFFF
+		x ^= x >> 27
+		self.s = x
+		return ((x * 0x2545F4914F6CDD1D) & 0xFFFFFFFFFFFFFFFF) % n
+
+	def doc(self):
+		# Lines that carry comments and blanks somewhere a later step can move
+		# them: comments at every depth, empty and reopened blocks, and a
+		# same-line fence with a comment after an empty binding.
+		out = []
+		depth = 0
+		for _ in range(1 + self.below(10)):
+			r = self.below(6)
+			if r == 0:
+				depth = 0
+			elif r == 1:
+				depth = max(depth - 1, 0)
+			elif r == 2:
+				depth = min(depth + 1, 3)
+			ind = "\t" * depth
+			name = SEQ_NAMES[self.below(3)]
+			shape = self.below(8)
+			if shape == 0:
+				out.append(f"{ind}# c{self.below(3)}")
+			elif shape == 1:
+				out.append("")
+			elif shape == 2:
+				out.append(f"{ind}{name}:")
+			elif shape == 3:
+				out.append(f"{ind}{name}: {self.below(3)}")
+			elif shape == 4:
+				out.append(f"{ind}{name}: ```x  # t\n{ind}\tbody\n{ind}\t```")
+			elif shape == 5:
+				out.append(f"{ind}{name}: {self.below(3)}  # t")
+			elif shape == 6:
+				out.append(f"{ind}{name}.{name}: 1")
+			else:
+				out.append(f"{ind}\t# deep")
+		return "".join(line + "\n" for line in out)
+
+
+SEQ_NAMES = ["a", "b", "m"]
+
+
+def edits_and_merges_match_a_reload():
+	# A merge or an edit leaves the document its own saved text reloads as,
+	# comments included, so the next step lands the same whether or not the file
+	# was saved in between. Comments were filed one way by a load and another by
+	# a merge, a new child or the writer's fold three times in three days, and
+	# the text fixpoint cannot see it, since both placements are fixpoints. Same
+	# fixture in every runner.
+	g = SeqGen(0x5EED0923C0DE0003)
+	for i in range(3000):
+		base = g.doc()
+		live = shcl.Document.parse(base)
+		log = "base:\n" + base
+		for _ in range(2 + g.below(3)):
+			back = shcl.Document.parse(live.to_canonical())
+			paths = live.paths()
+			if not paths or g.below(3) == 0:
+				path = SEQ_NAMES[g.below(3)] + "." + SEQ_NAMES[g.below(3)]
+			else:
+				path = paths[g.below(len(paths))]
+			v = f"v{g.below(3)}"
+			op = g.below(9)
+			layer = g.doc()
+			for d in (live, back):
+				if op <= 1:
+					d.merge(shcl.Document.parse(layer))
+				elif op == 2:
+					d.set_int(path, 7)
+				elif op == 3:
+					d.set_string(path, v)
+				elif op == 4:
+					d.remove(path)
+				elif op == 5:
+					d.set_comment(path, v)
+				elif op == 6:
+					d.set_empty(path)
+				elif op == 7:
+					d.set_raw(path, "body", v)
+				else:
+					d.set_int_default(path, 1)
+			log += f"merge:\n{layer}" if op <= 1 else f"op {op} at {path!r}\n"
+			a, b = live.to_canonical(), back.to_canonical()
+			if a != b:
+				raise SystemExit(f"a step on the document and on its reload differ at iteration {i}:\n{log}--- live\n{a}--- reload\n{b}")
+
+
 def main():
 	fails = []
 	cases = load_cases()
@@ -1776,6 +1875,7 @@ def main():
 		raise SystemExit("set_float_array past the float range bound a value")
 
 	setters_write_only_what_reads_back()
+	edits_and_merges_match_a_reload()
 
 	# Python-only: Diagnostic and Read used to print as object addresses, where
 	# the other three print their fields. Printing a value is how Python gets
