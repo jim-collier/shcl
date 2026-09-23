@@ -422,30 +422,6 @@ type value struct {
 	raw  *rawValue // behind a pointer: inline, its four fields would ride on every node
 }
 
-// key is the merge key: nodes with equal (name, key) collapse into one.
-func (v *value) key() string {
-	switch v.kind {
-	case vEmpty:
-		return "e"
-	case vCell:
-		// Length-prefix each element so the joined key is injective: a bare NUL
-		// separator lets `[a, b]` collide with the single element "a\0b" (NUL is
-		// legal in a quoted string), silently merging them.
-		var b strings.Builder
-		b.WriteString("c:")
-		for _, e := range v.els {
-			b.WriteString(strconv.Itoa(len(e.text)))
-			b.WriteByte(':')
-			b.WriteString(e.text)
-		}
-		return b.String()
-	}
-	// Info-string is part of identity (a `sql` and a `python` block are
-	// different values even with equal bodies); fence style is not. Info is
-	// length-prefixed for the same injectivity reason as cell elements.
-	return "r:" + strconv.Itoa(len(v.raw.info)) + ":" + v.raw.info + v.raw.content
-}
-
 // display is the spelled-out form; also what selectors match against (case-sensitive).
 func (v *value) display() string {
 	switch v.kind {
@@ -1390,8 +1366,12 @@ func (f *fnv) dec(n int) {
 	}
 }
 
-// mergeHash hashes the (name, merge-key) pair, spelling what value.key()
-// spells without building it.
+// mergeHash hashes the (name, merge-key) pair: nodes with equal pairs
+// collapse into one. The key is 'e', or each cell element (and the raw
+// info-string) length-prefixed so the sequence is injective - a bare NUL
+// separator lets `[a, b]` collide with the single element "a\0b". Info-string
+// is part of identity (a `sql` and a `python` block are different values even
+// with equal bodies); fence style is not.
 func mergeHash(name string, v *value) uint64 {
 	f := newFnv()
 	f.bytes(name)
@@ -5738,14 +5718,21 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	baseKids := append([]int(nil), d.arena[baseParent].children...)
 	hasContainer := map[string]bool{}
 	byName := map[string][]int{}
-	byKey := map[[2]string]int{}
+	// Keyed on the hash of (name, merge key) and verified on a hit, so no
+	// key text is built per child on either side.
+	byKey := make(map[uint64]slot, len(baseKids))
+	find := func(h uint64, name string, v *value) (int, bool) {
+		return slotFirstMatch(byKey, h, func(x int) bool {
+			return mergeEq(d.arena[x].name, &d.arena[x].value, name, v)
+		})
+	}
 	for _, b := range baseKids {
 		name := d.arena[b].name
 		hasContainer[name] = hasContainer[name] || len(d.arena[b].children) > 0
 		byName[name] = append(byName[name], b)
-		key := [2]string{name, d.arena[b].value.key()}
-		if _, dup := byKey[key]; !dup {
-			byKey[key] = b
+		h := mergeHash(name, &d.arena[b].value)
+		if _, dup := find(h, name, &d.arena[b].value); !dup {
+			slotInsert(byKey, h, b)
 		}
 	}
 	// Decide per name. A name whose over-side nodes are all leaves is an
@@ -5758,7 +5745,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 	// order, which the per-name pass here would otherwise regroup.
 	replace := map[string][]int{}
 	var appended []overKid
-	emptyKey := (&value{kind: vEmpty}).key()
+	emptyVal := &value{kind: vEmpty}
 	for _, name := range order {
 		group := groups[name]
 		overLeafy := true
@@ -5807,22 +5794,20 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 		} else {
 			for _, k := range group {
 				ok := k.node
-				okey := over.arena[ok].value.key()
-				target, found := byKey[[2]string{name, okey}]
+				ov := &over.arena[ok].value
+				hk := mergeHash(name, ov)
+				target, found := find(hk, name, ov)
 				// A raw block in the higher layer fills a same-named empty
 				// binding below, exactly as a fence line fills one inside a
 				// single file. Without it, merging two documents and parsing
 				// them run together disagree: both bindings survive here and
 				// fold there, so the merged output is not a formatter fixpoint.
-				if !found && over.arena[ok].value.kind == vRaw {
-					empty := [2]string{name, emptyKey}
-					if b, hit := byKey[empty]; hit {
-						cv := cloneValue(&over.arena[ok].value)
-						d.arena[b].value = cv
-						delete(byKey, empty)
-						if _, dup := byKey[[2]string{name, okey}]; !dup {
-							byKey[[2]string{name, okey}] = b
-						}
+				if !found && ov.kind == vRaw {
+					he := mergeHash(name, emptyVal)
+					if b, hit := find(he, name, emptyVal); hit {
+						d.arena[b].value = cloneValue(ov)
+						slotRemove(byKey, he, b)
+						slotInsert(byKey, hk, b)
 						target, found = b, true
 					}
 				}

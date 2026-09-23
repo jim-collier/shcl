@@ -435,25 +435,6 @@ class _Value:
 		v.fence_len = self.fence_len
 		return v
 
-	def key(self):
-		"""Merge key: nodes with equal (name, key) collapse into one."""
-		if self.kind == "empty":
-			return "e"
-		if self.kind == "cell":
-			# Length-prefix each element so the joined key is injective: a bare NUL
-			# separator lets `[a, b]` collide with the single element "a\0b" (NUL is
-			# legal in a quoted string), silently merging them.
-			parts = ["c:"]
-			for e in self.els:
-				parts.append(str(len(e.text)))
-				parts.append(":")
-				parts.append(e.text)
-			return "".join(parts)
-		# Info-string is part of identity (a `sql` and a `python` block are
-		# different values even with equal bodies); fence style is not. Info is
-		# length-prefixed for the same injectivity reason as cell elements.
-		return "r:" + str(len(self.info)) + ":" + self.info + self.content
-
 	def display(self):
 		"""Human/display form; also what selectors match against (case-sensitive)."""
 		if self.kind == "empty":
@@ -1356,11 +1337,14 @@ def _disp_key(v):
 
 
 def _merge_key(name, v):
-	"""The (name, merge-key) accelerator key, as an exact tuple reusing the
-	value's own strings: injective exactly like name plus _Value.key(), with no
-	key text built or copied. Where the reference streams these fields through
-	an FNV hash and verifies hits, tuples keep the lookup exact - dict and
-	tuple machinery here is C-speed, a hand-rolled hash loop is not."""
+	"""The (name, merge-key) accelerator key: nodes with equal keys collapse
+	into one. An exact tuple reusing the value's own strings, so it is
+	injective with no key text built or copied - `[a, b]` never meets the
+	single element "a\0b". Info-string is part of identity (a `sql` and a
+	`python` block are different values even with equal bodies); fence style
+	is not. Where the reference streams these fields through an FNV hash and
+	verifies hits, tuples keep the lookup exact - dict and tuple machinery
+	here is C-speed, a hand-rolled hash loop is not."""
 	k = v.kind
 	if k == "cell":
 		els = v.els
@@ -3965,7 +3949,7 @@ class Document:
 			name = self.arena[b].name
 			has_container[name] = has_container.get(name, False) or bool(self.arena[b].children)
 			by_name.setdefault(name, []).append(b)
-			by_key.setdefault((name, self.arena[b].value.key()), b)
+			by_key.setdefault(_merge_key(name, self.arena[b].value), b)
 		# Decide per name. A name whose over-side nodes are all leaves is an
 		# override - but only when the base side of the group is leaf-shaped
 		# too. Against a base container, a childless over-node is a wrapper
@@ -3977,7 +3961,6 @@ class Document:
 		replace = {}
 		appended = []
 		pending = []
-		empty_key = _Value("empty").key()
 		for name in order:
 			group = groups[name]
 			over_leafy = all(not over.arena[k].children for _, k in group)
@@ -4006,19 +3989,20 @@ class Document:
 					appended.extend(clones)
 			else:
 				for pos, ok in group:
-					okey = over.arena[ok].value.key()
-					b = by_key.get((name, okey))
+					okey = _merge_key(name, over.arena[ok].value)
+					b = by_key.get(okey)
 					# A raw block in the higher layer fills a same-named empty
 					# binding below, exactly as a fence line fills one inside a
 					# single file. Without it, merging two documents and parsing
 					# them run together disagree: both bindings survive here and
 					# fold there, so merged output is not a formatter fixpoint.
 					if b is None and over.arena[ok].value.kind == "raw":
-						hit = by_key.get((name, empty_key))
+						empty = _merge_key(name, _Value("empty"))
+						hit = by_key.get(empty)
 						if hit is not None:
 							self.arena[hit].value = over.arena[ok].value.copy()
-							del by_key[(name, empty_key)]
-							by_key.setdefault((name, okey), hit)
+							del by_key[empty]
+							by_key.setdefault(okey, hit)
 							b = hit
 					if b is not None:
 						self._adopt_trivia(b, over, ok)

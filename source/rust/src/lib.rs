@@ -422,34 +422,7 @@ struct RawVal {
 	fence_len: usize,
 }
 
-/// The identity spelling of an element's text: escapes resolved, so two
-/// spellings of one string are one instance. Names have followed that rule
-/// since 2.0, and a `[value]` selector matches on the resolved text already -
-/// without this, one selector addressed two instances. Borrowed when there is
-/// nothing to resolve, which is nearly every element.
 impl Value {
-	/// Merge key: nodes with equal (name, key) collapse into one.
-	fn key(&self) -> String {
-		match self {
-			Value::Empty => "e".to_string(),
-			Value::Cell(els) => {
-				// Length-prefix each element so the joined key is injective: a bare
-				// NUL separator lets `[a, b]` collide with the single element
-				// "a\0b" (NUL is legal in a quoted string), silently merging them.
-				let mut k = String::from("c:");
-				for e in els {
-					k.push_str(&e.text.len().to_string());
-					k.push(':');
-					k.push_str(&e.text);
-				}
-				k
-			}
-			// Info-string is part of identity (a `sql` and a `python` block are
-			// different values even with equal bodies); fence style is not. Info is
-			// length-prefixed for the same injectivity reason as cell elements.
-			Value::Raw(r) => format!("r:{}:{}{}", r.info.len(), r.info, r.content),
-		}
-	}
 	/// Human/display form; also what selectors match against (case-sensitive).
 	fn display(&self) -> String {
 		match self {
@@ -1349,8 +1322,15 @@ impl Hasher for PreHashed {
 
 type U64Map<V> = HashMap<u64, V, BuildHasherDefault<PreHashed>>;
 
-/// Hash of the (name, merge-key) pair, spelling what value.key() spells
-/// without building it.
+/// Hash of the (name, merge-key) pair: nodes with equal pairs collapse into
+/// one. The key is 'e', or each cell element (and the raw info-string)
+/// length-prefixed so the sequence is injective - a bare NUL separator lets
+/// `[a, b]` collide with the single element "a\0b". Elements are the resolved
+/// strings, so two spellings of one string are one instance: names have
+/// followed that rule since 2.0, and a `[value]` selector matches on the
+/// resolved text already. Info-string is part of identity (a `sql` and a
+/// `python` block are different values even with equal bodies); fence style
+/// is not.
 fn merge_hash(name: &str, v: &Value) -> u64 {
 	let mut h = Fnv::new();
 	h.bytes(name.as_bytes());
@@ -5868,14 +5848,14 @@ impl Document {
 	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
 		let over_kids = &over.arena[over_parent].children;
 		// Over side: name -> node bucket, in first-appearance order.
-		let mut order: Vec<String> = Vec::new();
-		let mut groups: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+		let mut order: Vec<&str> = Vec::new();
+		let mut groups: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
 		for (pos, &k) in over_kids.iter().enumerate() {
-			let n = &over.arena[k].name;
+			let n = over.arena[k].name.as_str();
 			groups
-				.entry(n.clone())
+				.entry(n)
 				.or_insert_with(|| {
-					order.push(n.clone());
+					order.push(n);
 					Vec::new()
 				})
 				.push((pos, k));
@@ -5886,13 +5866,27 @@ impl Document {
 		let base_kids = self.arena[base_parent].children.clone();
 		let mut has_container: HashMap<String, bool> = HashMap::new();
 		let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
-		let mut by_key: HashMap<(String, String), usize> = HashMap::new();
+		// Keyed on the hash of (name, merge key) and verified on a hit, so no
+		// key text is built per child on either side.
+		let mut by_key: U64Map<Slot> =
+			U64Map::with_capacity_and_hasher(base_kids.len(), Default::default());
+		let find = |arena: &[NodeData], by_key: &U64Map<Slot>, h: u64, name: &str, v: &Value| {
+			by_key
+				.get(&h)
+				.and_then(|s| s.first_match(|x| merge_eq(&arena[x].name, &arena[x].value, name, v)))
+		};
 		for &b in &base_kids {
-			let name = self.arena[b].name.clone();
-			let e = has_container.entry(name.clone()).or_insert(false);
-			*e = *e || !self.arena[b].children.is_empty();
-			by_name.entry(name.clone()).or_default().push(b);
-			by_key.entry((name, self.arena[b].value.key())).or_insert(b);
+			let nd = &self.arena[b];
+			let e = has_container.entry(nd.name.clone()).or_insert(false);
+			*e = *e || !nd.children.is_empty();
+			by_name.entry(nd.name.clone()).or_default().push(b);
+			let h = merge_hash(&nd.name, &nd.value);
+			if find(&self.arena, &by_key, h, &nd.name, &nd.value).is_none() {
+				by_key
+					.entry(h)
+					.and_modify(|s| s.push(b))
+					.or_insert(Slot::One(b));
+			}
 		}
 		// Decide per name. A name whose over-side nodes are all leaves is an
 		// override - but only when the base side of the group is leaf-shaped
@@ -5902,10 +5896,9 @@ impl Document {
 		// Replaced groups splice in the rebuild; everything appended (unmatched
 		// instances, and replaced names base never had) keeps the over file's
 		// order, which the per-name pass here would otherwise regroup.
-		let mut replace: HashMap<String, Vec<usize>> = HashMap::new();
+		let mut replace: HashMap<&str, Vec<usize>> = HashMap::new();
 		let mut appended: Vec<(usize, usize)> = Vec::new();
-		let empty_key = Value::Empty.key();
-		for name in &order {
+		for &name in &order {
 			let group = &groups[name];
 			let over_leafy = group
 				.iter()
@@ -5940,26 +5933,31 @@ impl Document {
 						kept.append(&mut t.leading);
 						t.leading = kept;
 					}
-					replace.insert(name.clone(), clones.into_iter().map(|(_, c)| c).collect());
+					replace.insert(name, clones.into_iter().map(|(_, c)| c).collect());
 				} else {
 					appended.extend(clones);
 				}
 			} else {
 				for &(pos, ok) in group {
-					let okey = over.arena[ok].value.key();
+					let ov = &over.arena[ok].value;
+					let hk = merge_hash(name, ov);
+					let mut target = find(&self.arena, &by_key, hk, name, ov);
 					// A raw block in the higher layer fills a same-named empty
 					// binding below, exactly as a fence line fills one inside a
 					// single file. Without it, merging two documents and parsing
 					// them run together disagree: both bindings survive here and
 					// fold there, so the merged output is not a formatter fixpoint.
-					let mut target = by_key.get(&(name.clone(), okey.clone())).copied();
-					if target.is_none() && matches!(over.arena[ok].value, Value::Raw { .. }) {
-						let empty = (name.clone(), empty_key.clone());
-						let hit = by_key.get(&empty).copied();
-						if let Some(b) = hit {
-							self.arena[b].value = over.arena[ok].value.clone();
-							by_key.remove(&empty);
-							by_key.entry((name.clone(), okey)).or_insert(b);
+					if target.is_none() && matches!(ov, Value::Raw { .. }) {
+						let he = merge_hash(name, &Value::Empty);
+						if let Some(b) = find(&self.arena, &by_key, he, name, &Value::Empty) {
+							self.arena[b].value = ov.clone();
+							if by_key.get_mut(&he).is_some_and(|s| s.remove(b)) {
+								by_key.remove(&he);
+							}
+							by_key
+								.entry(hk)
+								.and_modify(|s| s.push(b))
+								.or_insert(Slot::One(b));
 							target = Some(b);
 						}
 					}
