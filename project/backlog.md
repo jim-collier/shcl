@@ -201,24 +201,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `f127185` (2026-08-03).
 		- Opened: 20260922-120717
 
-	- 🔘 Idea 2: Go never sizes its node arena, and growing it costs about 12 percent of `fmt` and 16 percent of peak memory.
-		- Measured: sized to the line count, `fmt` on the 16 MB document went from about 1150 to 1020 ms and peak memory from 591 to 499 MiB. On the comment-heavy document time dropped 7 percent but memory rose 3, since it has far more lines than nodes.
-		- Note: Go only. Rust and C gained nothing from the same change.
-		- Origin: `e2a57f7` (2026-08-17).
-		- Opened: 20260922-120717
-
 	- 🔘 Idea 3: Rust's emitter allocates about three strings per node, and returning the borrowed text where nothing changes takes a third off emit time.
 		- Measured: emit alone on the 16 MB document went from about 155 to 105 ms, and allocations from 4.0M to 1.15M. Output is byte-identical and every test passes on the patched copy.
 		- Note: `emit_element`, `escape_name` and `emit_name` copy text that needs no escaping, `emit_node` builds the inside pad for every node, and each cell is built as its own string before it is copied in. `emit_element`'s clone gives no reason.
 		- Note: Rust only. The other three already share strings or write into the output. No function or output changes.
 		- Origin: `5756a59` (2026-07-12) and later. 20260829 item 47 trimmed the pads and did not measure this.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 4: Rust runs its 64-bit keys through a second hash in every lookup map.
-		- Measured: an identity hasher on the eight `HashMap<u64, ...>` maps took 40,000 writes from about 70 to 62 ms, and parse plus emit of the same file from 43 to 38. `fmt --layer` on the 16 MB document was about 5 percent faster. Output identical.
-		- Note: Rust only. Go's runtime, C's buckets and Python's int hash use the value as is.
-		- Note: try a document of many short names first, since the map takes its control bits from the top of the hash.
-		- Origin: `082c917` (2026-08-21) and `5321e38` (2026-09-19).
 		- Opened: 20260922-120717
 
 	- 🔘 Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
@@ -245,11 +232,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: four sites copy a selector's text only to compare it: `find_by_value`, `resolve_from`, `probe_write` and `v_contexts`. `Value::display` clones every element to join them, `read_string`'s array arm collects before joining, and `v_node` clones each element to test it against a set. The CLI's `do_tokens` pushes a `format!` per token.
 		- Note: borrow at each site, or say why the copy is needed.
 		- Origin: mostly `e58fe9f` (2026-09-07) and `5756a59` (2026-07-12). No directive pass had read them.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 9: containers whose size is known are grown one push at a time. Unmeasured.
-		- Note: the duplicate-fold maps in Rust (`fold_late_dups` and the writer's fold) and in C (`fold_late_dups`, `w_fold_dups_below`), which Go sized last round. Rust's `cell_of_tokens`. Four loops in the C++ veneer, one of them run once per tokenized line.
-		- Origin: 2026-07 to 2026-09.
 		- Opened: 20260922-120717
 
 ### Done
@@ -5107,6 +5089,36 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - Code review 20260922:
 
 	- The round's ideas that were taken. Its defects are under Done - Bugs, in a bullet of the same name.
+
+	- ✅ Idea 2: Go never sizes its node arena, and growing it costs about 12 percent of `fmt` and 16 percent of peak memory.
+		- Measured: sized to the line count, `fmt` on the 16 MB document went from about 1150 to 1020 ms and peak memory from 591 to 499 MiB. On the comment-heavy document time dropped 7 percent but memory rose 3, since it has far more lines than nodes.
+		- Note: Go only. Rust and C gained nothing from the same change.
+		- Fixed: the parser sizes the arena and the two maps beside it from a count of the lines that can make a node. The count is taken in the loop that already strips each line's carriage return, and blank, comment and list-element lines are left out. An arena left more than half empty is copied down to size before the document keeps it.
+		- Measured: `fmt` on the 16 MB document went from about 1130 to 990 ms, and peak memory from about 600 to 480 MiB. On the comment-heavy document, 820 to 770 ms, with peak memory level or lower.
+		- Note: the version the review measured, sized to every line, failed `TestDiagnosticCapBoundsTheParse`. A 200,000-line list kept an arena of 200,000 nodes it never filled.
+		- Pinned by: `TestArenaSizedToTheDocument` in `mem_test.go`, which fails on the old code.
+		- Origin: `e2a57f7` (2026-08-17).
+		- Opened: 20260922-120717
+		- Closed: 20260922-195049
+
+	- ✅ Idea 4: Rust runs its 64-bit keys through a second hash in every lookup map.
+		- Measured: an identity hasher on the eight `HashMap<u64, ...>` maps took 40,000 writes from about 70 to 62 ms, and parse plus emit of the same file from 43 to 38. `fmt --layer` on the 16 MB document was about 5 percent faster. Output identical.
+		- Note: Rust only. Go's runtime, C's buckets and Python's int hash use the value as is.
+		- Note: try a document of many short names first, since the map takes its control bits from the top of the hash.
+		- Fixed: the eight maps use a hasher that takes the key as it is, with its top half folded down. Fnv's low bits are its weak ones, and the table picks a bucket from the low bits.
+		- Measured: `fmt` and `fmt --layer` on the 16 MB document were each about 3 percent faster, inside the noise of a shared box. A document of many one- and two-letter names was no slower. Output identical.
+		- Pinned by: nothing new. The conformance suite and the crosscheck cover the output.
+		- Origin: `082c917` (2026-08-21) and `5321e38` (2026-09-19).
+		- Opened: 20260922-120717
+		- Closed: 20260922-195049
+
+	- ✅ Idea 9: containers whose size is known are grown one push at a time. Unmeasured.
+		- Note: the duplicate-fold maps in Rust (`fold_late_dups` and the writer's fold) and in C (`fold_late_dups`, `w_fold_dups_below`), which Go sized last round. Rust's `cell_of_tokens`. Four loops in the C++ veneer, one of them run once per tokenized line.
+		- Fixed: the duplicate-fold maps are sized to the child count in Rust, both folds, and in C, through a new `cmap_reserve` that leaves are skipped for. Rust's `cell_of_tokens` reserves its elements, as Go's does. The four veneer loops reserve, like every other loop in `shcl.hpp`.
+		- Pinned by: nothing new. Unmeasured, as filed.
+		- Origin: 2026-07 to 2026-09.
+		- Opened: 20260922-120717
+		- Closed: 20260922-195049
 
 	- ✅ Idea 10: the C header falls short of three of the C rules added to the directives on 2026-09-19.
 		- Note: `sprintf`, `strcpy`, `wcscpy` and `wcscat` at seven sites. Each is bounded by construction, so nothing can overflow, but the rule says never.

@@ -2997,8 +2997,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	// read as neither - the one shape where the count is visible.
 	text = strings.TrimPrefix(text, "\uFEFF")
 	lines := strings.Split(text, "\n")
+	// Counted on the way: lines that can make a node, which sizes the arena.
+	// Only a guess - raw bodies count and are not nodes - so it stays cheap.
+	nodeLines := 0
 	for j, l := range lines {
-		lines[j] = strings.TrimRight(l, "\r")
+		l = strings.TrimRight(l, "\r")
+		lines[j] = l
+		if t := strings.TrimLeft(l, " \t"); t != "" && t[0] != '#' && t[0] != '*' {
+			nodeLines++
+		}
 	}
 	// A newline-terminated text splits into one more piece than it has lines.
 	// An unterminated raw block took that empty tail as a body line, so the
@@ -3007,6 +3014,15 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	if strings.HasSuffix(text, "\n") {
 		lines = lines[:len(lines)-1]
 	}
+	// Growing the arena by append cost about an eighth of fmt on a large
+	// file, and more than that in peak memory.
+	want := nodeLines + 1
+	if p.maxNodes != 0 && want > p.maxNodes+2 {
+		want = p.maxNodes + 2
+	}
+	p.arena = append(make([]nodeData, 0, want), p.arena...)
+	p.childMap = append(make([]map[uint64]slot, 0, want), p.childMap...)
+	p.dispMap = append(make([]map[uint64]int, 0, want), p.dispMap...)
 	i := 0
 	nodeCapped := false
 	tok := Tokens{Cap: p.maxElements}
@@ -3300,6 +3316,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			Code:     "E022",
 			Message:  fmt.Sprintf("diagnostic cap of %d reached; %d more not listed, %d of them errors", p.maxDiags, more, p.unlistedErrors),
 		})
+	}
+	// The arena was sized to the line count, and comments, blank lines and
+	// list elements make no node. The document keeps it, so give back what
+	// growing by append would not have left unused.
+	if 2*len(p.arena) < cap(p.arena) {
+		p.arena = append([]nodeData(nil), p.arena...)
 	}
 	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost}
 }

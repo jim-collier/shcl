@@ -110,3 +110,22 @@ func TestRangeFaultsCostTheirMessage(t *testing.T) {
 		t.Fatalf("a range fault allocated %d bytes", (faulty-clean)/fields)
 	}
 }
+
+func TestArenaSizedToTheDocument(t *testing.T) {
+	// Grown by append, the arena cost about an eighth of fmt and a sixth of
+	// peak memory on a large file. Sized from the line count it has no slack,
+	// and lines that make no node must not reserve room the document keeps.
+	var flat strings.Builder
+	for i := 0; i < 50000; i++ {
+		flat.WriteString("k" + strconv.Itoa(i) + ": 1\n")
+	}
+	doc := Parse(flat.String())
+	if len(doc.arena) != 50001 || cap(doc.arena) != len(doc.arena) {
+		t.Fatalf("flat: %d nodes in an arena of %d", len(doc.arena), cap(doc.arena))
+	}
+	sparse := "a: 1\n" + strings.Repeat("# note\n\n", 20000) + "arr:\n" + strings.Repeat("\t* 1\n", 20000)
+	doc = Parse(sparse)
+	if cap(doc.arena) > 2*len(doc.arena) {
+		t.Fatalf("sparse: %d nodes in an arena of %d", len(doc.arena), cap(doc.arena))
+	}
+}

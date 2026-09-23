@@ -10,6 +10,7 @@
 //! restructuring all.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 // ---------------------------------------------------------------------------
 // Public surface
@@ -603,8 +604,8 @@ pub struct Document {
 /// superset.
 #[derive(Debug, Clone)]
 struct NameIndex {
-	first: HashMap<u64, usize>,
-	last: HashMap<u64, usize>,
+	first: U64Map<usize>,
+	last: U64Map<usize>,
 	next_same: Vec<usize>, // per node; NIL ends the chain
 }
 
@@ -1191,11 +1192,8 @@ fn element_of(p: &Piece, text: &str) -> Option<Element> {
 
 /// The value the tokenized pieces spell.
 fn cell_of_tokens(tok: &Tokens, text: &str) -> Value {
-	let els: Vec<Element> = tok
-		.elements
-		.iter()
-		.filter_map(|p| element_of(p, text))
-		.collect();
+	let mut els: Vec<Element> = Vec::with_capacity(tok.elements.len());
+	els.extend(tok.elements.iter().filter_map(|p| element_of(p, text)));
 	if els.is_empty() {
 		Value::Empty
 	} else {
@@ -1321,6 +1319,29 @@ impl Fnv {
 		self.bytes(&buf[i..]);
 	}
 }
+
+/// Hasher for maps keyed on an Fnv value, which is a hash already, so running
+/// it through SipHash again is wasted work. Fnv's low bits are its weak ones -
+/// a changed input bit only reaches the bits above it - and the table picks a
+/// bucket from the low bits, so the top half is folded down.
+#[derive(Default, Clone, Copy)]
+struct PreHashed(u64);
+
+impl Hasher for PreHashed {
+	fn finish(&self) -> u64 {
+		self.0
+	}
+	fn write(&mut self, bytes: &[u8]) {
+		for &b in bytes {
+			self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+		}
+	}
+	fn write_u64(&mut self, x: u64) {
+		self.0 = x ^ (x >> 32);
+	}
+}
+
+type U64Map<V> = HashMap<u64, V, BuildHasherDefault<PreHashed>>;
 
 /// Hash of the (name, merge-key) pair, spelling what value.key() spells
 /// without building it.
@@ -2027,13 +2048,13 @@ struct Parser {
 	// strings are stored - a hit is verified against the arena with merge_eq.
 	// The box is the point: an inline Option<HashMap> costs 48 bytes per node.
 	#[allow(clippy::box_collection)]
-	child_map: Vec<Option<Box<HashMap<u64, Slot>>>>,
+	child_map: Vec<Option<Box<U64Map<Slot>>>>,
 	// Per-node hash-of-(name, display) -> first matching child: the `[value]`
 	// selector accelerator (its predicate is display(), a different and
 	// non-injective key from child_map's). Same first-wins discipline, same
 	// mutation sites; ownership is by hash, and a query verifies its hit.
 	#[allow(clippy::box_collection)]
-	disp_map: Vec<Option<Box<HashMap<u64, usize>>>>,
+	disp_map: Vec<Option<Box<U64Map<usize>>>>,
 	// Whole-line comments waiting for the next line that binds a node. The
 	// source indent is kept only to decide after-attachment (a comment deeper
 	// than the next binding hangs on the block it sits in).
@@ -2290,7 +2311,8 @@ impl Parser {
 		let mut stack = vec![ROOT];
 		while let Some(parent) = stack.pop() {
 			let kids = std::mem::take(&mut self.arena[parent].children);
-			let mut first: HashMap<u64, Slot> = HashMap::new();
+			let mut first: U64Map<Slot> =
+				U64Map::with_capacity_and_hasher(kids.len(), Default::default());
 			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
 			for c in kids {
 				let h = merge_hash(&self.arena[c].name, &self.arena[c].value);
@@ -4784,8 +4806,8 @@ impl Document {
 			// Boxed so the document stays small on the stack (it rides inside
 			// LoadError by value).
 			let mut idx = NameIndex {
-				first: HashMap::new(),
-				last: HashMap::new(),
+				first: U64Map::default(),
+				last: U64Map::default(),
 				next_same: vec![NIL; self.arena.len()],
 			};
 			// From the root, not across the arena: a removed subtree's nodes
@@ -5326,7 +5348,8 @@ impl Document {
 		let mut stack = vec![start];
 		while let Some(parent) = stack.pop() {
 			let kids = std::mem::take(&mut self.arena[parent].children);
-			let mut first: HashMap<u64, Slot> = HashMap::new();
+			let mut first: U64Map<Slot> =
+				U64Map::with_capacity_and_hasher(kids.len(), Default::default());
 			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
 			for c in kids {
 				let h = merge_hash(&self.arena[c].name, &self.arena[c].value);
@@ -8838,7 +8861,7 @@ struct SuggestNames {
 	names: Vec<String>,
 	seen: HashSet<String>,
 	queries: usize,
-	index: Option<HashMap<u64, Vec<usize>>>,
+	index: Option<U64Map<Vec<usize>>>,
 	long: Vec<usize>,
 	// The query that last looked at each name, so a name found under several
 	// spellings is measured once.
@@ -8872,7 +8895,7 @@ impl SuggestNames {
 			}
 		} else {
 			if self.index.is_none() {
-				let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+				let mut index: U64Map<Vec<usize>> = U64Map::default();
 				for (i, n) in self.names.iter().enumerate() {
 					let cs: Vec<char> = n.chars().collect();
 					if cs.len() > SUGGEST_INDEXED {

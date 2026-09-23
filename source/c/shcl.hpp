@@ -160,6 +160,7 @@ class Document {
 	static void copy_tokens(const shcl_tokens &t, Tokens &out) {
 		auto piece = [](const shcl_piece &p) { return Piece{p.start, p.end, static_cast<Quote>(p.quote)}; };
 		out.segments.clear();
+		out.segments.reserve(t.nseg);
 		for (std::size_t i = 0; i < t.nseg; i++) {
 			const shcl_seg_tok &s = t.segments[i];
 			out.segments.push_back({piece(s.name), s.has_selector ? std::optional<Piece>(piece(s.selector)) : std::nullopt, s.star != 0});
@@ -168,6 +169,7 @@ class Document {
 		out.value_start = t.value_start;
 		out.value_end = t.value_end;
 		out.elements.clear();
+		out.elements.reserve(t.nelem);
 		for (std::size_t i = 0; i < t.nelem; i++) out.elements.push_back(piece(t.elements[i]));
 		out.comment = t.has_comment ? std::optional<std::size_t>(t.comment) : std::nullopt;
 		out.fault_at = t.has_fault ? std::optional<std::size_t>(t.fault_at) : std::nullopt;
@@ -296,6 +298,7 @@ public:
 
 	std::vector<Diagnostic> diagnostics() const {
 		std::vector<Diagnostic> v; std::size_t n = shcl_diag_count(d_.get());
+		v.reserve(n);
 		for (std::size_t i = 0; i < n; i++)
 			v.push_back({shcl_diag_line(d_.get(), i), shcl_diag_severity(d_.get(), i) == SHCL_SEV_ERROR, to_str(shcl_diag_message(d_.get(), i)), shcl_diag_code(d_.get(), i)});
 		return v;
@@ -324,6 +327,7 @@ public:
 		std::unique_ptr<shcl_validation, void (*)(shcl_validation *)> r(shcl_validate(d_.get(), schema.d_.get()), &shcl_validation_free);
 		if (!r) return v;  // an allocation failed; the document is finished
 		std::size_t n = shcl_validation_count(r.get());
+		v.reserve(n);
 		for (std::size_t i = 0; i < n; i++)
 			v.push_back({shcl_validation_line(r.get(), i), shcl_validation_severity(r.get(), i) == SHCL_SEV_ERROR, to_str(shcl_validation_message(r.get(), i)), shcl_validation_code(r.get(), i)});
 		return v;

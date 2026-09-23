@@ -52,6 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Go formats a large file in about a tenth less time and a fifth less memory. Its parser sizes the node table up front rather than growing it one node at a time. Rust's lookup maps no longer hash keys that are hashes already.
+
 - Python's `Read` is generic, so a type checker sees `read_int(...).value` as an `int` and `get_string_array` as a `list[str]`, the way Rust and Go already typed them. It used to be `Any`. Nothing changes at run time.
 
 - The project moved to <https://github.com/yottacore/shcl>. Old `jim-collier/shcl` links, clones and release downloads redirect there. The Go module path moves with it, so Go imports change from `github.com/jim-collier/shcl/...` to `github.com/yottacore/shcl/...`. The `Home` and `Syntax` links in the info block that `init` and a creating `set --write` put at the foot of a new file point at the new address.

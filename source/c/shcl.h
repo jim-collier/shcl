@@ -2604,6 +2604,15 @@ static void cmap_put(ShclArena *a, ShclCMap *m, uint64_t h, size_t val) {
 	*tail = e;
 	m->len++;
 }
+/* Size an empty map for n entries, when the count is known, so it never grows.
+   Each growth leaves the old table behind in the arena. */
+static void cmap_reserve(ShclArena *a, ShclCMap *m, size_t n) {
+	size_t nc = 8;
+	while (nc - nc / 4 < n) nc *= 2;
+	m->buckets = (ShclCMapEnt **)arena_alloc(a, nc * sizeof(ShclCMapEnt *));
+	memset(m->buckets, 0, nc * sizeof(ShclCMapEnt *));
+	m->cap = nc;
+}
 /* Unlink the (hash, val) entry - a node holds at most one entry per map, so
    nothing else can match the pair. */
 static void cmap_del(ShclCMap *m, uint64_t h, size_t val) {
@@ -2772,6 +2781,7 @@ static void fold_late_dups(ShclParser *P) {
 		size_t parent = stack.data[--stack.len];
 		ShclCMap first; memset(&first, 0, sizeof first);
 		ShclVecSize *ch = &NODE(d, parent).children;
+		if (ch->len) cmap_reserve(t, &first, ch->len);
 		size_t w = 0;
 		for (size_t k = 0; k < ch->len; k++) {
 			size_t c = ch->data[k];
@@ -4225,6 +4235,7 @@ static void w_fold_dups_below(shcl_doc *d, size_t start) {
 		size_t parent = stack.data[--stack.len];
 		ShclCMap first; memset(&first, 0, sizeof first);
 		ShclVecSize *ch = &NODE(d, parent).children;
+		if (ch->len) cmap_reserve(t, &first, ch->len);
 		size_t w = 0;
 		for (size_t k = 0; k < ch->len; k++) {
 			size_t c = ch->data[k];
