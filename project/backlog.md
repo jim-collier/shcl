@@ -201,37 +201,11 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `f127185` (2026-08-03).
 		- Opened: 20260922-120717
 
-	- 🔘 Idea 3: Rust's emitter allocates about three strings per node, and returning the borrowed text where nothing changes takes a third off emit time.
-		- Measured: emit alone on the 16 MB document went from about 155 to 105 ms, and allocations from 4.0M to 1.15M. Output is byte-identical and every test passes on the patched copy.
-		- Note: `emit_element`, `escape_name` and `emit_name` copy text that needs no escaping, `emit_node` builds the inside pad for every node, and each cell is built as its own string before it is copied in. `emit_element`'s clone gives no reason.
-		- Note: Rust only. The other three already share strings or write into the output. No function or output changes.
-		- Origin: `5756a59` (2026-07-12) and later. 20260829 item 47 trimmed the pads and did not measure this.
-		- Opened: 20260922-120717
-
 	- 🔘 Idea 5: a merge builds key strings for every child on both sides, in all four bindings, and merge is the slowest thing the CLI does.
 		- Measured: `fmt --layer` on the 16 MB document takes 2.9 times as long as plain `fmt` in Rust, 2.4 in Go, 2.3 in C and Python. The key strings' share was not separated out.
 		- Note: 20260829 item 46 moved the writer's fold to hash-and-verify. The merge's own map is the last one keyed on built strings.
 		- Note: all four: `overlay` in Rust and Go, `_overlay_level` in Python, `w_overlay` in C.
 		- Origin: `66c7e5e` (2026-07-25). 20260918b item 58 added the name index beside it and left this map alone.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 6: the repeated-leaf hint pass makes a list for every child in Rust, C and Python. Go stopped doing that last round.
-		- Measured: Rust `fmt` is 3 to 10 percent faster with the pass off, and C spends about 7.6 percent there.
-		- Note: 20260921 idea 2 fixed Go only, so Go's `emitRepeatedLeafHints` now carries a field the reference does not. Taking the same change in the other three puts them back in step.
-		- Origin: `5756a59` (2026-07-12) in Rust. 20260829 item 47 left it with no number.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 7: Rust copies text on the parse path that the other three slice.
-		- Measured: 17 percent fewer allocations parsing the 16 MB document, 8.2M to 6.8M. Time was within the noise of a shared box.
-		- Note: the value text is copied into `PathScan` per value line, and a name is copied into its segment and then again into the node. The new comment filing copies each comment's indent and collects the pending list per binding line, where Go and C filter in place. The parser's stack copies the indent per nested line.
-		- Note: Rust only. Go made the same changes last round.
-		- Origin: `e58fe9f` (2026-09-07), `5756a59` (2026-07-12), and `0165a83` (2026-09-21) for the comment filing.
-		- Opened: 20260922-120717
-
-	- 🔘 Idea 8: Rust copies strings with no reason given on per-lookup and per-element paths. Unmeasured.
-		- Note: four sites copy a selector's text only to compare it: `find_by_value`, `resolve_from`, `probe_write` and `v_contexts`. `Value::display` clones every element to join them, `read_string`'s array arm collects before joining, and `v_node` clones each element to test it against a set. The CLI's `do_tokens` pushes a `format!` per token.
-		- Note: borrow at each site, or say why the copy is needed.
-		- Origin: mostly `e58fe9f` (2026-09-07) and `5756a59` (2026-07-12). No directive pass had read them.
 		- Opened: 20260922-120717
 
 ### Done
@@ -5101,6 +5075,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260922-120717
 		- Closed: 20260922-195049
 
+	- ✅ Idea 3: Rust's emitter allocates about three strings per node, and returning the borrowed text where nothing changes takes a third off emit time.
+		- Measured: emit alone on the 16 MB document went from about 155 to 105 ms, and allocations from 4.0M to 1.15M. Output is byte-identical and every test passes on the patched copy.
+		- Note: `emit_element`, `escape_name` and `emit_name` copy text that needs no escaping, `emit_node` builds the inside pad for every node, and each cell is built as its own string before it is copied in. `emit_element`'s clone gives no reason.
+		- Note: Rust only. The other three already share strings or write into the output. No function or output changes.
+		- Origin: `5756a59` (2026-07-12) and later. 20260829 item 47 trimmed the pads and did not measure this.
+		- Fixed: `emit_element`, `escape_name` and `emit_name` hand back the text they were given when it needs no quoting, and copy only where a caller keeps it. The inside pad is written straight into the output, and so is each cell. `escape_name` checks bytes, which left `is_bare_name_char` unused, so it went.
+		- Measured: with ideas 7 and 8, `fmt` on the 16 MB document went from about 1.02 to 0.92 s, and on the 32 MB comment-heavy one from 0.93 to 0.71 s. Output identical.
+		- Pinned by: nothing new. The conformance suite and the crosscheck cover the output.
+		- Opened: 20260922-120717
+		- Closed: 20260923-085158
+
 	- ✅ Idea 4: Rust runs its 64-bit keys through a second hash in every lookup map.
 		- Measured: an identity hasher on the eight `HashMap<u64, ...>` maps took 40,000 writes from about 70 to 62 ms, and parse plus emit of the same file from 43 to 38. `fmt --layer` on the 16 MB document was about 5 percent faster. Output identical.
 		- Note: Rust only. Go's runtime, C's buckets and Python's int hash use the value as is.
@@ -5111,6 +5096,37 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `082c917` (2026-08-21) and `5321e38` (2026-09-19).
 		- Opened: 20260922-120717
 		- Closed: 20260922-195049
+
+	- ✅ Idea 6: the repeated-leaf hint pass makes a list for every child in Rust, C and Python. Go stopped doing that last round.
+		- Measured: Rust `fmt` is 3 to 10 percent faster with the pass off, and C spends about 7.6 percent there.
+		- Note: 20260921 idea 2 fixed Go only, so Go's `emitRepeatedLeafHints` now carries a field the reference does not. Taking the same change in the other three puts them back in step.
+		- Origin: `5756a59` (2026-07-12) in Rust. 20260829 item 47 left it with no number.
+		- Fixed: Rust, C and Python hold the first node of a name and make the list on the second, as Go does. All four skip a parent with fewer than two children. C also resets its scratch arena per parent, since each hint is copied out as it is made.
+		- Measured: C `fmt` on the 16 MB document went from about 0.69 to 0.61 s, and peak memory from 536 to 388 MB. On the comment-heavy document peak memory went from 479 to 406 MB. Output identical.
+		- Pinned by: nothing new. The corpus's H001 cases and the crosscheck cover the output.
+		- Opened: 20260922-120717
+		- Closed: 20260923-085158
+
+	- ✅ Idea 7: Rust copies text on the parse path that the other three slice.
+		- Measured: 17 percent fewer allocations parsing the 16 MB document, 8.2M to 6.8M. Time was within the noise of a shared box.
+		- Note: the value text is copied into `PathScan` per value line, and a name is copied into its segment and then again into the node. The new comment filing copies each comment's indent and collects the pending list per binding line, where Go and C filter in place. The parser's stack copies the indent per nested line.
+		- Note: Rust only. Go made the same changes last round.
+		- Origin: `e58fe9f` (2026-09-07), `5756a59` (2026-07-12), and `0165a83` (2026-09-21) for the comment filing.
+		- Fixed: `PathScan` keeps a span into the line in place of a copy of the value text. `attach_path` takes its segments by value, so each name moves into its node. The parser borrows each indent from the source text, for its stack and for pending comments, and the comment filing sorts the pending list in place.
+		- Measured: see idea 3.
+		- Pinned by: nothing new. The 2,000,000-run release fuzz and the crosscheck over fuzz inputs pass.
+		- Opened: 20260922-120717
+		- Closed: 20260923-085158
+
+	- ✅ Idea 8: Rust copies strings with no reason given on per-lookup and per-element paths. Unmeasured.
+		- Note: four sites copy a selector's text only to compare it: `find_by_value`, `resolve_from`, `probe_write` and `v_contexts`. `Value::display` clones every element to join them, `read_string`'s array arm collects before joining, and `v_node` clones each element to test it against a set. The CLI's `do_tokens` pushes a `format!` per token.
+		- Note: borrow at each site, or say why the copy is needed.
+		- Origin: mostly `e58fe9f` (2026-09-07) and `5756a59` (2026-07-12). No directive pass had read them.
+		- Fixed: all the named sites borrow now. The two `children.clone()` calls before a fold read the survivor's new tail instead, since the fold only appends. The CLI takes an option's earlier value rather than copying it, since the new value replaces it next, and `do_tokens` writes into its buffer.
+		- Measured: see idea 3.
+		- Pinned by: nothing new. The conformance suite and `cli-regress.bash` pass.
+		- Opened: 20260922-120717
+		- Closed: 20260923-085158
 
 	- ✅ Idea 9: containers whose size is known are grown one push at a time. Unmeasured.
 		- Note: the duplicate-fold maps in Rust (`fold_late_dups` and the writer's fold) and in C (`fold_late_dups`, `w_fold_dups_below`), which Go sized last round. Rust's `cell_of_tokens`. Four loops in the C++ veneer, one of them run once per tokenized line.

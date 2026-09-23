@@ -9,6 +9,7 @@ use shcl::{
 	Tokens, format_float, generate, migrate, parse_datetime, suppress_declared_reopens,
 	suppress_declared_repeats, tokenize, write_file_atomic,
 };
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 // Every stdout write goes through these. On windows a reader that closed
@@ -693,7 +694,7 @@ fn parse_opts(argv: &[String]) -> Result<Opts, String> {
 			return Ok(o);
 		}
 		if let Some(k) = Kind::from_opt(a) {
-			if let (Some(prev), Some(prev_text)) = (o.kind_opt, o.kind_text.clone())
+			if let (Some(prev), Some(prev_text)) = (o.kind_opt, o.kind_text.take())
 				&& prev != k
 			{
 				note_clash(&mut o, None, &prev_text, a);
@@ -803,7 +804,7 @@ fn note_clash(o: &mut Opts, opt: Option<&'static str>, a: &str, b: &str) {
 fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 	match name {
 		"--default" => {
-			if let Some(prev) = o.default.clone()
+			if let Some(prev) = o.default.take()
 				&& prev != v
 			{
 				note_clash(o, Some("--default"), &prev, v);
@@ -819,7 +820,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 				"flag" => OnBad::Flag,
 				_ => return Err(format!("bad --on-bad value: {} (see --help)", v)),
 			};
-			if let Some(prev) = o.on_bad_text.clone()
+			if let Some(prev) = o.on_bad_text.take()
 				&& o.on_bad_arg != Some(mode)
 			{
 				note_clash(o, Some("--on-bad"), &prev, v);
@@ -832,7 +833,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 		"--strictness" => {
 			let level = Strictness::from_arg(v)
 				.ok_or_else(|| format!("bad --strictness value: {} (see --help)", v))?;
-			if let Some(prev) = o.strictness_text.clone()
+			if let Some(prev) = o.strictness_text.take()
 				&& o.strictness != level
 			{
 				note_clash(o, Some("--strictness"), &prev, v);
@@ -842,7 +843,7 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			o.seen.push("--strictness");
 		}
 		"--schema" => {
-			if let Some(prev) = o.schema.clone()
+			if let Some(prev) = o.schema.take()
 				&& prev != v
 			{
 				note_clash(o, Some("--schema"), &prev, v);
@@ -1959,7 +1960,7 @@ fn do_tokens(o: &Opts) -> u8 {
 			.count();
 		let rest = &line[ilen..];
 		let rest = rest.trim_end_matches([' ', '\t', '\r']);
-		out.push_str(&format!("{}:{}", i + 1, ilen));
+		let _ = write!(out, "{}:{}", i + 1, ilen);
 		if rest.is_empty() {
 			out.push_str(" blank\n");
 			continue;
@@ -1971,14 +1972,11 @@ fn do_tokens(o: &Opts) -> u8 {
 			out.push_str(" comment\n");
 			continue;
 		}
-		let span = |p: &Piece| {
-			let mark = match p.quote {
-				Quote::None => "",
-				Quote::Single => "'",
-				Quote::Double => "\"",
-				Quote::Open => "?",
-			};
-			format!("{}-{}{}", p.start, p.end, mark)
+		let mark = |p: &Piece| match p.quote {
+			Quote::None => "",
+			Quote::Single => "'",
+			Quote::Double => "\"",
+			Quote::Open => "?",
 		};
 		// A stacked element and a fence line are value halves on their own.
 		let star = body.starts_with('*') && body[1..].starts_with([' ', '\t', '\r']);
@@ -1986,41 +1984,36 @@ fn do_tokens(o: &Opts) -> u8 {
 		if star || fence {
 			shcl::tokenize_value(rest, lead + usize::from(star), Rules::Current, &mut tok);
 			out.push_str(if star { " star" } else { " fence" });
-			out.push_str(&format!(" value={}-{}", tok.value.0, tok.value.1));
+			let _ = write!(out, " value={}-{}", tok.value.0, tok.value.1);
 			for p in &tok.elements {
-				out.push_str(&format!(" elem={}", span(p)));
+				let _ = write!(out, " elem={}-{}{}", p.start, p.end, mark(p));
 			}
 			if let Some(at) = tok.comment {
-				out.push_str(&format!(" comment={}", at));
+				let _ = write!(out, " comment={}", at);
 			}
 			out.push('\n');
 			continue;
 		}
 		tokenize(rest, b':', false, Rules::Current, &mut tok);
 		for seg in &tok.segments {
-			out.push_str(&format!(
-				" {}={}",
-				if seg.star { "star" } else { "name" },
-				span(&seg.name)
-			));
+			let kind = if seg.star { "star" } else { "name" };
+			let name = &seg.name;
+			let _ = write!(out, " {}={}-{}{}", kind, name.start, name.end, mark(name));
 			if let Some(sel) = &seg.selector {
-				out.push_str(&format!(" sel={}", span(sel)));
+				let _ = write!(out, " sel={}-{}{}", sel.start, sel.end, mark(sel));
 			}
 		}
 		if let Some(at) = tok.sep {
-			out.push_str(&format!(
-				" sep={} value={}-{}",
-				at, tok.value.0, tok.value.1
-			));
+			let _ = write!(out, " sep={} value={}-{}", at, tok.value.0, tok.value.1);
 			for p in &tok.elements {
-				out.push_str(&format!(" elem={}", span(p)));
+				let _ = write!(out, " elem={}-{}{}", p.start, p.end, mark(p));
 			}
 		}
 		if let Some(at) = tok.comment {
-			out.push_str(&format!(" comment={}", at));
+			let _ = write!(out, " comment={}", at);
 		}
 		if let Some((at, why)) = tok.fault {
-			out.push_str(&format!(" fault={}:{}", at, why));
+			let _ = write!(out, " fault={}:{}", at, why);
 		}
 		out.push('\n');
 	}
@@ -2838,12 +2831,12 @@ fn run_cli() -> u8 {
 		out!("\n{}\n", DONATE);
 		return 0;
 	}
-	let cmd = argv[0].clone();
-	if !COMMANDS.contains(&cmd.as_str()) {
+	let cmd = argv[0].as_str();
+	if !COMMANDS.contains(&cmd) {
 		// Before the options are judged, so a typo in the command is reported
 		// as that and not as an option the wrong command cannot take.
 		if cmd.starts_with('-') && cmd != "--" {
-			let name = cmd.split('=').next().unwrap_or(&cmd);
+			let name = cmd.split('=').next().unwrap_or(cmd);
 			if known_option(name) {
 				// It is a real option, just in front of the subcommand. Calling
 				// it unknown and then suggesting the same spelling back says
@@ -2860,7 +2853,7 @@ fn run_cli() -> u8 {
 			errln!(
 				"unknown command: {}{} (see --help)",
 				cmd,
-				suggest(&command_names(), &cmd)
+				suggest(&command_names(), cmd)
 			);
 		}
 		return 1;
@@ -2874,7 +2867,7 @@ fn run_cli() -> u8 {
 	};
 	#[cfg(feature = "profiling")]
 	if let Ok(out) = std::env::var("SHCL_PROFILE_OUT") {
-		return run_profiled(&cmd, &o, &out);
+		return run_profiled(cmd, &o, &out);
 	}
-	run(&cmd, &o)
+	run(cmd, &o)
 }

@@ -2943,9 +2943,13 @@ func (p *parser) emitRepeatedLeafHints() {
 		nodes []int
 	}
 	for parent := range p.arena {
-		byName := make([]group, 0, len(p.arena[parent].children))
+		children := p.arena[parent].children
+		if len(children) < 2 {
+			continue
+		}
+		byName := make([]group, 0, len(children))
 		groupOf := make(map[string]int)
-		for _, c := range p.arena[parent].children {
+		for _, c := range children {
 			name := p.arena[c].name
 			if g, ok := groupOf[name]; ok {
 				if byName[g].nodes == nil {
