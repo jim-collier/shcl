@@ -3044,6 +3044,38 @@ func (p *parser) emitRepeatedLeafHints() {
 	}
 }
 
+// trimCountingNodeLines takes the carriage returns off every line and counts
+// the lines that can make a node, which sizes the arena. Only a guess, so it
+// stays cheap, but a raw body is skipped: a document of embedded blocks
+// otherwise reserved half again what it used.
+func trimCountingNodeLines(lines []string) int {
+	n := 0
+	var bodyCh byte
+	bodyLen := 0
+	for j, l := range lines {
+		l = strings.TrimRight(l, "\r")
+		lines[j] = l
+		if bodyLen > 0 {
+			if isFenceClose(l, bodyCh, bodyLen) {
+				bodyLen = 0
+			}
+			continue
+		}
+		t := strings.TrimLeft(l, " \t")
+		if t == "" || t[0] == '#' || t[0] == '*' {
+			continue
+		}
+		n++
+		if k := strings.IndexByte(t, ':'); k >= 0 {
+			t = strings.TrimLeft(t[k+1:], " \t")
+		}
+		if ch, length, _, ok := fenceOpen(t); ok {
+			bodyCh, bodyLen = ch, length
+		}
+	}
+	return n
+}
+
 func (p *parser) parse(text string, strictness Strictness) *Document {
 	// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 	// The whole trailing CR run goes, not just one: a raw block keeps its content
@@ -3051,16 +3083,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	// read as neither - the one shape where the count is visible.
 	text = strings.TrimPrefix(text, "\uFEFF")
 	lines := strings.Split(text, "\n")
-	// Counted on the way: lines that can make a node, which sizes the arena.
-	// Only a guess - raw bodies count and are not nodes - so it stays cheap.
-	nodeLines := 0
-	for j, l := range lines {
-		l = strings.TrimRight(l, "\r")
-		lines[j] = l
-		if t := strings.TrimLeft(l, " \t"); t != "" && t[0] != '#' && t[0] != '*' {
-			nodeLines++
-		}
-	}
+	nodeLines := trimCountingNodeLines(lines)
 	// A newline-terminated text splits into one more piece than it has lines.
 	// An unterminated raw block took that empty tail as a body line, so the
 	// same last line read differently with and without its newline, which
@@ -3070,8 +3093,10 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	}
 	// Growing the arena by append cost about an eighth of fmt on a large
 	// file, and more than that in peak memory.
+	// Compared without adding to the cap, which may be near MaxInt. A
+	// negative cap stops the parse at the first line, so it sizes nothing.
 	want := nodeLines + 1
-	if p.maxNodes != 0 && want > p.maxNodes+2 {
+	if p.maxNodes > 0 && want-2 > p.maxNodes {
 		want = p.maxNodes + 2
 	}
 	p.arena = append(make([]nodeData, 0, want), p.arena...)
@@ -4510,14 +4535,17 @@ func valueHalf(text string, out *Tokens) string {
 	return line
 }
 
-// valueReadsBack is true when a value comes back off the page as itself.
+// valueReadsBack is true when a value comes back off the page as itself. A Go
+// string can hold any bytes and a document is UTF-8, so text that is not valid
+// UTF-8 is refused here, the one gate every setter passes through: saved, it
+// would fail the next load of the whole file.
 func valueReadsBack(v *value) bool {
 	switch v.kind {
 	case vEmpty:
 		return true
 	case vCell:
 		text := emitCell(v.els)
-		if strings.Contains(text, "\n") {
+		if strings.Contains(text, "\n") || !utf8.ValidString(text) {
 			return false
 		}
 		var tok Tokens
@@ -4538,7 +4566,7 @@ func valueReadsBack(v *value) bool {
 	default:
 		r := v.raw
 		line := emitFenceLine(r)
-		if strings.Contains(line, "\n") {
+		if strings.Contains(line, "\n") || !utf8.ValidString(line) || !utf8.ValidString(r.content) {
 			return false
 		}
 		var tok Tokens
@@ -4562,7 +4590,7 @@ func valueReadsBack(v *value) bool {
 // nameReadsBack is true when a field name comes back off a line as itself.
 func nameReadsBack(name string) bool {
 	text := escapeName(name)
-	if strings.Contains(text, "\n") {
+	if strings.Contains(text, "\n") || !utf8.ValidString(text) {
 		return false
 	}
 	var tok Tokens
@@ -4576,7 +4604,7 @@ func nameReadsBack(name string) bool {
 // every line's end, so the trimmed text is what gets written; text holding a
 // line break is refused rather than cut down to its first line.
 func commentLine(text string) (string, bool) {
-	if strings.Contains(text, "\n") {
+	if strings.Contains(text, "\n") || !utf8.ValidString(text) {
 		return "", false
 	}
 	t := trimEndWS(text)
@@ -5422,9 +5450,6 @@ func (d *Document) SetBool(path string, v bool) bool {
 // character per bad byte and reported as written - the same refusal SetFloat
 // gives an infinity and SetDateTime a month of 13.
 func (d *Document) SetString(path, v string) bool {
-	if !utf8.ValidString(v) {
-		return false
-	}
 	return d.setValue(path, cellOf(v))
 }
 
@@ -5490,12 +5515,7 @@ func (d *Document) SetBoolArray(path string, v []bool) bool {
 // SetStringArray binds an inline string array at path, per-element escaped.
 func (d *Document) SetStringArray(path string, v []string) bool {
 	texts := make([]string, len(v))
-	for i, x := range v {
-		if !utf8.ValidString(x) {
-			return false
-		}
-		texts[i] = x
-	}
+	copy(texts, v)
 	return d.setValue(path, arrayCell(texts))
 }
 
