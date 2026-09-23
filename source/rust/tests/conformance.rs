@@ -1940,21 +1940,34 @@ fn soup_inputs() -> Vec<String> {
 /// for every input either the call refuses and the document is byte-identical,
 /// or the canonical text reloads to itself and the read gives the value back.
 /// Twelve review items were one setter's own trim, carriage-return or `#` rule
-/// disagreeing with the parser's. Same fixture in every runner.
+/// disagreeing with the parser's. Every accepted write also goes into one
+/// document that is saved and loaded back at the end, since the file tier
+/// checks what an in-memory reload does not: a setter once took bytes the
+/// save wrote and the next load refused. Same fixture in every runner.
 #[test]
 fn setters_write_only_what_reads_back() {
+	let mut all = Document::parse("");
+	let mut slot = 0;
 	for s in soup_inputs() {
 		for kind in 0..6 {
 			let mut doc = Document::parse("k: 1\n");
 			let before = doc.to_canonical();
-			let applied = match kind {
-				0 => doc.set_string("k", &s),
-				1 => doc.set_literal("k", &s),
-				2 => doc.set_comment("k", &s),
-				3 => doc.set_raw("k", &s, "t"),
-				4 => doc.set_raw("k", "body", &s),
-				_ => doc.set_string_array("k", &["x", s.as_str()]),
+			let set = |d: &mut Document, p: &str| match kind {
+				0 => d.set_string(p, &s),
+				1 => d.set_literal(p, &s),
+				2 => d.set_comment(p, &s),
+				3 => d.set_raw(p, &s, "t"),
+				4 => d.set_raw(p, "body", &s),
+				_ => d.set_string_array(p, &["x", s.as_str()]),
 			};
+			let applied = set(&mut doc, "k");
+			if applied {
+				slot += 1;
+				assert!(
+					set(&mut all, &format!("k{slot}")),
+					"slot {slot} refused what k took (setter {kind}, input {s:?})"
+				);
+			}
 			if !applied {
 				assert_eq!(
 					doc.to_canonical(),
@@ -2017,7 +2030,14 @@ fn setters_write_only_what_reads_back() {
 		let path = shcl::quote_segment(&s);
 		let mut doc = Document::parse("k: 1\n");
 		let before = doc.to_canonical();
-		if !doc.set_string(&path, "v") {
+		let applied = doc.set_string(&path, "v");
+		if applied {
+			assert!(
+				all.set_string(&path, "v"),
+				"the name {s:?} was refused the second time"
+			);
+		}
+		if !applied {
 			assert_eq!(
 				doc.to_canonical(),
 				before,
@@ -2043,4 +2063,24 @@ fn setters_write_only_what_reads_back() {
 			text
 		);
 	}
+	let dir = std::env::temp_dir().join(format!("shcl-setters-{}", std::process::id()));
+	std::fs::create_dir_all(&dir).unwrap();
+	let f = dir.join("all.shcl");
+	let fs = f.to_str().unwrap();
+	assert!(
+		all.save_file(fs).is_ok(),
+		"every accepted write together would not save"
+	);
+	let (back, st) = Document::load_file(fs);
+	assert_eq!(
+		st,
+		shcl::FileStatus::Clean,
+		"every accepted write together did not load clean"
+	);
+	assert_eq!(
+		back.to_canonical(),
+		all.to_canonical(),
+		"every accepted write together changed on a save and load"
+	);
+	std::fs::remove_dir_all(&dir).unwrap();
 }

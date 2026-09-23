@@ -484,23 +484,34 @@ def setters_write_only_what_reads_back():
 	# for every input either the call refuses and the document is byte-identical,
 	# or the canonical text reloads to itself and the read gives the value back.
 	# Twelve review items were one setter's own trim, carriage-return or `#` rule
-	# disagreeing with the parser's. Same fixture in every runner.
+	# disagreeing with the parser's. Every accepted write also goes into one
+	# document that is saved and loaded back at the end, since the file tier
+	# checks what an in-memory reload does not: a setter once took bytes the save
+	# wrote and the next load refused. Same fixture in every runner.
+	def put(d, kind, p, s):
+		if kind == 0:
+			return d.set_string(p, s)
+		if kind == 1:
+			return d.set_literal(p, s)
+		if kind == 2:
+			return d.set_comment(p, s)
+		if kind == 3:
+			return d.set_raw(p, s, "t")
+		if kind == 4:
+			return d.set_raw(p, "body", s)
+		return d.set_string_array(p, ["x", s])
+
+	every = shcl.Document.parse("")
+	slot = 0
 	for s in soup_inputs():
 		for kind in range(6):
 			doc = shcl.Document.parse("k: 1\n")
 			before = doc.to_canonical()
-			if kind == 0:
-				applied = doc.set_string("k", s)
-			elif kind == 1:
-				applied = doc.set_literal("k", s)
-			elif kind == 2:
-				applied = doc.set_comment("k", s)
-			elif kind == 3:
-				applied = doc.set_raw("k", s, "t")
-			elif kind == 4:
-				applied = doc.set_raw("k", "body", s)
-			else:
-				applied = doc.set_string_array("k", ["x", s])
+			applied = put(doc, kind, "k", s)
+			if applied:
+				slot += 1
+				if not put(every, kind, f"k{slot}", s):
+					raise SystemExit(f"slot {slot} refused what k took (setter {kind}, input {s!r})")
 			if not applied:
 				if doc.to_canonical() != before:
 					raise SystemExit(f"a refused write changed the document (setter {kind}, input {s!r})")
@@ -530,7 +541,10 @@ def setters_write_only_what_reads_back():
 		path = shcl.quote_segment(s)
 		doc = shcl.Document.parse("k: 1\n")
 		before = doc.to_canonical()
-		if not doc.set_string(path, "v"):
+		applied = doc.set_string(path, "v")
+		if applied and not every.set_string(path, "v"):
+			raise SystemExit(f"the name {s!r} was refused the second time")
+		if not applied:
 			if doc.to_canonical() != before:
 				raise SystemExit(f"a refused name write changed the document ({s!r})")
 			continue
@@ -540,6 +554,14 @@ def setters_write_only_what_reads_back():
 			raise SystemExit(f"name {s!r} is not a fixpoint:\n{text}")
 		if back.read_string(path).value != "v":
 			raise SystemExit(f"name {s!r} did not read back:\n{text}")
+	with tempfile.TemporaryDirectory() as td:
+		f = os.path.join(td, "all.shcl")
+		every.save_file(f)
+		back, st = shcl.Document.load_file(f)
+		if st != shcl.FileStatus.Clean:
+			raise SystemExit(f"every accepted write together loaded {st}")
+		if back.to_canonical() != every.to_canonical():
+			raise SystemExit("every accepted write together changed on a save and load")
 
 
 class SeqGen:
