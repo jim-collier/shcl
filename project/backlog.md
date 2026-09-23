@@ -86,6 +86,44 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260923b:
+
+	- A light pass over fix round part 1 (`cc73b01`: items 1, 2, 5, 6, 7, 13, 20, 21 and 22) and the siblings of those fixes, using the previous round's methods. Nothing else was read.
+
+	- Four defects, all minor. Item 3 is a regression from item 5's fix. Items 1 and 4 are a new gate and a new test that see less than they claim. None loses data or gives a wrong answer at exit 0.
+
+	- Checked clean:
+		- Item 1: nothing gating runs after the record under `--ci`, read stage by stage. The hook still passes only `--no-largedoc`, so its runs record.
+		- Item 2: `set --write` in all four CLIs with a non-UTF-8 value, raw body, name and comment. Each exits 1 and the file still loads, so C's caller contract cannot be reached from its CLI.
+		- Item 5: the new compare cannot overflow, by reading. Python gives the same E020 at line 1 for a negative cap.
+		- Item 6: `isFenceClose` trims the line itself, so an indented close ends the skip.
+		- Item 13: `cli-regress`'s `migrate-check-clean` row pins exit 0 on a file lacking only the Format line.
+
+	- Deferred: `cicd.bash:163` runs past its block's wrap. Rewrap it with the next edit there.
+
+	- 🔘 Item 1: the new veneer doc check cannot see a `[[nodiscard]]` declaration, and two setter groups have no comment.
+		- Reproduced: 27 declarations in `class Document` start with the attribute, every setter among them. With it stripped, the check flags `set_int_array` and `set_int_default`. Declarations spanning lines are skipped too.
+		- Note: the C header comments the `_default` group ("Default (only-if-absent) forms"); the veneer does not. Neither comments the array group.
+		- Origin: the check, `7384068` (20260923 item 22). Confirmed.
+		- Opened: 20260923-155056
+
+	- 🔘 Item 2: 20260923 items 20 and 21 closed with no check behind them.
+		- Reproduced: nothing in `check-docs.bash` refuses `jim-collier/shcl` or its troff spelling, so the org-move miss can come back. No `cli-regress` row runs `tokens` over a raw body, which the new help and man page text describe.
+		- Note: item 13 names the `cli-regress` rows that pin it, so it stands.
+		- Origin: `7384068`. Confirmed.
+		- Opened: 20260923-155056
+
+	- 🔘 Item 3: Go's parse with a negative node cap reserves an arena for the whole document again.
+		- Reproduced: `ParseLimited` at -1 or -3 over 200,000 lines reserves 200,001 slots for a parse that stops at line 1. Before item 5's fix, -1 reserved 1.
+		- Note: the code comment and item 5's Fixed line both say a negative cap sizes nothing. Peak memory only, the same as no cap. The trim hands it back after the parse.
+		- Origin: `3425ce4` (20260923 item 5). Regression. Confirmed.
+		- Opened: 20260923-155056
+
+	- 🔘 Item 4: `TestArenaSizedToTheDocument` passes when the count never finds a raw body's close.
+		- Reproduced: with `isFenceClose` taken out of `trimCountingNodeLines`, the test passes. The child-indent case then counts 3 lines, under its limit of 4, since the line after the close is the only one the skip can hide.
+		- Origin: `3425ce4` (20260923 item 6). Confirmed.
+		- Opened: 20260923-155056
+
 - Code review 20260923:
 
 	- A full adversarial pass over the whole tree, split six ways: the Rust reference, C and C++, Go, Python with the PowerShell wrapper, the four CLIs judged against the spec and the public docs, and the scripts, gates and installers. Aimed first at the code merged since the last round's base (`ed5f861`) and at the siblings of those fixes.
