@@ -372,6 +372,8 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - Tail comments are filed before the end-of-load fold of late duplicates, not after. The fold carries a dropped instance's comments over to the one it joins; after it, they were filed on the dropped one and lost.
 
+- A merge, a new child and the writer's fold change child lists after the load, so each files comments by the same rules where it changed one. Otherwise the next step put a comment in one place on the document and in another on its saved text, and whether a file was saved between two edits decided where the comment went. The same holds for the blank the emitter drops on the first line, and for a raw block's trailing comment, which goes on its own line above when an empty binding of its name comes first.
+
 **A float is written with the fewest digits that read back, and an exact tie between two such spellings rounds to even.** Shortest-round-trip formatters agree on every double except two cases, and both had leaked into the output: at a power of two the rounding interval is lopsided, so the closest short spelling can fall outside it while its neighbor reads back, and on an exact tie between two spellings of the shortest length Rust's formatter rounds away from zero where Go's, Python's and glibc's round to even.
 
 - We decided on round to even: it is IEEE 754's own tie rule, what three of the four bindings already did, and what `repr` in Python and `strconv` in Go print, so a value read from another tool's output spells the same here. The reference takes the correctly rounded spelling of the shortest length whenever it reads back, and keeps its own shortest spelling only when it does not.

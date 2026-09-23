@@ -2757,43 +2757,89 @@ static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t o
 	if (!cmap_first(P->dmaps->data[parent], hd)) cmap_put(P->tmp, map_mut(P->tmp, P->dmaps, parent), hd, node);
 }
 
-/* A block's inside comments are written out after its last child's block, at
-   that child's level, which is where a reload files them: as the last child's
-   own. File them there once the tree is final, so a layer and its canonical
-   form merge the same. The text does not move. */
-static void inside_to_last_child(ShclParser *P) {
-	ShclArena *a = &P->d->arena;
-	for (size_t n = 0; n < P->d->nodes.len; n++) {
-		ShclNode *nd = &NODE(P->d, n);
-		if (!nd->children.len || !nd->trivia || !nd->trivia->inside.len) continue;
-		ShclTrivia *kt = triv_mut(a, &NODE(P->d, nd->children.data[nd->children.len - 1]));
-		for (size_t k = 0; k < nd->trivia->inside.len; k++) ShclVecLead_push(a, &kt->after, nd->trivia->inside.data[k]);
-		nd->trivia->inside.len = 0;
+/* The trailing comment becomes the last leading line, taking the node's blank
+   with it, which is the order the emitter writes them in. */
+static void trailing_to_leading(shcl_doc *d, ShclNode *nd) {
+	ShclVecLead_push(&d->arena, &nd->trivia->leading, lead_make(nd->trivia->trailing, nd->blank_before, 0));
+	nd->trivia->trailing = s_empty();
+	nd->blank_before = 0;
+}
+
+/* A raw block after an empty binding of its name is written with the fence on
+   the binding's line, where no comment can follow it, so the emitter writes its
+   trailing comment on a line of its own above, after the node's blank. A
+   reload files that line as a leading comment, so file it there now. The
+   empties map lives in scratch, like the emitter's. */
+static void settle_fence_trailing(shcl_doc *d, size_t n) {
+	ShclVecSize kids = NODE(d, n).children;
+	size_t k = 0;
+	while (k < kids.len && !(NODE(d, kids.data[k]).value.kind == V_RAW && triv_trailing(&NODE(d, kids.data[k])).n)) k++;
+	if (k == kids.len) return;
+	ShclCMap empties; memset(&empties, 0, sizeof empties);
+	for (size_t i = 0; i < kids.len; i++) {
+		size_t c = kids.data[i];
+		ShclNode *nd = &NODE(d, c);
+		uint64_t h = cmap_hash(nd->name, s_empty());
+		int seen = 0; /* entries name the empty sibling, so a hit verifies */
+		for (ShclCMapEnt *e = cmap_first(&empties, h); e; e = cmap_next(e, h))
+			if (s_eq(NODE(d, e->val).name, nd->name)) { seen = 1; break; }
+		if (nd->value.kind == V_RAW && seen && nd->trivia && nd->trivia->trailing.n) {
+			trailing_to_leading(d, nd);
+		} else if (v_is_empty(&nd->value) && !seen) {
+			cmap_put(&d->scratch, &empties, h, c);
+		}
 	}
 }
 
-/* A block reopened later in the file gains children after the one that was
-   last, and that child's comments at its own level now sit right above a
-   sibling, where a reload files them as the sibling's leading ones. Move them
-   there, from the first one at that level on, which is where a reload splits
-   the run. */
-static void after_to_next_sibling(ShclParser *P) {
-	ShclArena *a = &P->d->arena;
-	for (size_t n = 0; n < P->d->nodes.len; n++) {
-		ShclVecSize *kids = &NODE(P->d, n).children;
-		for (size_t i = 1; i < kids->len; i++) {
-			ShclTrivia *t = NODE(P->d, kids->data[i - 1]).trivia;
-			if (!t) continue;
-			size_t at = 0;
-			while (at < t->after.len && t->after.data[at].depth != 0) at++;
-			if (at == t->after.len) continue;
-			ShclTrivia *nt = triv_mut(a, &NODE(P->d, kids->data[i]));
-			ShclVecLead lead = {0};
-			for (size_t k = at; k < t->after.len; k++) ShclVecLead_push(a, &lead, t->after.data[k]);
-			for (size_t k = 0; k < nt->leading.len; k++) ShclVecLead_push(a, &lead, nt->leading.data[k]);
-			nt->leading = lead;
-			t->after.len = at;
-		}
+/* File a block's comments where a reload does, in place. A block's inside
+   comments are written after its last child's block, at that child's level,
+   so a reload files them as the last child's own. A child's comments at its
+   own level sit right above the next sibling, so a reload files them as that
+   sibling's leading ones, from the first one at that level on. The load runs
+   this once the tree is final; a merge, a new child and the writer's fold run
+   it where they change a child list, or the next step lands differently
+   depending on whether the file was saved in between. The text does not move.
+   `from` is the first child whose leading list may gain, so a new last child
+   costs one pair; it cannot put a fence after an empty binding either, so
+   only a full pass looks for one. */
+static void settle_block(shcl_doc *d, size_t n, size_t from) {
+	ShclArena *a = &d->arena;
+	if (!NODE(d, n).children.len) return;
+	if (from <= 1) settle_fence_trailing(d, n);
+	ShclNode *nd = &NODE(d, n);
+	if (nd->trivia && nd->trivia->inside.len) {
+		ShclTrivia *kt = triv_mut(a, &NODE(d, nd->children.data[nd->children.len - 1]));
+		for (size_t k = 0; k < nd->trivia->inside.len; k++) ShclVecLead_push(a, &kt->after, nd->trivia->inside.data[k]);
+		nd->trivia->inside.len = 0;
+	}
+	ShclVecSize *kids = &NODE(d, n).children;
+	for (size_t i = from ? from : 1; i < kids->len; i++) {
+		ShclTrivia *t = NODE(d, kids->data[i - 1]).trivia;
+		if (!t) continue;
+		size_t at = 0;
+		while (at < t->after.len && t->after.data[at].depth != 0) at++;
+		if (at == t->after.len) continue;
+		ShclTrivia *nt = triv_mut(a, &NODE(d, kids->data[i]));
+		ShclVecLead lead = {0};
+		for (size_t k = at; k < t->after.len; k++) ShclVecLead_push(a, &lead, t->after.data[k]);
+		for (size_t k = 0; k < nt->leading.len; k++) ShclVecLead_push(a, &lead, nt->leading.data[k]);
+		nt->leading = lead;
+		t->after.len = at;
+	}
+}
+
+/* The emitter drops a blank before the first thing it prints, so a document
+   that kept one there would not survive its own canonical form, and a merge or
+   a new first line - where it is no longer first - would place a blank nobody
+   wrote. Clear it wherever output starts. */
+static void settle_first_blank(shcl_doc *d) {
+	ShclVecSize kids = NODE(d, ROOT).children;
+	if (kids.len) {
+		ShclNode *n = &NODE(d, kids.data[0]);
+		if (n->trivia && n->trivia->leading.len) n->trivia->leading.data[0].blank_before = 0;
+		else n->blank_before = 0;
+	} else if (d->orphans.len) {
+		d->orphans.data[0].blank_before = 0;
 	}
 }
 
@@ -3644,27 +3690,12 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	   one it joins: after it they would hang on the dropped one. */
 	hang_deeper_pending(&P, s_empty());
 	fold_late_dups(&P);
-	inside_to_last_child(&P);
-	after_to_next_sibling(&P);
+	for (size_t n = 0; n < d->nodes.len; n++) settle_block(d, n, 1);
 	emit_repeated_leaf_hints(&P);
 	P.depth_chain.len = 0;
 	for (size_t k = 0; k < P.pending.len; k++)
 		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before, comment_depth(&P, s_empty(), P.pending.data[k].text, P.pending.data[k].indent)));
-	/* The emitter drops a blank before the first thing it prints, so a document
-	   that kept one there would not survive its own canonical form:
-	   load(emit(load(x))) and load(x) would differ on that bit, and a merge -
-	   where the line is no longer first - would place a blank the author never
-	   wrote. Clear it here, once, wherever output starts. */
-	{
-		ShclVecSize kids = NODE(d, ROOT).children;
-		if (kids.len) {
-			ShclNode *n = &NODE(d, kids.data[0]);
-			if (n->trivia && n->trivia->leading.len) n->trivia->leading.data[0].blank_before = 0;
-			else n->blank_before = 0;
-		} else if (d->orphans.len) {
-			d->orphans.data[0].blank_before = 0;
-		}
-	}
+	settle_first_blank(d);
 	/* The one entry past the cap: what was not listed, and whether any of it
 	   was an error, so a consumer scanning the list for errors still finds
 	   one and a strict load still fails. */
@@ -4203,6 +4234,7 @@ static size_t w_new_child(shcl_doc *d, size_t parent, ShclStr name, ShclStr name
 	nodes_push(d, n);
 	ShclVecSize_push(a, &NODE(d, parent).children, idx);
 	if (d->index_built == 1) index_append(d, name_key(parent, name), idx);
+	settle_block(d, parent, NODE(d, parent).children.len - 1);
 	return idx;
 }
 
@@ -4298,6 +4330,20 @@ static int w_place(shcl_doc *d, ShclStr path, size_t *out) {
 	*out = cur; return 1;
 }
 
+/* The write-side twin of settle_fence_trailing: only the written name's
+   instances can change, and walking them off the index keeps a write off the
+   rest of the block. */
+static void w_settle_fence_name(shcl_doc *d, size_t parent, ShclStr name) {
+	ShclVecSize cands = {0};
+	children_named(d, &d->scratch, parent, name, &cands);
+	int seen_empty = 0;
+	for (size_t k = 0; k < cands.len; k++) {
+		ShclNode *nd = &NODE(d, cands.data[k]);
+		if (seen_empty && nd->value.kind == V_RAW && nd->trivia && nd->trivia->trailing.n) trailing_to_leading(d, nd);
+		else if (v_is_empty(&nd->value)) seen_empty = 1;
+	}
+}
+
 /* Folding moves the loser's children up a level, where they can collide with
    the survivor's own. The parser's fold is depth-first for the same reason;
    only a node that just received children can hold a new pair. */
@@ -4335,6 +4381,7 @@ static void w_fold_dups_below(shcl_doc *d, size_t start) {
 			}
 		}
 		ch->len = w;
+		settle_block(d, parent, 1);
 	}
 }
 
@@ -4367,6 +4414,7 @@ static void w_collapse_dup(shcl_doc *d, size_t node) {
 	size_t w = 0;
 	for (size_t k = 0; k < pk->len; k++) if (pk->data[k] != loser) pk->data[w++] = pk->data[k];
 	pk->len = w;
+	settle_block(d, parent, 1);
 	if (d->index_built == 1) {
 		index_unlink(d, name_key(parent, NODE(d, loser).name), loser);
 		for (size_t k = 0; k < moved.len; k++) {
@@ -4391,7 +4439,14 @@ static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	if (d->probe) { arena_release(&d->arena, m); arena_reset_smallest(&d->scratch); return 1; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
+	/* An empty binding or a raw block can put a fence after an empty sibling
+	   of its name. */
+	int fence_side = v.kind == V_EMPTY || v.kind == V_RAW;
+	size_t parent = NODE(d, idx).parent;
+	ShclStr name = NODE(d, idx).name;
 	w_collapse_dup(d, idx);
+	if (fence_side) w_settle_fence_name(d, parent, name);
+	settle_first_blank(d);
 	return 1;
 }
 
@@ -4444,6 +4499,7 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 		}
 		kids->len = w;
 	}
+	settle_first_blank(d);
 	return targets.len;
 }
 
@@ -4482,6 +4538,7 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 		else lead.blank_before = 1;
 	}
 	ShclVecLead_push(a, &t->leading, lead);
+	settle_first_blank(d);
 	return 1;
 }
 
@@ -4882,6 +4939,13 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	ShclArena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	w_overlay(d, ROOT, over, ROOT);
+	ShclVecSize stack = {0};
+	ShclVecSize_push(&d->scratch, &stack, ROOT);
+	while (stack.len) {
+		size_t n = stack.data[--stack.len];
+		settle_block(d, n, 1);
+		for (size_t k = 0; k < NODE(d, n).children.len; k++) ShclVecSize_push(&d->scratch, &stack, NODE(d, n).children.data[k]);
+	}
 	// Layers commonly share a footer; keeping one copy of each keeps a stack
 	// of files from repeating it once per layer. Only the lines already here
 	// count: a layer's own repeats are its content.
@@ -4900,6 +4964,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 		if (ot.n && ot.p[0] == '#') { if (depth > room) depth = room; room = depth + 1; }
 		ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, depth));
 	}
+	settle_first_blank(d);
 }
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {

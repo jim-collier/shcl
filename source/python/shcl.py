@@ -683,6 +683,82 @@ def _fold_node_into(arena, survivor, loser):
 		st.inside.extend(lt.inside)
 
 
+def _settle_block(arena, n, start):
+	"""File a block's comments where a reload does, in place. A block's inside
+	comments are written after its last child's block, at that child's level,
+	so a reload files them as the last child's own. A child's comments at its
+	own level sit right above the next sibling, so a reload files them as that
+	sibling's leading ones, from the first one at that level on. The load runs
+	this once the tree is final; a merge, a new child and the writer's fold run
+	it where they change a child list, or the next step lands differently
+	depending on whether the file was saved in between. The text does not move.
+	start is the first child whose leading list may gain, so a new last child
+	costs one pair; it cannot put a fence after an empty binding either, so only
+	a full pass looks for one."""
+	kids = arena[n].children
+	if not kids:
+		return
+	if start <= 1:
+		_settle_fence_trailing(arena, n)
+	t = arena[n].trivia
+	if t is not None and t.inside:
+		arena[kids[-1]]._triv().after.extend(t.inside)
+		t.inside = []
+	for i in range(max(start, 1), len(kids)):
+		t = arena[kids[i - 1]].trivia
+		if t is None:
+			continue
+		at = next((k for k, c in enumerate(t.after) if c.depth == 0), None)
+		if at is None:
+			continue
+		nt = arena[kids[i]]._triv()
+		nt.leading[:0] = t.after[at:]
+		del t.after[at:]
+
+
+def _settle_fence_trailing(arena, n):
+	"""A raw block after an empty binding of its name is written with the fence
+	on the binding's line, where no comment can follow it, so the emitter writes
+	its trailing comment on a line of its own above, after the node's blank. A
+	reload files that line as a leading comment, so file it there now."""
+	kids = arena[n].children
+	if not any(arena[c].value.kind == "raw" and arena[c].trivia is not None and arena[c].trivia.trailing for c in kids):
+		return
+	empties = set()
+	for c in kids:
+		nd = arena[c]
+		t = nd.trivia
+		if nd.value.kind == "raw" and t is not None and t.trailing and nd.name in empties:
+			_trailing_to_leading(nd)
+		elif nd.value.is_empty():
+			empties.add(nd.name)
+
+
+def _trailing_to_leading(nd):
+	"""The trailing comment becomes the last leading line, taking the node's
+	blank with it, which is the order the emitter writes them in."""
+	t = nd.trivia
+	t.leading.append(_Lead(t.trailing, nd.blank_before))
+	t.trailing = ""
+	nd.blank_before = False
+
+
+def _settle_first_blank(arena, orphans):
+	"""The emitter drops a blank before the first thing it prints, so a document
+	that kept one there would not survive its own canonical form, and a merge or
+	a new first line - where it is no longer first - would place a blank nobody
+	wrote. Clear it wherever output starts."""
+	kids = arena[ROOT].children
+	if kids:
+		n = arena[kids[0]]
+		if n.trivia is not None and n.trivia.leading:
+			n.trivia.leading[0].blank_before = False
+		else:
+			n.blank_before = False
+	elif orphans:
+		orphans[0].blank_before = False
+
+
 # Maximum nesting depth (levels below the document root), enforced at load and
 # by the Writer. Deeper lines are skipped with an E016 error. The cap is what
 # keeps the recursive tree walks (emit, merge, clone) safely inside every
@@ -2022,38 +2098,6 @@ class _Parser:
 			del dmap[old_disp]
 		dmap.setdefault((name, _disp_key(self.arena[node].value)), node)
 
-	def _inside_to_last_child(self):
-		"""A block's inside comments are written out after its last child's
-		block, at that child's level, which is where a reload files them: as the
-		last child's own. File them there once the tree is final, so a layer and
-		its canonical form merge the same. The text does not move."""
-		for nd in self.arena:
-			t = nd.trivia
-			if not nd.children or t is None or not t.inside:
-				continue
-			self.arena[nd.children[-1]]._triv().after.extend(t.inside)
-			t.inside = []
-
-	def _after_to_next_sibling(self):
-		"""A block reopened later in the file gains children after the one that
-		was last, and that child's comments at its own level now sit right above
-		a sibling, where a reload files them as the sibling's leading ones. Move
-		them there, from the first one at that level on, which is where a reload
-		splits the run."""
-		arena = self.arena
-		for nd in arena:
-			kids = nd.children
-			for i in range(1, len(kids)):
-				t = arena[kids[i - 1]].trivia
-				if t is None:
-					continue
-				at = next((k for k, c in enumerate(t.after) if c.depth == 0), None)
-				if at is None:
-					continue
-				nt = arena[kids[i]]._triv()
-				nt.leading[:0] = t.after[at:]
-				del t.after[at:]
-
 	def _fold_late_dups(self):
 		"""A value that mutates after its sibling group was keyed - an empty field
 		filled by a fence, a stacked list closed - can land on a key an earlier
@@ -2762,26 +2806,13 @@ class _Parser:
 		# the one it joins: after it they would hang on the dropped one.
 		self._hang_deeper_pending("")
 		self._fold_late_dups()
-		self._inside_to_last_child()
-		self._after_to_next_sibling()
+		for n in range(len(self.arena)):
+			_settle_block(self.arena, n, 1)
 		self._emit_repeated_leaf_hints()
 		chain: list[tuple[str, int]] = []
 		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent)) for p in self.pending]
 		self.pending = []
-		# The emitter drops a blank before the first thing it prints, so a
-		# document that kept one there would not survive its own canonical form:
-		# load(emit(load(x))) and load(x) would differ on that bit, and a merge -
-		# where the line is no longer first - would place a blank the author
-		# never wrote. Clear it here, once, wherever output starts.
-		kids = self.arena[ROOT].children
-		if kids:
-			n = self.arena[kids[0]]
-			if n.trivia is not None and n.trivia.leading:
-				n.trivia.leading[0].blank_before = False
-			else:
-				n.blank_before = False
-		elif orphans:
-			orphans[0].blank_before = False
+		_settle_first_blank(self.arena, orphans)
 		# The one entry past the cap: what was not listed, and whether any of
 		# it was an error, so a consumer scanning the list for errors still
 		# finds one and a Strict load still fails.
@@ -3425,6 +3456,7 @@ class Document:
 		self.arena[parent].children.append(idx)
 		if self._index is not None:
 			self._index.append(_name_key(parent, name), idx)
+		_settle_block(self.arena, parent, len(self.arena[parent].children) - 1)
 		return idx
 
 	def write_reason(self, path: str) -> WriteReason:
@@ -3536,7 +3568,14 @@ class Document:
 			return False
 		self.arena[idx].value = value
 		self.arena[idx].src = None   # written value has no source spelling
+		# An empty binding or a raw block can put a fence after an empty
+		# sibling of its name.
+		fence_side = value.kind == "raw" or value.is_empty()
+		parent, name = self.arena[idx].parent, self.arena[idx].name
 		self._collapse_dup(idx)
+		if fence_side:
+			self._settle_fence_name(parent, name)
+		_settle_first_blank(self.arena, self.orphans)
 		return True
 
 	def _collapse_dup(self, node):
@@ -3563,6 +3602,7 @@ class Document:
 		moved = list(self.arena[loser].children)
 		_fold_node_into(self.arena, survivor, loser)
 		self.arena[parent].children = [c for c in self.arena[parent].children if c != loser]
+		_settle_block(self.arena, parent, 1)
 		ix = self._index
 		if ix is not None:
 			ix.unlink(_name_key(parent, self.arena[loser].name), loser)
@@ -3571,6 +3611,19 @@ class Document:
 				ix.unlink(_name_key(loser, name), k)
 				ix.append(_name_key(survivor, name), k)
 		self._fold_dups_below(survivor)
+
+	def _settle_fence_name(self, parent, name):
+		"""The write-side twin of _settle_fence_trailing: only the written name's
+		instances can change, and walking them off the index keeps a write off
+		the rest of the block."""
+		seen_empty = False
+		for c in self._children_named(parent, name):
+			nd = self.arena[c]
+			t = nd.trivia
+			if seen_empty and nd.value.kind == "raw" and t is not None and t.trailing:
+				_trailing_to_leading(nd)
+			elif nd.value.is_empty():
+				seen_empty = True
 
 	def _fold_dups_below(self, start):
 		"""Folding moves the loser's children up a level, where they can collide
@@ -3600,6 +3653,7 @@ class Document:
 					first[key] = c
 					keep.append(c)
 			self.arena[parent].children = keep
+			_settle_block(self.arena, parent, 1)
 
 	def exists(self, path: str) -> bool:
 		"""True when the path resolves to at least one real node."""
@@ -3654,6 +3708,7 @@ class Document:
 				else:
 					keep.append(c)
 			self.arena[p].children = keep
+		_settle_first_blank(self.arena, self.orphans)
 		return len(targets)
 
 	def set_comment(self, path: str, text: str) -> bool:
@@ -3682,6 +3737,7 @@ class Document:
 			else:
 				lead.blank_before = True
 		t.leading.append(lead)
+		_settle_first_blank(self.arena, self.orphans)
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -3875,6 +3931,11 @@ class Document:
 		self._index = None
 		self._lost += over._lost
 		self._overlay(ROOT, over, ROOT)
+		stack = [ROOT]
+		while stack:
+			n = stack.pop()
+			_settle_block(self.arena, n, 1)
+			stack.extend(self.arena[n].children)
 		# Layers commonly share a footer; keeping one copy of each keeps a
 		# stack of files from repeating it once per layer. Only the lines
 		# already here count: a layer's own repeats are its content.
@@ -3890,6 +3951,7 @@ class Document:
 					depth = min(depth, room)
 					room = depth + 1
 				self.orphans.append(_Lead(o.text, o.blank_before, depth))
+		_settle_first_blank(self.arena, self.orphans)
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned

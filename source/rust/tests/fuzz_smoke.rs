@@ -844,6 +844,70 @@ fn writer_roundtrips_and_stays_fixpoint() {
 	}
 }
 
+/// A merge or an edit leaves the document its own saved text reloads as,
+/// comments included, so the next step lands the same whether or not the file
+/// was saved in between. Comments were filed one way by a load and another by
+/// a merge, a new child or the writer's fold three times in three days; the
+/// text fixpoint cannot see it, since both placements are fixpoints.
+#[test]
+fn edits_and_merges_match_a_reload() {
+	let iters = iter_count(1);
+	let seeds = seed_texts();
+	let mut rng = Rng(0x5EED_0923_C0DE_0003);
+	for i in 0..iters {
+		let base = if rng.below(3) == 0 {
+			let seed = rng.below(seeds.len());
+			mutate(&mut rng, &seeds[seed])
+		} else {
+			structural(&mut rng)
+		};
+		let mut live = Document::parse(&base);
+		let mut log = format!("base:\n{base}");
+		for _ in 0..(2 + rng.below(3)) {
+			let text = live.to_canonical();
+			let mut back = Document::parse(&text);
+			let paths = live.paths();
+			let path = if paths.is_empty() || rng.below(3) == 0 {
+				format!(
+					"{}.{}",
+					["a", "b", "m"][rng.below(3)],
+					["c", "d", "x"][rng.below(3)]
+				)
+			} else {
+				paths[rng.below(paths.len())].clone()
+			};
+			let v = format!("v{}", rng.below(3));
+			let op = rng.below(10);
+			let layer = structural(&mut rng);
+			for d in [&mut live, &mut back] {
+				let _ = match op {
+					0 | 1 => {
+						d.merge(&Document::parse(&layer));
+						true
+					}
+					2 => d.set_int(&path, 7),
+					3 => d.set_string(&path, &v),
+					4 => d.remove(&path) > 0,
+					5 => d.set_comment(&path, &v),
+					6 => d.set_empty(&path),
+					7 => d.set_raw(&path, "body", &v),
+					8 => d.set_int_default(&path, 1),
+					_ => d.set_literal(&path, &v),
+				};
+			}
+			log.push_str(&match op {
+				0 | 1 => format!("merge:\n{layer}"),
+				_ => format!("op {op} at {path:?}\n"),
+			});
+			assert_eq!(
+				live.to_canonical(),
+				back.to_canonical(),
+				"a step on the document and on its reload differ at iteration {i}:\n{log}"
+			);
+		}
+	}
+}
+
 /// Lines built from the grammar with their spans known as they are laid
 /// down, so the tokenizer has an oracle outside itself: the four bindings
 /// agreeing on `tokens` proves parity, and this is what proves the spans are

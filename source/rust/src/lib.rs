@@ -682,6 +682,94 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 	}
 }
 
+/// Where a reload files a block's comments, applied in place. A block's
+/// inside comments are written after its last child's block, at that child's
+/// level, so a reload files them as the last child's own. A child's comments
+/// at its own level sit right above the next sibling, so a reload files them
+/// as that sibling's leading ones, from the first one at that level on. The
+/// load runs this once the tree is final; a merge, a new child and the
+/// writer's fold run it where they change a child list, or the next step
+/// lands differently depending on whether the file was saved in between. The
+/// text does not move. `from` is the first child whose leading list may
+/// gain, so a new last child costs one pair; it cannot put a fence after an
+/// empty binding either, so only a full pass looks for one.
+fn settle_block(arena: &mut [NodeData], n: usize, from: usize) {
+	let Some(&kid) = arena[n].children.last() else {
+		return;
+	};
+	if from <= 1 {
+		settle_fence_trailing(arena, n);
+	}
+	if let Some(t) = arena[n].trivia.as_deref_mut()
+		&& !t.inside.is_empty()
+	{
+		let moved = std::mem::take(&mut t.inside);
+		arena[kid].triv_mut().after.extend(moved);
+	}
+	for i in from.max(1)..arena[n].children.len() {
+		let (prev, next) = (arena[n].children[i - 1], arena[n].children[i]);
+		let Some(t) = arena[prev].trivia.as_deref_mut() else {
+			continue;
+		};
+		let Some(at) = t.after.iter().position(|c| c.depth == 0) else {
+			continue;
+		};
+		let mut moved = t.after.split_off(at);
+		let nt = arena[next].triv_mut();
+		moved.append(&mut nt.leading);
+		nt.leading = moved;
+	}
+}
+
+/// A raw block after an empty binding of its name is written with the fence on
+/// the binding's line, where no comment can follow it, so the emitter writes
+/// its trailing comment on a line of its own above, after the node's blank. A
+/// reload files that line as a leading comment, so file it there now.
+fn settle_fence_trailing(arena: &mut [NodeData], n: usize) {
+	let fenced = |nd: &NodeData| matches!(nd.value, Value::Raw(_)) && !nd.trailing().is_empty();
+	if !arena[n].children.iter().any(|&c| fenced(&arena[c])) {
+		return;
+	}
+	let mut empties: std::collections::HashSet<String> = std::collections::HashSet::new();
+	for i in 0..arena[n].children.len() {
+		let nd = &mut arena[arena[n].children[i]];
+		if fenced(nd) && empties.contains(&nd.name) {
+			trailing_to_leading(nd);
+		} else if nd.value.is_empty() {
+			empties.insert(nd.name.clone());
+		}
+	}
+}
+
+/// The trailing comment becomes the last leading line, taking the node's blank
+/// with it, which is the order the emitter writes them in.
+fn trailing_to_leading(nd: &mut NodeData) {
+	let blank_before = std::mem::take(&mut nd.blank_before);
+	let t = nd.triv_mut();
+	let text = std::mem::take(&mut t.trailing);
+	t.leading.push(Lead {
+		depth: 0,
+		text,
+		blank_before,
+	});
+}
+
+/// The emitter drops a blank before the first thing it prints, so a document
+/// that kept one there would not survive its own canonical form, and a merge
+/// or a new first line - where it is no longer first - would place a blank
+/// nobody wrote. Clear it wherever output starts.
+fn settle_first_blank(arena: &mut [NodeData], orphans: &mut [Lead]) {
+	if let Some(&first) = arena[ROOT].children.first() {
+		let n = &mut arena[first];
+		match n.trivia.as_mut().and_then(|t| t.leading.first_mut()) {
+			Some(c) => c.blank_before = false,
+			None => n.blank_before = false,
+		}
+	} else if let Some(c) = orphans.first_mut() {
+		c.blank_before = false;
+	}
+}
+
 /// Maximum nesting depth (levels below the document root), enforced at load
 /// and by the Writer. Deeper lines are skipped with an `E016` error. The cap
 /// is what keeps the recursive tree walks (emit, merge, clone) safely inside
@@ -2369,49 +2457,6 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-	/// A block's inside comments are written out after its last child's block,
-	/// at that child's level, which is where a reload files them: as the last
-	/// child's own. File them there once the tree is final, so a layer and its
-	/// canonical form merge the same. The text does not move.
-	fn inside_to_last_child(&mut self) {
-		for n in 0..self.arena.len() {
-			let Some(&kid) = self.arena[n].children.last() else {
-				continue;
-			};
-			let Some(t) = self.arena[n].trivia.as_deref_mut() else {
-				continue;
-			};
-			if t.inside.is_empty() {
-				continue;
-			}
-			let moved = std::mem::take(&mut t.inside);
-			self.arena[kid].triv_mut().after.extend(moved);
-		}
-	}
-
-	/// A block reopened later in the file gains children after the one that
-	/// was last, and that child's comments at its own level now sit right
-	/// above a sibling, where a reload files them as the sibling's leading
-	/// ones. Move them there, from the first one at that level on, which is
-	/// where a reload splits the run.
-	fn after_to_next_sibling(&mut self) {
-		for n in 0..self.arena.len() {
-			for i in 1..self.arena[n].children.len() {
-				let (prev, next) = (self.arena[n].children[i - 1], self.arena[n].children[i]);
-				let Some(t) = self.arena[prev].trivia.as_deref_mut() else {
-					continue;
-				};
-				let Some(at) = t.after.iter().position(|c| c.depth == 0) else {
-					continue;
-				};
-				let mut moved = t.after.split_off(at);
-				let nt = self.arena[next].triv_mut();
-				moved.append(&mut nt.leading);
-				nt.leading = moved;
-			}
-		}
-	}
-
 	/// Hand pending leading comments (and this line's trailing one) to a node.
 	/// First trailing wins; a later one demotes to leading so nothing is lost.
 	fn attach_trivia(&mut self, node: usize, indent: &str, trailing: Option<&str>) {
@@ -3436,8 +3481,9 @@ impl<'a> Parser<'a> {
 		// the one it joins: after it they would hang on the dropped one.
 		self.hang_deeper_pending("");
 		self.fold_late_dups();
-		self.inside_to_last_child();
-		self.after_to_next_sibling();
+		for n in 0..self.arena.len() {
+			settle_block(&mut self.arena, n, 1);
+		}
 		self.emit_repeated_leaf_hints();
 		let mut chain = Vec::new();
 		let mut orphans: Vec<Lead> = self
@@ -3449,20 +3495,7 @@ impl<'a> Parser<'a> {
 				blank_before: p.blank_before,
 			})
 			.collect();
-		// The emitter drops a blank before the first thing it prints, so a
-		// document that kept one there would not survive its own canonical
-		// form: `load(emit(load(x)))` and `load(x)` would differ on that bit,
-		// and a merge - where the line is no longer first - would place a blank
-		// the author never wrote. Clear it here, once, wherever output starts.
-		if let Some(&first) = self.arena[ROOT].children.first() {
-			let n = &mut self.arena[first];
-			match n.trivia.as_mut().and_then(|t| t.leading.first_mut()) {
-				Some(c) => c.blank_before = false,
-				None => n.blank_before = false,
-			}
-		} else if let Some(c) = orphans.first_mut() {
-			c.blank_before = false;
-		}
+		settle_first_blank(&mut self.arena, &mut orphans);
 		// The one entry past the cap: what was not listed, and whether any
 		// of it was an error, so a consumer scanning the list for errors
 		// still finds one and a Strict load still fails.
@@ -5241,6 +5274,8 @@ impl Document {
 		if let Some(ix) = self.index.get_mut() {
 			ix.append(name_key(parent, name), idx);
 		}
+		let last = self.arena[parent].children.len() - 1;
+		settle_block(&mut self.arena, parent, last);
 		idx
 	}
 
@@ -5377,7 +5412,15 @@ impl Document {
 			Some(node) => {
 				self.arena[node].value = value;
 				self.arena[node].src = None; // written value has no source spelling
+				// An empty binding or a raw block can put a fence after an
+				// empty sibling of its name.
+				let fence_side = matches!(self.arena[node].value, Value::Empty | Value::Raw(_));
+				let parent = self.arena[node].parent;
 				self.collapse_dup(node);
+				if fence_side {
+					self.settle_fence_name(parent, &self.arena[node].name.clone());
+				}
+				settle_first_blank(&mut self.arena, &mut self.orphans);
 				true
 			}
 			None => false,
@@ -5417,6 +5460,7 @@ impl Document {
 		let kept = self.arena[survivor].children.len();
 		fold_node_into(&mut self.arena, survivor, loser);
 		self.arena[parent].children.retain(|&c| c != loser);
+		settle_block(&mut self.arena, parent, 1);
 		if let Some(ix) = self.index.get_mut() {
 			ix.unlink(name_key(parent, &self.arena[loser].name), loser);
 			for &k in &self.arena[survivor].children[kept..] {
@@ -5426,6 +5470,21 @@ impl Document {
 			}
 		}
 		self.fold_dups_below(survivor);
+	}
+
+	/// The write-side twin of `settle_fence_trailing`: only the written name's
+	/// instances can change, and walking them off the index keeps a write off
+	/// the rest of the block.
+	fn settle_fence_name(&mut self, parent: usize, name: &str) {
+		let mut seen_empty = false;
+		for c in self.children_named(parent, name) {
+			let nd = &mut self.arena[c];
+			if seen_empty && matches!(nd.value, Value::Raw(_)) && !nd.trailing().is_empty() {
+				trailing_to_leading(nd);
+			} else if nd.value.is_empty() {
+				seen_empty = true;
+			}
+		}
 	}
 
 	/// Folding moves the loser's children up a level, where they can collide
@@ -5474,6 +5533,7 @@ impl Document {
 				}
 			}
 			self.arena[parent].children = keep;
+			settle_block(&mut self.arena, parent, 1);
 		}
 	}
 
@@ -5531,6 +5591,7 @@ impl Document {
 			}
 			self.arena[p].children = keep;
 		}
+		settle_first_blank(&mut self.arena, &mut self.orphans);
 		targets.len()
 	}
 
@@ -5560,6 +5621,7 @@ impl Document {
 					}
 				}
 				nd.triv_mut().leading.push(lead);
+				settle_first_blank(&mut self.arena, &mut self.orphans);
 				true
 			}
 			None => false,
@@ -5793,6 +5855,11 @@ impl Document {
 		self.index.take();
 		self.lost += over.lost;
 		self.overlay(ROOT, over, ROOT);
+		let mut stack = vec![ROOT];
+		while let Some(n) = stack.pop() {
+			settle_block(&mut self.arena, n, 1);
+			stack.extend_from_slice(&self.arena[n].children);
+		}
 		// Layers commonly share a footer; keeping one copy of each keeps a
 		// stack of files from repeating it once per layer. Only the lines
 		// already here count: a layer's own repeats are its content.
@@ -5819,6 +5886,7 @@ impl Document {
 				self.orphans.push(o);
 			}
 		}
+		settle_first_blank(&mut self.arena, &mut self.orphans);
 	}
 
 	// One grouping pass over each side, then a single children rebuild: the

@@ -697,6 +697,106 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 	}
 }
 
+// settleBlock files a block's comments where a reload does, in place. A
+// block's inside comments are written after its last child's block, at that
+// child's level, so a reload files them as the last child's own. A child's
+// comments at its own level sit right above the next sibling, so a reload
+// files them as that sibling's leading ones, from the first one at that level
+// on. The load runs this once the tree is final; a merge, a new child and the
+// writer's fold run it where they change a child list, or the next step lands
+// differently depending on whether the file was saved in between. The text
+// does not move. from is the first child whose leading list may gain, so a new
+// last child costs one pair; it cannot put a fence after an empty binding
+// either, so only a full pass looks for one.
+func settleBlock(arena []nodeData, n, from int) {
+	kids := arena[n].children
+	if len(kids) == 0 {
+		return
+	}
+	if from <= 1 {
+		settleFenceTrailing(arena, n)
+	}
+	if t := arena[n].trivia; t != nil && len(t.inside) > 0 {
+		kt := arena[kids[len(kids)-1]].trivMut()
+		kt.after = append(kt.after, t.inside...)
+		t.inside = nil
+	}
+	if from < 1 {
+		from = 1
+	}
+	for i := from; i < len(kids); i++ {
+		t := arena[kids[i-1]].trivia
+		if t == nil {
+			continue
+		}
+		at := 0
+		for at < len(t.after) && t.after[at].depth != 0 {
+			at++
+		}
+		if at == len(t.after) {
+			continue
+		}
+		nt := arena[kids[i]].trivMut()
+		moved := make([]lead, 0, len(t.after)-at+len(nt.leading))
+		nt.leading = append(append(moved, t.after[at:]...), nt.leading...)
+		t.after = t.after[:at:at]
+	}
+}
+
+// settleFenceTrailing: a raw block after an empty binding of its name is
+// written with the fence on the binding's line, where no comment can follow
+// it, so the emitter writes its trailing comment on a line of its own above,
+// after the node's blank. A reload files that line as a leading comment, so
+// file it there now.
+func settleFenceTrailing(arena []nodeData, n int) {
+	fenced := func(nd *nodeData) bool { return nd.value.kind == vRaw && nd.trailing() != "" }
+	hit := false
+	for _, c := range arena[n].children {
+		if fenced(&arena[c]) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return
+	}
+	empties := map[string]bool{}
+	for _, c := range arena[n].children {
+		nd := &arena[c]
+		if fenced(nd) && empties[nd.name] {
+			trailingToLeading(nd)
+		} else if nd.value.isEmpty() {
+			empties[nd.name] = true
+		}
+	}
+}
+
+// trailingToLeading: the trailing comment becomes the last leading line, taking
+// the node's blank with it, which is the order the emitter writes them in.
+func trailingToLeading(nd *nodeData) {
+	t := nd.trivia
+	t.leading = append(t.leading, lead{text: t.trailing, blankBefore: nd.blankBefore})
+	t.trailing = ""
+	nd.blankBefore = false
+}
+
+// settleFirstBlank: the emitter drops a blank before the first thing it
+// prints, so a document that kept one there would not survive its own
+// canonical form, and a merge or a new first line - where it is no longer
+// first - would place a blank nobody wrote. Clear it wherever output starts.
+func settleFirstBlank(arena []nodeData, orphans []lead) {
+	if kids := arena[root].children; len(kids) > 0 {
+		n := &arena[kids[0]]
+		if n.trivia != nil && len(n.trivia.leading) > 0 {
+			n.trivia.leading[0].blankBefore = false
+		} else {
+			n.blankBefore = false
+		}
+	} else if len(orphans) > 0 {
+		orphans[0].blankBefore = false
+	}
+}
+
 // MaxDepth is the maximum nesting depth (levels below the document root),
 // enforced at load and by the Writer. Deeper lines are skipped with an E016
 // error. The cap is what keeps the recursive tree walks (emit, merge, clone)
@@ -2344,51 +2444,6 @@ func (p *parser) remapChild(node int, oldKey, oldDisp uint64) {
 	}
 }
 
-// insideToLastChild: a block's inside comments are written out after its last
-// child's block, at that child's level, which is where a reload files them: as
-// the last child's own. File them there once the tree is final, so a layer and
-// its canonical form merge the same. The text does not move.
-func (p *parser) insideToLastChild() {
-	for n := range p.arena {
-		kids := p.arena[n].children
-		t := p.arena[n].trivia
-		if len(kids) == 0 || t == nil || len(t.inside) == 0 {
-			continue
-		}
-		kt := p.arena[kids[len(kids)-1]].trivMut()
-		kt.after = append(kt.after, t.inside...)
-		t.inside = nil
-	}
-}
-
-// afterToNextSibling: a block reopened later in the file gains children after
-// the one that was last, and that child's comments at its own level now sit
-// right above a sibling, where a reload files them as the sibling's leading
-// ones. Move them there, from the first one at that level on, which is where
-// a reload splits the run.
-func (p *parser) afterToNextSibling() {
-	for n := range p.arena {
-		kids := p.arena[n].children
-		for i := 1; i < len(kids); i++ {
-			t := p.arena[kids[i-1]].trivia
-			if t == nil {
-				continue
-			}
-			at := 0
-			for at < len(t.after) && t.after[at].depth != 0 {
-				at++
-			}
-			if at == len(t.after) {
-				continue
-			}
-			nt := p.arena[kids[i]].trivMut()
-			moved := make([]lead, 0, len(t.after)-at+len(nt.leading))
-			nt.leading = append(append(moved, t.after[at:]...), nt.leading...)
-			t.after = t.after[:at:at]
-		}
-	}
-}
-
 // foldLateDups: a value that mutates after its sibling group was keyed - an
 // empty field filled by a fence, a stacked list closed - can land on a key an
 // earlier sibling already holds, which the keyed lookup can no longer catch.
@@ -3368,8 +3423,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	// one it joins: after it they would hang on the dropped one.
 	p.hangDeeperPending("")
 	p.foldLateDups()
-	p.insideToLastChild()
-	p.afterToNextSibling()
+	for n := range p.arena {
+		settleBlock(p.arena, n, 1)
+	}
 	p.emitRepeatedLeafHints()
 	orphans := make([]lead, 0, len(p.pending))
 	var chain []depthEnt
@@ -3377,21 +3433,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, "", pn.text, pn.indent)})
 	}
 	p.pending = p.pending[:0]
-	// The emitter drops a blank before the first thing it prints, so a document
-	// that kept one there would not survive its own canonical form:
-	// load(emit(load(x))) and load(x) would differ on that bit, and a merge -
-	// where the line is no longer first - would place a blank the author never
-	// wrote. Clear it here, once, wherever output starts.
-	if kids := p.arena[root].children; len(kids) > 0 {
-		n := &p.arena[kids[0]]
-		if n.trivia != nil && len(n.trivia.leading) > 0 {
-			n.trivia.leading[0].blankBefore = false
-		} else {
-			n.blankBefore = false
-		}
-	} else if len(orphans) > 0 {
-		orphans[0].blankBefore = false
-	}
+	settleFirstBlank(p.arena, orphans)
 	// The one entry past the cap: what was not listed, and whether any of it
 	// was an error, so a consumer scanning the list for errors still finds
 	// one and a Strict load still fails.
@@ -5080,6 +5122,7 @@ func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
 	if ix := d.index.Load(); ix != nil {
 		ix.append(nameKey(parent, name), idx)
 	}
+	settleBlock(d.arena, parent, len(d.arena[parent].children)-1)
 	return idx
 }
 
@@ -5230,7 +5273,15 @@ func (d *Document) setValue(path string, v value) bool {
 	}
 	d.arena[idx].value = v
 	d.arena[idx].src = nil // written value has no source spelling
+	// An empty binding or a raw block can put a fence after an empty sibling
+	// of its name.
+	fenceSide := v.kind == vEmpty || v.kind == vRaw
+	parent, name := d.arena[idx].parent, d.arena[idx].name
 	d.collapseDup(idx)
+	if fenceSide {
+		d.settleFenceName(parent, name)
+	}
+	settleFirstBlank(d.arena, d.orphans)
 	return true
 }
 
@@ -5273,6 +5324,7 @@ func (d *Document) collapseDup(node int) {
 		}
 	}
 	d.arena[parent].children = keep
+	settleBlock(d.arena, parent, 1)
 	if ix := d.index.Load(); ix != nil {
 		ix.unlink(nameKey(parent, d.arena[loser].name), loser)
 		for _, k := range moved {
@@ -5282,6 +5334,21 @@ func (d *Document) collapseDup(node int) {
 		}
 	}
 	d.foldDupsBelow(survivor)
+}
+
+// settleFenceName is the write-side twin of settleFenceTrailing: only the
+// written name's instances can change, and walking them off the index keeps a
+// write off the rest of the block.
+func (d *Document) settleFenceName(parent int, name string) {
+	seenEmpty := false
+	for _, c := range d.childrenNamed(parent, name) {
+		nd := &d.arena[c]
+		if seenEmpty && nd.value.kind == vRaw && nd.trailing() != "" {
+			trailingToLeading(nd)
+		} else if nd.value.isEmpty() {
+			seenEmpty = true
+		}
+	}
 }
 
 // foldDupsBelow: folding moves the loser's children up a level, where they can
@@ -5318,6 +5385,7 @@ func (d *Document) foldDupsBelow(start int) {
 			}
 		}
 		d.arena[parent].children = keep
+		settleBlock(d.arena, parent, 1)
 	}
 }
 
@@ -5395,6 +5463,7 @@ func (d *Document) Remove(path string) int {
 		}
 		d.arena[pr.parent].children = kids
 	}
+	settleFirstBlank(d.arena, d.orphans)
 	return len(targets)
 }
 
@@ -5428,6 +5497,7 @@ func (d *Document) SetComment(path, text string) bool {
 		}
 	}
 	t.leading = append(t.leading, l)
+	settleFirstBlank(d.arena, d.orphans)
 	return true
 }
 
@@ -5667,6 +5737,13 @@ func (d *Document) Merge(over *Document) {
 	d.index.Store(nil)
 	d.lost += over.lost
 	d.overlay(root, over, root)
+	stack := []int{root}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		settleBlock(d.arena, n, 1)
+		stack = append(stack, d.arena[n].children...)
+	}
 	// Layers commonly share a footer; keeping one copy of each keeps a
 	// stack of files from repeating it once per layer. Only the lines
 	// already here count: a layer's own repeats are its content.
@@ -5699,6 +5776,7 @@ func (d *Document) Merge(over *Document) {
 			d.orphans = append(d.orphans, o)
 		}
 	}
+	settleFirstBlank(d.arena, d.orphans)
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
