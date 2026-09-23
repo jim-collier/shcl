@@ -86,6 +86,152 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260923:
+
+	- A full adversarial pass over the whole tree, split six ways: the Rust reference, C and C++, Go, Python with the PowerShell wrapper, the four CLIs judged against the spec and the public docs, and the scripts, gates and installers. Aimed first at the code merged since the last round's base (`ed5f861`) and at the siblings of those fixes.
+
+	- Twenty-two defects here and two ideas under Features and enhancements. Four are regressions from the last round's fixes: items 5, 6 and 7 from the Go arena reserve, and item 21 from the org move. Item 3 is the sibling of the corpus 142 fix. The rest is older ground no round had read this way.
+
+	- Item 2 meets the release bar: a Go setter takes bytes the reader refuses, the save succeeds, and the next load fails. It is Go only and a one-line gate per setter. Item 1 is the most consequential for the pipeline: a gate run that failed can still let a push through. Nothing else loses data or gives a wrong answer at exit 0.
+
+	- No class oscillated. One class keeps coming: comments filed one way on a load and another way in memory after a merge or an edit. It is the third item in three days (corpus 140, corpus 142, item 3 here). A fix that runs the same end-of-load pass after every tree change, not per site, should end it.
+
+	- Items 8, 9 and 10 were run on vm925w, once each, in both PowerShell 5.1 and 7. Everything else was reproduced on this box.
+
+	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
+
+	- 🔘 Item 1: the gate records a tree as passed before the cross checks run, and `--no-cross` records one too.
+		- Reproduced: a stubbed engine repo with one cross check that fails. `--ci` prints "tree recorded", then fails the cross check and exits 1. `green-tree.bash passed` then says yes for that tree, so a retried push to main skips the gate. `--ci --no-cross` records the tree with no cross check run.
+		- Cause: the record is at the end of stage 4 and the cross checks moved to stage 6. `--no-cross` does not count as a partial run.
+		- Origin: the record point is from 2026-09-14; the hole opened when 20260920 item 2 moved the cross checks under `--ci`. Not seen before. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 2: Go's `SetRaw`, `SetComment` and `SetLiteral` accept invalid UTF-8, and the saved file then will not load.
+		- Reproduced: each returns ok, `SaveFile` returns nil, and `LoadFile` then gives `Unreadable`. Every CLI exits 8 on the file. `SetLiteral` refuses the same bytes in quotes and takes them bare.
+		- Cause: 20260902 item 40 put a UTF-8 gate on `SetString` and `SetStringArray` only.
+		- Note: Go only. Rust cannot hold such a string, Python refuses at save, and C's header defines its text as UTF-8, so a C caller passing bad bytes is misuse.
+		- Origin: `SetRaw` from 2026-07-25; the gate from 2026-09-02 left these out. A sibling of item 40. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 3: comments are filed differently after a merge or an edit than after a reload of the same text.
+		- Reproduced, all four: three layers merged at once put a comment after the last child; merged in two steps it lands above the second. `fmt --layer=A2 --remove a.c B2` drops a comment at exit 0 that the same steps through a pipe keep. Two edits in one `set` and the same two in two runs place a comment differently.
+		- Cause: the end-of-load passes from the corpus 140 and 142 fixes run only after a parse. A merge, a new child and the writer's fold add children after a block's last one and never run them.
+		- Note: a comment moves or goes with a removed node. No value changes.
+		- Origin: the sibling of `6651739` (2026-09-23) and of the corpus 140 fix. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 4: `get --array` and `--slots` print an element holding a line break across several lines.
+		- Reproduced, all four: `n: "a\nb", c` gives three lines for two elements, and under `--slots` one line has no status.
+		- Note: 20260920b item 26 fixed `instances` for this, since a script splitting on newlines miscounts. Each CLI already has the one-line helper.
+		- Origin: 2026-07-18 and 2026-09-02. The sibling of 20260920b item 26. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 5: Go's `ParseLimited` panics when the node cap is near `MaxInt` or below -2.
+		- Reproduced: `ParseLimited(text, Standard, math.MaxInt, 0, 0)` panics with `makeslice: cap out of range`. So do `MaxInt-1` and `-3`. The doc says 0 disables a cap and gives no range.
+		- Cause: the new reserve adds 2 to the cap before comparing, which overflows.
+		- Origin: `a134efe` (2026-09-22), the last round's idea 2. Regression. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 6: Go's arena reserve counts raw block bodies, so peak memory rises about 60 percent on documents with embedded blocks.
+		- Measured: 20,000 sections each with a 20-line block, 105 to 169 MB. One 500k-line block, about 100 to 165 MB. A 60 MB block, 1.47 to 2.32 GB, where Rust takes 1.04. Time unchanged. The flat 1M-key file still improves, 702 to 546 MB.
+		- Cause: the count takes every non-blank line not starting with `#` or `*`, fence and body lines included.
+		- Origin: `a134efe` (2026-09-22), idea 2, which measured only documents without blocks. Regression. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 7: `TestArenaSizedToTheDocument` passes with the arena trim removed.
+		- Reproduced: with the trim deleted the test still passes. A document of one 20,000-line raw block fails it.
+		- Cause: its sparse case uses only comment, blank and `*` lines, which the count already skips, so the trim never runs.
+		- Origin: `a134efe` (2026-09-22). Regression in the test. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 8: on Windows, the C binding creates and deletes a file when it reads through a dangling symlink.
+		- Reproduced on vm925w: `get` on a link to a missing `target.shcl` exits 8 as it should, and a watcher sees `target.shcl` created and then deleted.
+		- Cause: every Windows read goes through the resolver, and its dangling-link probe was written for saves.
+		- Note: if something holds the probe file open, the delete fails and an empty file stays behind. The next load reads it as an empty document.
+		- Origin: 2026-09-03, the long-path reads plus the save-side probe. No item covers the read side. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 9: under Windows PowerShell 5.1, text piped into `shcl` through the wrapper loses its non-ASCII characters at exit 0.
+		- Reproduced on vm925w: `'a: café' | shcl fmt -` gives `a: caf?` in 5.1 and `a: café` in 7. 5.1's `$OutputEncoding` is `us-ascii`.
+		- Note: the wrapper sets neither `$OutputEncoding` nor `[Console]::OutputEncoding`. Output came back right over ssh, where the console page is 65001. An interactive console on the OEM page is untested and may garble output too.
+		- Origin: the wrapper, 2026-07-18. Not seen before. Confirmed for input.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 10: `shcl.ps1` run as a script drops pipeline input.
+		- Reproduced on pwsh 7 here and on vm925w in 5.1 and 7: `'a: 5' | .\shcl.ps1 fmt -` prints nothing at exit 0. Dot-sourced `shcl` gets it.
+		- Cause: the script's run path calls `shcl @args` without the `ExpectingInput` test the function and the fifteen helpers use.
+		- Origin: 2026-07-18. The third site of the class fixed for the function and then for the helpers (20260918b item 32). Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 11: a late fold merges two bindings that are not adjacent without an `H002` hint.
+		- Reproduced, all four: `m:` with `a: 1, 2` and a child, then `c: 0`, then `m:` again with `a:` as a stacked list of 1 and 2. It hints only for `m`. The same document with `a: 1, 2` inline hints for both.
+		- Rests on: the spec says every merged level under a hinted re-open reports.
+		- Origin: the late fold, 2026-08-03. Not seen before. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 12: `tokens` reads `* ` with a trailing blank as a name fault.
+		- Reproduced, all four: `a:` then `\t* ` gives `fault=0:expected a field name`, while `check` gives `E009 empty list element`. `*\t` and `*\r` do the same.
+		- Cause: `tokens` decides on the star after trimming the trailing blanks, and the parser decides before.
+		- Origin: 2026-09-10. Not seen before. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 13: the help and man page say `migrate --check` exits 6 when a rewrite would change the file, but a file that only gains the Format line exits 0.
+		- Reproduced, all four: on `x: 1`, `--check` exits 0, and `--write` then appends the stamp and exits 0.
+		- Note: `design.md` and `spec.md` say 6 means a line to rewrite, which is what the code does, and `cli-regress` pins it. So the fix is the help and man page wording.
+		- Origin: 2026-09-16. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 14: the sync stage does not count untracked files when it decides to stash.
+		- Reproduced: an untracked file that upstream also adds. The stage sees a clean tree, and the fast-forward fails where a stash would have let it through. Nothing is lost.
+		- Note: the publisher got this fix on 2026-09-23 (`035dfb7`). The stash here is already `--include-untracked`.
+		- Origin: the sync stage, 2026-08-19. The sibling of the publisher fix. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 15: the installers say https is pinned through redirects, but wget's `--https-only` does nothing for a single download.
+		- Reproduced with a local TLS listener that redirects to http: wget with the installers' flags fetches it at exit 0, and curl refuses.
+		- Note: the release payload is still checked against the signed sums file. The API listing that picks the tag, the rustup script in `install-dev.bash` and the fetched pins file are not.
+		- Origin: 2026-07-25. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 16: the Python and Go CLIs do not report a file that will not open as `FILE: ` and the system's message.
+		- Reproduced: Python prints `[Errno 2] No such file or directory: 'nope.shcl'`, and Go prints `nope.shcl: open nope.shcl: no such file or directory`. Rust and C follow the UI guide.
+		- Note: stderr wording is per binding, but the guide sets this form, and 20260901b item 32 already brought the directory case in line.
+		- Origin: the guide line is from 2026-09-17; the CLIs are older. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 17: `version`, `about` and `donate` ignore options and extra words they do not use.
+		- Reproduced, all four: `shcl version --int` and `version extra` exit 0, while `help get extra` exits 1.
+		- Rests on: the UI guide says an option a subcommand does not use is a usage error and is never ignored. The flag spellings still work anywhere, as `design.md` says.
+		- Origin: 2026-08-03. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 18: the spec says a stacked element is always colon-less, but `* k: v` loads as the string `k: v`.
+		- Reproduced, all four, with no diagnostic. The grammar agrees with the code. `*x: y` is `E013`, so the space is what tells the two apart, not the colon.
+		- Note: needs a decision. Either fix the spec's wording to the general bare-value rule, or diagnose `* key: value`, which is the YAML list-of-maps habit and now reads silently as a string.
+		- Origin: the spec text is from 2026-07-12, before the 3.0 bare-value rule. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 19: the C header's list of when to reset a `shcl_tokens` leaves out `shcl_compact`, and reuse after one writes into freed memory.
+		- Reproduced under ASan: tokenize, `shcl_compact`, tokenize again with the same struct, and the second call writes to the freed reads arena.
+		- Note: a doc fix. The per-document serial was declined in 20260918b item 23.
+		- Origin: the tokens contract, 2026-09-19. The fourth time this handle's lifetime has come up. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 20: the help, man page and README say `tokens` shows how the parser reads a line, but a raw body line is tokenized as a field line.
+		- Reproduced: a body line `\tbody` prints `name=0-4`. The code comment says the lexical view is on purpose, so the docs need one clause.
+		- Origin: 2026-09-07. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 21: the man page still links to `jim-collier/shcl`.
+		- Reproduced: SEE ALSO and BUGS. The troff source spells it `jim\-collier`, so the org-move replace missed it. The old URL still redirects.
+		- Origin: `300c6b6` (2026-09-22). Regression. Confirmed.
+		- Opened: 20260923-145138
+
+	- 🔘 Item 22: the veneer's `paths()` has no doc comment, and its one line sits above the wrong function and says quoted segments are dropped.
+		- Reproduced: `paths` lists `"q x"`. The line sits between `count()` and `quote_segment()`.
+		- Origin: 2026-07-25, stale since paths quoting on 2026-08-02. The misplaced doc comment class again. Confirmed.
+		- Opened: 20260923-145138
+
 - Code review 20260922:
 
 	- A review against the directives' code style and performance sections. It picks up where 20260921 stopped: Rust, Python, C and C++, and measured performance across the four bindings. It also covers everything merged since that round's base (`f85a0d2`), in every language and script, which is the last round's own fixes with no soak time. Five sweeps, one area each.
@@ -189,6 +335,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Finished items are under Done - Bugs and canceled ones under Canceled, each in a bullet of the same name.
 
 ### Features and enhancements
+
+- Code review 20260923:
+
+	- The round's ideas. Its defects are under Bugs, in a bullet of the same name.
+
+	- 🔘 Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
+		- Note: least surprise. The help says the five edit options share one list, and the last three came in 20260830b item 21 without this site. All four CLIs.
+		- Opened: 20260923-145138
+
+	- 🔘 Idea 2: `--remove` takes a path that can never parse, such as `b[` or `a: 1`, and exits 0 with the document unchanged.
+		- Note: least surprise. `--set b[=1` is refused at option parse. Refusing a bad path would keep a missing path or a wildcard at exit 0, as the help says. All four CLIs.
+		- Opened: 20260923-145138
 
 ### Done
 
