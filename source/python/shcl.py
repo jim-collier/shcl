@@ -1952,6 +1952,9 @@ class _Parser:
 		# element is O(list^2) time); (node, map key, display key) at deferral
 		# start, flushed before any map lookup and at end of parse.
 		self.star_open = None
+		# Parents where a remap landed on a key a sibling already held: the only
+		# places a duplicate can survive the keyed lookup, so the fold starts here.
+		self.late_dups = []
 		# Node -> line of the re-open that H002-hinted it. A merge under a hinted
 		# container combines the same two textual regions, so it hints too even
 		# when it lands on the newest child at its own scope - that is how every
@@ -2026,7 +2029,8 @@ class _Parser:
 			cmap = self.child_map[parent] = {}
 		if cmap.get(old_key) == node:
 			del cmap[old_key]
-		cmap.setdefault(_merge_key(name, self.arena[node].value), node)
+		if cmap.setdefault(_merge_key(name, self.arena[node].value), node) != node:
+			self.late_dups.append(parent)
 		dmap = self.disp_map[parent]
 		if dmap is None:
 			dmap = self.disp_map[parent] = {}
@@ -2051,24 +2055,44 @@ class _Parser:
 		filled by a fence, a stacked list closed - can land on a key an earlier
 		sibling already holds, which the keyed lookup can no longer catch. Fold
 		those pairs so the tree matches a reparse of its own canonical text.
-		Depth-first, since folding can carry duplicates down a level."""
+		Only the parents _remap_child flagged can hold one. Shallowest first,
+		since a fold hands the survivor more children and the order they arrive
+		in decides whose trailing comment wins; folding keeps depths."""
+		parents = set()
+		for n in self.late_dups:
+			depth, up = 0, n
+			while up != ROOT:
+				up = self.arena[up].parent
+				depth += 1
+			parents.add((depth, n))
+		self.late_dups = []
+		for _, n in sorted(parents):
+			self._fold_dups_from(n)
+
+	def _fold_dups_from(self, start):
+		"""Depth-first below start, and only into survivors: a fold moves the
+		loser's children up to join the survivor's, where they can pair."""
 		# Explicit stack: parse-side walks stay iterative so depth can't blow
 		# Python's recursion limit.
-		stack = [ROOT]
+		stack = [start]
 		while stack:
 			parent = stack.pop()
 			kids = self.arena[parent].children
+			# Keyed to positions in keep, so a survivor's grew flag sits beside it.
 			first: dict = {}
-			keep = []
+			keep: list[int] = []
+			grew: list[bool] = []
 			for c in kids:
 				key = _merge_key(self.arena[c].name, self.arena[c].value)
-				survivor = first.get(key)
-				if survivor is not None:
-					_fold_node_into(self.arena, survivor, c)
+				i = first.get(key)
+				if i is not None:
+					_fold_node_into(self.arena, keep[i], c)
+					grew[i] = True
 				else:
-					first[key] = c
+					first[key] = len(keep)
 					keep.append(c)
-			stack.extend(keep)
+					grew.append(False)
+			stack.extend(k for k, g in zip(keep, grew) if g)
 			self.arena[parent].children = keep
 
 	def _attach_trivia(self, node, indent, trailing):

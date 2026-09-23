@@ -2077,6 +2077,9 @@ struct Parser<'a> {
 	// element is O(list^2) time); (node, key hash, display hash) at deferral
 	// start, flushed before any map lookup and at end of parse.
 	star_open: Option<(usize, u64, u64)>,
+	// Parents where a remap landed on a key a sibling already held: the only
+	// places a duplicate can survive the keyed lookup, so the fold starts here.
+	late_dups: Vec<usize>,
 	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
 	// container combines the same two textual regions, so it hints too even
 	// when it lands on the newest child at its own scope - that is how every
@@ -2134,6 +2137,7 @@ impl<'a> Parser<'a> {
 			pend_marks: Vec::new(),
 			saw_blank: false,
 			star_open: None,
+			late_dups: Vec::new(),
 			reentered: HashMap::new(),
 			lost: 0,
 			max_nodes: 0,
@@ -2297,6 +2301,8 @@ impl<'a> Parser<'a> {
 				.entry(new_key)
 				.and_modify(|s| s.push(node))
 				.or_insert(Slot::One(node));
+		} else {
+			self.late_dups.push(parent);
 		}
 		if let Some(m) = self.disp_map[parent].as_deref_mut()
 			&& m.get(&old_disp) == Some(&node)
@@ -2314,38 +2320,71 @@ impl<'a> Parser<'a> {
 	/// filled by a fence, a stacked list closed - can land on a key an earlier
 	/// sibling already holds, which the keyed lookup can no longer catch. Fold
 	/// those pairs so the tree matches a reparse of its own canonical text.
-	/// Depth-first, since folding can carry duplicates down a level.
+	/// Only the parents remap_child flagged can hold one. Shallowest first,
+	/// since a fold hands the survivor more children and the order they
+	/// arrive in decides whose trailing comment wins; folding keeps depths.
 	fn fold_late_dups(&mut self) {
-		let mut stack = vec![ROOT];
+		let mut parents: Vec<(usize, usize)> = std::mem::take(&mut self.late_dups)
+			.into_iter()
+			.map(|p| {
+				let (mut depth, mut n) = (0, p);
+				while n != ROOT {
+					n = self.arena[n].parent;
+					depth += 1;
+				}
+				(depth, p)
+			})
+			.collect();
+		parents.sort_unstable();
+		parents.dedup();
+		for (_, p) in parents {
+			self.fold_dups_from(p);
+		}
+	}
+
+	/// Depth-first below start, and only into survivors: a fold moves the
+	/// loser's children up to join the survivor's, where they can pair.
+	fn fold_dups_from(&mut self, start: usize) {
+		let mut stack = vec![start];
 		while let Some(parent) = stack.pop() {
 			let kids = std::mem::take(&mut self.arena[parent].children);
+			// Keyed to positions in keep, so a survivor's grew flag sits beside it.
 			let mut first: U64Map<Slot> =
 				U64Map::with_capacity_and_hasher(kids.len(), Default::default());
 			let mut keep: Vec<usize> = Vec::with_capacity(kids.len());
+			let mut grew: Vec<bool> = Vec::with_capacity(kids.len());
 			for c in kids {
 				let h = merge_hash(&self.arena[c].name, &self.arena[c].value);
-				let survivor = first.get(&h).and_then(|s| {
+				let hit = first.get(&h).and_then(|s| {
 					s.first_match(|x| {
 						merge_eq(
-							&self.arena[x].name,
-							&self.arena[x].value,
+							&self.arena[keep[x]].name,
+							&self.arena[keep[x]].value,
 							&self.arena[c].name,
 							&self.arena[c].value,
 						)
 					})
 				});
-				match survivor {
-					Some(s) => fold_node_into(&mut self.arena, s, c),
+				match hit {
+					Some(i) => {
+						fold_node_into(&mut self.arena, keep[i], c);
+						grew[i] = true;
+					}
 					None => {
 						first
 							.entry(h)
-							.and_modify(|s| s.push(c))
-							.or_insert(Slot::One(c));
+							.and_modify(|s| s.push(keep.len()))
+							.or_insert(Slot::One(keep.len()));
 						keep.push(c);
+						grew.push(false);
 					}
 				}
 			}
-			stack.extend(keep.iter().copied());
+			for (i, &g) in grew.iter().enumerate() {
+				if g {
+					stack.push(keep[i]);
+				}
+			}
 			self.arena[parent].children = keep;
 		}
 	}

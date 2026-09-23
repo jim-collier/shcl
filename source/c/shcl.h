@@ -2672,6 +2672,9 @@ typedef struct { ShclArena line, hints; ShclVecMapPtr cmaps, dmaps; } ShclParseO
    into the document arena. Nothing resets scratch during a parse; the first
    read after it does. */
 typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints; ShclStr src; ShclVecStack stack; ShclVecMapPtr *cmaps; ShclVecMapPtr *dmaps; ShclVecPend pending; ShclVecPendMark pend_marks; ShclVecDepth depth_chain; int star_open; size_t star_node; uint64_t star_key; uint64_t star_disp; int saw_blank; ShclVecSize reent_node; ShclVecSize reent_line;
+	/* Parents where a remap landed on a key a sibling already held: the only
+	   places a duplicate can survive the keyed lookup, so the fold starts here. */
+	ShclVecSize late_dups;
 	/* shcl_parse_limited's caps, 0 = uncapped: nodes counted against the
 	   arena (root excluded), elements against a single value's cell. */
 	size_t max_nodes, max_elements;
@@ -2746,6 +2749,7 @@ static void remap_child(ShclParser *P, size_t node, uint64_t old_key, uint64_t o
 	for (ShclCMapEnt *e = cmap_first(P->cmaps->data[parent], h); e; e = cmap_next(e, h))
 		if (merge_eq(NODE(P->d, e->val).name, &NODE(P->d, e->val).value, name, &NODE(P->d, node).value)) { already = 1; break; }
 	if (!already) cmap_put(P->tmp, map_mut(P->tmp, P->cmaps, parent), h, node);
+	else ShclVecSize_push(P->tmp, &P->late_dups, parent);
 	cmap_del(P->dmaps->data[parent], old_disp, node);
 	uint64_t hd = disp_hash(name, &NODE(P->d, node).value);
 	if (!cmap_first(P->dmaps->data[parent], hd)) cmap_put(P->tmp, map_mut(P->tmp, P->dmaps, parent), hd, node);
@@ -2770,33 +2774,65 @@ static void inside_to_last_child(ShclParser *P) {
    filled by a fence, a stacked list closed - can land on a key an earlier
    sibling already holds, which the keyed lookup can no longer catch. Fold
    those pairs so the tree matches a reparse of its own canonical text.
-   Depth-first, since folding can carry duplicates down a level. Grouping
+   Only the parents remap_child flagged can hold one. Shallowest first, since
+   a fold hands the survivor more children and the order they arrive in
+   decides whose trailing comment wins; folding keeps depths. Grouping
    temporaries live in scratch (dead before the first resolve resets it). */
+typedef struct { size_t depth, node; } ShclLateDup;
+static int late_dup_cmp(const void *pa, const void *pb) {
+	const ShclLateDup *a = (const ShclLateDup *)pa, *b = (const ShclLateDup *)pb;
+	if (a->depth != b->depth) return a->depth < b->depth ? -1 : 1;
+	return a->node < b->node ? -1 : a->node > b->node;
+}
+static void fold_dups_from(shcl_doc *d, size_t start);
 static void fold_late_dups(ShclParser *P) {
-	shcl_doc *d = P->d;
+	size_t n = P->late_dups.len;
+	if (!n) return;
+	ShclLateDup *parents = (ShclLateDup *)arena_alloc(P->tmp, n * sizeof *parents);
+	for (size_t i = 0; i < n; i++) {
+		size_t depth = 0;
+		for (size_t up = P->late_dups.data[i]; up != ROOT; up = NODE(P->d, up).parent) depth++;
+		parents[i].depth = depth; parents[i].node = P->late_dups.data[i];
+	}
+	qsort(parents, n, sizeof *parents, late_dup_cmp);
+	for (size_t i = 0; i < n; i++)
+		if (i == 0 || parents[i - 1].node != parents[i].node) fold_dups_from(P->d, parents[i].node);
+}
+
+/* Depth-first below start, and only into survivors: a fold moves the loser's
+   children up to join the survivor's, where they can pair. */
+static void fold_dups_from(shcl_doc *d, size_t start) {
 	ShclArena *t = &d->scratch;
 	ShclVecSize stack = {0};
-	ShclVecSize_push(t, &stack, ROOT);
+	ShclVecSize_push(t, &stack, start);
 	while (stack.len) {
 		size_t parent = stack.data[--stack.len];
+		/* Keyed to positions in the kept prefix, so a survivor's grew flag sits
+		   beside it. */
 		ShclCMap first; memset(&first, 0, sizeof first);
 		ShclVecSize *ch = &NODE(d, parent).children;
-		if (ch->len) cmap_reserve(t, &first, ch->len);
+		if (!ch->len) continue;
+		cmap_reserve(t, &first, ch->len);
+		unsigned char *grew = (unsigned char *)arena_alloc(t, ch->len);
 		size_t w = 0;
 		for (size_t k = 0; k < ch->len; k++) {
 			size_t c = ch->data[k];
 			uint64_t h = merge_hash(NODE(d, c).name, &NODE(d, c).value);
-			size_t survivor = (size_t)-1;
+			size_t hit = (size_t)-1;
 			for (ShclCMapEnt *e = cmap_first(&first, h); e; e = cmap_next(e, h))
-				if (merge_eq(NODE(d, e->val).name, &NODE(d, e->val).value, NODE(d, c).name, &NODE(d, c).value)) { survivor = e->val; break; }
-			if (survivor != (size_t)-1) fold_node_into(d, survivor, c);
-			else {
-				cmap_put(t, &first, h, c);
+				if (merge_eq(NODE(d, ch->data[e->val]).name, &NODE(d, ch->data[e->val]).value, NODE(d, c).name, &NODE(d, c).value)) { hit = e->val; break; }
+			if (hit != (size_t)-1) {
+				fold_node_into(d, ch->data[hit], c);
+				grew[hit] = 1;
+			} else {
+				cmap_put(t, &first, h, w);
+				grew[w] = 0;
 				ch->data[w++] = c;
 			}
 		}
 		ch->len = w;
-		for (size_t k = 0; k < ch->len; k++) ShclVecSize_push(t, &stack, ch->data[k]);
+		for (size_t k = 0; k < w; k++)
+			if (grew[k]) ShclVecSize_push(t, &stack, ch->data[k]);
 	}
 }
 
@@ -3364,7 +3400,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks); memset(&P.depth_chain, 0, sizeof P.depth_chain);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
 	P.max_nodes = max_nodes; P.max_elements = max_elements; P.max_diags = max_diags; P.unlisted_errors = 0; P.unlisted_hints = 0;
-	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line);
+	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line); memset(&P.late_dups, 0, sizeof P.late_dups);
 	ShclStackEnt e0; e0.indent = s_empty(); e0.node = ROOT; ShclVecStack_push(P.tmp, &P.stack, e0);
 	maps_push(d->panic, P.cmaps, NULL);
 	maps_push(d->panic, P.dmaps, NULL);

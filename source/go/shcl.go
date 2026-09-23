@@ -2244,6 +2244,9 @@ type parser struct {
 	starNode int
 	starKey  uint64
 	starDisp uint64
+	// Parents where a remap landed on a key a sibling already held: the only
+	// places a duplicate can survive the keyed lookup, so the fold starts here.
+	lateDups []int
 	// Node -> line of the re-open that H002-hinted it. A merge under a hinted
 	// container combines the same two textual regions, so it hints too even
 	// when it lands on the newest child at its own scope - that is how every
@@ -2344,6 +2347,8 @@ func (p *parser) remapChild(node int, oldKey, oldDisp uint64) {
 			p.childMap[parent] = map[uint64]slot{}
 		}
 		slotInsert(p.childMap[parent], newKey, node)
+	} else {
+		p.lateDups = append(p.lateDups, parent)
 	}
 	if m := p.dispMap[parent]; m != nil {
 		if c, ok := m[oldDisp]; ok && c == node {
@@ -2380,28 +2385,65 @@ func (p *parser) insideToLastChild() {
 // empty field filled by a fence, a stacked list closed - can land on a key an
 // earlier sibling already holds, which the keyed lookup can no longer catch.
 // Fold those pairs so the tree matches a reparse of its own canonical text.
-// Depth-first, since folding can carry duplicates down a level.
+// Only the parents remapChild flagged can hold one. Shallowest first, since a
+// fold hands the survivor more children and the order they arrive in decides
+// whose trailing comment wins; folding keeps depths.
 func (p *parser) foldLateDups() {
-	stack := []int{root}
+	type flagged struct{ depth, node int }
+	parents := make([]flagged, 0, len(p.lateDups))
+	for _, n := range p.lateDups {
+		depth := 0
+		for up := n; up != root; up = p.arena[up].parent {
+			depth++
+		}
+		parents = append(parents, flagged{depth, n})
+	}
+	p.lateDups = nil
+	sort.Slice(parents, func(i, j int) bool {
+		if parents[i].depth != parents[j].depth {
+			return parents[i].depth < parents[j].depth
+		}
+		return parents[i].node < parents[j].node
+	})
+	for i, f := range parents {
+		if i > 0 && parents[i-1] == f {
+			continue
+		}
+		p.foldDupsFrom(f.node)
+	}
+}
+
+// foldDupsFrom: depth-first below start, and only into survivors: a fold moves
+// the loser's children up to join the survivor's, where they can pair.
+func (p *parser) foldDupsFrom(start int) {
+	stack := []int{start}
 	for len(stack) > 0 {
 		parent := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		kids := p.arena[parent].children
 		p.arena[parent].children = nil
+		// Keyed to positions in keep, so a survivor's grew flag sits beside it.
 		first := make(map[uint64]slot, len(kids))
 		keep := make([]int, 0, len(kids))
+		grew := make([]bool, 0, len(kids))
 		for _, c := range kids {
 			h := mergeHash(p.arena[c].name, &p.arena[c].value)
-			if survivor, ok := slotFirstMatch(first, h, func(x int) bool {
-				return mergeEq(p.arena[x].name, &p.arena[x].value, p.arena[c].name, &p.arena[c].value)
+			if i, ok := slotFirstMatch(first, h, func(x int) bool {
+				return mergeEq(p.arena[keep[x]].name, &p.arena[keep[x]].value, p.arena[c].name, &p.arena[c].value)
 			}); ok {
-				foldNodeInto(p.arena, survivor, c)
+				foldNodeInto(p.arena, keep[i], c)
+				grew[i] = true
 			} else {
-				slotInsert(first, h, c)
+				slotInsert(first, h, len(keep))
 				keep = append(keep, c)
+				grew = append(grew, false)
 			}
 		}
-		stack = append(stack, keep...)
+		for i, g := range grew {
+			if g {
+				stack = append(stack, keep[i])
+			}
+		}
 		p.arena[parent].children = keep
 	}
 }
