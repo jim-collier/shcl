@@ -530,6 +530,7 @@ int shcl_set_string(shcl_doc *d, const char *path, size_t plen, const char *s, s
 int shcl_set_datetime(shcl_doc *d, const char *path, size_t plen, const shcl_datetime *dt);
 int shcl_set_raw(shcl_doc *d, const char *path, size_t plen, const char *content, size_t clen, const char *info, size_t ilen);
 
+// Inline arrays, one per call.
 int shcl_set_int_array(shcl_doc *d, const char *path, size_t plen, const int64_t *v, size_t n);
 int shcl_set_float_array(shcl_doc *d, const char *path, size_t plen, const double *v, size_t n);
 int shcl_set_bool_array(shcl_doc *d, const char *path, size_t plen, const int *v, size_t n);

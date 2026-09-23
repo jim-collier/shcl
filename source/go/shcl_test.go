@@ -1650,6 +1650,15 @@ func TestParseLimitedCaps(t *testing.T) {
 		if n, line := codeCount(doc, "E020"); n != 1 || line != 1 {
 			t.Fatalf("cap %d: %d E020 at %d", capAt, n, line)
 		}
+		// The arena is trimmed after the parse, so the reserve is read here.
+		if w := arenaWant(200000, capAt); w != 1 {
+			t.Fatalf("cap %d reserves %d slots for a parse that stops at line 1", capAt, w)
+		}
+	}
+	for _, c := range []struct{ lines, capAt, want int }{{10, 0, 11}, {10, 2, 4}, {10, 9, 11}, {10, math.MaxInt, 11}} {
+		if w := arenaWant(c.lines, c.capAt); w != c.want {
+			t.Fatalf("%d lines under cap %d reserve %d, want %d", c.lines, c.capAt, w, c.want)
+		}
 	}
 	// Element cap, inline spelling: the whole line is refused, the rest of
 	// the document is untouched.

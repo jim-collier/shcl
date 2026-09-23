@@ -3076,6 +3076,21 @@ func trimCountingNodeLines(lines []string) int {
 	return n
 }
 
+// arenaWant is the arena's starting size: the root plus every counted line,
+// held to what the node cap lets the parse build. Compared without adding to
+// the cap, which may be near MaxInt. A negative cap stops the parse at the
+// first line, so it gets the root alone.
+func arenaWant(nodeLines, maxNodes int) int {
+	if maxNodes < 0 {
+		return 1
+	}
+	want := nodeLines + 1
+	if maxNodes > 0 && want-2 > maxNodes {
+		want = maxNodes + 2
+	}
+	return want
+}
+
 func (p *parser) parse(text string, strictness Strictness) *Document {
 	// UTF-8 BOM strip, then split keeping raw lines (CR stripped per line).
 	// The whole trailing CR run goes, not just one: a raw block keeps its content
@@ -3093,12 +3108,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	}
 	// Growing the arena by append cost about an eighth of fmt on a large
 	// file, and more than that in peak memory.
-	// Compared without adding to the cap, which may be near MaxInt. A
-	// negative cap stops the parse at the first line, so it sizes nothing.
-	want := nodeLines + 1
-	if p.maxNodes > 0 && want-2 > p.maxNodes {
-		want = p.maxNodes + 2
-	}
+	want := arenaWant(nodeLines, p.maxNodes)
 	p.arena = append(make([]nodeData, 0, want), p.arena...)
 	p.childMap = append(make([]map[uint64]slot, 0, want), p.childMap...)
 	p.dispMap = append(make([]map[uint64]int, 0, want), p.dispMap...)
