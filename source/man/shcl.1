@@ -217,6 +217,8 @@ length, then every name, selector, separator, value, element and comment as
 byte offsets from the first character after the indent, with a mark for how a
 piece was quoted, and the fault that made a line malformed. This is the view
 the parser reads a line through, for seeing why it read a line as it did.
+Each line is read on its own, so a raw body line is tokenized as if it were a
+field line.
 .TP
 .B explain
 Print what a diagnostic code means: the code, its severity and the rule behind
@@ -335,8 +337,16 @@ nothing in the file says which one wrote it.
 .TP
 .B \-\-check
 .RB ( fmt ", " migrate )
-Print nothing. Exit 6 when a rewrite would change the file and 0 when it would
-not, so a script can ask which files in a tree need formatting or migrating.
+Print nothing. Exit 6 when
+.B fmt
+would change the file or
+.B migrate
+would rewrite a line, and 0 otherwise, so a script can ask which files in a
+tree need formatting or migrating. The
+.B Format
+line a
+.B migrate
+rewrite adds is not a rewritten line, so a file that only lacks it is 0.
 A rewrite the matching
 .B \-\-write
 would refuse is exit 7 instead, since
@@ -723,14 +733,14 @@ shcl fmt \-\-layer=base.shcl site.shcl |
 .RE
 .SH SEE ALSO
 The language spec, the formal grammar and the Rust, Go, Python and C bindings:
-.UR https://github.com/jim\-collier/shcl
+.UR https://github.com/yottacore/shcl
 .UE
 .PP
 Bash and PowerShell wrappers are installed beside this command and give the
 same reads as shell functions.
 .SH BUGS
 Report them at
-.UR https://github.com/jim\-collier/shcl/issues
+.UR https://github.com/yottacore/shcl/issues
 .UE
 .SH AUTHOR
 Jim Collier

@@ -94,6 +94,39 @@ if [[ -f "${backlog}" ]]; then
 	' "${backlog}")
 fi
 
+##	A doc comment stranded on the wrong declaration came back four rounds running,
+##	each time from code inserted between a comment and its function. Two places
+##	can be read mechanically. A Go comment opens with the name it documents, so
+##	one opening with another name declared in the package has moved. And every
+##	veneer declaration that starts a group carries a comment, so the one left
+##	bare when its comment moved shows.
+while IFS= read -r problem; do fBad "${problem}"; done < <(
+	for pkg in "${repoDir}/source/go" "${repoDir}/source/go/cmd/shcl"; do
+		LC_ALL=C awk -v root="${repoDir}/" '
+			{ line[FILENAME, FNR] = $0; if (FNR > last[FILENAME]) last[FILENAME] = FNR; files[FILENAME] = 1 }
+			match($0, /^(func (\([^)]*\) )?|type |var |const )[A-Za-z_][A-Za-z0-9_]*/) {
+				nm = substr($0, RSTART, RLENGTH); sub(/.* /, "", nm); declared[nm] = 1
+			}
+			END {
+				for (f in files) for (i = 2; i <= last[f]; i++) {
+					if (!match(line[f, i], /^(func (\([^)]*\) )?|type |var |const )[A-Za-z_][A-Za-z0-9_]*/)) continue
+					nm = substr(line[f, i], RSTART, RLENGTH); sub(/.* /, "", nm)
+					j = i - 1; if (line[f, j] !~ /^\/\//) continue
+					while (j > 1 && line[f, j - 1] ~ /^\/\//) j--
+					w = line[f, j]; sub(/^\/\/[ \t]*/, "", w); sub(/[^A-Za-z0-9_].*$/, "", w)
+					if (w != nm && (w in declared)) { g = f; sub(root, "", g); print g ":" j ": the comment for " w " sits on " nm }
+				}
+			}' "${pkg}"/*.go
+	done
+	LC_ALL=C awk '
+		/^class Document/ { inDoc = 1 }
+		inDoc && /^};/ { inDoc = 0 }
+		inDoc && /^\t[A-Za-z].*\(.*\).*[{;}]$/ && !/^\t(return|if|for|while|public|private)/ {
+			if (prev ~ /^[ \t]*$/ || prev ~ /^\t(public|private):/) print "source/c/shcl.hpp:" FNR ": a declaration heads a group with no comment above it"
+		}
+		{ prev = $0 }' "${repoDir}/source/c/shcl.hpp"
+)
+
 ##	The documents list five integration modes, two of which are a shared library.
 ##	Nothing in the tree builds one - no crate-type, no export macro in the C
 ##	header, and the release stage produces binaries, packages and the drop-in
@@ -728,3 +761,5 @@ echo "check-docs: OK"
 ##		            compared with the help's.
 ##		2026-09-20  Every copyright marker is the canonical bytes, not a retyped
 ##		            lookalike.
+##		2026-09-23  No Go doc comment opens with another declared name, and every
+##		            veneer declaration heading a group has a comment.
