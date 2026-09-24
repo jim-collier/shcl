@@ -38,10 +38,14 @@ macro_rules! outln {
 // to report that fact, and the document on stdout is still good, so the write
 // result is dropped - what the print macros do instead is panic, which the
 // release build turns into an abort with nothing delivered.
+// stderr has no buffer, so writeln! straight to it made one write call per
+// format piece, about eleven per diagnostic. The line is built first and goes
+// out in one.
 macro_rules! errln {
 	($($arg:tt)*) => {{
 		use std::io::Write;
-		let _ = writeln!(std::io::stderr(), $($arg)*);
+		let line = format!("{}\n", format_args!($($arg)*));
+		let _ = std::io::stderr().write_all(line.as_bytes());
 	}};
 }
 

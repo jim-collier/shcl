@@ -78,7 +78,8 @@ jobs:
           ## The cross checks run under --ci since 20260920, and the first of
           ## them builds the C library and CLI for windows with mingw's gcc,
           ## which this image does not carry.
-          sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh bash-completion gcc-mingw-w64-x86-64
+          ## perf-gate counts write calls with strace.
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh bash-completion gcc-mingw-w64-x86-64 strace
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0 pillow==11.1.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser'

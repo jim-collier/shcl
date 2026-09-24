@@ -354,6 +354,16 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Bugs
 
+- ✅ `perf-gate` fails now and then on the hosted runner: Rust's `badlines` goes past its budget.
+	- Reproduced: hosted run 36044384924 on dev, 325 ms against a 294 ms budget. The same workload has read 95 to 282 ms on earlier hosted runs against about 300.
+	- Cause: the Rust CLI wrote each diagnostic to an unbuffered stderr one format piece at a time, eleven write calls a line against Go's two. The gate's CLI is built at the test profile's opt-level 1, which makes the parse baseline about 50 ms, so the write calls became most of the cost.
+	- Origin: the stderr macro is older than 3.0 work. `[profile.test] opt-level = 1` (2026-09-22) moved the baseline under it. Not a regression from the 20260924 fixes: `cc73b01` times the same. Confirmed.
+	- Fixed: `errln!` in `main.rs` builds the line first and writes it once. Output is byte-identical. `badlines` went from 172 ms to 102 ms here at opt-level 1.
+	- Pinned by: `perf-gate.bash` counts write calls for `badlines` with strace, at most four per line, in all four CLIs. It fails on the old Rust CLI with 440,002. `ci.yml` installs strace, and a missing one fails under the strict gate.
+	- Swept: Go writes 2 calls a line, C 3 and Python 1. `errln!` is the only stderr write in `main.rs`.
+	- Opened: 20260924-1207
+	- Closed: 20260924-1215
+
 - ✅ A layer merges differently from its canonical form when a comment sits between two instances of a block.
 	- Reproduced: in Rust, on `dev` as well. Base `m:` with `\ts: 3` under it. The layer is `m:`, `\tp: 1`, `\t# c`, then `m:` again with `\ts: 3`. Merged as written, `# c` comes out after `p`, at the end of `m`. Merged after `fmt`, it comes out above `s`.
 	- Cause: the load files `# c` after `p`. The canonical form writes it just above the reopened block's `s`, and a reload files it as `s`'s leading comment. `s` matches the base's `s`, so the two merges put it in different places.
