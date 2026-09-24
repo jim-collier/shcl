@@ -1639,6 +1639,8 @@ func doGet(o *opts) int {
 			emit(subbed)
 		} else if o.slots {
 			outf("%s\t%s\n", status, oneLine(o.def))
+		} else if o.array {
+			outln(oneLine(o.def))
 		} else {
 			outln(o.def)
 		}

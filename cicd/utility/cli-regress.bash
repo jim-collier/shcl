@@ -246,7 +246,8 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 ##	default whose value breaks its type, %SK% a valued parent whose array
 ##	default has no selector spelling,
 ##	%C% a path with nothing at it, cleared before every binding's run, %E% an
-##	empty argument, %LS% a long s (U+017F), which Unicode upper-cases to S,
+##	empty argument, %DB% a --default carrying a line break, %LS% a long s
+##	(U+017F), which Unicode upper-cases to S,
 ##	%L% a fresh copy of a file whose basename is 250 characters, %LW% one whose
 ##	basename is 245 bytes of four-byte characters,
 ##	%NB% a repeated field name carrying a line break, %DN%/%SN% a flat name
@@ -524,6 +525,9 @@ rows=(
 	'get-slots-one-per-line|get --array --slots %NV% arr|-|0|Good\t"a\\nb"\nGood\tc\n|-'
 	'get-slots-scalar-escaped|get --slots %NV% one|-|0|Good\t"x\\ny"\n|-'
 	'get-scalar-unescaped|get %NV% one|-|0|x\ny\n|-'
+	'get-array-default-missing|get --array %DB% %NV% nope|-|0|"q\\nr"\n|-'
+	'get-array-default-slots|get --array --int %DB% %NV% arr|-|0|"q\\nr"\n"q\\nr"\n|-'
+	'get-scalar-default-missing|get %DB% %NV% nope|-|0|q\nr\n|-'
 	## 20260830b item 22: usage and I/O shared exit 1, so a script could not
 	## tell "the command line is wrong" from "that file is not there".
 	'io-missing-file|get %M% a|-|8|-|-'
@@ -803,6 +807,7 @@ for row in "${rows[@]}"; do
 	read -r -a args <<<"${argv}"
 	for k in "${!args[@]}"; do
 		if [[ "${args[k]}" == "%E%" ]]; then args[k]=""; fi
+		if [[ "${args[k]}" == "%DB%" ]]; then args[k]=$'--default=q\nr'; fi
 	done
 	for b in "${bindings[@]}"; do
 		name="${b%%|*}"; cli="${b#*|}"

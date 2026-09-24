@@ -832,6 +832,7 @@ static int do_get(Opts *o) {
 			}
 		} else {
 			if (o->slots) { printf("%s\t", shcl_status_name(status)); out_one_line(dv, strlen(dv)); }
+			else if (o->array) out_one_line(dv, strlen(dv));
 			else outln(dv, strlen(dv));
 		}
 		rc = 0;
