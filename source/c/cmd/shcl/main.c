@@ -40,6 +40,16 @@
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
 #define VERSION "2.0.0"
 
+// The build number, set only for a stamped build (-DSHCL_BUILD=ID, unquoted).
+// The Rust CLI is the one the pipeline stamps; see its build.rs.
+#ifdef SHCL_BUILD
+	#define SHCL_STR_(x) #x
+	#define SHCL_STR(x) SHCL_STR_(x)
+	#define VERSION_LINE "shcl v" VERSION " build " SHCL_STR(SHCL_BUILD)
+#else
+	#define VERSION_LINE "shcl v" VERSION
+#endif
+
 static const char *HELP =
 	"shcl - Simple Hierarchical Config Language (reference CLI)\n"
 	"\n"
@@ -201,7 +211,7 @@ static const char *HELP =
 // bindings the same way the help text and the init banner are. The version
 // concatenates from the VERSION macro so it cannot drift from `shcl version`.
 static const char *ABOUT =
-	"shcl v" VERSION "\n"
+	VERSION_LINE "\n"
 	"Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].\n"
 	"Project: https://github.com/yottacore/shcl\n"
 	"Licensed under the MIT License. Full text at:\n"
@@ -2261,7 +2271,7 @@ static int cli_main(int argc, char **argv) {
 		fprintf(stderr, "unknown command: %s%s (see --help)\n", topic, hint);
 		return 1;
 	}
-	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("shcl %s\n", VERSION); return 0; }
+	if ((asked && !strcmp(asked, "version")) || !strcmp(argv[1], "version")) { printf("%s\n", VERSION_LINE); return 0; }
 	if ((asked && !strcmp(asked, "about")) || !strcmp(argv[1], "about")) { printf("\n%s\n", ABOUT); return 0; }
 	if ((asked && !strcmp(asked, "donate")) || !strcmp(argv[1], "donate")) { printf("\n%s\n", DONATE); return 0; }
 	const char *cmd = argv[1];

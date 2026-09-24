@@ -1585,6 +1585,25 @@ unset SHCL_STUB_MARKER
 ##	against origin/main after a dev publish. The line has to be there.
 grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"
 
+##	20260924c idea 13: the release binaries print a build number, minutes from
+##	2000 to the commit in Crockford base32. The rows pin the encoding and that
+##	the release build is the one handed it.
+eval "$(sed -n '/^fBuildNumber()/,/^}/p' "${repoDir}/cicd/cicd.bash")"
+if declare -F fBuildNumber >/dev/null; then
+	for row in "946684800 0" "946684829 0" "946684830 1" "946686720 10" "946746240 100" "2052828780 hjkmn" "2959950660 zzzzz" "2959950690 100000"; do
+		got="$(fBuildNumber "${row% *}")"
+		[[ "${got}" == "${row#* }" ]] || fBad "cicd.bash build number for ${row% *} is ${got@Q}, want ${row#* }"
+	done
+else
+	fBad "cicd.bash no longer carries fBuildNumber"
+fi
+buildLine="$( { grep -n '^[[:space:]]*export SHCL_BUILD$' "${repoDir}/cicd/cicd.bash" || true; } | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016  ## cicd.bash's own text, matched literally
+releaseLine="$( { grep -n '^[[:space:]]*"${RELEASE_NATIVE_CMD\[@\]}"$' "${repoDir}/cicd/cicd.bash" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${buildLine}" || -z "${releaseLine}" ]] || ((buildLine > releaseLine)); then
+	fBad "cicd.bash does not hand SHCL_BUILD to the native release build"
+fi
+
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"

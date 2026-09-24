@@ -192,6 +192,19 @@ trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n\n" "$rc" "$LI
 ## with SIGPIPE, so the quit belongs in sed.
 fVersion(){ sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${root}/${VERSION_MANIFEST}"; }
 
+## The build number a release binary prints after its version: minutes from
+## 2000-01-01 UTC to a unix time, rounded, in lower-case Crockford base32.
+fBuildNumber(){   ## fBuildNumber EPOCH_SECONDS
+	local digits="0123456789abcdefghjkmnpqrstvwxyz" n out=""
+	n=$(( ($1 - 946684800 + 30) / 60 ))
+	while :; do
+		out="${digits:n % 32:1}${out}"
+		n=$((n / 32))
+		((n > 0)) || break
+	done
+	printf '%s\n' "${out}"
+}
+
 ## (Re)write the sha256sums file over every artifact in the release dir except
 ## the sums file itself.
 fWriteSums(){
@@ -489,6 +502,12 @@ if [[ -n "${green_tree}" ]]; then
 	fi
 fi
 if ((${#RELEASE_NATIVE_CMD[@]})); then
+	## Stamped from the commit, not the clock, so a rebuild of one commit gives
+	## the same bytes. Only these builds carry it: the gate's own builds stay
+	## unstamped, the same as the other three CLIs they are compared against.
+	SHCL_BUILD="$(fBuildNumber "$(git -C "${root}" log -1 --format=%ct)")"
+	export SHCL_BUILD
+	fEcho "build ${SHCL_BUILD}"
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
 	fEcho "OK: native release: ${RELEASE_NATIVE_BIN} ($(du -h "${RELEASE_NATIVE_BIN}" | cut -f1))"
@@ -501,6 +520,7 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		fEcho "OK: ${t_label}: ${t_art} ($(du -h "${t_art}" | cut -f1))"
 		built_arts+=("${t_osarch}|${t_art}")
 	done
+	unset SHCL_BUILD
 	if [[ -n "${RELEASE_ARTIFACT_DIR:-}" ]]; then
 		ver="$(fVersion)"
 		[[ -n "$ver" ]] || fDie "no version found in ${VERSION_MANIFEST}"

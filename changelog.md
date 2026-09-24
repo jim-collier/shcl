@@ -54,6 +54,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `shcl version` prints `shcl v3.0.0`, and a release binary adds its build number, as in `shcl v3.0.0 build dd2f6`. `about` opens with the same line. It used to print `shcl 2.0.0`.
+
 - The installers default to the newest full release, installed for the current user with no sudo or elevation. `--release dev` and `--target system` (`-Release dev`, `-Target system`) give the old defaults. While there is no full release yet, the default takes the newest pre-release. The plan names the release it downloads from, and the Linux one-liner is now `bash <(curl ...)`.
 
 - Rust formats a large file in about a tenth less time, and a comment-heavy one in about a quarter less. It copies far less text while it parses and writes. C's `fmt` uses about a quarter less peak memory on a large file, since its check for repeated leaves no longer keeps every level's working lists until it ends.
