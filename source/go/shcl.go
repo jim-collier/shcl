@@ -5762,13 +5762,14 @@ func (d *Document) Merge(over *Document) {
 	}
 	d.index.Store(nil)
 	d.lost += over.lost
-	d.overlay(root, over, root)
-	stack := []int{root}
-	for len(stack) > 0 {
-		n := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+	// Only a block the overlay visited can have a changed child list or
+	// comments; the rest was settled when it was built. Settling the whole
+	// tree made every merge cost the document (20260924 item 6). A block's
+	// settle writes only below it, so the order does not matter.
+	var touched []int
+	d.overlay(root, over, root, &touched)
+	for _, n := range touched {
 		settleBlock(d.arena, n, 1)
-		stack = append(stack, d.arena[n].children...)
 	}
 	// Layers commonly share a footer; keeping one copy of each keeps a
 	// stack of files from repeating it once per layer. Only the lines
@@ -5833,7 +5834,8 @@ func (d *Document) adoptTrivia(base int, over *Document, ok int) {
 	bt.inside = append(bt.inside, st.inside...)
 }
 
-func (d *Document) overlay(baseParent int, over *Document, overParent int) {
+func (d *Document) overlay(baseParent int, over *Document, overParent int, touched *[]int) {
+	*touched = append(*touched, baseParent)
 	overKids := over.arena[overParent].children
 	// Over side: name -> node bucket, in first-appearance order.
 	var order []string
@@ -5947,7 +5949,7 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int) {
 				}
 				if found {
 					d.adoptTrivia(target, over, ok)
-					d.overlay(target, over, ok)
+					d.overlay(target, over, ok, touched)
 				} else {
 					c := d.cloneSubtree(over, ok, baseParent)
 					appended = append(appended, overKid{k.pos, c})

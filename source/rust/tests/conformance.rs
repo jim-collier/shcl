@@ -1658,6 +1658,46 @@ fn index_rebuild_ignores_removed_nodes() {
 	);
 }
 
+/// A merge settles the comments of the blocks it visited, not of the whole
+/// tree: a whole-tree pass made each small merge cost the document, and a
+/// caller folding many layers onto a big one paid it every time. Timed against
+/// the same merges with the big block left out. Same fixture in every runner.
+#[test]
+fn merge_settles_only_what_it_touched() {
+	let mut ms = [0.0f64; 2];
+	for (big, slot) in ms.iter_mut().enumerate() {
+		let mut text = String::from("g:\n\tk: 1\n");
+		if big == 1 {
+			text.push_str("big:\n");
+			for i in 0..100_000 {
+				text.push_str(&format!("\tc{i}: {i}\n"));
+			}
+		}
+		let mut d = Document::parse(&text);
+		let other = Document::parse("g:\n\tk: 1\n");
+		let t0 = std::time::Instant::now();
+		for _ in 0..2000 {
+			d.merge(&other);
+		}
+		*slot = t0.elapsed().as_secs_f64() * 1000.0;
+		assert_eq!(d.get_int_or("g.k", -1), 1);
+	}
+	// The same bound as the index fixture above: the defect is a walk over a
+	// hundred thousand nodes per merge, seconds past the constant term.
+	let bound = if ms[0] <= 0.0 {
+		3000.0
+	} else {
+		ms[0] * 25.0 + 1000.0
+	};
+	assert!(
+		ms[1] <= bound,
+		"2000 merges beside a big block {:.1} ms against {:.1} ms without it (bound {:.1} ms) - the merge settles blocks it never touched",
+		ms[1],
+		ms[0],
+		bound
+	);
+}
+
 #[test]
 fn standard_trait_surface() {
 	// Rust-only: the traits a rust user reaches for before reading any docs.

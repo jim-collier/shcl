@@ -3943,12 +3943,12 @@ class Document:
 			return
 		self._index = None
 		self._lost += over._lost
-		self._overlay(ROOT, over, ROOT)
-		stack = [ROOT]
-		while stack:
-			n = stack.pop()
+		# Only a block the overlay visited can have a changed child list or
+		# comments; the rest was settled when it was built. Settling the whole
+		# tree made every merge cost the document (20260924 item 6). A block's
+		# settle writes only below it, so the order does not matter.
+		for n in self._overlay(ROOT, over, ROOT):
 			_settle_block(self.arena, n, 1)
-			stack.extend(self.arena[n].children)
 		# Layers commonly share a footer; keeping one copy of each keeps a
 		# stack of files from repeating it once per layer. Only the lines
 		# already here count: a layer's own repeats are its content.
@@ -3992,11 +3992,15 @@ class Document:
 	def _overlay(self, base_parent, over, over_parent):
 		"""Explicit stack rather than recursion, for the same reason _clone_subtree
 		uses one. Each level's rebuild depends on nothing the deeper levels do, so
-		deferring them changes no result; the walk stays depth-first and in order."""
+		deferring them changes no result; the walk stays depth-first and in order.
+		Returns the base blocks it visited, which are the ones a merge settles."""
+		touched = []
 		stack = [(base_parent, over_parent)]
 		while stack:
 			bp, op = stack.pop()
+			touched.append(bp)
 			stack.extend(reversed(self._overlay_level(bp, over, op)))
+		return touched
 
 	def _overlay_level(self, base_parent, over, over_parent):
 		"""One level of the overlay. Returns the (base, over) pairs whose subtrees
