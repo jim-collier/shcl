@@ -319,6 +319,10 @@ H002|hint|a binding merged with a non-adjacent earlier one
   Same name and value, so the two combine. Legal, and only the parser can
   see it happened. The prose names the earlier line, and a schema can
   disavow it per section with 'reopen: true'.
+H003|hint|a stacked '*' element spelled like a field binding
+  '* name: value' is the YAML habit for a list of objects. Here it is one
+  string element, the text 'name: value'. Quote it to keep the string; a
+  list of objects is written as instances of a field.
 V001|error|unknown field
   No schema path covers it. Only the topmost unknown node is reported; its
   subtree is skipped. The prose carries the did-you-mean suggestion.
@@ -1154,10 +1158,15 @@ def do_get(o):
 		# Per-line slot status: falls back to the aggregate for scalar reads.
 		return slots[i] if i < len(slots) else status
 
+	# An array or a slot listing is one line per element, so a value holding a
+	# line break takes its escaped spelling there. A plain scalar read prints the
+	# value as it is, since the whole output is that one value.
 	def emit(lns):
 		for i, ln in enumerate(lns):
 			if o.slots:
-				print(f"{slot_at(i).name}\t{ln}")
+				print(f"{slot_at(i).name}\t{one_line(ln)}")
+			elif o.array:
+				print(one_line(ln))
 			else:
 				print(ln)
 
@@ -1199,7 +1208,7 @@ def do_get(o):
 			# Array read: the default substitutes per bad slot; alignment holds.
 			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
 		elif o.slots:
-			print(f"{status.name}\t{dv}")
+			print(f"{status.name}\t{one_line(dv)}")
 		else:
 			print(dv)
 		return 0

@@ -107,31 +107,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260923 - technical detail".
 
-	- 🔘 Item 4: `get --array` and `--slots` print an element holding a line break across several lines.
-		- Reproduced, all four: `n: "a\nb", c` gives three lines for two elements, and under `--slots` one line has no status.
-		- Note: 20260920b item 26 fixed `instances` for this, since a script splitting on newlines miscounts. Each CLI already has the one-line helper.
-		- Origin: 2026-07-18 and 2026-09-02. The sibling of 20260920b item 26. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 8: on Windows, the C binding creates and deletes a file when it reads through a dangling symlink.
-		- Reproduced on vm925w: `get` on a link to a missing `target.shcl` exits 8 as it should, and a watcher sees `target.shcl` created and then deleted.
-		- Cause: every Windows read goes through the resolver, and its dangling-link probe was written for saves.
-		- Note: if something holds the probe file open, the delete fails and an empty file stays behind. The next load reads it as an empty document.
-		- Origin: 2026-09-03, the long-path reads plus the save-side probe. No item covers the read side. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 9: under Windows PowerShell 5.1, text piped into `shcl` through the wrapper loses its non-ASCII characters at exit 0.
-		- Reproduced on vm925w: `'a: café' | shcl fmt -` gives `a: caf?` in 5.1 and `a: café` in 7. 5.1's `$OutputEncoding` is `us-ascii`.
-		- Note: the wrapper sets neither `$OutputEncoding` nor `[Console]::OutputEncoding`. Output came back right over ssh, where the console page is 65001. An interactive console on the OEM page is untested and may garble output too.
-		- Origin: the wrapper, 2026-07-18. Not seen before. Confirmed for input.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 10: `shcl.ps1` run as a script drops pipeline input.
-		- Reproduced on pwsh 7 here and on vm925w in 5.1 and 7: `'a: 5' | .\shcl.ps1 fmt -` prints nothing at exit 0. Dot-sourced `shcl` gets it.
-		- Cause: the script's run path calls `shcl @args` without the `ExpectingInput` test the function and the fifteen helpers use.
-		- Origin: 2026-07-18. The third site of the class fixed for the function and then for the helpers (20260918b item 32). Confirmed.
-		- Opened: 20260923-145138
-
 	- 🔘 Item 11: a late fold merges two bindings that are not adjacent without an `H002` hint.
 		- Reproduced, all four: `m:` with `a: 1, 2` and a child, then `c: 0`, then `m:` again with `a:` as a stacked list of 1 and 2. It hints only for `m`. The same document with `a: 1, 2` inline hints for both.
 		- Rests on: the spec says every merged level under a hinted re-open reports.
@@ -166,12 +141,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced, all four: `shcl version --int` and `version extra` exit 0, while `help get extra` exits 1.
 		- Rests on: the UI guide says an option a subcommand does not use is a usage error and is never ignored. The flag spellings still work anywhere, as `design.md` says.
 		- Origin: 2026-08-03. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 18: the spec says a stacked element is always colon-less, but `* k: v` loads as the string `k: v`.
-		- Reproduced, all four, with no diagnostic. The grammar agrees with the code. `*x: y` is `E013`, so the space is what tells the two apart, not the colon.
-		- Note: needs a decision. Either fix the spec's wording to the general bare-value rule, or diagnose `* key: value`, which is the YAML list-of-maps habit and now reads silently as a string.
-		- Origin: the spec text is from 2026-07-12, before the 3.0 bare-value rule. Confirmed.
 		- Opened: 20260923-145138
 
 	- 🔘 Item 19: the C header's list of when to reset a `shcl_tokens` leaves out `shcl_compact`, and reuse after one writes into freed memory.
@@ -777,6 +746,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260923-145138
 		- Closed: 20260923-1635
 
+	- ✅ Item 4: `get --array` and `--slots` print an element holding a line break across several lines.
+		- Reproduced, all four: `n: "a\nb", c` gives three lines for two elements, and under `--slots` one line has no status.
+		- Note: 20260920b item 26 fixed `instances` for this, since a script splitting on newlines miscounts. Each CLI already has the one-line helper.
+		- Origin: 2026-07-18 and 2026-09-02. The sibling of 20260920b item 26. Confirmed.
+		- Fixed: under `--array` or `--slots`, `get` prints each element with the same one-line helper `instances` uses. A plain scalar `get` prints the value as it is, since the whole output is that value. Spec and man page say so.
+		- Pinned by: four `cli-regress.bash` rows on the `%NV%` fixture. The old C CLI fails three of them.
+		- Opened: 20260923-145138
+		- Closed: 20260924-0835
+
 	- ✅ Item 5: Go's `ParseLimited` panics when the node cap is near `MaxInt` or below -2.
 		- Reproduced: `ParseLimited(text, Standard, math.MaxInt, 0, 0)` panics with `makeslice: cap out of range`. So do `MaxInt-1` and `-3`. The doc says 0 disables a cap and gives no range.
 		- Cause: the new reserve adds 2 to the cap before comparing, which overflows.
@@ -807,6 +785,34 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260923-145138
 		- Closed: 20260923-1514
 
+	- ✅ Item 8: on Windows, the C binding creates and deletes a file when it reads through a dangling symlink.
+		- Reproduced on vm925w: `get` on a link to a missing `target.shcl` exits 8 as it should, and a watcher sees `target.shcl` created and then deleted.
+		- Cause: every Windows read goes through the resolver, and its dangling-link probe was written for saves.
+		- Note: if something holds the probe file open, the delete fails and an empty file stays behind. The next load reads it as an empty document.
+		- Origin: 2026-09-03, the long-path reads plus the save-side probe. No item covers the read side. Confirmed.
+		- Fixed: the Windows resolver takes a read-or-save flag, and a read gets not-found for a dangling link without the probe. Saves keep it.
+		- Pinned by: `windangle` in the C runner. It sets the directory's write time back, reads through the link, and fails if the time moved. On vm925w the old header fails it and the new one passes.
+		- Opened: 20260923-145138
+		- Closed: 20260924-0835
+
+	- ✅ Item 9: under Windows PowerShell 5.1, text piped into `shcl` through the wrapper loses its non-ASCII characters at exit 0.
+		- Reproduced on vm925w: `'a: café' | shcl fmt -` gives `a: caf?` in 5.1 and `a: café` in 7. 5.1's `$OutputEncoding` is `us-ascii`.
+		- Note: the wrapper sets neither `$OutputEncoding` nor `[Console]::OutputEncoding`. Output came back right over ssh, where the console page is 65001. An interactive console on the OEM page is untested and may garble output too.
+		- Origin: the wrapper, 2026-07-18. Not seen before. Confirmed for input.
+		- Fixed: the wrapper's `shcl` function sets `$OutputEncoding` and the console's output encoding to UTF-8 for the call and puts both back. 5.1 reads only the global `$OutputEncoding`, so a local copy was not enough.
+		- Pinned by: `shell-regress.bash` rows that set both to something else first, and check the value read back and the console encoding after. Checked on vm925w in 5.1 and 7, old and new wrappers.
+		- Opened: 20260923-145138
+		- Closed: 20260924-0835
+
+	- ✅ Item 10: `shcl.ps1` run as a script drops pipeline input.
+		- Reproduced on pwsh 7 here and on vm925w in 5.1 and 7: `'a: 5' | .\shcl.ps1 fmt -` prints nothing at exit 0. Dot-sourced `shcl` gets it.
+		- Cause: the script's run path calls `shcl @args` without the `ExpectingInput` test the function and the fifteen helpers use.
+		- Origin: 2026-07-18. The third site of the class fixed for the function and then for the helpers (20260918b item 32). Confirmed.
+		- Fixed: the run path forwards `$input` under the same `ExpectingInput` test as the function and helpers.
+		- Pinned by: a `shell-regress.bash` row piping into the script form from inside PowerShell. Checked on vm925w in 5.1 and 7.
+		- Opened: 20260923-145138
+		- Closed: 20260924-0835
+
 	- ✅ Item 13: the help and man page say `migrate --check` exits 6 when a rewrite would change the file, but a file that only gains the Format line exits 0.
 		- Reproduced, all four: on `x: 1`, `--check` exits 0, and `--write` then appends the stamp and exits 0.
 		- Note: `design.md` and `spec.md` say 6 means a line to rewrite, which is what the code does, and `cli-regress` pins it. So the fix is the help and man page wording.
@@ -815,6 +821,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Sweep: `design.md`, `spec.md` and the README already said a line to rewrite. The EXIT STATUS entry's "a rewrite to make" was left, since it names both subcommands.
 		- Opened: 20260923-145138
 		- Closed: 20260923-1514
+
+	- ✅ Item 18: the spec says a stacked element is always colon-less, but `* k: v` loads as the string `k: v`.
+		- Reproduced, all four, with no diagnostic. The grammar agrees with the code. `*x: y` is `E013`, so the space is what tells the two apart, not the colon.
+		- Note: needs a decision. Either fix the spec's wording to the general bare-value rule, or diagnose `* key: value`, which is the YAML list-of-maps habit and now reads silently as a string.
+		- Origin: the spec text is from 2026-07-12, before the 3.0 bare-value rule. Confirmed.
+		- Fixed: a hint, `H003`, on a bare element spelled `name: value` or `name:`. An error would refuse a value the bare-value rule takes everywhere else, and a hint changes no load or exit code. The spec wording now matches the parser. Decision in `design.md`.
+		- Pinned by: corpus 144, with near misses that stay quiet.
+		- Opened: 20260923-145138
+		- Closed: 20260924-0835
 
 	- ✅ Item 20: the help, man page and README say `tokens` shows how the parser reads a line, but a raw body line is tokenized as a field line.
 		- Reproduced: a body line `\tbody` prints `name=0-4`. The code comment says the lexical view is on purpose, so the docs need one clause.

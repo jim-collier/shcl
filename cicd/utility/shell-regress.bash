@@ -265,6 +265,31 @@ done
 			[[ "${hout}" == "${bout}" && "${hrc}" == "${brc}" ]] \
 				|| fBad "piped helper ${hid} differs from the binary: ${hout@Q} rc=${hrc} against ${bout@Q} rc=${brc}"
 		done
+
+		##	20260923 items 9 and 10. Windows PowerShell 5.1 pipes text in as
+		##	us-ascii and decodes what comes back with the console's code page, so
+		##	`'a: café' | shcl fmt -` gave `caf?` at exit 0. pwsh here defaults to
+		##	UTF-8 for both, so the rows set the two to something else first. And
+		##	the script form, run from a PowerShell pipeline, dropped its input.
+		printf 'a: caf\xc3\xa9\n' > "${tmpDir}/cafe.shcl"
+		#  shellcheck disable=2016  ## PowerShell's own $variables.
+		{
+			echo ". '${repoDir}/source/powershell/shcl.ps1'"
+			echo '$cafe = "caf" + [char]0xe9'
+			echo '$OutputEncoding = [System.Text.Encoding]::ASCII'
+			echo '$r = "a: $cafe" | shcl get - a'
+			echo '"piped=$($r -eq $cafe)"'
+			echo '[Console]::OutputEncoding = [System.Text.Encoding]::Latin1'
+			echo "\$r = shcl get '${tmpDir}/cafe.shcl' a"
+			echo '"decoded=$($r -eq $cafe) restored=$([Console]::OutputEncoding.CodePage)"'
+			echo "\$r = 'a: 5' | & '${repoDir}/source/powershell/shcl.ps1' get --int - a"
+			echo '"script=$r rc=$LASTEXITCODE"'
+		} > "${tmpDir}/wenc.ps1"
+		out="$(pwsh -NoProfile -File "${tmpDir}/wenc.ps1" </dev/null 2>&1 || true)"
+		[[ "${out}" == *"piped=True"* ]] || fBad "shcl.ps1 pipes text in with the caller's \$OutputEncoding: ${out@Q}"
+		[[ "${out}" == *"decoded=True restored=28591"* ]] \
+			|| fBad "shcl.ps1 decodes output with the console's code page, or does not put it back: ${out@Q}"
+		[[ "${out}" == *"script=5 rc=0"* ]] || fBad "shcl.ps1 run as a script drops pipeline input: ${out@Q}"
 	fi
 	unset SHCL_BIN
 }

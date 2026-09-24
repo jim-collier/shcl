@@ -3327,6 +3327,19 @@ static size_t bind_block(ShclParser *P, size_t parent, ShclValue value, size_t l
 	return select_or_create(P, gp, name, name_src, value, line);
 }
 
+/* `* name: value` is the YAML habit for a list of objects. Here it is one
+   string element, so the parser says so (H003): the text up to its first colon
+   has no blank, and the colon ends the text or a blank follows it. */
+static int looks_like_binding(ShclStr s) {
+	size_t i = 0;
+	while (i < s.n && s.p[i] != ':') {
+		if (is_wsp((unsigned char)s.p[i])) return 0;
+		i++;
+	}
+	if (i == 0 || i == s.n) return 0;
+	return i + 1 == s.n || is_wsp((unsigned char)s.p[i + 1]);
+}
+
 /* One stacked-list element (`* scalar`) appends to the parent's array. */
 static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok, ShclStr text, size_t line, ShclStr indent) {
 	ShclArena *a = &P->d->arena;
@@ -3339,6 +3352,7 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 	ShclElement el;
 	if (!element_of(a, &piece, text, &el)) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return; }
 	if (piece.quote == SHCL_QUOTE_OPEN) p_err(P, line, "E017", s_lit("unterminated quote in value"));
+	int binding_like = !el.quoted && looks_like_binding(el.text);
 	/* Element cap: each element line past it is refused on its own, the way
 	   any other bad element line is. Only a line that would join the list:
 	   under a field that already has a value it is E011, cap or not. */
@@ -3377,6 +3391,7 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 		p_refuse(P, line, "E011", s_lit("field already has a value; list element ignored"), out_kind(OUT_DROPPED), indent);
 		return;
 	}
+	if (binding_like) p_diag(P, line, SHCL_SEV_HINT, "H003", s_lit("list element looks like a field binding; it is read as a string (quote it to say so)"));
 	/* A kept element holds its column as a dropped one does, with the field as
 	   that level's node: a line written deeper binds where it always did, and a
 	   line back at the element's column is its sibling, where no level had been
@@ -7249,15 +7264,17 @@ static int shcl_publish_new_file(const wchar_t *tmp, const wchar_t *target) {
 #endif
 
 #ifdef _WIN32
-static char *shcl_resolve_target(const char *file);
+static char *shcl_resolve_path(const char *file, int for_save);
 #endif
 static FILE *shcl_fopen_rb(const char *path) {
 #ifdef _WIN32
 	// Through the same resolver the write side uses, so a read past MAX_PATH
 	// works too: the narrow and wide file calls both refuse such a path unless
 	// it carries the long-path prefix. A path the resolver cannot spell is
-	// opened as given, which is what it did before.
-	char *real = shcl_resolve_target(path);
+	// opened as given, which is what it did before. A read never probes a
+	// dangling link: the probe creates a file where the link points, and a
+	// read has nothing to create.
+	char *real = shcl_resolve_path(path, 0);
 	wchar_t *w = shcl_widen(real ? real : path);
 	free(real);
 	FILE *f = w ? _wfopen(w, L"rb") : NULL;
@@ -7343,8 +7360,9 @@ static int shcl_not_a_disk_file(const char *path) {
 // prefix is kept only where the name would otherwise be too long for the temp
 // file beside it; a short path stays the plain name it was. A file that is not
 // there yet has no final path, so its full path is prefixed by hand. malloc'd
-// UTF-8; NULL with errno saying why.
-static char *shcl_resolve_target(const char *file) {
+// UTF-8; NULL with errno saying why. A read passes FOR_SAVE 0 and gets
+// ENOENT for a dangling link rather than the probe below.
+static char *shcl_resolve_path(const char *file, int for_save) {
 	wchar_t *w = shcl_widen(file);
 	if (!w) return NULL;
 	wchar_t *full = NULL;
@@ -7376,6 +7394,7 @@ static char *shcl_resolve_target(const char *file) {
 			          && (fd.dwReserved0 == IO_REPARSE_TAG_SYMLINK || fd.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT);
 			FindClose(fh);
 		}
+		if (is_link && !for_save) { free(w); errno = ENOENT; return NULL; }
 		if (is_link) {
 			HANDLE ch = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 			                        NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -7432,6 +7451,7 @@ static char *shcl_resolve_target(const char *file) {
 	}
 	return out;
 }
+static char *shcl_resolve_target(const char *file) { return shcl_resolve_path(file, 1); }
 #endif
 
 #ifndef _WIN32

@@ -2180,6 +2180,47 @@ int main(int argc, char **argv) {
 		free(wl); free(wr);
 		remove(real); _rmdir(sdir);
 	}
+	{
+		/* 20260923 item 8: a read through a dangling link created a file where
+		   the link pointed and deleted it again, the save side's probe. If the
+		   delete failed, an empty file stayed and the next load read it as an
+		   empty document. The directory's write time is what the create and
+		   delete leave behind, so it is set back first and must not move. */
+		char sdir[256], link[320];
+		snprintf(sdir, sizeof sdir, "%s/shcl-dangle-%ld", tmp_root(), (long)getpid());
+		if (_mkdir(sdir) != 0) fail("windangle", "mkdir failed");
+		snprintf(link, sizeof link, "%s/link.shcl", sdir);
+		wchar_t *wl = shcl_widen(link), *wd = shcl_widen(sdir);
+		int made = wl && wd && CreateSymbolicLinkW(wl, L"gone.shcl", 0x2 /* ALLOW_UNPRIVILEGED_CREATE */);
+		if (made) {
+			DWORD la = GetFileAttributesW(wl);
+			made = la != INVALID_FILE_ATTRIBUTES && (la & FILE_ATTRIBUTE_REPARSE_POINT);
+		}
+		if (!made) printf("conformance: windangle skipped (no symlink)\n");
+		else {
+			FILETIME old_t = { 0x6C0D8000u, 0x01C0A6A4u }; /* early 2001 */
+			FILETIME now_t;
+			HANDLE dh = CreateFileW(wd, FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			                        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+			if (dh == INVALID_HANDLE_VALUE || !SetFileTime(dh, NULL, NULL, &old_t)) fail("windangle", "could not set the directory's time");
+			shcl_file_status st;
+			shcl_doc *ld = shcl_load_file(link, &st);
+			if (st != SHCL_FILE_NOT_FOUND) fail("windangle", "a read through a dangling link did not say not found");
+			shcl_free(ld);
+			if (dh != INVALID_HANDLE_VALUE) {
+				if (!GetFileTime(dh, NULL, NULL, &now_t)) fail("windangle", "could not read the directory's time");
+				else if (CompareFileTime(&now_t, &old_t) != 0) fail("windangle", "a read through a dangling link created a file");
+				CloseHandle(dh);
+			}
+			wchar_t gone[320];
+			swprintf(gone, sizeof gone / sizeof *gone, L"%ls\\gone.shcl", wd);
+			if (GetFileAttributesW(gone) != INVALID_FILE_ATTRIBUTES) fail("windangle", "a read through a dangling link left a file");
+			DeleteFileW(gone);
+			remove(link);
+		}
+		free(wl); free(wd);
+		_rmdir(sdir);
+	}
 #endif
 
 	if (nfail) { fprintf(stderr, "conformance: %d failure(s)\n", nfail); return 1; }

@@ -903,6 +903,17 @@ fn is_wsp_byte(b: u8) -> bool {
 	b == b' ' || b == b'\t' || b == b'\r'
 }
 
+/// `* name: value` is the YAML habit for a list of objects. Here it is one
+/// string element, so the parser says so (H003): the text up to its first
+/// colon has no blank, and the colon ends the text or a blank follows it.
+fn looks_like_binding(s: &str) -> bool {
+	let b = s.as_bytes();
+	let Some(i) = b.iter().position(|&c| c == b':') else {
+		return false;
+	};
+	i > 0 && !b[..i].iter().any(|&c| is_wsp_byte(c)) && b.get(i + 1).is_none_or(|&c| is_wsp_byte(c))
+}
+
 fn is_bare_name_byte(b: u8) -> bool {
 	b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
@@ -2993,6 +3004,7 @@ impl<'a> Parser<'a> {
 		if piece.quote == Quote::Open {
 			self.err(line, "E017", "unterminated quote in value");
 		}
+		let binding_like = !el.quoted && looks_like_binding(&el.text);
 		// Element cap: each element line past it is refused on its own, the way
 		// any other bad element line is. Only a line that would join the list:
 		// under a field that already has a value it is E011, cap or not.
@@ -3046,6 +3058,15 @@ impl<'a> Parser<'a> {
 				indent,
 			);
 			return;
+		}
+		if binding_like {
+			self.diag(Diagnostic {
+				line,
+				severity: Severity::Hint,
+				message: "list element looks like a field binding; it is read as a string (quote it to say so)"
+					.to_string(),
+				code: "H003",
+			});
 		}
 		// A kept element holds its column as a dropped one does, with the field
 		// as that level's node: a line written deeper binds where it always did,

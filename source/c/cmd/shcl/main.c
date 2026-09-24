@@ -350,6 +350,10 @@ static const char *CODES =
 	"  Same name and value, so the two combine. Legal, and only the parser can\n"
 	"  see it happened. The prose names the earlier line, and a schema can\n"
 	"  disavow it per section with 'reopen: true'.\n"
+	"H003|hint|a stacked '*' element spelled like a field binding\n"
+	"  '* name: value' is the YAML habit for a list of objects. Here it is one\n"
+	"  string element, the text 'name: value'. Quote it to keep the string; a\n"
+	"  list of objects is written as instances of a field.\n"
 	"V001|error|unknown field\n"
 	"  No schema path covers it. Only the topmost unknown node is reported; its\n"
 	"  subtree is skipped. The prose carries the did-you-mean suggestion.\n"
@@ -777,7 +781,13 @@ static int do_get(Opts *o) {
 
 	// Per-line slot status: falls back to the aggregate for scalar reads.
 	#define SLOT_AT(I) (slotSts && (I) < nSlots ? slotSts[I] : status)
-	#define EMITLINE(I, P, N) do { if (o->slots) printf("%s\t", shcl_status_name(SLOT_AT(I))); outln((P), (N)); } while (0)
+	// An array or a slot listing is one line per element, so a value holding a
+	// line break takes its escaped spelling there. A plain scalar read prints
+	// the value as it is, since the whole output is that one value.
+	#define EMITLINE(I, P, N) do { \
+		if (o->slots) printf("%s\t", shcl_status_name(SLOT_AT(I))); \
+		if (o->slots || o->array) out_one_line((P), (N)); else outln((P), (N)); \
+	} while (0)
 	// Why the read failed is worth saying even when the exit code already
 	// carries it: at the default mode the user otherwise gets an empty line, a
 	// nonzero code, and nothing to go on. Stdout is untouched - this only ever
@@ -821,8 +831,8 @@ static int do_get(Opts *o) {
 				else EMITLINE(i, dv, strlen(dv));
 			}
 		} else {
-			if (o->slots) printf("%s\t", shcl_status_name(status));
-			outln(dv, strlen(dv));
+			if (o->slots) { printf("%s\t", shcl_status_name(status)); out_one_line(dv, strlen(dv)); }
+			else outln(dv, strlen(dv));
 		}
 		rc = 0;
 	} else if (!strcmp(o->on_bad, "error")) {
