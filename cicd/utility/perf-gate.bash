@@ -290,6 +290,34 @@ for b in "${bindings[@]}"; do
 	done
 done
 
+##	A count where the clock only drifts: the write calls for the refused-lines
+##	document, at most four per line. Rust's stderr has no buffer, and writeln!
+##	straight to it made eleven per diagnostic, which put badlines at up to seven
+##	times its baseline on the hosted runner and failed the gate there now and
+##	then.
+if command -v strace >/dev/null 2>&1; then
+	for b in "${bindings[@]}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		fRun strace -f -c -e trace=write,writev -o "${tmpDir}/strace" "${cli}" check "${badDoc}" >/dev/null 2>&1 || true
+		calls="$(awk '$NF == "total" { print $4 }' "${tmpDir}/strace" 2>/dev/null || true)"
+		if [[ ! "${calls}" =~ ^[0-9]+$ ]]; then
+			echo "perf-gate: ${name}: strace gave no write count for badlines" >&2
+			nBad+=1
+		elif ((calls > keys * 4)); then
+			echo "perf-gate: ${name}: badlines made ${calls} write calls for ${keys} refused lines, more than four a line" >&2
+			nBad+=1
+		else
+			echo "perf-gate: ${name}: badlines ${calls} write calls for ${keys} lines"
+		fi
+	done
+elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
+	echo "perf-gate: strace is missing, and the gate requires it" >&2
+	nBad+=1
+else
+	echo "perf-gate: write counts SKIPPED - no strace"
+	echo perf-gate-strace >> "${SHCL_GATE_SKIPS:-/dev/null}"
+fi
+
 if ((nBad)); then
 	echo "perf-gate: ${nBad} workload(s) over budget" >&2
 	exit 1
@@ -321,3 +349,5 @@ echo "perf-gate: OK: ${keys} keys, ${#bindings[@]} binding(s) within ${factor}x 
 ##		            terminating fails this gate instead of hanging it.
 ##		2026-09-20  removes workload: every child of one parent taken out by one
 ##		            path, which rebuilt that child list once per target.
+##		2026-09-24  Write calls counted for badlines, since Rust's unbuffered
+##		            stderr made the clock flaky on the hosted runner.
