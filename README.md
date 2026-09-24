@@ -950,7 +950,7 @@ Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, 
 
 A config parser gets trusted with other people's files, so help and scrutiny are both welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, [sponsorship](https://github.com/sponsors/jim-collier) is welcome.
+If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, sponsorship through [GitHub](https://github.com/sponsors/jim-collier) or [Ko-fi](https://ko-fi.com/jimcollier) is welcome.
 
 ## Legal stuff
 

@@ -227,6 +227,7 @@ static const char *DONATE =
 	"\n"
 	"If it saves you time and you want to give something back:\n"
 	"  https://github.com/sponsors/jim-collier\n"
+	"  https://ko-fi.com/jimcollier\n"
 	"\n"
 	"A star on the project, a clear bug report, or a mention to someone who needs it\n"
 	"are worth just as much.\n";

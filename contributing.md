@@ -14,7 +14,7 @@ All types of contributions are encouraged and valued. See the [Table of contents
 > - Tweet/skeet/post about it
 > - Refer this project in your project's readme
 > - Mention the project to your friends/colleagues
-> - [Sponsor it](https://github.com/sponsors/jim-collier)
+> - Sponsor it on [GitHub](https://github.com/sponsors/jim-collier) or [Ko-fi](https://ko-fi.com/jimcollier)
 
 <!-- TOC ignore:true -->
 ## Table of contents
