@@ -218,6 +218,16 @@ fWriteSums(){
 }
 
 ## First existing+writable dir from the list; empty output when there is none.
+## True when a running process was started from this file. Linux answers
+## through /proc; elsewhere nothing is known to be in use.
+fInUse(){   ## fInUse PATH
+	local path exe
+	path="$(readlink -f -- "$1" 2>/dev/null)" || return 1
+	for exe in /proc/[0-9]*/exe; do
+		if [[ "$(readlink -- "${exe}" 2>/dev/null || true)" == "${path}" ]]; then return 0; fi
+	done
+	return 1
+}
 fFirstWritableDir(){ local d; for d in "$@"; do [[ -d "$d" && -w "$d" ]] && { echo "$d"; break; }; done; return 0; }
 
 ## Install to <dest_dir>/<name> through a temp file in the SAME dir plus a rename,
@@ -568,7 +578,9 @@ fi
 fSection "7/9  Dogfood"
 if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]; then
 	dogfood_dest="$(fFirstWritableDir "${DOGFOOD_FIXED_DESTS[@]}")"
-	if [[ -n "$dogfood_dest" ]]; then
+	if [[ -n "$dogfood_dest" ]] && fInUse "${dogfood_dest}/${EXE_NAME}"; then
+		fEcho "WARNING: ${dogfood_dest}/${EXE_NAME} is running; dogfood copy skipped"
+	elif [[ -n "$dogfood_dest" ]]; then
 		fInstallAtomic "${RELEASE_NATIVE_BIN}" "$dogfood_dest" "${EXE_NAME}"
 		for wrapper in "${DOGFOOD_WRAPPERS[@]:-}"; do
 			[[ -n "$wrapper" && -f "$wrapper" ]] || continue
@@ -594,6 +606,19 @@ if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]
 		[[ -n "$x_dest" ]] || { fEcho "WARNING: no ${x_osarch} dogfood dest exists+writable; skipping"; continue; }
 		x_ext=""; [[ "$x_src" == *.exe ]] && x_ext=".exe"
 		fInstallAtomic "$x_src" "$x_dest" "${EXE_NAME}${x_ext}"
+	done
+	## The runner and its launchers, only where they changed, so an ordinary run
+	## does not touch the sync tree.
+	for runner in "${DOGFOOD_RUNNERS[@]:-}"; do
+		[[ -n "$runner" ]] || continue
+		IFS='|' read -r -a r_parts <<<"$runner"
+		r_src="${root}/${r_parts[0]}"
+		[[ -f "$r_src" ]] || { fEcho "WARNING: no dogfood runner at ${r_parts[0]}"; continue; }
+		for r_dir in "${r_parts[@]:1}"; do
+			[[ -d "$r_dir" && -w "$r_dir" ]] || continue
+			cmp -s "$r_src" "${r_dir}/${r_src##*/}" && continue
+			fInstallAtomic "$r_src" "$r_dir" "${r_src##*/}"
+		done
 	done
 else
 	fEcho_Clean "dogfood skipped"

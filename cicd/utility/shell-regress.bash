@@ -1802,31 +1802,64 @@ if command -v git >/dev/null 2>&1; then
 	[[ "${out}" == "${want}" ]] || fBad "git-auto-msg.bash: commits came out as ${out@Q}"
 fi
 
-##	20260909 item 39: n8runshcl.ps1 aged out the copy it had just staged when
-##	that build was older than the kept ones or any other `shcl-*` file sat there,
-##	then launched a file that was gone. A failed removal reported success.
+##	20260924c idea 11: dogfood_shcl.ps1 replaced n8runshcl.ps1 and carries its
+##	lessons: a file with some other name in the pool is not a version, the build
+##	about to run is never pruned, and a failed removal says so. Plus its own: the
+##	pipe sees only what shcl printed, `-v` reaches shcl, a running version stays,
+##	and a regular file at the fixed name is someone else's.
 if fHave pwsh; then
-	rs="${tmpDir}/runshcl"
-	fRunStage(){   ## fRunStage BUILD-DATE EXISTING...: a fresh fake repo with one build
-		rm -rf "${rs}"; mkdir -p "${rs}/cicd/utility" "${rs}/cicd/artifacts/runbuilds" "${rs}/source/rust/target/release"
-		cp "${repoDir}/cicd/utility/n8runshcl.ps1" "${rs}/cicd/utility/"
-		printf '#!/bin/sh\necho ran\n' > "${rs}/source/rust/target/release/shcl"; chmod +x "${rs}/source/rust/target/release/shcl"
-		touch -d "$1" "${rs}/source/rust/target/release/shcl"; shift
-		local n; for n in "$@"; do : > "${rs}/cicd/artifacts/runbuilds/${n}"; done
-	}
-	fRunShcl(){ env -u DISPLAY -u WAYLAND_DISPLAY pwsh -NoProfile -File "${rs}/cicd/utility/n8runshcl.ps1" "$@" 2>&1 || true ;}
-	fRunStage 2026-01-01 shcl-zz1 shcl-zz2
-	out="$(fRunShcl -Keep 2)"
-	[[ "${out}" == ran && -e "${rs}/cicd/artifacts/runbuilds/shcl-zz1" ]] || fBad "n8runshcl.ps1 with squatters in its build dir: ${out@Q}"
-	fRunStage 2026-01-01 shcl-20260301-000000 shcl-20260302-000000
-	out="$(fRunShcl -Keep 2)"
-	[[ "${out}" == ran ]] || fBad "n8runshcl.ps1 aged out an older build it was about to launch: ${out@Q}"
-	fRunStage 2026-05-01 shcl-20260401-000000
-	cp -p "${rs}/source/rust/target/release/shcl" "${rs}/cicd/artifacts/runbuilds/shcl-20260501-000000"
-	chmod 555 "${rs}/cicd/artifacts/runbuilds"
-	out="$(fRunShcl -Keep 1)"
-	chmod 755 "${rs}/cicd/artifacts/runbuilds"
-	[[ "${out}" == *"could not remove shcl-20260401-000000"* ]] || fBad "n8runshcl.ps1 said nothing about a copy it failed to remove: ${out@Q}"
+	dh="${tmpDir}/dfhome"
+	dsrc="${dh}/synced/0-0/common/exec/util/linux/bin"
+	dpool="${dh}/.local/bin/shcl_versions"
+	mkdir -p "${dsrc}" "${dh}/.local/bin"
+	printf '#!/bin/sh\necho "one: $*"\nexit 3\n' > "${dsrc}/shcl"; chmod +x "${dsrc}/shcl"
+	touch -d '2026-09-20 10:00' "${dsrc}/shcl"
+	fDogfood(){ env -u DISPLAY -u WAYLAND_DISPLAY HOME="${dh}" pwsh -NoProfile -File "${repoDir}/utility/dogfood_shcl.ps1" "$@" 2>"${tmpDir}/df.err" ;}
+	rc=0; out="$(fDogfood -v a)" || rc=$?
+	[[ "${out}" == "one: -v a" && "${rc}" == 3 ]] || fBad "dogfood_shcl.ps1 did not run the build with its arguments and exit code: ${out@Q} rc ${rc}"
+	[[ "$(readlink "${dh}/.local/bin/shcl")" == "${dpool}/shcl_20260920-100000_newest" ]] || fBad "dogfood_shcl.ps1 did not point the fixed name at the new version"
+	grep -q 'new build 20260920-100000' "${tmpDir}/df.err" || fBad "dogfood_shcl.ps1 said nothing on stderr about the build it took"
+	out="$(fDogfood x)" || true
+	[[ "${out}" == "one: x" && ! -s "${tmpDir}/df.err" ]] || fBad "dogfood_shcl.ps1 spoke up on a run that changed nothing: $(cat "${tmpDir}/df.err")"
+	for d in 01 02 03 04 05 06 07 08 09 10 11 12; do : > "${dpool}/shcl_202608${d}-120000"; done
+	: > "${dpool}/shcl_junk"
+	cp /bin/sleep "${dpool}/shcl_20260805-120000"
+	chmod 755 "${dpool}/shcl_20260805-120000"
+	"${dpool}/shcl_20260805-120000" 60 & sleeper=$!
+	out="$(fDogfood y)" || true
+	kill "${sleeper}" 2>/dev/null || true; wait "${sleeper}" 2>/dev/null || true
+	n="$(find "${dpool}" -name 'shcl_2026*' | wc -l)"
+	[[ "${out}" == "one: y" ]] || fBad "dogfood_shcl.ps1 ran something other than the newest build: ${out@Q}"
+	((n >= 5 && n <= 11)) || fBad "dogfood_shcl.ps1 kept ${n} versions, outside the budget"
+	[[ -e "${dpool}/shcl_junk" ]] || fBad "dogfood_shcl.ps1 deleted a file that is not a version"
+	[[ -e "${dpool}/shcl_20260805-120000" ]] || fBad "dogfood_shcl.ps1 deleted a version that was running"
+	[[ -e "${dpool}/shcl_20260920-100000_newest" && -e "${dpool}/shcl_20260801-120000_oldest" ]] || fBad "dogfood_shcl.ps1 lost the newest or the oldest version: $(find "${dpool}" -mindepth 1 -printf '%f ')"
+	for d in 01 02 03 04 05 06 07 08 09; do : > "${dpool}/shcl_202607${d}-120000"; done
+	if ((EUID != 0)); then
+		chmod 555 "${dpool}"
+		out="$(fDogfood z)" || true
+		chmod 755 "${dpool}"
+		grep -q 'could not remove shcl_202607' "${tmpDir}/df.err" || fBad "dogfood_shcl.ps1 said nothing about a version it failed to remove: $(cat "${tmpDir}/df.err")"
+	fi
+	rm -f "${dh}/.local/bin/shcl"; echo mine > "${dh}/.local/bin/shcl"
+	out="$(fDogfood w)" || true
+	[[ "$(cat "${dh}/.local/bin/shcl")" == mine && "${out}" == "one: w" ]] || fBad "dogfood_shcl.ps1 replaced a regular file at the fixed name, or did not run the newest: ${out@Q}"
+fi
+
+##	20260924c idea 9: the dogfood stage copied over a binary that was running.
+##	It asks /proc first now.
+eval "$(sed -n '/^fInUse()/,/^}/p' "${repoDir}/cicd/cicd.bash")"
+if ! declare -F fInUse >/dev/null; then
+	fBad "cicd.bash no longer carries fInUse"
+elif [[ -d /proc/self ]]; then
+	cp /bin/sleep "${tmpDir}/inuse-bin"
+	"${tmpDir}/inuse-bin" 60 & inusePid=$!
+	sleep 0.3
+	fInUse "${tmpDir}/inuse-bin" || fBad "cicd.bash did not see a running dogfood binary"
+	kill "${inusePid}" 2>/dev/null || true; wait "${inusePid}" 2>/dev/null || true
+	fInUse "${tmpDir}/inuse-bin" && fBad "cicd.bash called an idle dogfood binary running"
+	# shellcheck disable=SC2016  ## cicd.bash's own text, matched literally
+	grep -qF 'fInUse "${dogfood_dest}/${EXE_NAME}"' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer asks whether the dogfood binary is running"
 fi
 
 ##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so

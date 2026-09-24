@@ -98,6 +98,22 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Feedback from gitsby:
+
+	- 🔘 Children still returns nothing on a repeated key without saying so, and there's still no way to walk each instance of a key.
+
+- Feedback from SilkTerm:
+
+	- 🔘 A `*` line with no space moves out of its block on save.
+		- Reproduced: `outer:` / `x: 1` / `list:` / `* a` / `*bad` / `* b` / `y: 2`, each level one tab deeper, through `fmt`. `*bad` comes back one level up, above `list:`. E013, lost count 0.
+		- Note: a silent wrong answer one step removed. Fixed later to `* bad`, the line is no longer in `list`. An E019 line is kept in place at its own indent, and this should be too.
+		- Opened: 20260924-142912
+
+	- 🔘 `GEN_BANNER`'s Syntax link is dead until 3.0.0 final.
+		- Reproduced: `https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md` returns 404. A beta is tagged `v3.0.0-beta.1`, so every file written during the betas points at nothing.
+		- Note: a rough edge. Either accept the gap, or link the beta's own tag while it is the latest.
+		- Opened: 20260924-142912
+
 - Code review 20260924c:
 
 	- 🔘 Item 1: the help's `set` paragraph says set-if-absent and removal go in only as a stdin ops script.
@@ -165,30 +181,22 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- 🔘 Cut `v3.0.0-beta1`.
-	- Note: brief release notes that say issues were fixed without listing each one. A brief changelog that names the fixes rather than describing them. This release only; later ones go back to the usual detail.
-	- Opened: 20260924-133723
+- Feedback from SilkTerm:
 
-- 🔘 A code style and performance review of the whole tree.
-	- Opened: 20260924-133723
+	- 🔘 Keep a line at a bad indent (E012), and the lines under it (E018), on save, the way an E019 line is kept.
+		- Reproduced: `window:` / `opacity: 1.0` at one tab / `margin: 4` at four spaces / `columns: 160` at one tab, through `fmt`. The `margin` line is gone and counts as lost, so `save_file` refuses.
+		- Note: a missing capability. One stray space in a hand-edited config stops every save, including ones nobody asked for, like a program saving its window size. Wanted: the line written bait was, and a lost count of 0.
+		- Opened: 20260924-142912
 
-- 🔘 A full adversarial code review of the whole tree, copied and vendored code included.
-	- Note: waits until after the 3.0.0 cut.
-	- Opened: 20260924-133723
+	- 🔘 Let a caller ask whether a file needs `migrate`, and get the rewrite without the stamp.
+		- Note: `format_version` is private, so a consumer checks `FORMAT_LINE_HEAD` itself, and that check does not skip raw bodies the way shcl's does. `migrate` always adds the Format line at end, even when nothing else changed, so a program that writes `GEN_BANNER` as its own footer has to strip it off again.
+		- Wanted: a public `format_version` or `needs_migrate`, and an option to leave the stamp off.
+		- Opened: 20260924-142912
 
 - Code review 20260924c:
 
 	- 🔘 Idea 8: the pipeline calls `git` and `gh` directly.
 		- Note: use `gitsby raw` when it is installed and plain `git` otherwise, so a fresh clone still builds. The publisher is a copied file, so only its changed block would be patched.
-		- Opened: 20260924-133723
-
-	- 🔘 Idea 9: the dogfood install copies over a binary that is running.
-		- Note: skip the copy with a warning when the target is in use.
-		- Opened: 20260924-133723
-
-	- 🔘 Idea 11: a cross-platform `dogfood_shcl.ps1` runner to replace `n8runshcl.ps1`.
-		- Note: copy the newest dogfood build into a dated versions folder, keep 5 to 10 copies within 1 GB, skip ones in use, and launch with the arguments passed through. Masters in the repo, launchers for each OS.
-		- Decided: the latest link is `~/.local/bin/shcl`, the user install location. A system install goes in the usual root location, `/usr/local/bin` (the user, 2026-09-24).
 		- Opened: 20260924-133723
 
 	- 🔘 Idea 12: `nfpm` and `makensis` are not in `TOOL_PINS`.
@@ -5332,6 +5340,22 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a pre-release-only fixture in `shell-regress.bash`, which the old pickers answer with nothing.
 		- Opened: 20260924-133723
 		- Closed: 20260924-142448
+
+	- ✅ Idea 9: the dogfood install copies over a binary that is running.
+		- Note: skip the copy with a warning when the target is in use.
+		- Done: stage 7 skips the copy with a warning while a process runs from it. Linux only, through `/proc`.
+		- Pinned by: `shell-regress.bash` rows on a running and an idle binary. They fail with the scan broken.
+		- Opened: 20260924-133723
+		- Closed: 20260924-151302
+
+	- ✅ Idea 11: a cross-platform `dogfood_shcl.ps1` runner to replace `n8runshcl.ps1`.
+		- Note: copy the newest dogfood build into a dated versions folder, keep 5 to 10 copies within 1 GB, skip ones in use, and launch with the arguments passed through. Masters in the repo, launchers for each OS.
+		- Decided: the latest link is `~/.local/bin/shcl`, the user install location. A system install goes in the usual root location, `/usr/local/bin` (the user, 2026-09-24).
+		- Done: `utility/dogfood_shcl.ps1`, with `dogfood_shcl` for Linux and macOS and `dogfood_shcl.cmd` for Windows. It takes the build from the synced dogfood dir and keeps 5 to 10 versions within 1 GB, by GFS role. It never deletes a running version, and leaves a regular file at the fixed name alone. The pipe gets only shcl's output. Stage 7 deploys all three where they changed. `n8runshcl.ps1` is gone.
+		- Decided against: self-elevating on Windows. A CLI's output would land in a new window that closes. The fixed name falls back to a hard link, then a copy.
+		- Pinned by: `shell-regress.bash` rows, which fail with the running check, the stderr notes or the regular-file guard taken out.
+		- Opened: 20260924-133723
+		- Closed: 20260924-151302
 
 	- ✅ Idea 13: `--version` and `--about` carry no build number.
 		- Decided: include the build number (the user, 2026-09-24). It reverses an earlier call for no `build` stamp and a bare `version` line.

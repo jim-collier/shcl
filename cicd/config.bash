@@ -132,7 +132,7 @@ LINT_EXTRA=(
 	'markdownlint-cli2'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path source/powershell/shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path install.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
-	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/n8runshcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
+	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path utility/dogfood_shcl.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/packaging/shclpath.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/winpath-regress.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
 	'pwsh -NoProfile -Command "Invoke-ScriptAnalyzer -Path cicd/utility/winpath-sandbox.ps1 -Settings ./PSScriptAnalyzerSettings.psd1 -EnableExit"'
@@ -188,6 +188,7 @@ SHELLCHECK_TARGETS=(
 	source/completions/shcl.bash
 	install.bash
 	install-dev.bash
+	utility/dogfood_shcl
 )
 
 ## Stage 4: tests. cargo test runs the conformance corpus (project/conformance/)
@@ -382,6 +383,14 @@ DOGFOOD_WRAPPER_DESTS_ps1=(
 ## no arm64 dir to put one in.
 DOGFOOD_CROSS_DESTS_windows_x86_64=(
 	"${HOME}/synced/0-0/common/exec/util/mswin/cli/by-self/win64"
+)
+## The dogfood runner and its launchers, name kept, into every listed dir that
+## exists. One per line: "source|dir|dir...". The bash launcher serves Linux and
+## macOS alike.
+DOGFOOD_RUNNERS=(
+	"utility/dogfood_shcl.ps1|${HOME}/synced/0-0/common/exec/util/0_crossplatform"
+	"utility/dogfood_shcl|${HOME}/synced/0-0/common/exec/util/linux/bash|${HOME}/synced/0-0/common/exec/util/macos/bash"
+	"utility/dogfood_shcl.cmd|${HOME}/synced/0-0/common/exec/util/mswin/cli/by-self/cmd"
 )
 
 ## Stage 8: demo gif for the README. Rendered from a scripted scenario against the
