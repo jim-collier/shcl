@@ -90,7 +90,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- A pass over the fix rounds since `cc73b01` and their siblings, with the previous round's methods: 20260923b items 1-4, 20260923 item 3 with its property, the setter property, and the pre-cut fixes (20260923 items 4, 8, 9, 10 and 18). Nothing else was read.
 
-	- Six defects. All six are regressions or missed twins of those fixes. Item 1 meets the release bar: the item 10 fix lets the script form save changed bytes at exit 0. Items 2 and 3 turn gates red on dev, so the cut's `--ci` would fail. Items 4, 5 and 6 are minor.
+	- Six defects. All six are regressions or missed twins of those fixes. Items 7 and 8 were found while fixing 1 and 5, both Windows PowerShell 5.1 behavior older than this work. Item 1 meets the release bar: the item 10 fix lets the script form save changed bytes at exit 0. Items 2 and 3 turn gates red on dev, so the cut's `--ci` would fail. Items 4, 5 and 6 are minor.
 
 	- No class oscillated. Item 5 is the second pass at PowerShell's encoding scopes, and item 4 is item 4's own missed branch.
 
@@ -103,42 +103,69 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260924 - technical detail".
 
-	- 🔘 Item 1: `shcl.ps1` run as a script re-encodes stdin that comes from outside PowerShell, and `set --write` saves the result at exit 0.
+	- ✅ Item 1: `shcl.ps1` run as a script re-encodes stdin that comes from outside PowerShell, and `set --write` saves the result at exit 0.
 		- Reproduced: `printf 'string\tk\tx\xffy\n' | pwsh -File shcl.ps1 set --write f` saves `x`, U+FFFD, `y` at exit 0. The script before the fix and the bare binary both refuse it with exit 8. A mid-line CR in a raw body read through `get --raw -` comes back as a line break.
 		- Cause: under `-File`, PowerShell hands redirected stdin to the script as pipeline input. The run path now forwards any pipeline input, so the process's own stdin goes through a decode and an encode instead of reaching the binary as it was.
 		- Note: a script called with `-File` has an empty `$MyInvocation.Line`. One run from a pipeline inside a session does not.
 		- Note: `shell-regress.bash` feeds the wrapper matrix only ASCII with no CR, so it could not see this.
 		- Origin: `16b4add` (20260923 item 10). Regression. Confirmed.
+		- Fixed: the run path forwards pipeline input only when the script has an invoking line, which a script started by `-File` does not. It reads `$input` by name, since pwsh 7 reads all of stdin up front when a script names `$input` at its top level. 5.1 sets `ExpectingInput` under `-File` either way, so it needs the line check.
+		- Pinned by: two `shell-regress.bash` rows, a bad byte through `set --write` that must exit 8 with the file unchanged, and a CR in a raw body through `get --raw -`. Both fail on the old wrapper. Checked on vm925w in 5.1 and 7, old and new.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1101
 
-	- 🔘 Item 2: `check-migrate.bash` fails on dev, 5 divergences over 581 documents.
+	- ✅ Item 2: `check-migrate.bash` fails on dev, 5 divergences over 581 documents.
 		- Reproduced: corpus 118 and fuzz documents 22, 240 and 292. 2.x prints an element holding a line break on two lines, and the current CLI prints `"a\nb"`.
 		- Cause: the gate compares `get --string --array` between the two CLIs, and item 4 changed what the current one prints.
 		- Origin: `16b4add` (20260923 item 4). Regression. Confirmed.
+		- Fixed: both sides read `--slots` too. The 2.x side is put back together at each status line and escaped by the CLI's rule, so the two compare element by element.
+		- Pinned by: the gate itself, which reports the same 5 divergences with the 2.x output left as it was.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1101
 
-	- 🔘 Item 3: `check-docs.bash` fails on dev: the man page's `.TH` date is older than its last commit.
+	- ✅ Item 3: `check-docs.bash` fails on dev: the man page's `.TH` date is older than its last commit.
 		- Origin: `16b4add` edited `shcl.1` and did not move the date. Confirmed.
+		- Fixed: the date moved. The existing check is the pin.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1101
 
-	- 🔘 Item 4: `get --array --default=X` prints X across lines when the path is missing.
+	- ✅ Item 4: `get --array --default=X` prints X across lines when the path is missing.
 		- Reproduced, all four: with a default holding a line break, a bad element's default prints as one escaped line, but a missing path prints the default raw.
 		- Rests on: the spec and the changelog now say `--array` and `--slots` print one line per element.
 		- Origin: the branch dates from `9bed75b`; item 4's fix in `16b4add` left it alone. Missed twin. Confirmed.
+		- Fixed: the missing-path default under `--array` goes through the one-line escape: `do_get` in `main.rs`, `doGet` in `main.go`, `do_get` in `main.py`, `EMITLINE`'s neighbor in `main.c`.
+		- Pinned by: three `cli-regress.bash` rows, a missing path, bad slots, and a plain `get` that stays raw. The first fails on the old CLIs.
+		- Swept: the other `--default` branches already escape; `--on-bad=flag` prints only values read.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1101
 
-	- 🔘 Item 5: the wrapper's UTF-8 pipe loses to a caller's own `$OutputEncoding` in pwsh 7.
+	- ✅ Item 5: the wrapper's UTF-8 pipe loses to a caller's own `$OutputEncoding` in pwsh 7.
 		- Reproduced: a function or script block that sets `$OutputEncoding` to ASCII and pipes `café` to `shcl` gets `caf?` at exit 0.
 		- Cause: 5.1 reads only the global, so the fix sets only the global. pwsh 7 looks the name up from the calling scope, and the caller's copy wins.
 		- Note: no worse than before the fix, but the comment says the call is always UTF-8.
 		- Origin: `16b4add` (20260923 item 9). Missed twin. Confirmed.
+		- Fixed: on pwsh 7 the wrapper also sets a local copy. On 5.1 a local copy makes the native pipe ignore the global and send ASCII again, so 5.1 keeps the global alone, and a caller's own copy still wins there. The comment says so.
+		- Pinned by: a `shell-regress.bash` row with the caller's copy set inside a function; it fails on the old wrapper. Checked on vm925w: 7 passes every case, and 5.1 keeps item 9's fix.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1101
 
 	- 🔘 Item 6: every merge now settles the whole document, not the scopes it touched.
 		- Measured: 2000 merges of one field onto a block of 200,000 children went from 0.21 s to 17.5 s in Rust and from 0.018 s to 8.6 s in Go. Python took 10.7 s for 200 merges, against 0.01 s before.
 		- Note: the CLI merges once per `--layer`, so it barely moves. A library caller merging many small layers onto a big document pays it each time. The doc comments in all four still say "a pass over the touched scopes".
 		- Origin: `186b201` (20260923 item 3). Regression. Confirmed.
 		- Opened: 20260924-100526
+
+	- 🔘 Item 7: Windows PowerShell 5.1 puts a BOM in front of text piped to the binary, and `set` refuses the ops.
+		- Reproduced on vm925w, ssh console on code page 65001: `"string`tk`tv" | shcl set --write f` gives `unknown op` on a first op starting with U+FEFF, exit 1. It does the same at 5.1's defaults, before the wrapper changes anything. pwsh 7 adds no BOM. A document piped to `fmt -` or `get -` loads, since the parser skips a leading BOM.
+		- Note: fails loudly. A likely fix is the ops reader skipping one leading U+FEFF in all four CLIs, the same as the document parser.
+		- Origin: older than 3.0 work; found during this round's fixes. Not seen before. Confirmed.
+		- Opened: 20260924-1101
+
+	- 🔘 Item 8: Windows PowerShell 5.1 refuses a lone `-` argument to a script started by `-File` when stdin is redirected.
+		- Reproduced on vm925w: `type f.shcl | powershell -File shcl.ps1 get - a` stops with "Cannot process argument because the value of argument "name" is not valid" before the script's first line runs. A word or `--x` argument works, and so does pwsh 7.
+		- Note: fails loudly, and it is 5.1's own argument parse, so the script cannot catch it. The ways around it are dot-sourcing, pwsh, or the binary itself. The README and man page do not mention it.
+		- Origin: 5.1. Not seen before. Confirmed.
+		- Opened: 20260924-1101
 
 - Code review 20260923:
 
