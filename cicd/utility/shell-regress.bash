@@ -533,7 +533,7 @@ SRVEOF
 	[[ -e "${tmpDir}/lad/Programs/Shcl/shcl.exe" || -e "${tmpDir}/lad/Programs/Shcl/code/lib.rs" ]] \
 		&& fBad "install.ps1 -Uninstall left its files with the network down"
 	out="$(fNoNet -Target user -Yes || true)"
-	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
+	[[ "${out}" == *"cannot fetch the stable release (none published yet, or network down)"* ]] \
 		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
 	##	20260921 idea 6: a file the uninstall could not remove, which a running
@@ -1173,8 +1173,15 @@ lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpD
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest
 ##	first, and the answer must not be the first row.
+##	20260924c idea 3: install.bash ranked any tag, and `vnext` sorts above every
+##	version under sort -V.
 cat > "${tmpDir}/rel.json" <<'JSON'
 [
+  {
+    "tag_name": "vnext",
+    "draft": false,
+    "prerelease": false
+  },
   {
     "tag_name": "v1.2.1",
     "draft": false,
@@ -1238,6 +1245,50 @@ if fHave pwsh; then
 	out="$(pwsh -NoProfile -File "${tmpDir}/pick.ps1" 2>&1 || true)"
 	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
 	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
+fi
+
+##	20260924c idea 7: stable is the default channel, so with no full release at
+##	all it takes the newest pre-release rather than finding nothing.
+cat > "${tmpDir}/rel-pre.json" <<'JSON'
+[
+  { "tag_name": "v3.0.0-beta2", "draft": true, "prerelease": true },
+  { "tag_name": "v3.0.0-beta1", "draft": false, "prerelease": true },
+  { "tag_name": "v3.0.0-alpha.9", "draft": false, "prerelease": true }
+]
+JSON
+out="$(fPickTag stable "${tmpDir}/rel-pre.json")"
+[[ "${out}" == "v3.0.0-beta1" ]] || fBad "install.bash stable channel with no full release picked ${out@Q}, want v3.0.0-beta1"
+if fHave pwsh; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$rel = Get-Content '${tmpDir}/rel-pre.json' -Raw | ConvertFrom-Json"
+		echo 'Write-Output ("stable=" + (Select-ReleaseTag stable $rel).tag_name)'
+	} > "${tmpDir}/pickpre.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pickpre.ps1" 2>&1 || true)"
+	[[ "${out}" == *"stable=v3.0.0-beta1"* ]] || fBad "install.ps1 stable channel with no full release: ${out@Q}"
+
+	##	20260924c idea 5: a read-only target, or a shcl.exe held open, failed
+	##	after the download with raw exception text. Both are asked first now.
+	mkdir -p "${tmpDir}/itarget/ro" "${tmpDir}/itarget/rw"
+	: > "${tmpDir}/itarget/rw/shcl.exe"
+	chmod 555 "${tmpDir}/itarget/ro"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Test-InstallTarget/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "Write-Output (\"rw=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/rw') + ']')"
+		echo "Write-Output (\"ro=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/ro/Shcl') + ']')"
+		echo "\$held = [IO.File]::Open('${tmpDir}/itarget/rw/shcl.exe', 'Open', 'ReadWrite', 'None')"
+		echo "Write-Output (\"held=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/rw') + ']')"
+		echo '$held.Dispose()'
+	} > "${tmpDir}/itarget.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/itarget.ps1" 2>&1 || true)"
+	chmod 755 "${tmpDir}/itarget/ro"
+	[[ "${out}" == *"rw=[]"* ]] || fBad "install.ps1 refused a writable target: ${out@Q}"
+	if ((EUID != 0)); then
+		[[ "${out}" == *"ro=[cannot write"*"not writable]"* ]] || fBad "install.ps1 did not see a read-only target before the download: ${out@Q}"
+	fi
+	[[ "${out}" == *"held=[cannot replace"*"in use"* ]] || fBad "install.ps1 did not see a shcl.exe held open: ${out@Q}"
 fi
 
 ##	20260901b item 34, both windows-only and neither reachable from a linux

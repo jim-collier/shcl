@@ -10,19 +10,23 @@
 ##	Usage (one-liner, defaults):
 ##		irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1 | iex
 ##	With options (download first, or wrap in a script block):
-##		& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user -Yes
+##		& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target system -Yes
 ##
 ##	Options:
-##		-Release <dev|stable>   dev = newest release including pre-releases
-##		                        (default); stable = newest full release.
-##		-Target <user|system>   system (default): C:\Program Files\Shcl, added
-##		                        to the machine PATH (needs an elevated shell).
-##		                        user: %LOCALAPPDATA%\Programs\Shcl, added to
-##		                        the user PATH. No elevation.
+##		-Release <stable|dev>   stable (default) = newest full release, or the
+##		                        newest pre-release while there is no full one;
+##		                        dev = newest release including pre-releases.
+##		-Target <user|system>   user (default): %LOCALAPPDATA%\Programs\Shcl,
+##		                        added to the user PATH. No elevation.
+##		                        system: C:\Program Files\Shcl, added to the
+##		                        machine PATH (needs an elevated shell).
 ##		-Uninstall              remove what an install of the same -Target laid
 ##		                        down (binary, code\, scripts\, PATH entry).
 ##		-Yes                    skip the confirmation prompt.
+##		-Version                print this installer's version and exit.
 ##		-Help                   print the options and exit.
+##
+##	Needs Windows PowerShell 5.1 or pwsh 7.
 ##
 ##	Layout under the install dir:
 ##		shcl.exe    the CLI binary
@@ -42,24 +46,27 @@ Installs, updates or removes the shcl release binary on Windows.
 .DESCRIPTION
 Downloads a release from GitHub, checks the signed sha256sums file before trusting a checksum out of it, and installs the binary, the drop-in source files and the wrappers. Re-running updates an install in place.
 .PARAMETER Release
-dev (the default) takes the newest release, pre-releases included. stable takes the newest full release.
+stable (the default) takes the newest full release, or the newest pre-release while there is no full one. dev takes the newest release, pre-releases included.
 .PARAMETER Target
-system (the default) installs under Program Files and adds it to the machine PATH, which needs an elevated shell. user installs under LOCALAPPDATA\Programs and adds it to the user PATH.
+user (the default) installs under LOCALAPPDATA\Programs and adds it to the user PATH. system installs under Program Files and adds it to the machine PATH, which needs an elevated shell.
 .PARAMETER Yes
 Skip the confirmation prompt.
 .PARAMETER Uninstall
 Remove what an install of the same -Target laid down, and nothing else.
+.PARAMETER Version
+Print the installer's version and exit.
 .PARAMETER Help
 Print the options and exit.
 .EXAMPLE
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user -Yes
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target system -Yes
 #>
 [CmdletBinding()]
 param(
-	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'dev',
-	[ValidateSet('user', 'system')] [string]$Target = 'system',
+	[ValidateSet('dev', 'development', 'stable')] [string]$Release = 'stable',
+	[ValidateSet('user', 'system')] [string]$Target = 'user',
 	[switch]$Yes,
 	[switch]$Uninstall,
+	[switch]$Version,
 	[switch]$Help
 )
 
@@ -71,36 +78,49 @@ param(
 ## there ends the shell that ran it. Only a file invocation may exit;
 ## everything else returns or throws.
 & {
-	param([string]$Release, [string]$Target, [bool]$Yes, [bool]$Uninstall, [bool]$Help, [bool]$invokedAsFile, [string]$scriptPath)
+	param([string]$Release, [string]$Target, [bool]$Yes, [bool]$Uninstall, [bool]$Version, [bool]$Help, [bool]$invokedAsFile, [string]$scriptPath)
 
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = 'Stop'
 
+	$installerVersion = '1.1.0'
+
+	## Every run opens with a blank line and ends with one, errors included.
+	Write-Output ''
+
+	if ($Version) {
+		Write-Output "install.ps1 $installerVersion"
+		Write-Output ''
+		return
+	}
+
 	## Spelled out here rather than left to Get-Help: the documented one-liner pipes
 	## this script straight into the shell, so there is no file left to ask about.
 	if ($Help) {
-		Write-Output ''
-		@'
-shcl installer
+		@"
+install.ps1 $installerVersion - shcl installer for Windows
 
 Usage:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target system
 
 Options:
-    -Release <dev|stable>   dev = newest release including pre-releases
-                            (default); stable = newest full release.
-    -Target <user|system>   system (default): C:\Program Files\Shcl, added to
-                            the machine PATH (needs an elevated shell).
-                            user: %LOCALAPPDATA%\Programs\Shcl, added to the
-                            user PATH. No elevation needed.
+    -Release <stable|dev>   stable (default): newest full release, or the
+                            newest pre-release while there is no full one.
+                            dev: newest release including pre-releases.
+    -Target <user|system>   user (default): %LOCALAPPDATA%\Programs\Shcl, added
+                            to the user PATH. No elevation needed.
+                            system: C:\Program Files\Shcl, added to the
+                            machine PATH (needs an elevated shell).
     -Uninstall              remove what an install of the same -Target laid
                             down, and nothing else.
     -Yes                    skip the confirmation prompt.
+    -Version                print this installer's version and exit.
     -Help                   this text.
 
-The release signature is checked before any checksum is read out of the sums
-file. Nothing unverified is installed.
-'@ | Write-Output
+Needs Windows PowerShell 5.1 or pwsh 7. The release signature is checked
+before any checksum is read out of the sums file. Nothing unverified is
+installed.
+"@ | Write-Output
 		Write-Output ''
 		return
 	}
@@ -114,9 +134,15 @@ file. Nothing unverified is installed.
 		param([string]$Message)
 		if ($invokedAsFile) {
 			[Console]::Error.WriteLine("install.ps1: $Message")
+			[Console]::Error.WriteLine('')
 			exit 1
 		}
 		throw "install.ps1: $Message"
+	}
+
+	## 5.0 and older have no Get-FileHash, so a download could not be checked.
+	if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+		Exit-Install "needs Windows PowerShell 5.1 or pwsh 7, and this is $($PSVersionTable.PSVersion) - see https://aka.ms/powershell"
 	}
 
 	## Release signing key, carried as raw RSA parameters rather than PEM on purpose:
@@ -173,6 +199,53 @@ file. Nothing unverified is installed.
 		return [int]$response.Value.StatusCode
 	}
 
+	## A failed download names the file and the reason. It used to show the raw
+	## exception, several lines of .NET text with the file name buried in it.
+	function Save-ReleaseAsset {
+		[CmdletBinding()]
+		param([string]$Uri, [string]$OutFile, [string]$Name)
+		try {
+			Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
+		} catch {
+			$status = Get-HttpStatus -ErrorRecord $_
+			if ($status -gt 0) { Exit-Install "download failed: $Name (HTTP $status)" }
+			$ex = $_.Exception
+			while ($ex.InnerException) { $ex = $ex.InnerException }
+			Exit-Install "download failed: $Name ($($ex.Message))"
+		}
+	}
+
+	## Why the install cannot write where it means to, or nothing when it can.
+	## Asked before any download. A running shcl.exe cannot be replaced, and
+	## Windows reports that as access denied at the move, which sent people
+	## looking at permissions. Opening the old file with no sharing tells the
+	## two apart: a running image refuses it as a sharing violation.
+	function Test-InstallTarget {
+		[CmdletBinding()]
+		param([string]$Dest)
+		$near = $Dest
+		while ($near -and -not (Test-Path -LiteralPath $near)) { $near = Split-Path -Path $near -Parent }
+		if (-not $near) { return "cannot write $Dest - no part of that path exists" }
+		$probe = Join-Path -Path $near -ChildPath ('.shcl-probe-' + [IO.Path]::GetRandomFileName())
+		try {
+			[IO.File]::Create($probe, 1, [IO.FileOptions]::DeleteOnClose).Dispose()
+		} catch {
+			return "cannot write $Dest - $near is not writable"
+		}
+		$exe = Join-Path -Path $Dest -ChildPath 'shcl.exe'
+		if (Test-Path -LiteralPath $exe -PathType Leaf) {
+			try {
+				[IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Dispose()
+			} catch {
+				$ex = $_.Exception
+				while ($ex.InnerException) { $ex = $ex.InnerException }
+				if ($ex -is [UnauthorizedAccessException]) { return "cannot replace $exe - access denied" }
+				return "cannot replace $exe - it is in use. Close any running shcl and run the install again"
+			}
+		}
+		return $null
+	}
+
 	## The shcl program that comes first on PATH when it is not $Installed, or
 	## nothing. On a first install there is none at all, since only the registry
 	## PATH was written, and reading .Source off nothing threw under strict mode
@@ -186,12 +259,17 @@ file. Nothing unverified is installed.
 		return $null
 	}
 
+	## Stable falls back to the newest pre-release when there is no full release
+	## at all, so a first beta still installs by default.
 	function Select-ReleaseTag {
 		[CmdletBinding()]
 		param([string]$Channel, [object[]]$Releases)
 		$all = @($Releases) | Where-Object { $_.tag_name -match '^v\d+\.\d+\.\d+' }
 		$all = @($all) | Where-Object { -not $_.draft }
-		if ($Channel -eq 'stable') { $all = @($all) | Where-Object { -not $_.prerelease } }
+		if ($Channel -eq 'stable') {
+			$full = @($all) | Where-Object { -not $_.prerelease }
+			if (@($full).Count -gt 0) { $all = $full }
+		}
 		$order = @(
 			@{ Expression = { [version](($_.tag_name.TrimStart('v') -split '-', 2)[0]) } },
 			@{ Expression = { $_.tag_name -notmatch '-' } },
@@ -322,12 +400,12 @@ file. Nothing unverified is installed.
 		if (Test-Path -LiteralPath $setupUninstaller) {
 			Exit-Install "$dest was installed by the shcl setup - remove it from Add/Remove Programs, or run $setupUninstaller"
 		}
-		Write-Output ''
 		Write-Output "removing shcl: $dest (and the $pathScope PATH entry)"
 		if (-not $Yes) {
 			$reply = Read-Host 'Proceed? [y/N]'
 			if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
 				Write-Output 'aborted'
+				Write-Output ''
 				if ($invokedAsFile) { exit 1 }
 				return
 			}
@@ -397,6 +475,8 @@ file. Nothing unverified is installed.
 	if (-not $rel -or -not $rel.tag_name) { Exit-Install "no $Release release found" }
 	$tag = $rel.tag_name
 	$version = $tag.TrimStart('v')
+	$channel = $Release
+	if ($Release -eq 'stable' -and $rel.prerelease) { $channel = 'stable, but no full release yet, so the newest pre-release' }
 
 	## The drop-in payload is a tar.gz. Windows 10 1803 and Server 2019 ship tar;
 	## anything older finds out here, before a download, not after.
@@ -405,9 +485,9 @@ file. Nothing unverified is installed.
 	}
 
 	## State the plan, then confirm.
-	Write-Output ''
 	$existing = if (Test-Path -LiteralPath (Join-Path -Path $dest -ChildPath 'shcl.exe')) { 'updates the existing install' } else { 'new install' }
-	Write-Output "shcl $version ($Release, windows-$arch) -> $dest ($existing)"
+	Write-Output "shcl $version ($channel, windows-$arch) -> $dest ($existing)"
+	Write-Output "  from     https://github.com/$repo/releases/tag/$tag"
 	Write-Output "  binary   $dest\shcl.exe"
 	Write-Output "  drop-ins $dest\code\, wrappers $dest\scripts\"
 	Write-Output "  adds $pathDir to the $pathScope PATH if missing"
@@ -415,9 +495,16 @@ file. Nothing unverified is installed.
 		$reply = Read-Host 'Proceed? [y/N]'
 		if ($reply -notin @('y', 'Y', 'yes', 'Yes', 'YES')) {
 			Write-Output 'aborted'
+			Write-Output ''
 			if ($invokedAsFile) { exit 1 }
 			return
 		}
+	}
+
+	$targetProblem = Test-InstallTarget -Dest $dest
+	if ($targetProblem) {
+		if ($Target -eq 'system') { Exit-Install $targetProblem }
+		Exit-Install "$targetProblem (check that the folder is not read-only, and that antivirus is not blocking it)"
 	}
 
 	$tmp = Join-Path -Path ([IO.Path]::GetTempPath()) -ChildPath ('shcl-install-' + [IO.Path]::GetRandomFileName())
@@ -431,9 +518,9 @@ file. Nothing unverified is installed.
 		$sumsSig = Join-Path -Path $tmp -ChildPath 'sums.txt.sig'
 		$base = "https://github.com/$repo/releases/download/$tag"
 		Write-Output "downloading $asset..."
-		Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmpExe -UseBasicParsing
-		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt" -OutFile $sums -UseBasicParsing
-		Invoke-WebRequest -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile $sumsSig -UseBasicParsing
+		Save-ReleaseAsset -Uri "$base/$asset" -OutFile $tmpExe -Name $asset
+		Save-ReleaseAsset -Uri "$base/shcl-$version-sha256sums.txt" -OutFile $sums -Name 'sha256sums'
+		Save-ReleaseAsset -Uri "$base/shcl-$version-sha256sums.txt.sig" -OutFile $sumsSig -Name 'sha256sums signature'
 
 		## Check the signature before trusting anything the sums file says. Order is
 		## the whole point: a checksum read out of an unverified file proves nothing.
@@ -458,7 +545,7 @@ file. Nothing unverified is installed.
 		$srcroot = $null
 		if ($wantSrc) {
 			Write-Output "downloading $dropins..."
-			Invoke-WebRequest -Uri "$base/$dropins" -OutFile (Join-Path -Path $tmp -ChildPath 'dropins.tgz') -UseBasicParsing
+			Save-ReleaseAsset -Uri "$base/$dropins" -OutFile (Join-Path -Path $tmp -ChildPath 'dropins.tgz') -Name $dropins
 			$gotSrc = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path -Path $tmp -ChildPath 'dropins.tgz')).Hash.ToLower()
 			if ($gotSrc -ne $wantSrc.ToLower()) { Exit-Install "sha256 mismatch on $dropins" }
 			$unpackDir = Join-Path -Path $tmp -ChildPath 'x'
@@ -480,14 +567,21 @@ file. Nothing unverified is installed.
 
 		## Install. The binary goes in via a temp name + Move-Item in the same dir,
 		## so a running copy only ever sees the complete old or new file.
-		New-Item -ItemType Directory -Force -Path $dest | Out-Null
-		Copy-Item -LiteralPath $tmpExe -Destination (Join-Path -Path $dest -ChildPath '.shcl.exe.new')
-		Move-Item -Force -LiteralPath (Join-Path -Path $dest -ChildPath '.shcl.exe.new') -Destination (Join-Path -Path $dest -ChildPath 'shcl.exe')
-		if ($haveDropins) {
-			New-Item -ItemType Directory -Force -Path (Join-Path -Path $dest -ChildPath 'code'), (Join-Path -Path $dest -ChildPath 'scripts') | Out-Null
-			$payloadRoot = $srcroot.FullName
-			Copy-Item -LiteralPath "$payloadRoot\source\rust\src\lib.rs", "$payloadRoot\source\go\shcl.go", "$payloadRoot\source\python\shcl.py", "$payloadRoot\source\c\shcl.h", "$payloadRoot\source\c\shcl.hpp" -Destination (Join-Path -Path $dest -ChildPath 'code')
-			Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path -Path $dest -ChildPath 'scripts')
+		## A failure here is one message, not the raw exception.
+		try {
+			New-Item -ItemType Directory -Force -Path $dest | Out-Null
+			Copy-Item -LiteralPath $tmpExe -Destination (Join-Path -Path $dest -ChildPath '.shcl.exe.new')
+			Move-Item -Force -LiteralPath (Join-Path -Path $dest -ChildPath '.shcl.exe.new') -Destination (Join-Path -Path $dest -ChildPath 'shcl.exe')
+			if ($haveDropins) {
+				New-Item -ItemType Directory -Force -Path (Join-Path -Path $dest -ChildPath 'code'), (Join-Path -Path $dest -ChildPath 'scripts') | Out-Null
+				$payloadRoot = $srcroot.FullName
+				Copy-Item -LiteralPath "$payloadRoot\source\rust\src\lib.rs", "$payloadRoot\source\go\shcl.go", "$payloadRoot\source\python\shcl.py", "$payloadRoot\source\c\shcl.h", "$payloadRoot\source\c\shcl.hpp" -Destination (Join-Path -Path $dest -ChildPath 'code')
+				Copy-Item -LiteralPath "$payloadRoot\source\powershell\shcl.ps1", "$payloadRoot\source\bash\shcl.bash" -Destination (Join-Path -Path $dest -ChildPath 'scripts')
+			}
+		} catch {
+			$ex = $_.Exception
+			while ($ex.InnerException) { $ex = $ex.InnerException }
+			Exit-Install "cannot write $dest - $($ex.Message)"
 		}
 
 		if (Update-ShclPath -Scope $pathScope -Dir $pathDir) {
@@ -528,4 +622,4 @@ file. Nothing unverified is installed.
 	} finally {
 		Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
 	}
-} $Release $Target $Yes $Uninstall $Help ($MyInvocation.MyCommand -is [Management.Automation.ExternalScriptInfo]) $PSCommandPath
+} $Release $Target $Yes $Uninstall $Version $Help ($MyInvocation.MyCommand -is [Management.Automation.ExternalScriptInfo]) $PSCommandPath

@@ -50,7 +50,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The Windows setup handles a running `shcl.exe` and an existing older install instead of failing partway through.
 
+- The installers take `--version` (`-Version` on Windows).
+
 ### Changed
+
+- The installers default to the newest full release, installed for the current user with no sudo or elevation. `--release dev` and `--target system` (`-Release dev`, `-Target system`) give the old defaults. While there is no full release yet, the default takes the newest pre-release. The plan names the release it downloads from, and the Linux one-liner is now `bash <(curl ...)`.
 
 - Rust formats a large file in about a tenth less time, and a comment-heavy one in about a quarter less. It copies far less text while it parses and writes. C's `fmt` uses about a quarter less peak memory on a large file, since its check for repeated leaves no longer keeps every level's working lists until it ends.
 
@@ -191,6 +195,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A malformed line (`E014`) names the column where the path went wrong.
 
 ### Fixed
+
+- The Linux installer ranked any tag, so one such as `vnext` would beat every real version. The Windows installer finds a read-only target or a running `shcl.exe` before it downloads, and a failed download or copy names the file and the reason instead of printing the raw exception.
 
 - On Windows, text piped through the PowerShell wrapper keeps its non-ASCII characters. Windows PowerShell 5.1 sent it to the binary as us-ascii, so `'a: café' | shcl fmt -` printed `a: caf?` at exit 0, and output read back into a variable was decoded with the console's code page. The wrapper now sets both to UTF-8 for the call and puts them back after.
 
