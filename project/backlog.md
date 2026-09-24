@@ -5380,6 +5380,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260924-133723
 		- Closed: 20260924-133723
 
+	- ✅ Idea 18: the README, design.md, changelog and About box suggestions from this round's marketing pass.
+		- Done: badges cut to three, new features listed, installation one level flatter, `~~~` fences everywhere, contributing.md's contents block generated, a brief changelog, and the About box, homepage and topics updated.
+		- Note: moving the file example and a quick start up, and trimming the benchmarks, were turned down.
+		- Opened: 20260924-133723
+		- Closed: 20260924-152433
+
 - Code review 20260922:
 
 	- ✅ Idea 1: every parse walks every parent a second time to fold duplicates, and in Rust that is about 14 percent of `fmt`.
