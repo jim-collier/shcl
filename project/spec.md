@@ -405,19 +405,19 @@ The consumer is assumed to be a junior programmer in **every** binding, so each 
 
 The convenience tier has the same shape everywhere (a mandatory, call-site-visible fallback), which is precisely what defuses the silent-zero trap: a junior cannot accidentally read a `0`/`""` that was really empty or missing, because there is no convenience call without a stated fallback. It also has the same *name* everywhere: `_or` (`Or` in the languages that capitalize) means "with a fallback" in every binding, so a routine ported between two of them cannot keep the call name while changing which tier it lands on. Each binding's native value-or-default idiom still works where it has one - `get_int(path).unwrap_or(0)` in Rust, `get_int(path, default=0)` in Python - and the plain `get_*` spelling keeps whatever it already meant there.
 
-| Language   | Convenience tier                              | Full tier                                          |
-|------------|-----------------------------------------------|----------------------------------------------------|
-| Go         | `pop := doc.GetIntOr(path, 0)`                | `pop, st := doc.GetInt(path)`                      |
-| Rust       | `let pop = doc.get_int_or(path, 0);`          | `let r = doc.get_int(path); // Result<i64, Status>`|
-| C          | `int64_t pop = shcl_get_int_or(d, p, n, 0);`  | `shcl_read_i64 r = shcl_read_int(d, p, n);`        |
-| C++        | `auto pop = doc.get_or<int64_t>(path, 0);`    | `auto r = doc.get<int64_t>(path); // .value`       |
-| C#         | `int pop = doc.GetIntOr(path, 0);`            | `var r = doc.GetInt(path); // .Value / .Status`    |
-| Java       | `int pop = doc.getIntOr(path, 0);`            | `var r = doc.getInt(path); // .value() .status()`  |
-| Kotlin     | `val pop = doc.getIntOr(path, 0)`             | `val r = doc.getInt(path)`                         |
-| Python     | `pop = doc.get_int_or(path, 0)`               | `r = doc.read_int(path)  # r.value, r.status`      |
-| JS / TS    | `const pop = doc.getIntOr(path, 0)`           | `const r = doc.getInt(path)  // {value, status}`   |
-| PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`         | `$r = $doc.GetInt($path)  # .Value .Status`        |
-| POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')`  | `shcl get --int f 'path'; status=$?`               |
+| Language   | Convenience tier                             | Full tier
+| :---       | :---                                         | :---
+| Go         | `pop := doc.GetIntOr(path, 0)`               | `pop, st := doc.GetInt(path)`
+| Rust       | `let pop = doc.get_int_or(path, 0);`         | `let r = doc.get_int(path); // Result<i64, Status>`
+| C          | `int64_t pop = shcl_get_int_or(d, p, n, 0);` | `shcl_read_i64 r = shcl_read_int(d, p, n);`
+| C++        | `auto pop = doc.get_or<int64_t>(path, 0);`   | `auto r = doc.get<int64_t>(path); // .value`
+| C#         | `int pop = doc.GetIntOr(path, 0);`           | `var r = doc.GetInt(path); // .Value / .Status`
+| Java       | `int pop = doc.getIntOr(path, 0);`           | `var r = doc.getInt(path); // .value() .status()`
+| Kotlin     | `val pop = doc.getIntOr(path, 0)`            | `val r = doc.getInt(path)`
+| Python     | `pop = doc.get_int_or(path, 0)`              | `r = doc.read_int(path)  # r.value, r.status`
+| JS / TS    | `const pop = doc.getIntOr(path, 0)`          | `const r = doc.getInt(path)  // {value, status}`
+| PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`        | `$r = $doc.GetInt($path)  # .Value .Status`
+| POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')` | `shcl get --int f 'path'; status=$?`
 
 The array, bool, float, datetime, string, raw, and raw-info forms follow the same two-tier pattern (`GetIntArrayOr`, `GetBoolOr`, `GetRawInfoOr`, ...); only the coercion target changes. Deliberate exception: C's convenience tier covers the value types only (`shcl_get_int`/`_float`/`_bool`, and the `_or` spelling of each) - string, raw, raw-info, datetime, and array reads hand back borrowed memory or lengths, which a value-or-default signature cannot express, so those use the full `shcl_read_*` tier; the C++ veneer copies every result, so its `get_or<T>` covers every `get<T>` type, arrays and datetimes included, with `get_raw_or` and `get_raw_info_or` beside it. The deviation is recorded in the style guide. The full tier is one representation of the `Flag`-mode status described above; the convenience tier is `Default` mode with the fallback the caller passed. For array reads the convenience fallback is the whole default array (returned unless the read is `Good`); per-slot substitution into a partially-resolved array is the full tier's per-slot status or the CLI's `--default`, not the convenience form.
 
@@ -519,7 +519,7 @@ Materialization is idempotent and order-stable, so two traversals of the same do
 
 	- Any other hard link to the old file keeps the old content. That is inherent to publishing a new file in the old one's place, and so is everything else a file carries outside its permission bits: POSIX ACLs, extended attributes and the SELinux label among them, and on Windows a file's own explicit ACEs and alternate data streams. The owner is not kept either: the new file belongs to whoever ran the save, which only shows when that is not the old file's owner. The group is carried over, best effort, so a config a service reads through its group keeps that read; a saver who is not in the old group leaves its own group on the file, as it did before. In a sticky directory such as `/tmp` the rename is refused for a file the saver does not own, and the save reports it.
 	- A read-only file is rewritten, since the rename needs the directory rather than the file, and the new file comes back read-only; Windows clears the attribute for the publish and sets it again after, so the platforms agree. Windows closes most of the carry-over gap where it can: the publish goes through `ReplaceFile`, which carries the destination's ACLs, security attributes and named streams onto the replacement, and falls back to a plain replacing move when the file is being created or the merge cannot be done. Neither carries the basic attributes, so hidden and system are re-applied after the publish along with read-only. `ReplaceFile` moves the old file to `.NAME.bakPID.N` beside it before it moves the new one in. If the second move fails, the old file is moved back. If that fails too, nothing is at the path, and the save keeps both files and fails with an error that names them: the old file at the backup name and the new text at the temp name, `.NAME.tmpPID.N`. The C binding reports `errno` only, so its header gives the names instead. A publish that is refused is tried five times, 50 ms apart, since a scanner or an indexer reading the fresh temp file blocks it for a moment. On POSIX the containing directory is synced after the rename, as the file is before it, so a power cut cannot lose the publish itself and leave the old content in place.
-	- The CLI prints the load's diagnostics to stderr on `fmt` and `set` whether or not `--write` is given, and an in-place write **refuses**, exiting 7, while `LostCount()` is nonzero - the same `SaveFile` gate a consumer program gets (see the file tier below); `--lossy` is the CLI's spelling of the override. Without the gate a recovered load would delete the line it could not re-emit at exit 0 with nothing on either stream.
+	- The CLI prints the load's diagnostics to stderr on every subcommand that loads a file, whether or not `--write` is given, and an in-place write **refuses**, exiting 7, while `LostCount()` is nonzero - the same `SaveFile` gate a consumer program gets (see the file tier below); `--lossy` is the CLI's spelling of the override. Without the gate a recovered load would delete the line it could not re-emit at exit 0 with nothing on either stream.
 
 ### File tier
 
@@ -531,7 +531,7 @@ Every consumer that persists a config re-implements the same load/save dance, an
 
 - `SaveFile(doc, path)` writes the document's canonical text through the same temp-file-and-rename mechanics the CLI's `--write` uses (described above), so an interrupted save can never truncate the config it rewrites; the CLIs call this same code, so the two cannot drift.
 
-- A save that **creates** a file has no mode to preserve, so the file lands at the `0666 & ~umask` an ordinary create would produce - the same bits the user's editor or shell redirect would have given it. An existing file keeps the permission bits it already had, which is the case the temp file is born private for.
+- A save that **creates** a file has no mode to preserve, so the file gets the `0666 & ~umask` an ordinary create would produce - the same bits the user's editor or shell redirect would have given it. An existing file keeps the permission bits it already had, which is the case the temp file is born private for.
 
 - The save **refuses** when the load dropped content it would silently delete (`LostCount() > 0` - see Diagnostics); `SaveFileLossy` (each binding's spelling) is the explicit override, so deleting a user's unparsable-but-unretainable line is always the caller's stated choice, never an accident. Retained content-malformed lines do not trip the gate - they survive the save.
 
@@ -780,7 +780,7 @@ Three edges read differently, and `migrate` leaves all three as written:
 
 - A carriage return in the middle of a line, at the edge of a piece, was content in 2.x. It is trimmed now.
 
-- An indent that lands on no open level's column. 2.x placed a line by a looser comparison, so a tab followed by a space and a tab, or by two spaces, bound then and is `E012` now. `migrate` rewrites spellings and not layout, so a file like that has to be re-indented by hand. Nothing goes quietly: the line counts as dropped, so an in-place write refuses at exit 7.
+- An indent that matches no open level's column. 2.x placed a line by a looser comparison, so a tab followed by a space and a tab, or by two spaces, bound then and is `E012` now. `migrate` rewrites spellings and not layout, so a file like that has to be re-indented by hand. Nothing goes quietly: the line counts as dropped, so an in-place write refuses at exit 7.
 
 ## Cross-language parity and conformance
 

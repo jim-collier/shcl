@@ -392,7 +392,7 @@ GIF_OUT="assets/demo.gif"
 ## Every render is kept, gfs-rotated, in the synced (non-repo) private tree; the
 ## newest is copied onto GIF_OUT above. The ../ leaves the repo root on purpose -
 ## private/ is a sibling symlink, so rotated gifs never touch the tracked tree.
-GIF_ROTATE_DIR="../private/demos/gif"
+GIF_ROTATE_DIR="../private/demo/gif"
 
 ## Full-run output is tee'd here (gitignored) and gfs-rotated; lint-report.bash
 ## reports warnings from the newest log at session start.

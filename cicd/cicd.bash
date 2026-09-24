@@ -160,9 +160,10 @@ if ((quick)); then
 fi
 
 ## A run at least as thorough as the pre-push hook's records the tree it tested
-## once the tests and the cross checks pass, and the hook lets a commit with that tree through. A gate
-## that skips a missing tool locally notes it in SHCL_GATE_SKIPS. Under --ci the
-## same skip is a failure, so a run with anything noted there records nothing.
+## once the tests and the cross checks pass, and the hook lets a commit with
+## that tree through. A gate that skips a missing tool locally notes it in
+## SHCL_GATE_SKIPS. Under --ci the same skip is a failure, so a run with
+## anything noted there records nothing.
 record_green=1
 if ((quick || gate_partial)); then record_green=0; fi
 export SHCL_GATE_SKIPS="$(mktemp)"
@@ -183,8 +184,8 @@ fEcho(){       if [[ -n "$*"     ]]; then fEcho_Clean "[ $* ]"; else fEcho_Clean
 fEcho_Force(){ fEcho_ResetBlankCounter; fEcho "$*"; }
 _letterbox="••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
 fSection(){ fEcho_Clean; fEcho_Clean "${_letterbox}"; fEcho "$*"; }
-fDie(){ { fEcho_Force "FAILED: $*"; } >&2; exit 1; }
-trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit $rc' ERR
+fDie(){ { fEcho_Force "FAILED: $*"; echo; } >&2; exit 1; }
+trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit $rc' ERR
 
 ## Current version from the single canonical source.
 ## No `| head -1`: under pipefail an early-quitting reader kills the writer
