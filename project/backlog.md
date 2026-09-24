@@ -4605,69 +4605,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
-- Code review 20260924c:
-
-	- ✅ Idea 1: the installers take no `--version` (`-Version` in PowerShell).
-		- Note: all three scripts. silkterm's installers carry a version constant for it.
-		- Done: all three take `--version`, and `install.ps1` takes `-Version`. Each prints its own version, 1.1.0.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 2: the installers print no blank line on their fail and abort paths.
-		- Note: `fDie` in both Bash scripts, `Exit-Install` in `install.ps1`, and each "aborted" exit. `install-dev.bash --help` has no trailing blank either.
-		- Done: each run opens and ends with a blank line, on the error, abort and help paths too.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 3: `install.bash` ranks any release tag, while `install.ps1` keeps only `vX.Y.Z` ones.
-		- Note: a tag such as `vnext` would outrank real versions under the Bash sort.
-		- Fixed: only `vX.Y.Z` tags count, as in `install.ps1`.
-		- Pinned by: a `vnext` row in the `shell-regress.bash` tag fixture, which the old picker takes on both channels.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 4: the install plan does not say where the files come from.
-		- Note: add the release URL to the plan in both installers.
-		- Done: the plan names the release page, in both installers.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 5: `install.ps1` shows a raw exception when a download or file copy fails.
-		- Note: a locked `shcl.exe` or a read-only target reads as "used by another process" or a stack of .NET text. There is no writable check before the download and no floor below 5.1. silkterm's installer has helpers for all three.
-		- Fixed: a failed download names the file and the HTTP status or reason. The copy step gives one line. Before any download, the target is probed for write access, and an existing `shcl.exe` is opened with no sharing, which a running copy refuses. Below 5.1 it says what it needs.
-		- Pinned by: `shell-regress.bash` rows for a read-only target and a `shcl.exe` held open. Both fail with the probes taken out.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 6: the README's install section lists every installer option.
-		- Note: pointing at `--help` (`-Help`) and saying it uses sane defaults and asks first would be enough. The Bash one-liner could be `bash <(curl -fsSL ...)` like the sister projects; `install.bash` never reads its own text, so that form is safe.
-		- Done: the section says `--help` (`-Help`), sane defaults, and a prompt first. The Linux one-liners are `bash <(curl ...)`, in the README and in both Bash installers.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 7: the installers default to the `dev` channel and a `system` install.
-		- Note: `stable` and `user` are the usual defaults. Changing it is a call to make, and stable as the default also wants a fallback to the newest prerelease when no stable release exists.
-		- Decided: `stable` and `user` (the user, 2026-09-24).
-		- Done: both installers. While there is no full release, `stable` takes the newest pre-release and the plan says so.
-		- Pinned by: a pre-release-only fixture in `shell-regress.bash`, which the old pickers answer with nothing.
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
-	- ✅ Idea 14: nothing checked `pyproject.toml`'s version against `Cargo.toml`.
-		- Fixed: `check-docs.bash` fails when they differ. Watched to fail with the Python version bumped alone.
-		- Opened: 20260924-133723
-		- Closed: 20260924-133723
-
-	- ✅ Idea 15: a failed `cicd.bash` run ended with no blank line before the prompt.
-		- Fixed: `fDie` and the ERR trap end with one.
-		- Opened: 20260924-133723
-		- Closed: 20260924-133723
-
-	- ✅ Idea 16: the demo gif archive sat under `private/demos/gif`.
-		- Fixed: moved to `private/demo/gif`, and `GIF_ROTATE_DIR` with it.
-		- Opened: 20260924-133723
-		- Closed: 20260924-133723
-
 - ✅ `.ps1` scripts that can run on Windows should have no unicode in them, so that they don't need a BOM. (Unless a BOM is needed for other reasons.)
 	- Done: every `.ps1` is ASCII with no BOM. The copyright line takes the plain `(C)` form, as `install.ps1` already did, and section rules are `#===`. `check-docs.bash` refuses a BOM or a non-ASCII byte in any PowerShell file.
 	- Opened: 20260924-124420
@@ -5352,6 +5289,69 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Note: fuzzing turned up two formatter rules, now in `spec.md`.
 	- Opened: n/a
 	- Closed: 20260713-065600
+
+- Code review 20260924c:
+
+	- ✅ Idea 1: the installers take no `--version` (`-Version` in PowerShell).
+		- Note: all three scripts. silkterm's installers carry a version constant for it.
+		- Done: all three take `--version`, and `install.ps1` takes `-Version`. Each prints its own version, 1.1.0.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 2: the installers print no blank line on their fail and abort paths.
+		- Note: `fDie` in both Bash scripts, `Exit-Install` in `install.ps1`, and each "aborted" exit. `install-dev.bash --help` has no trailing blank either.
+		- Done: each run opens and ends with a blank line, on the error, abort and help paths too.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 3: `install.bash` ranks any release tag, while `install.ps1` keeps only `vX.Y.Z` ones.
+		- Note: a tag such as `vnext` would outrank real versions under the Bash sort.
+		- Fixed: only `vX.Y.Z` tags count, as in `install.ps1`.
+		- Pinned by: a `vnext` row in the `shell-regress.bash` tag fixture, which the old picker takes on both channels.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 4: the install plan does not say where the files come from.
+		- Note: add the release URL to the plan in both installers.
+		- Done: the plan names the release page, in both installers.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 5: `install.ps1` shows a raw exception when a download or file copy fails.
+		- Note: a locked `shcl.exe` or a read-only target reads as "used by another process" or a stack of .NET text. There is no writable check before the download and no floor below 5.1. silkterm's installer has helpers for all three.
+		- Fixed: a failed download names the file and the HTTP status or reason. The copy step gives one line. Before any download, the target is probed for write access, and an existing `shcl.exe` is opened with no sharing, which a running copy refuses. Below 5.1 it says what it needs.
+		- Pinned by: `shell-regress.bash` rows for a read-only target and a `shcl.exe` held open. Both fail with the probes taken out.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 6: the README's install section lists every installer option.
+		- Note: pointing at `--help` (`-Help`) and saying it uses sane defaults and asks first would be enough. The Bash one-liner could be `bash <(curl -fsSL ...)` like the sister projects; `install.bash` never reads its own text, so that form is safe.
+		- Done: the section says `--help` (`-Help`), sane defaults, and a prompt first. The Linux one-liners are `bash <(curl ...)`, in the README and in both Bash installers.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 7: the installers default to the `dev` channel and a `system` install.
+		- Note: `stable` and `user` are the usual defaults. Changing it is a call to make, and stable as the default also wants a fallback to the newest prerelease when no stable release exists.
+		- Decided: `stable` and `user` (the user, 2026-09-24).
+		- Done: both installers. While there is no full release, `stable` takes the newest pre-release and the plan says so.
+		- Pinned by: a pre-release-only fixture in `shell-regress.bash`, which the old pickers answer with nothing.
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
+
+	- ✅ Idea 14: nothing checked `pyproject.toml`'s version against `Cargo.toml`.
+		- Fixed: `check-docs.bash` fails when they differ. Watched to fail with the Python version bumped alone.
+		- Opened: 20260924-133723
+		- Closed: 20260924-133723
+
+	- ✅ Idea 15: a failed `cicd.bash` run ended with no blank line before the prompt.
+		- Fixed: `fDie` and the ERR trap end with one.
+		- Opened: 20260924-133723
+		- Closed: 20260924-133723
+
+	- ✅ Idea 16: the demo gif archive sat under `private/demos/gif`.
+		- Fixed: moved to `private/demo/gif`, and `GIF_ROTATE_DIR` with it.
+		- Opened: 20260924-133723
+		- Closed: 20260924-133723
 
 - Code review 20260922:
 
@@ -8342,14 +8342,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Canceled
 
-- Code review 20260924c:
-
-	- 🚫 Idea 10: the dogfood build goes to `util/linux/bin`, not `app/linux/`.
-		- Note: `util/linux/bin` is the folder of on-PATH CLI tools.
-		- Decided against: `util/linux/bin` stays. `app/linux/` is for GUI programs (the user, 2026-09-24).
-		- Opened: 20260924-133723
-		- Closed: 20260924-142448
-
 - 🚫 Default configuration hard-coded.
 	- 🚫 Overridden by a per-user config file, created the first time a default is changed.
 		- 🚫 Settings live under `~/.config`, resistant to errors (do not bail on the whole file over one bad line).
@@ -8357,6 +8349,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Dropped: strictness and on-bad are the consuming program's contract, not the user's. A user-level override would silently weaken guarantees an app makes about its own config handling, and would make the same `shcl` command mean different things on different machines. Nothing else the CLI exposes is presentation-only, so there is nothing left for a config file to hold. Rationale in `design.md`; runtime options and the library's per-document strictness argument stay as they are.
 	- Opened: 20260711-150807
 	- Closed: 20260723-134323
+
+- Code review 20260924c:
+
+	- 🚫 Idea 10: the dogfood build goes to `util/linux/bin`, not `app/linux/`.
+		- Note: `util/linux/bin` is the folder of on-PATH CLI tools.
+		- Decided against: `util/linux/bin` stays. `app/linux/` is for GUI programs (the user, 2026-09-24).
+		- Opened: 20260924-133723
+		- Closed: 20260924-142448
 
 - Code review 20260909:
 
