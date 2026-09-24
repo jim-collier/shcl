@@ -59,6 +59,12 @@ def write_failed(e):
 # Keep in step with source/rust/Cargo.toml, the canonical version source.
 VERSION = "2.0.0"
 
+# The build number, set only for a stamped build. The Rust CLI is the one the
+# pipeline stamps; see its build.rs.
+BUILD = ""
+
+VERSION_LINE = "shcl v" + VERSION + (" build " + BUILD if BUILD else "")
+
 HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
@@ -219,7 +225,7 @@ not be read or written.
 # About and donate are stdout, so they are byte-for-byte contracts across the
 # bindings the same way the help text and the init banner are. The version
 # concatenates from the constant above so it cannot drift from `shcl version`.
-ABOUT = "shcl v" + VERSION + """
+ABOUT = VERSION_LINE + """
 Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
 Project: https://github.com/yottacore/shcl
 Licensed under the MIT License. Full text at:
@@ -2012,7 +2018,7 @@ def run(argv):
 		sys.stderr.write(f"unknown command: {topic}{suggest(command_names(), topic)} (see --help)\n")
 		return 1
 	if asked == "version" or argv[0] == "version":
-		print(f"shcl {VERSION}")
+		print(VERSION_LINE)
 		return 0
 	if asked == "about" or argv[0] == "about":
 		sys.stdout.write("\n" + ABOUT + "\n")

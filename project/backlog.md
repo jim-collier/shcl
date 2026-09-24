@@ -195,11 +195,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: packages are the same bytes on one box, but a different tool version on another box changes them with no warning. `ci.yml` must install the pinned versions in the same commit.
 		- Opened: 20260924-133723
 
-	- 🔘 Idea 13: `--version` and `--about` carry no build number.
-		- Decided: include the build number (the user, 2026-09-24). It reverses an earlier call for no `build` stamp and a bare `version` line.
-		- Note: it would be minutes since 2000 from the commit time, in lower-case Crockford base32, in all four CLIs. `cargo install` from crates.io has no git history, so it needs a fallback.
-		- Opened: 20260924-133723
-
 - Code review 20260923:
 
 	- 🔘 Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
@@ -5337,6 +5332,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Pinned by: a pre-release-only fixture in `shell-regress.bash`, which the old pickers answer with nothing.
 		- Opened: 20260924-133723
 		- Closed: 20260924-142448
+
+	- ✅ Idea 13: `--version` and `--about` carry no build number.
+		- Decided: include the build number (the user, 2026-09-24). It reverses an earlier call for no `build` stamp and a bare `version` line.
+		- Note: it would be minutes since 2000 from the commit time, in lower-case Crockford base32, in all four CLIs. `cargo install` from crates.io has no git history, so it needs a fallback.
+		- Done: the release builds in stage 6 print `shcl vX.Y.Z build <id>` for `version` and on the first line of `about`. `version` stays one line, as design.md has it for scripts. Other builds print `shcl vX.Y.Z`, the other three CLIs included, so the four still compare byte for byte.
+		- Pinned by: `shell-regress.bash` rows for the encoding, and for the export ahead of the native release build. Both fail with the alphabet or the export broken.
+		- Opened: 20260924-133723
+		- Closed: 20260924-144234
 
 	- ✅ Idea 14: nothing checked `pyproject.toml`'s version against `Cargo.toml`.
 		- Fixed: `check-docs.bash` fails when they differ. Watched to fail with the Python version bumped alone.
