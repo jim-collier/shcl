@@ -338,6 +338,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
+- `.ps1` scripts that can run on Windows should have no unicode in them, so that they don't need a BOM. (Unless a BOM is needed for other reasons.)
+
 - Code review 20260923:
 
 	- The round's ideas. Its defects are under Bugs, in a bullet of the same name.

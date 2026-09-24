@@ -199,14 +199,11 @@ fMain(){
 	## Code review snapshots (crMMDD) and gate worktrees. Each is a full copy of
 	## the repo, builds included.
 	baseCmdArgs+=("-x*/cr0???/" "-x*/cr1???/" "-x*/gatewt-*/")
-	## Panoplia run scratch: audit trees (each a full copy of the build), test
-	## logs, captures, and throwaway repos and configs. The design notes, briefs
-	## and reports stay in.
-	baseCmdArgs+=("-x*/panoplia/working/audit-*/" "-x*/panoplia/working/scratch-*/" "-x*/panoplia/working/cfg-*/")
-	baseCmdArgs+=("-x*/panoplia/working/logs" "-x*/panoplia/working/shots" "-x*/panoplia/working/*.log" "-x*/panoplia/working/.ts_*")
-	## The linked-in private tree: wallpaper-sized stills, screenshots, and
-	## third-party source checkouts that never ship.
-	baseCmdArgs+=("-x*/private/backgrounds" "-x*/private/screenshots" "-x*/private/source")
+	## Anything named to stay out of backups, file or dir. The bare pattern takes
+	## files only, so each has a '/' twin for dirs.
+	baseCmdArgs+=("-x*_dupes" "-x*_dupes/" "-x*_no-backup" "-x*_no-backup/")
+	## Older backups, wherever a versions dir sits. Overlaps '*/versions' above.
+	baseCmdArgs+=("-x*/versions/*.rar")
 	## The linked-in vault of external resources (GBs of game assets and the like).
 	baseCmdArgs+=("-x*/assets-vault")
 	## Archived material, tmp dirs, and asset zips already imported into the game.
@@ -738,3 +735,6 @@ fMain  "${@}"
 ##			  stash, and an unset git user no longer ends the run.
 ##			- Also excludes every 0_archive and tmp dir, fetched zig/vendor, and
 ##			  imported Unreal asset zips under Content/_staging/*/_done.
+##		- 20260923: Backup excludes: dropped the Panoplia scratch and private tree
+##		  rules, so both are archived again. Added '*_dupes', '*_no-backup' (files
+##		  and dirs) and '*/versions/*.rar'.
