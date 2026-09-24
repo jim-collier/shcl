@@ -149,11 +149,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260924-100526
 		- Closed: 20260924-1101
 
-	- 🔘 Item 6: every merge now settles the whole document, not the scopes it touched.
+	- ✅ Item 6: every merge now settles the whole document, not the scopes it touched.
 		- Measured: 2000 merges of one field onto a block of 200,000 children went from 0.21 s to 17.5 s in Rust and from 0.018 s to 8.6 s in Go. Python took 10.7 s for 200 merges, against 0.01 s before.
 		- Note: the CLI merges once per `--layer`, so it barely moves. A library caller merging many small layers onto a big document pays it each time. The doc comments in all four still say "a pass over the touched scopes".
 		- Origin: `186b201` (20260923 item 3). Regression. Confirmed.
+		- Fixed: the overlay lists the base blocks it visits, and the merge settles only those. Everything else was settled when it was built, and a block's settle writes only below it, so the order does not matter. `merge` and `overlay` in `lib.rs`, `Merge` and `overlay` in `shcl.go`, `merge` and `_overlay` in `shcl.py`, `shcl_merge` and `w_overlay` in `shcl.h`.
+		- Pinned by: a timed fixture in every runner, 2000 small merges beside a block of 100,000 children against the same merges without it (200 in Python), with the index fixture's bound. Each fails on the old code, 2.4 to 5.2 seconds against a bound near one.
+		- Verified: settling only the root, or everything but the root, fails the reload property in all four. The review's wider property ran 300,000 iterations clean, and the 2M release fuzz is clean.
 		- Opened: 20260924-100526
+		- Closed: 20260924-1215
 
 	- 🔘 Item 7: Windows PowerShell 5.1 puts a BOM in front of text piped to the binary, and `set` refuses the ops.
 		- Reproduced on vm925w, ssh console on code page 65001: `"string`tk`tv" | shcl set --write f` gives `unknown op` on a first op starting with U+FEFF, exit 1. It does the same at 5.1's defaults, before the wrapper changes anything. pwsh 7 adds no BOM. A document piped to `fmt -` or `get -` loads, since the parser skips a leading BOM.
