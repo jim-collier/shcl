@@ -740,6 +740,23 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Opened: n/a
 	- Closed: 20260804-095938
 
+- Code review 20260924b:
+
+	- A light pass over the 20260924 fix round (`f26b97a..47681f2`: items 1 to 6) and the siblings of those fixes, using the previous round's methods. Nothing else was read.
+
+	- No defects. Nothing open loses data or gives a wrong answer at exit 0, so the 3.0.0 cut can go.
+
+	- Checked clean:
+		- Item 6: the previous round's widened reload and merge properties, 1M iterations each in Rust. The four-way differential, 100k steps per seed in Rust, Go and C and 20k in Python, four seeds, gives output byte-identical to the whole-tree settle it replaced. C under ASan and UBSan. Nothing under the overlay or the settle loop resets C's scratch arena, which holds the visited list. Every other settle call site is the parse or a single parent.
+		- Item 1: the script started by a bare path or `-Command`, with a bad byte and a CR on stdin. The binary reads stdin itself in each case, so there is no twin.
+		- Items 2 to 5: `check-migrate.bash`, `shell-regress.bash` and `cli-regress.bash` pass on all four CLIs. PSScriptAnalyzer and shellcheck are clean on the edited scripts.
+
+	- Not reached: Windows PowerShell 5.1, since the previous round checked items 1 and 5 on vm925w.
+
+	- Opened: 20260924-1130
+
+	- Closed: 20260924-1152
+
 - Code review 20260923b:
 
 	- A light pass over fix round part 1 (`cc73b01`: items 1, 2, 5, 6, 7, 13, 20, 21 and 22) and the siblings of those fixes, using the previous round's methods. Nothing else was read.
