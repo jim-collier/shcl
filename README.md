@@ -375,25 +375,19 @@ Run `shcl-2.0.0-windows-x86_64-setup.exe`. It installs to `C:\Program Files\Shcl
 
 #### Scripted installation direct from web - dev or stable
 
-Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It states its plan and asks before touching anything. The default channel is `dev`, which means the newest release including pre-releases. Pass `stable` to take the newest full release only.
+Downloads a release, checks its signature, and installs the binary plus the drop-in files and wrappers. Idempotent. It uses sane defaults, states its plan, and asks before touching anything. Pass `--help` (`-Help` on Windows) for the options.
 
 Each release includes a `shcl-<version>-sha256sums.txt` and a detached `.sig` over it, covering every asset - the binary, the packages, and the drop-in payload alike. Both installers carry the release public key and verify that signature *before* reading any checksum out of the file, so replacing a release asset is not enough to get past them. Nothing unverified is installed: a release with no signed drop-in payload gets the binary and a note saying what was skipped. On Linux this needs `openssl`, alongside `curl` or `wget`; there is no install-anyway fallback, so use the [DIY install](#diy-install) route on a machine that lacks it.
-
-Options are `--release <dev|stable>`, `--target <user|system>`, and `--yes` to skip the prompt (`-Release`, `-Target`, `-Yes` on Windows). `--uninstall` (`-Uninstall`) removes what an install of the same target laid down, and nothing else. `--help` (`-Help`) lists them all.
 
 The Linux installer also lays down the man page and the shell completions. It symlinks the man page into the target's own `man1` directory, so `man shcl` works once the install directory is on your `PATH` - man derives its search path from the `bin` directories there. Completions are left under `<install dir>/completions/` for you to enable, and the installer prints the line to paste for each shell: there is no single directory that works everywhere, and writing into the distribution's own is the packages' job, not a tarball installer's.
 
 ##### Linux and WSL
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)
 ```
 
-To pass options on Linux, add them after the pipe:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash -s -- --target=user
-```
+Options go at the end, after the closing parenthesis.
 
 The prebuilt linux-x86_64 binary needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9, and later). On an older system, `cargo install shcl` builds against what is there.
 
@@ -403,20 +397,20 @@ The prebuilt linux-x86_64 binary needs glibc 2.34 or newer (Ubuntu 22.04, Debian
 irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1 | iex
 ```
 
-On Windows, `irm | iex` cannot take arguments at all, so use the scriptblock form:
+`irm | iex` cannot take arguments at all, so for options use the scriptblock form:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Target user
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yottacore/shcl/main/install.ps1))) -Help
 ```
 
 The installer unpacks the drop-in payload with `tar`, which Windows 10 1803, Server 2019 and later carry. On an older Windows, use the setup `.exe` from the releases page instead.
 
-| Target | Linux | Windows
-| :-- | :-- | :--
-| `system` (default) | `/opt/shcl` plus a `/usr/local/bin/shcl` symlink | `C:\Program Files\Shcl`, added to `PATH`
-| `user` | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%LOCALAPPDATA%\Programs\Shcl`, added to your `PATH`
+| Target           | Linux                                                    | Windows
+| :---             | :---                                                     | :---
+| `user` (default) | `~/.local/share/shcl` plus a `~/.local/bin/shcl` symlink | `%LOCALAPPDATA%\Programs\Shcl`, added to your `PATH`
+| `system`         | `/opt/shcl` plus a `/usr/local/bin/shcl` symlink         | `C:\Program Files\Shcl`, added to `PATH`
 
-A `user` install needs no sudo or elevation.
+A `user` install needs no sudo or elevation. A `system` one does.
 
 macOS and the BSDs have no prebuilt binaries yet. Use `cargo install shcl`, a drop-in source file, or build the CLI.
 
@@ -924,7 +918,7 @@ One read-side companion belongs with this: canonical output lowercases field nam
 `install-dev.bash` clones the repo, installs the toolchains and linters the pipeline gates on as far as it can without sudo, and prints the package-manager hint for anything left over. It states its plan first:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash)
 ```
 
 Linux. macOS is untested for the pipeline, and some of its checks need Linux. On Windows, use WSL, since the pipeline is bash. Then, from the clone:
