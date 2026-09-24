@@ -86,6 +86,60 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260924:
+
+	- A pass over the fix rounds since `cc73b01` and their siblings, with the previous round's methods: 20260923b items 1-4, 20260923 item 3 with its property, the setter property, and the pre-cut fixes (20260923 items 4, 8, 9, 10 and 18). Nothing else was read.
+
+	- Six defects. All six are regressions or missed twins of those fixes. Item 1 meets the release bar: the item 10 fix lets the script form save changed bytes at exit 0. Items 2 and 3 turn gates red on dev, so the cut's `--ci` would fail. Items 4, 5 and 6 are minor.
+
+	- No class oscillated. Item 5 is the second pass at PowerShell's encoding scopes, and item 4 is item 4's own missed branch.
+
+	- Checked clean:
+		- The settle pass: a wider op mix in the reload property (raw blocks, empties of the same name, three-layer and edited-layer merges), 1M iterations in Rust, and a four-way differential of 400k iterations. C under ASan and UBSan, and at every allocation failure point of a parse. All clean.
+		- H003: `check` over 30,940 generated element lines and 1,500 structured documents, identical four ways. No load or exit code changed. No tracked `.shcl` or `.md` file hints.
+		- The 20260923b checks and the setter property each fail on their fault. The item 8 read path returns before the probe.
+
+	- Items 1 and 5 were reproduced on pwsh 7 here. Windows PowerShell 5.1 was not run.
+
+	- Exact sites, coverage and the decided-against list are in `details.md` -> "Code Review 20260924 - technical detail".
+
+	- 🔘 Item 1: `shcl.ps1` run as a script re-encodes stdin that comes from outside PowerShell, and `set --write` saves the result at exit 0.
+		- Reproduced: `printf 'string\tk\tx\xffy\n' | pwsh -File shcl.ps1 set --write f` saves `x`, U+FFFD, `y` at exit 0. The script before the fix and the bare binary both refuse it with exit 8. A mid-line CR in a raw body read through `get --raw -` comes back as a line break.
+		- Cause: under `-File`, PowerShell hands redirected stdin to the script as pipeline input. The run path now forwards any pipeline input, so the process's own stdin goes through a decode and an encode instead of reaching the binary as it was.
+		- Note: a script called with `-File` has an empty `$MyInvocation.Line`. One run from a pipeline inside a session does not.
+		- Note: `shell-regress.bash` feeds the wrapper matrix only ASCII with no CR, so it could not see this.
+		- Origin: `16b4add` (20260923 item 10). Regression. Confirmed.
+		- Opened: 20260924-100526
+
+	- 🔘 Item 2: `check-migrate.bash` fails on dev, 5 divergences over 581 documents.
+		- Reproduced: corpus 118 and fuzz documents 22, 240 and 292. 2.x prints an element holding a line break on two lines, and the current CLI prints `"a\nb"`.
+		- Cause: the gate compares `get --string --array` between the two CLIs, and item 4 changed what the current one prints.
+		- Origin: `16b4add` (20260923 item 4). Regression. Confirmed.
+		- Opened: 20260924-100526
+
+	- 🔘 Item 3: `check-docs.bash` fails on dev: the man page's `.TH` date is older than its last commit.
+		- Origin: `16b4add` edited `shcl.1` and did not move the date. Confirmed.
+		- Opened: 20260924-100526
+
+	- 🔘 Item 4: `get --array --default=X` prints X across lines when the path is missing.
+		- Reproduced, all four: with a default holding a line break, a bad element's default prints as one escaped line, but a missing path prints the default raw.
+		- Rests on: the spec and the changelog now say `--array` and `--slots` print one line per element.
+		- Origin: the branch dates from `9bed75b`; item 4's fix in `16b4add` left it alone. Missed twin. Confirmed.
+		- Opened: 20260924-100526
+
+	- 🔘 Item 5: the wrapper's UTF-8 pipe loses to a caller's own `$OutputEncoding` in pwsh 7.
+		- Reproduced: a function or script block that sets `$OutputEncoding` to ASCII and pipes `café` to `shcl` gets `caf?` at exit 0.
+		- Cause: 5.1 reads only the global, so the fix sets only the global. pwsh 7 looks the name up from the calling scope, and the caller's copy wins.
+		- Note: no worse than before the fix, but the comment says the call is always UTF-8.
+		- Origin: `16b4add` (20260923 item 9). Missed twin. Confirmed.
+		- Opened: 20260924-100526
+
+	- 🔘 Item 6: every merge now settles the whole document, not the scopes it touched.
+		- Measured: 2000 merges of one field onto a block of 200,000 children went from 0.21 s to 17.5 s in Rust and from 0.018 s to 8.6 s in Go. Python took 10.7 s for 200 merges, against 0.01 s before.
+		- Note: the CLI merges once per `--layer`, so it barely moves. A library caller merging many small layers onto a big document pays it each time. The doc comments in all four still say "a pass over the touched scopes".
+		- Origin: `186b201` (20260923 item 3). Regression. Confirmed.
+		- Opened: 20260924-100526
+
 - Code review 20260923:
 
 	- A full adversarial pass over the whole tree, split six ways: the Rust reference, C and C++, Go, Python with the PowerShell wrapper, the four CLIs judged against the spec and the public docs, and the scripts, gates and installers. Aimed first at the code merged since the last round's base (`ed5f861`) and at the siblings of those fixes.
