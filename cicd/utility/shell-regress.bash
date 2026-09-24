@@ -533,7 +533,7 @@ SRVEOF
 	[[ -e "${tmpDir}/lad/Programs/Shcl/shcl.exe" || -e "${tmpDir}/lad/Programs/Shcl/code/lib.rs" ]] \
 		&& fBad "install.ps1 -Uninstall left its files with the network down"
 	out="$(fNoNet -Target user -Yes || true)"
-	[[ "${out}" == *"cannot fetch the dev release (none published yet, or network down)"* ]] \
+	[[ "${out}" == *"cannot fetch the stable release (none published yet, or network down)"* ]] \
 		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
 	##	20260921 idea 6: a file the uninstall could not remove, which a running
@@ -1173,8 +1173,15 @@ lintOut="$(bash "${repoDir}/cicd/utility/lint-report.bash" --check --dir "${tmpD
 ##	release" verbatim, so a patch back-ported to an older line after a newer one
 ##	shipped was handed out as stable. The fixture is in publish order, newest
 ##	first, and the answer must not be the first row.
+##	20260924c idea 3: install.bash ranked any tag, and `vnext` sorts above every
+##	version under sort -V.
 cat > "${tmpDir}/rel.json" <<'JSON'
 [
+  {
+    "tag_name": "vnext",
+    "draft": false,
+    "prerelease": false
+  },
   {
     "tag_name": "v1.2.1",
     "draft": false,
@@ -1238,6 +1245,50 @@ if fHave pwsh; then
 	out="$(pwsh -NoProfile -File "${tmpDir}/pick.ps1" 2>&1 || true)"
 	[[ "${out}" == *"stable=v2.0.0"* ]]        || fBad "install.ps1 stable channel: ${out@Q}"
 	[[ "${out}" == *"dev=v2.1.0-alpha.10"* ]]  || fBad "install.ps1 dev channel: ${out@Q}"
+fi
+
+##	20260924c idea 7: stable is the default channel, so with no full release at
+##	all it takes the newest pre-release rather than finding nothing.
+cat > "${tmpDir}/rel-pre.json" <<'JSON'
+[
+  { "tag_name": "v3.0.0-beta2", "draft": true, "prerelease": true },
+  { "tag_name": "v3.0.0-beta1", "draft": false, "prerelease": true },
+  { "tag_name": "v3.0.0-alpha.9", "draft": false, "prerelease": true }
+]
+JSON
+out="$(fPickTag stable "${tmpDir}/rel-pre.json")"
+[[ "${out}" == "v3.0.0-beta1" ]] || fBad "install.bash stable channel with no full release picked ${out@Q}, want v3.0.0-beta1"
+if fHave pwsh; then
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Select-ReleaseTag/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "\$rel = Get-Content '${tmpDir}/rel-pre.json' -Raw | ConvertFrom-Json"
+		echo 'Write-Output ("stable=" + (Select-ReleaseTag stable $rel).tag_name)'
+	} > "${tmpDir}/pickpre.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/pickpre.ps1" 2>&1 || true)"
+	[[ "${out}" == *"stable=v3.0.0-beta1"* ]] || fBad "install.ps1 stable channel with no full release: ${out@Q}"
+
+	##	20260924c idea 5: a read-only target, or a shcl.exe held open, failed
+	##	after the download with raw exception text. Both are asked first now.
+	mkdir -p "${tmpDir}/itarget/ro" "${tmpDir}/itarget/rw"
+	: > "${tmpDir}/itarget/rw/shcl.exe"
+	chmod 555 "${tmpDir}/itarget/ro"
+	#  shellcheck disable=2016  ## PowerShell's own $variables, quoted so bash leaves them alone.
+	{
+		sed -n '/^\tfunction Test-InstallTarget/,/^\t}/p' "${repoDir}/install.ps1"
+		echo "Write-Output (\"rw=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/rw') + ']')"
+		echo "Write-Output (\"ro=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/ro/Shcl') + ']')"
+		echo "\$held = [IO.File]::Open('${tmpDir}/itarget/rw/shcl.exe', 'Open', 'ReadWrite', 'None')"
+		echo "Write-Output (\"held=[\" + (Test-InstallTarget -Dest '${tmpDir}/itarget/rw') + ']')"
+		echo '$held.Dispose()'
+	} > "${tmpDir}/itarget.ps1"
+	out="$(pwsh -NoProfile -File "${tmpDir}/itarget.ps1" 2>&1 || true)"
+	chmod 755 "${tmpDir}/itarget/ro"
+	[[ "${out}" == *"rw=[]"* ]] || fBad "install.ps1 refused a writable target: ${out@Q}"
+	if ((EUID != 0)); then
+		[[ "${out}" == *"ro=[cannot write"*"not writable]"* ]] || fBad "install.ps1 did not see a read-only target before the download: ${out@Q}"
+	fi
+	[[ "${out}" == *"held=[cannot replace"*"in use"* ]] || fBad "install.ps1 did not see a shcl.exe held open: ${out@Q}"
 fi
 
 ##	20260901b item 34, both windows-only and neither reachable from a linux
@@ -1534,6 +1585,25 @@ unset SHCL_STUB_MARKER
 ##	against origin/main after a dev publish. The line has to be there.
 grep -qF -- 'git diff --stat origin/main -- install.bash install.ps1 install-dev.bash' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer compares the installers against origin/main after a publish"
 
+##	20260924c idea 13: the release binaries print a build number, minutes from
+##	2000 to the commit in Crockford base32. The rows pin the encoding and that
+##	the release build is the one handed it.
+eval "$(sed -n '/^fBuildNumber()/,/^}/p' "${repoDir}/cicd/cicd.bash")"
+if declare -F fBuildNumber >/dev/null; then
+	for row in "946684800 0" "946684829 0" "946684830 1" "946686720 10" "946746240 100" "2052828780 hjkmn" "2959950660 zzzzz" "2959950690 100000"; do
+		got="$(fBuildNumber "${row% *}")"
+		[[ "${got}" == "${row#* }" ]] || fBad "cicd.bash build number for ${row% *} is ${got@Q}, want ${row#* }"
+	done
+else
+	fBad "cicd.bash no longer carries fBuildNumber"
+fi
+buildLine="$( { grep -n '^[[:space:]]*export SHCL_BUILD$' "${repoDir}/cicd/cicd.bash" || true; } | head -n1 | cut -d: -f1)"
+# shellcheck disable=SC2016  ## cicd.bash's own text, matched literally
+releaseLine="$( { grep -n '^[[:space:]]*"${RELEASE_NATIVE_CMD\[@\]}"$' "${repoDir}/cicd/cicd.bash" || true; } | head -n1 | cut -d: -f1)"
+if [[ -z "${buildLine}" || -z "${releaseLine}" ]] || ((buildLine > releaseLine)); then
+	fBad "cicd.bash does not hand SHCL_BUILD to the native release build"
+fi
+
 ##	20260904 item 28: SHCL_GATE_STRICT is armed by one line in cicd.bash and read
 ##	by the gates; deleting the line disarmed every skip-as-failure silently.
 grep -qE '^\s*export SHCL_GATE_STRICT=1' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer exports SHCL_GATE_STRICT under --ci"
@@ -1732,31 +1802,64 @@ if command -v git >/dev/null 2>&1; then
 	[[ "${out}" == "${want}" ]] || fBad "git-auto-msg.bash: commits came out as ${out@Q}"
 fi
 
-##	20260909 item 39: n8runshcl.ps1 aged out the copy it had just staged when
-##	that build was older than the kept ones or any other `shcl-*` file sat there,
-##	then launched a file that was gone. A failed removal reported success.
+##	20260924c idea 11: dogfood_shcl.ps1 replaced n8runshcl.ps1 and carries its
+##	lessons: a file with some other name in the pool is not a version, the build
+##	about to run is never pruned, and a failed removal says so. Plus its own: the
+##	pipe sees only what shcl printed, `-v` reaches shcl, a running version stays,
+##	and a regular file at the fixed name is someone else's.
 if fHave pwsh; then
-	rs="${tmpDir}/runshcl"
-	fRunStage(){   ## fRunStage BUILD-DATE EXISTING...: a fresh fake repo with one build
-		rm -rf "${rs}"; mkdir -p "${rs}/cicd/utility" "${rs}/cicd/artifacts/runbuilds" "${rs}/source/rust/target/release"
-		cp "${repoDir}/cicd/utility/n8runshcl.ps1" "${rs}/cicd/utility/"
-		printf '#!/bin/sh\necho ran\n' > "${rs}/source/rust/target/release/shcl"; chmod +x "${rs}/source/rust/target/release/shcl"
-		touch -d "$1" "${rs}/source/rust/target/release/shcl"; shift
-		local n; for n in "$@"; do : > "${rs}/cicd/artifacts/runbuilds/${n}"; done
-	}
-	fRunShcl(){ env -u DISPLAY -u WAYLAND_DISPLAY pwsh -NoProfile -File "${rs}/cicd/utility/n8runshcl.ps1" "$@" 2>&1 || true ;}
-	fRunStage 2026-01-01 shcl-zz1 shcl-zz2
-	out="$(fRunShcl -Keep 2)"
-	[[ "${out}" == ran && -e "${rs}/cicd/artifacts/runbuilds/shcl-zz1" ]] || fBad "n8runshcl.ps1 with squatters in its build dir: ${out@Q}"
-	fRunStage 2026-01-01 shcl-20260301-000000 shcl-20260302-000000
-	out="$(fRunShcl -Keep 2)"
-	[[ "${out}" == ran ]] || fBad "n8runshcl.ps1 aged out an older build it was about to launch: ${out@Q}"
-	fRunStage 2026-05-01 shcl-20260401-000000
-	cp -p "${rs}/source/rust/target/release/shcl" "${rs}/cicd/artifacts/runbuilds/shcl-20260501-000000"
-	chmod 555 "${rs}/cicd/artifacts/runbuilds"
-	out="$(fRunShcl -Keep 1)"
-	chmod 755 "${rs}/cicd/artifacts/runbuilds"
-	[[ "${out}" == *"could not remove shcl-20260401-000000"* ]] || fBad "n8runshcl.ps1 said nothing about a copy it failed to remove: ${out@Q}"
+	dh="${tmpDir}/dfhome"
+	dsrc="${dh}/synced/0-0/common/exec/util/linux/bin"
+	dpool="${dh}/.local/bin/shcl_versions"
+	mkdir -p "${dsrc}" "${dh}/.local/bin"
+	printf '#!/bin/sh\necho "one: $*"\nexit 3\n' > "${dsrc}/shcl"; chmod +x "${dsrc}/shcl"
+	touch -d '2026-09-20 10:00' "${dsrc}/shcl"
+	fDogfood(){ env -u DISPLAY -u WAYLAND_DISPLAY HOME="${dh}" pwsh -NoProfile -File "${repoDir}/utility/dogfood_shcl.ps1" "$@" 2>"${tmpDir}/df.err" ;}
+	rc=0; out="$(fDogfood -v a)" || rc=$?
+	[[ "${out}" == "one: -v a" && "${rc}" == 3 ]] || fBad "dogfood_shcl.ps1 did not run the build with its arguments and exit code: ${out@Q} rc ${rc}"
+	[[ "$(readlink "${dh}/.local/bin/shcl")" == "${dpool}/shcl_20260920-100000_newest" ]] || fBad "dogfood_shcl.ps1 did not point the fixed name at the new version"
+	grep -q 'new build 20260920-100000' "${tmpDir}/df.err" || fBad "dogfood_shcl.ps1 said nothing on stderr about the build it took"
+	out="$(fDogfood x)" || true
+	[[ "${out}" == "one: x" && ! -s "${tmpDir}/df.err" ]] || fBad "dogfood_shcl.ps1 spoke up on a run that changed nothing: $(cat "${tmpDir}/df.err")"
+	for d in 01 02 03 04 05 06 07 08 09 10 11 12; do : > "${dpool}/shcl_202608${d}-120000"; done
+	: > "${dpool}/shcl_junk"
+	cp /bin/sleep "${dpool}/shcl_20260805-120000"
+	chmod 755 "${dpool}/shcl_20260805-120000"
+	"${dpool}/shcl_20260805-120000" 60 & sleeper=$!
+	out="$(fDogfood y)" || true
+	kill "${sleeper}" 2>/dev/null || true; wait "${sleeper}" 2>/dev/null || true
+	n="$(find "${dpool}" -name 'shcl_2026*' | wc -l)"
+	[[ "${out}" == "one: y" ]] || fBad "dogfood_shcl.ps1 ran something other than the newest build: ${out@Q}"
+	((n >= 5 && n <= 11)) || fBad "dogfood_shcl.ps1 kept ${n} versions, outside the budget"
+	[[ -e "${dpool}/shcl_junk" ]] || fBad "dogfood_shcl.ps1 deleted a file that is not a version"
+	[[ -e "${dpool}/shcl_20260805-120000" ]] || fBad "dogfood_shcl.ps1 deleted a version that was running"
+	[[ -e "${dpool}/shcl_20260920-100000_newest" && -e "${dpool}/shcl_20260801-120000_oldest" ]] || fBad "dogfood_shcl.ps1 lost the newest or the oldest version: $(find "${dpool}" -mindepth 1 -printf '%f ')"
+	for d in 01 02 03 04 05 06 07 08 09; do : > "${dpool}/shcl_202607${d}-120000"; done
+	if ((EUID != 0)); then
+		chmod 555 "${dpool}"
+		out="$(fDogfood z)" || true
+		chmod 755 "${dpool}"
+		grep -q 'could not remove shcl_202607' "${tmpDir}/df.err" || fBad "dogfood_shcl.ps1 said nothing about a version it failed to remove: $(cat "${tmpDir}/df.err")"
+	fi
+	rm -f "${dh}/.local/bin/shcl"; echo mine > "${dh}/.local/bin/shcl"
+	out="$(fDogfood w)" || true
+	[[ "$(cat "${dh}/.local/bin/shcl")" == mine && "${out}" == "one: w" ]] || fBad "dogfood_shcl.ps1 replaced a regular file at the fixed name, or did not run the newest: ${out@Q}"
+fi
+
+##	20260924c idea 9: the dogfood stage copied over a binary that was running.
+##	It asks /proc first now.
+eval "$(sed -n '/^fInUse()/,/^}/p' "${repoDir}/cicd/cicd.bash")"
+if ! declare -F fInUse >/dev/null; then
+	fBad "cicd.bash no longer carries fInUse"
+elif [[ -d /proc/self ]]; then
+	cp /bin/sleep "${tmpDir}/inuse-bin"
+	"${tmpDir}/inuse-bin" 60 & inusePid=$!
+	sleep 0.3
+	fInUse "${tmpDir}/inuse-bin" || fBad "cicd.bash did not see a running dogfood binary"
+	kill "${inusePid}" 2>/dev/null || true; wait "${inusePid}" 2>/dev/null || true
+	fInUse "${tmpDir}/inuse-bin" && fBad "cicd.bash called an idle dogfood binary running"
+	# shellcheck disable=SC2016  ## cicd.bash's own text, matched literally
+	grep -qF 'fInUse "${dogfood_dest}/${EXE_NAME}"' "${repoDir}/cicd/cicd.bash" || fBad "cicd.bash no longer asks whether the dogfood binary is running"
 fi
 
 ##	20260904 item 25: largedoc's memory ceilings were strictly per input MiB, so

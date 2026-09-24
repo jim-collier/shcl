@@ -9,9 +9,9 @@
 ##	manager. States the plan first, with an option to abort.
 ##
 ##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
+##		bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash)
 ##	With options:
-##		curl -fsSL .../install-dev.bash | bash -s -- --yes
+##		bash <(curl -fsSL .../install-dev.bash) --yes
 ##
 ##	Options:
 ##		--dir <path>   where to clone (default ./shcl; skipped when run inside
@@ -19,6 +19,7 @@
 ##		--yes | -y     skip the confirmation prompt.
 ##		--hooks-only   skip the toolchain and just point git at the tracked
 ##		               hooks (for a box that already has the tools).
+##		--version      print this installer's version and exit.
 ##
 ##	What a full dev box needs (see contributing.md "How to develop"):
 ##		gating:   rustup (rustfmt+clippy ride along), go, python3, gcc+g++,
@@ -35,22 +36,22 @@
 
 set -euo pipefail
 
+installer_version="1.1.0"
 REPO_URL="https://github.com/yottacore/shcl"
 clone_dir="./shcl"
 assume_yes=0
 hooks_only=0
 dir_given=0
 
-fDie() { printf 'install-dev.bash: %s\n' "$*" >&2; exit 1; }
+fDie() { printf 'install-dev.bash: %s\n\n' "$*" >&2; exit 1; }
 fHave() { command -v "$1" >/dev/null 2>&1; }
 
-## Usage text lives here, not in a sed slice of "$0": under the documented
+## Usage text lives here, not in a sed slice of "$0": under a
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
 fUsage() {
-	cat <<'EOF'
-
-install-dev.bash - dev-environment setup for shcl
+	cat <<EOF
+install-dev.bash ${installer_version} - dev-environment setup for shcl
 
 Linux and macOS; on Windows use WSL, since the dev pipeline is bash. Clones the
 repo if needed, installs what it can without sudo (rustup, and the optional
@@ -58,10 +59,10 @@ linters via pipx/npm/pwsh), and prints the exact install hint for anything that
 needs the system package manager. States the plan first, with an option to abort.
 
 Usage (one-liner):
-  curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash | bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install-dev.bash)
 
 With options:
-  curl -fsSL .../install-dev.bash | bash -s -- --yes
+  bash <(curl -fsSL .../install-dev.bash) --yes
 
 Options:
   --dir <path>   where to clone (default ./shcl; skipped when run inside an
@@ -70,6 +71,7 @@ Options:
   --hooks-only   skip the toolchain and just point git at the tracked hooks
                  (for a box that already has the tools). Needs an existing
                  clone: run it inside one, or name one with --dir.
+  --version      print this installer's version and exit.
 
 What a full dev box needs (see contributing.md, "How to develop"):
   gating:    rustup (rustfmt and clippy ride along), go, python3, gcc and g++,
@@ -77,8 +79,12 @@ What a full dev box needs (see contributing.md, "How to develop"):
              staticcheck, govulncheck, cargo-deny (all at the pinned versions),
              PSScriptAnalyzer (only if pwsh is present)
   the gate:  cicd/cicd.bash --ci
+
 EOF
 }
+
+## Every run opens with a blank line and ends with one, errors included.
+echo
 
 while (( $# )); do
 	case "$1" in
@@ -87,6 +93,7 @@ while (( $# )); do
 		--hooks-only) hooks_only=1 ;;
 		-y|--yes) assume_yes=1 ;;
 		-h|--help) fUsage; exit 0 ;;
+		--version) printf 'install-dev.bash %s\n\n' "${installer_version}"; exit 0 ;;
 		*) fDie "unknown option: $1" ;;
 	esac
 	shift
@@ -137,6 +144,7 @@ if (( hooks_only )); then
 		fIsShcl "${clone_dir}" || fDie "--hooks-only needs an existing clone (run inside one, or name one with --dir)"
 	fi
 	fSetupHooks
+	echo
 	exit 0
 fi
 
@@ -237,7 +245,6 @@ if fHave pwsh; then
 fi
 
 ## The plan.
-echo
 if (( in_clone )); then
 	printf 'using the existing clone at %s\n' "${clone_dir}"
 else
@@ -262,7 +269,7 @@ if (( ! assume_yes )); then
 	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 		fDie "no terminal to confirm on - pass --yes"
 	fi
-	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+	case "${reply}" in y|Y|yes|Yes|YES) ;; *) printf 'aborted\n\n'; exit 1 ;; esac
 fi
 
 ## Clone. Resolve the dir to an absolute path afterwards - later steps refer to

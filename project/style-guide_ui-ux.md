@@ -6,7 +6,7 @@
 
 How the `shcl` command line looks and behaves. It writes down what the CLIs already do, so a new subcommand or option can follow it. Where a CLI does something else, that is a bug in the CLI, not a second convention.
 
-There are four CLIs, one per binding. Only the Rust one ships. The Go, Python and C ones exist so the cross-binding check can compare them, and they have to match the Rust one on stdout and exit code, byte for byte.
+There are four CLIs, one per binding. Only the Rust one is distributed. The Go, Python and C ones exist so the cross-binding check can compare them, and they have to match the Rust one on stdout and exit code, byte for byte.
 
 ## Commands
 
@@ -79,7 +79,7 @@ There are four CLIs, one per binding. Only the Rust one ships. The Go, Python an
 ## Exit codes
 
 | Code | Meaning
-|:---  |:---
+| :--- | :---
 | 0    | Good.
 | 1    | Usage error, and nothing else. A value an option refuses is still 1, since the option is what has to change.
 | 2    | The value is empty.

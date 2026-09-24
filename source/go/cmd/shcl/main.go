@@ -65,6 +65,19 @@ func writeFailed(err error) {
 // Keep in step with source/rust/Cargo.toml, the canonical version source.
 const version = "2.0.0"
 
+// The build number, set only for a stamped build (-ldflags "-X main.build=ID").
+// The Rust CLI is the one the pipeline stamps; see its build.rs.
+var build = ""
+
+var versionLine = "shcl v" + version + buildSuffix()
+
+func buildSuffix() string {
+	if build == "" {
+		return ""
+	}
+	return " build " + build
+}
+
 const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 
 Usage:
@@ -225,7 +238,7 @@ not be read or written.
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
 // concatenates from the const above so it cannot drift from `shcl version`.
-const about = "shcl v" + version + `
+var about = versionLine + `
 Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
 Project: https://github.com/yottacore/shcl
 Licensed under the MIT License. Full text at:
@@ -2775,7 +2788,7 @@ func run() int {
 		return 1
 	}
 	if asked == "version" || argv[0] == "version" {
-		outf("shcl %s\n", version)
+		outf("%s\n", versionLine)
 		return 0
 	}
 	if asked == "about" || argv[0] == "about" {

@@ -40,8 +40,8 @@ cp "${header}" "${tmpDir}/"
 ##	The config the examples read, and the file the README says the save leaves.
 ##	Every example but Zig's ends in a save, and until 2026-09-20 nothing ran any
 ##	of them, so the shown result and the code that produces it could drift apart.
-awk '/^## What a .shcl file looks like/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tmpDir}/server-in.shcl"
-awk '/^### What saving does/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tmpDir}/expected.shcl"
+awk '/^## What a .shcl file looks like/ { f = 1 } f && /^~~~+text$/ { b = 1; next } b && /^~~~+$/ { exit } b' "${readme}" > "${tmpDir}/server-in.shcl"
+awk '/^### What saving does/ { f = 1 } f && /^~~~+text$/ { b = 1; next } b && /^~~~+$/ { exit } b' "${readme}" > "${tmpDir}/expected.shcl"
 [[ -s "${tmpDir}/server-in.shcl" && -s "${tmpDir}/expected.shcl" ]] \
 	|| { echo "check-readme: the config block or the 'What saving does' block is gone from ${readme}" >&2; exit 2 ;}
 
@@ -63,8 +63,8 @@ fRunExample(){   ## fRunExample NAME DIR CMD...
 	echo "check-readme: the ${name} example builds, runs, and saves the file the README shows"
 }
 
-##	The C example is the fenced ```c block; the file has exactly one.
-awk '/^```c$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.c"
+##	The C example is the fenced ~~~c block; the file has exactly one.
+awk '/^~~~+c$/ { inBlock = 1; next } /^~~~+$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.c"
 [[ -s "${tmpDir}/block.c" ]] || { echo "check-readme: no c example found in ${readme}" >&2; exit 2 ;}
 
 ##	Without a system include of its own the ordering is not being exercised at
@@ -93,7 +93,7 @@ fRunExample C "${tmpDir}" ./example
 ##	reader adds a package clause, a main() and the two standard imports the
 ##	body calls. The module resolves the library from the tree rather than the
 ##	proxy, so this needs no network.
-awk '/^```go$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.go"
+awk '/^~~~+go$/ { inBlock = 1; next } /^~~~+$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.go"
 [[ -s "${tmpDir}/block.go" ]] || { echo "check-readme: no go example found in ${readme}" >&2; exit 2 ;}
 mkdir -p "${tmpDir}/goex"
 {
@@ -129,7 +129,7 @@ fRunExample Go "${tmpDir}/goex" ./goex
 ##	is the module on the import path - which for the published package is what
 ##	pip put there, and here is the tree's own copy.
 mkdir -p "${tmpDir}/pyex"
-awk '/^```python$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/pyex/example.py"
+awk '/^~~~+python$/ { inBlock = 1; next } /^~~~+$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/pyex/example.py"
 [[ -s "${tmpDir}/pyex/example.py" ]] || { echo "check-readme: no python example found in ${readme}" >&2; exit 2 ;}
 cp "${repoDir}/source/python/shcl.py" "${tmpDir}/pyex/"
 fRunExample Python "${tmpDir}/pyex" python3 example.py
@@ -140,7 +140,7 @@ fRunExample Python "${tmpDir}/pyex" python3 example.py
 ##	gate must not need crates.io - what is being checked is the code, and the
 ##	crate it resolves to is this tree's.
 mkdir -p "${tmpDir}/rsex/src"
-awk '/^```rust$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.rs"
+awk '/^~~~+rust$/ { inBlock = 1; next } /^~~~+$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.rs"
 [[ -s "${tmpDir}/block.rs" ]] || { echo "check-readme: no rust example found in ${readme}" >&2; exit 2 ;}
 {
 	sed -n '/^use /p' "${tmpDir}/block.rs"
@@ -175,7 +175,7 @@ fRunExample Rust "${tmpDir}/rsex" "${tmpDir}/rstarget/debug/readme-example"
 ##	and the build line the README prints beside it. Skipped out loud where
 ##	there is no zig - it is not a build dependency of anything shipped.
 if command -v zig >/dev/null 2>&1; then
-	awk '/^```zig$/ { inBlock = 1; next } /^```$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.zig"
+	awk '/^~~~+zig$/ { inBlock = 1; next } /^~~~+$/ { inBlock = 0 } inBlock' "${readme}" > "${tmpDir}/block.zig"
 	[[ -s "${tmpDir}/block.zig" ]] || { echo "check-readme: no zig example found in ${readme}" >&2; exit 2 ;}
 	mkdir -p "${tmpDir}/zigex"
 	cp "${header}" "${tmpDir}/zigex/"
@@ -199,7 +199,7 @@ else
 	echo "check-readme: skipping the Zig example (no zig here)"
 	echo check-readme >> "${SHCL_GATE_SKIPS:-/dev/null}"
 fi
-##	The transcripts. A ```console block reads as real output, so every `$ shcl`
+##	The transcripts. A ~~~console block reads as real output, so every `$ shcl`
 ##	line in one is run against the README's own server.shcl and schema, and has
 ##	to print what the block shows, stderr included, in the order a terminal
 ##	shows it. They drifted twice, each time a new line of output reached no
@@ -212,8 +212,8 @@ cli="${SHCL_CLI:-${repoDir}/source/rust/target/debug/shcl}"
 tx="${tmpDir}/tx"
 mkdir -p "${tx}/bin" "${tx}/cases"
 ln -s "${cli}" "${tx}/bin/shcl"
-awk '/^## What a .shcl file looks like/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tx}/server-shown.shcl"
-awk '/^Hand it a schema/ { f = 1 } f && /^```text$/ { b = 1; next } b && /^```$/ { exit } b' "${readme}" > "${tx}/app-schema.shcl"
+awk '/^## What a .shcl file looks like/ { f = 1 } f && /^~~~+text$/ { b = 1; next } b && /^~~~+$/ { exit } b' "${readme}" > "${tx}/server-shown.shcl"
+awk '/^Hand it a schema/ { f = 1 } f && /^~~~+text$/ { b = 1; next } b && /^~~~+$/ { exit } b' "${readme}" > "${tx}/app-schema.shcl"
 [[ -s "${tx}/server-shown.shcl" && -s "${tx}/app-schema.shcl" ]] \
 	|| { echo "check-readme: the transcripts' server.shcl or schema block is gone from ${readme}" >&2; exit 2 ;}
 sed '3s/://' "${tx}/server-shown.shcl" > "${tx}/server-knocked.shcl"
@@ -222,8 +222,8 @@ printf 'workers: 4\nlog-levle: warn\n' > "${tx}/app.shcl"
 ##	ends them) and N.blk (which block it is in).
 awk -v dir="${tx}/cases" '
 	function done_case() { sub(/\n\n$/, "\n", buf); printf "%s", buf > (dir "/" n ".want"); close(dir "/" n ".want"); n = 0 }
-	/^```console$/ { inb = 1; blk++; next }
-	inb && /^```$/ { if (n) done_case(); inb = 0; next }
+	/^~~~+console$/ { inb = 1; blk++; next }
+	inb && /^~~~+$/ { if (n) done_case(); inb = 0; next }
 	inb && /^\$ / { if (n) done_case(); n = ++cases; print substr($0, 3) > (dir "/" n ".cmd"); close(dir "/" n ".cmd"); print blk > (dir "/" n ".blk"); close(dir "/" n ".blk"); buf = ""; next }
 	inb && n { buf = buf $0 "\n" }' "${readme}"
 nCases=0; nTxBad=0; lastBlk=""

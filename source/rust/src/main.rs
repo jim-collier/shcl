@@ -221,10 +221,18 @@ not be read or written.
 
 // About and donate are stdout, so they are byte-for-byte contracts across the
 // bindings the same way the help text and the init banner are. The version
-// interpolates from the crate so it cannot drift from Cargo.toml.
+// interpolates from the crate so it cannot drift from Cargo.toml, and the build
+// number is empty unless the pipeline stamped one (build.rs).
+const VERSION_LINE: &str = concat!(
+	"shcl v",
+	env!("CARGO_PKG_VERSION"),
+	env!("SHCL_BUILD_SUFFIX")
+);
+
 const ABOUT: &str = concat!(
 	"shcl v",
 	env!("CARGO_PKG_VERSION"),
+	env!("SHCL_BUILD_SUFFIX"),
 	"
 Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ].
 Project: https://github.com/yottacore/shcl
@@ -2838,7 +2846,7 @@ fn run_cli() -> u8 {
 		return 0;
 	}
 	if asked == Some("version") || first == Some("version") {
-		outln!("shcl {}", env!("CARGO_PKG_VERSION"));
+		outln!("{}", VERSION_LINE);
 		return 0;
 	}
 	if asked == Some("about") || first == Some("about") {

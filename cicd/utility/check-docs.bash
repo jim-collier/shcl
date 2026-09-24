@@ -38,6 +38,14 @@ while IFS= read -r op; do
 	grep -qF -- "  ${base}[-default]<TAB>" "${mainRs}" || fBad "write op ${op} is dispatched but the help's op table never spells ${base}[-default]"
 done <<<"${defaultOps}"
 
+##	Cargo.toml is the version source, and the crosscheck holds the four CLIs to
+##	it. The Python package's own version is read by nothing but pip, so a bump
+##	that misses it goes out to PyPI under the old number.
+cargoVer="$(sed -n '/^version = "/{s/^version = "\(.*\)"$/\1/p;q;}' "${repoDir}/source/rust/Cargo.toml" || true)"
+pyVer="$(sed -n '/^version = "/{s/^version = "\(.*\)"$/\1/p;q;}' "${repoDir}/source/python/pyproject.toml" || true)"
+[[ -n "${cargoVer}" && "${cargoVer}" == "${pyVer}" ]] \
+	|| fBad "source/python/pyproject.toml is version '${pyVer}', but Cargo.toml says '${cargoVer}'"
+
 ##	`migrate` is the one path across the 3.0 lexical change, and it needs a
 ##	place in the spec and the man page that says what it rewrites and what it
 ##	leaves alone. A doc pass once tidied the section away.
@@ -160,11 +168,19 @@ fi
 ##	Every test ran the file with -File, which strips the mark. So the file stays
 ##	ASCII with no mark: nothing then needs one, PSScriptAnalyzer's BOM rule
 ##	included. The parse below reads the bytes the way irm hands them over.
+##	The other PowerShell files follow suit. Windows PowerShell 5.1 reads a file
+##	with no mark in the ANSI code page, so ASCII is the one text that needs
+##	none anywhere.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	while IFS= read -r f; do
+		[[ -f "${repoDir}/${f}" ]] || continue
+		[[ "$(head -c3 "${repoDir}/${f}" | od -An -tx1 | tr -d ' \n')" == efbbbf ]] \
+			&& fBad "${f} starts with a byte-order mark; PowerShell files stay ASCII with no mark"
+		LC_ALL=C grep -qP '[^\x00-\x7F]' "${repoDir}/${f}" \
+			&& fBad "${f} holds a non-ASCII byte; PowerShell files stay ASCII so they need no byte-order mark"
+	done < <(git -C "${repoDir}" ls-files '*.ps1' '*.psm1' '*.psd1' || true)
+fi
 if [[ -f "${ps1}" ]]; then
-	[[ "$(head -c3 "${ps1}" | od -An -tx1 | tr -d ' \n')" == efbbbf ]] \
-		&& fBad "install.ps1 starts with a byte-order mark, which breaks the README's irm | iex line"
-	LC_ALL=C grep -qP '[^\x00-\x7F]' "${ps1}" \
-		&& fBad "install.ps1 holds a non-ASCII byte; it has to stay ASCII so it needs no byte-order mark"
 	if command -v pwsh >/dev/null; then
 		# shellcheck disable=SC2016  ## PowerShell text, expanded by pwsh
 		nParse="$(SHCL_PS1="${ps1}" pwsh -NoProfile -NonInteractive -Command '$t = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($env:SHCL_PS1)); $e = $null; $null = [System.Management.Automation.Language.Parser]::ParseInput($t, [ref]$null, [ref]$e); $e.Count' 2>/dev/null || true)"
@@ -245,15 +261,15 @@ fi
 ##	The marker in a copyright line is a fixed run of bytes to be copied, never
 ##	retyped. One arrived with a Georgian letter one code point off the right
 ##	one and read the same on screen, and the check above only asks for the word
-##	"Copyright". So compare the bytes. install.ps1 and rust/build.rs are the
-##	two sanctioned ASCII forms with no marker, and the shared cicd/utility
+##	"Copyright". So compare the bytes. The PowerShell files and rust/build.rs
+##	are the sanctioned ASCII forms with no marker, and the shared cicd/utility
 ##	scripts carry the Bubbles form.
 if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	marker='[ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]'
 	mkFiles=()
 	while IFS= read -r f; do
 		[[ -f "${repoDir}/${f}" ]] || continue
-		[[ "${f}" == "install.ps1" || "${f}" == "source/rust/build.rs" ]] && continue
+		[[ "${f}" == *.ps1 || "${f}" == "source/rust/build.rs" ]] && continue
 		mkFiles+=("${repoDir}/${f}")
 	done < <(git -C "${repoDir}" ls-files || true)
 	##	The first marker line in each file's first 80, as a head and a grep -m1
@@ -388,7 +404,7 @@ done < <(grep -rn "prose to stderr" --include='*.md' "${repoDir}" | grep -v '/ba
 readme="${repoDir}/README.md"
 if [[ -f "${readme}" ]]; then
 	for fence in rust go python c; do
-		block="$(awk -v f="^\`\`\`${fence}\$" '$0 ~ f, /^```$/' "${readme}")"
+		block="$(awk -v f="^~~~+${fence}\$" '$0 ~ f, /^~~~+$/' "${readme}")"
 		[[ -n "${block}" ]] || { fBad "README.md has no \`\`\`${fence} example, so its setter checks went unread"; continue ;}
 		calls="$(grep -cE '(doc\.[Ss]et[A-Za-z_]+\(|shcl_set_[a-z]+\(doc)' <<<"${block}" || true)"
 		checked="$(grep -cE '(if !doc\.[Ss]et|if not doc\.set_|if \(!shcl_set_)' <<<"${block}" || true)"
@@ -562,14 +578,14 @@ fi
 ##	README transcript reading a damaged file has to show them - the get example
 ##	sat under a check example that showed the same file's diagnostic and said
 ##	nothing itself.
-readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/README.md")"
+readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^~~~~*$/p' "${repoDir}/README.md")"
 grep -q 'E014' <<<"${readmeGet}" \
 	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
 ##	And the diagnostic it shows is the one the CLI prints. The file is the
 ##	README's own example with the colon knocked off line 3, as the prose says.
 if [[ -n "${help}" ]]; then
 	tmpDoc="$(mktemp -d)"
-	awk '/^## What a \.shcl file looks like/ { hdr = 1 } hdr && /^```text$/ { body = 1; next } body && /^```$/ { exit } body' "${readme}" \
+	awk '/^## What a \.shcl file looks like/ { hdr = 1 } hdr && /^~~~+text$/ { body = 1; next } body && /^~~~+$/ { exit } body' "${readme}" \
 		| sed '3s/: / /' > "${tmpDoc}/server.shcl"
 	shown="$(grep -m1 'E014 malformed' <<<"${readmeGet}" || true)"
 	actual="$(cd "${tmpDoc}" && "${repoDir}/source/rust/target/debug/shcl" get server.shcl log-level 2>&1 >/dev/null || true)"
@@ -656,7 +672,7 @@ fBuildToc(){  ## fBuildToc FILE: the contents block those headings would generat
 		{ prev = $0 }
 	' "$1"
 }
-for doc in README.md project/design.md project/spec.md ai_policy.md; do
+for doc in README.md contributing.md project/design.md project/spec.md ai_policy.md; do
 	[[ -f "${repoDir}/${doc}" ]] || continue
 	live="$(sed -n '/^<!-- TOC -->$/,/^<!-- \/TOC -->$/p' "${repoDir}/${doc}" | sed '1d;$d' | sed '/^$/d')"
 	if [[ -z "${live}" ]]; then
@@ -774,3 +790,4 @@ echo "check-docs: OK"
 ##		            lookalike.
 ##		2026-09-23  No Go doc comment opens with another declared name, and every
 ##		            veneer declaration heading a group has a comment.
+##		2026-09-24  Every PowerShell file is ASCII with no byte-order mark.

@@ -21,6 +21,26 @@ fn main() {
 	println!("cargo:rerun-if-changed=build.rs");
 	println!("cargo:rerun-if-changed=../../assets/shcl.ico");
 
+	// The pipeline stamps a release build with a build number worked out from
+	// the commit time, so a rebuild of the same commit gets the same one. Any
+	// other build, `cargo install` from crates.io included, has none. A bad
+	// value is a pipeline bug, and a wrong number in a release would be worse
+	// than a failed build.
+	println!("cargo:rerun-if-env-changed=SHCL_BUILD");
+	let build = env::var("SHCL_BUILD").unwrap_or_default();
+	assert!(
+		build
+			.chars()
+			.all(|c| "0123456789abcdefghjkmnpqrstvwxyz".contains(c)),
+		"SHCL_BUILD must be lower-case Crockford base32, got {build:?}"
+	);
+	let suffix = if build.is_empty() {
+		String::new()
+	} else {
+		format!(" build {build}")
+	};
+	println!("cargo:rustc-env=SHCL_BUILD_SUFFIX={suffix}");
+
 	if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
 		return;
 	}

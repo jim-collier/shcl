@@ -160,9 +160,10 @@ if ((quick)); then
 fi
 
 ## A run at least as thorough as the pre-push hook's records the tree it tested
-## once the tests and the cross checks pass, and the hook lets a commit with that tree through. A gate
-## that skips a missing tool locally notes it in SHCL_GATE_SKIPS. Under --ci the
-## same skip is a failure, so a run with anything noted there records nothing.
+## once the tests and the cross checks pass, and the hook lets a commit with
+## that tree through. A gate that skips a missing tool locally notes it in
+## SHCL_GATE_SKIPS. Under --ci the same skip is a failure, so a run with
+## anything noted there records nothing.
 record_green=1
 if ((quick || gate_partial)); then record_green=0; fi
 export SHCL_GATE_SKIPS="$(mktemp)"
@@ -183,13 +184,26 @@ fEcho(){       if [[ -n "$*"     ]]; then fEcho_Clean "[ $* ]"; else fEcho_Clean
 fEcho_Force(){ fEcho_ResetBlankCounter; fEcho "$*"; }
 _letterbox="••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
 fSection(){ fEcho_Clean; fEcho_Clean "${_letterbox}"; fEcho "$*"; }
-fDie(){ { fEcho_Force "FAILED: $*"; } >&2; exit 1; }
-trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit $rc' ERR
+fDie(){ { fEcho_Force "FAILED: $*"; echo; } >&2; exit 1; }
+trap 'rc=$?; printf "\n[ CICD ABORTED (exit %s) at line %s: %s ]\n\n" "$rc" "$LINENO" "$BASH_COMMAND" >&2; exit $rc' ERR
 
 ## Current version from the single canonical source.
 ## No `| head -1`: under pipefail an early-quitting reader kills the writer
 ## with SIGPIPE, so the quit belongs in sed.
 fVersion(){ sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${root}/${VERSION_MANIFEST}"; }
+
+## The build number a release binary prints after its version: minutes from
+## 2000-01-01 UTC to a unix time, rounded, in lower-case Crockford base32.
+fBuildNumber(){   ## fBuildNumber EPOCH_SECONDS
+	local digits="0123456789abcdefghjkmnpqrstvwxyz" n out=""
+	n=$(( ($1 - 946684800 + 30) / 60 ))
+	while :; do
+		out="${digits:n % 32:1}${out}"
+		n=$((n / 32))
+		((n > 0)) || break
+	done
+	printf '%s\n' "${out}"
+}
 
 ## (Re)write the sha256sums file over every artifact in the release dir except
 ## the sums file itself.
@@ -204,6 +218,16 @@ fWriteSums(){
 }
 
 ## First existing+writable dir from the list; empty output when there is none.
+## True when a running process was started from this file. Linux answers
+## through /proc; elsewhere nothing is known to be in use.
+fInUse(){   ## fInUse PATH
+	local path exe
+	path="$(readlink -f -- "$1" 2>/dev/null)" || return 1
+	for exe in /proc/[0-9]*/exe; do
+		if [[ "$(readlink -- "${exe}" 2>/dev/null || true)" == "${path}" ]]; then return 0; fi
+	done
+	return 1
+}
 fFirstWritableDir(){ local d; for d in "$@"; do [[ -d "$d" && -w "$d" ]] && { echo "$d"; break; }; done; return 0; }
 
 ## Install to <dest_dir>/<name> through a temp file in the SAME dir plus a rename,
@@ -488,6 +512,12 @@ if [[ -n "${green_tree}" ]]; then
 	fi
 fi
 if ((${#RELEASE_NATIVE_CMD[@]})); then
+	## Stamped from the commit, not the clock, so a rebuild of one commit gives
+	## the same bytes. Only these builds carry it: the gate's own builds stay
+	## unstamped, the same as the other three CLIs they are compared against.
+	SHCL_BUILD="$(fBuildNumber "$(git -C "${root}" log -1 --format=%ct)")"
+	export SHCL_BUILD
+	fEcho "build ${SHCL_BUILD}"
 	"${RELEASE_NATIVE_CMD[@]}"
 	[[ -f "${RELEASE_NATIVE_BIN}" ]] || fDie "native release binary missing: ${RELEASE_NATIVE_BIN}"
 	fEcho "OK: native release: ${RELEASE_NATIVE_BIN} ($(du -h "${RELEASE_NATIVE_BIN}" | cut -f1))"
@@ -500,6 +530,7 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 		fEcho "OK: ${t_label}: ${t_art} ($(du -h "${t_art}" | cut -f1))"
 		built_arts+=("${t_osarch}|${t_art}")
 	done
+	unset SHCL_BUILD
 	if [[ -n "${RELEASE_ARTIFACT_DIR:-}" ]]; then
 		ver="$(fVersion)"
 		[[ -n "$ver" ]] || fDie "no version found in ${VERSION_MANIFEST}"
@@ -547,7 +578,9 @@ fi
 fSection "7/9  Dogfood"
 if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]; then
 	dogfood_dest="$(fFirstWritableDir "${DOGFOOD_FIXED_DESTS[@]}")"
-	if [[ -n "$dogfood_dest" ]]; then
+	if [[ -n "$dogfood_dest" ]] && fInUse "${dogfood_dest}/${EXE_NAME}"; then
+		fEcho "WARNING: ${dogfood_dest}/${EXE_NAME} is running; dogfood copy skipped"
+	elif [[ -n "$dogfood_dest" ]]; then
 		fInstallAtomic "${RELEASE_NATIVE_BIN}" "$dogfood_dest" "${EXE_NAME}"
 		for wrapper in "${DOGFOOD_WRAPPERS[@]:-}"; do
 			[[ -n "$wrapper" && -f "$wrapper" ]] || continue
@@ -573,6 +606,19 @@ if ((${#DOGFOOD_FIXED_DESTS[@]})) && [[ -f "${RELEASE_NATIVE_BIN:-/nonexist}" ]]
 		[[ -n "$x_dest" ]] || { fEcho "WARNING: no ${x_osarch} dogfood dest exists+writable; skipping"; continue; }
 		x_ext=""; [[ "$x_src" == *.exe ]] && x_ext=".exe"
 		fInstallAtomic "$x_src" "$x_dest" "${EXE_NAME}${x_ext}"
+	done
+	## The runner and its launchers, only where they changed, so an ordinary run
+	## does not touch the sync tree.
+	for runner in "${DOGFOOD_RUNNERS[@]:-}"; do
+		[[ -n "$runner" ]] || continue
+		IFS='|' read -r -a r_parts <<<"$runner"
+		r_src="${root}/${r_parts[0]}"
+		[[ -f "$r_src" ]] || { fEcho "WARNING: no dogfood runner at ${r_parts[0]}"; continue; }
+		for r_dir in "${r_parts[@]:1}"; do
+			[[ -d "$r_dir" && -w "$r_dir" ]] || continue
+			cmp -s "$r_src" "${r_dir}/${r_src##*/}" && continue
+			fInstallAtomic "$r_src" "$r_dir" "${r_src##*/}"
+		done
 	done
 else
 	fEcho_Clean "dogfood skipped"
