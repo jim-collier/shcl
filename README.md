@@ -13,6 +13,7 @@
 [![PyPI](https://img.shields.io/pypi/v/shcl?logo=python&logoColor=white&label=PyPI)](https://pypi.org/project/shcl/)
 [![Go module](https://pkg.go.dev/badge/github.com/yottacore/shcl/source/go/v2.svg)](https://pkg.go.dev/github.com/yottacore/shcl/source/go/v2)
 [![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jim-collier)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/jimcollier)
 
 <!-- TOC ignore:true -->
 # SHCL
@@ -959,7 +960,7 @@ Generated API reference, per binding: [docs.rs](https://docs.rs/shcl) for Rust, 
 
 A config parser gets trusted with other people's files, so help and scrutiny are both welcome. Bug reports, spec edge cases, and new-language bindings all count. See [`contributing.md`](contributing.md) to get started.
 
-If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, [sponsorship](https://github.com/sponsors/jim-collier) is welcome.
+If SHCL helps but code and issue reports aren't your thing, a star or a mention still helps other people find it - and if it is saving you real time, sponsorship through [GitHub](https://github.com/sponsors/jim-collier) or [Ko-fi](https://ko-fi.com/jimcollier) is welcome.
 
 ## Legal stuff
 
