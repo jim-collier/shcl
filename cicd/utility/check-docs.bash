@@ -404,7 +404,7 @@ done < <(grep -rn "prose to stderr" --include='*.md' "${repoDir}" | grep -v '/ba
 readme="${repoDir}/README.md"
 if [[ -f "${readme}" ]]; then
 	for fence in rust go python c; do
-		block="$(awk -v f="^\`\`\`${fence}\$" '$0 ~ f, /^```$/' "${readme}")"
+		block="$(awk -v f="^~~~+${fence}\$" '$0 ~ f, /^~~~+$/' "${readme}")"
 		[[ -n "${block}" ]] || { fBad "README.md has no \`\`\`${fence} example, so its setter checks went unread"; continue ;}
 		calls="$(grep -cE '(doc\.[Ss]et[A-Za-z_]+\(|shcl_set_[a-z]+\(doc)' <<<"${block}" || true)"
 		checked="$(grep -cE '(if !doc\.[Ss]et|if not doc\.set_|if \(!shcl_set_)' <<<"${block}" || true)"
@@ -578,14 +578,14 @@ fi
 ##	README transcript reading a damaged file has to show them - the get example
 ##	sat under a check example that showed the same file's diagnostic and said
 ##	nothing itself.
-readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^```$/p' "${repoDir}/README.md")"
+readmeGet="$(sed -n '/shcl get server.shcl log-level/,/^~~~~*$/p' "${repoDir}/README.md")"
 grep -q 'E014' <<<"${readmeGet}" \
 	|| fBad "README.md: the get transcript on the damaged file shows no load diagnostic"
 ##	And the diagnostic it shows is the one the CLI prints. The file is the
 ##	README's own example with the colon knocked off line 3, as the prose says.
 if [[ -n "${help}" ]]; then
 	tmpDoc="$(mktemp -d)"
-	awk '/^## What a \.shcl file looks like/ { hdr = 1 } hdr && /^```text$/ { body = 1; next } body && /^```$/ { exit } body' "${readme}" \
+	awk '/^## What a \.shcl file looks like/ { hdr = 1 } hdr && /^~~~+text$/ { body = 1; next } body && /^~~~+$/ { exit } body' "${readme}" \
 		| sed '3s/: / /' > "${tmpDoc}/server.shcl"
 	shown="$(grep -m1 'E014 malformed' <<<"${readmeGet}" || true)"
 	actual="$(cd "${tmpDoc}" && "${repoDir}/source/rust/target/debug/shcl" get server.shcl log-level 2>&1 >/dev/null || true)"
@@ -672,7 +672,7 @@ fBuildToc(){  ## fBuildToc FILE: the contents block those headings would generat
 		{ prev = $0 }
 	' "$1"
 }
-for doc in README.md project/design.md project/spec.md ai_policy.md; do
+for doc in README.md contributing.md project/design.md project/spec.md ai_policy.md; do
 	[[ -f "${repoDir}/${doc}" ]] || continue
 	live="$(sed -n '/^<!-- TOC -->$/,/^<!-- \/TOC -->$/p' "${repoDir}/${doc}" | sed '1d;$d' | sed '/^$/d')"
 	if [[ -z "${live}" ]]; then

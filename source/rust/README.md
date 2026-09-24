@@ -8,19 +8,19 @@ This crate is the reference implementation. Independent Go, Python, and C bindin
 
 ## Install
 
-```sh
+~~~sh
 cargo add shcl
-```
+~~~
 
 Zero dependencies. The crate also includes the CLI:
 
-```sh
+~~~sh
 cargo install shcl
-```
+~~~
 
 ## Use
 
-```rust
+~~~rust
 use shcl::{Document, FileStatus};
 
 // Reads and parses in one call, and never fails: the document is usable
@@ -53,7 +53,7 @@ if !doc.set_int(path, limit * 2) {
 	eprintln!("not written: {:?}", doc.write_reason(path));
 }
 doc.save_file("server.shcl").unwrap();
-```
+~~~
 
 `Document::parse` never fails, and neither does `load_file`. When you want a hard error instead, use `Document::parse_with(&text, Strictness::Strict)`.
 

@@ -1,9 +1,12 @@
-<!-- omit in toc -->
+<!-- markdownlint-disable MD007 -- Unordered list indentation -->
+<!-- markdownlint-disable MD010 -- hard tabs -->
+<!-- markdownlint-disable MD041 -- First line in a file should be a top-level heading -->
+<!-- TOC ignore:true -->
 # Contributing
 
 First off, thanks for taking the time to contribute!
 
-All types of contributions are encouraged and valued. See the [Table of Contents](#table-of-contents) for different ways to help and details about how this project handles them. Please read the relevant section before making your contribution - it makes things easier on both ends.
+All types of contributions are encouraged and valued. See the [Table of contents](#table-of-contents) for different ways to help and details about how this project handles them. Please read the relevant section before making your contribution - it makes things easier on both ends.
 
 > And if you like the project but don't have time to contribute, that's fine. There are easier ways to support it:
 >
@@ -13,15 +16,29 @@ All types of contributions are encouraged and valued. See the [Table of Contents
 > - Mention the project to your friends/colleagues
 > - [Sponsor it](https://github.com/sponsors/jim-collier)
 
-<!-- omit in toc -->
-## Table of Contents
+<!-- TOC ignore:true -->
+## Table of contents
+
+<!-- TOC -->
 
 - [Code of Conduct](#code-of-conduct)
 - [I Have a Question](#i-have-a-question)
 - [I Want To Contribute](#i-want-to-contribute)
 	- [Reporting Bugs](#reporting-bugs)
+		- [Before Submitting a Bug Report](#before-submitting-a-bug-report)
+		- [How Do I Submit a Good Bug Report?](#how-do-i-submit-a-good-bug-report)
 	- [Suggesting Enhancements](#suggesting-enhancements)
+		- [Before Submitting an Enhancement](#before-submitting-an-enhancement)
+		- [How Do I Submit a Good Enhancement Suggestion?](#how-do-i-submit-a-good-enhancement-suggestion)
 - [How to develop](#how-to-develop)
+	- [Toolchains](#toolchains)
+	- [Build and test](#build-and-test)
+	- [Adding a conformance case](#adding-a-conformance-case)
+	- [Linters](#linters)
+	- [Style](#style)
+	- [Branches](#branches)
+
+<!-- /TOC -->
 
 ## Code of Conduct
 
@@ -43,13 +60,12 @@ We will then take care of the issue as soon as possible.
 
 ## I Want To Contribute
 
-> ### Legal Notice <!-- omit in toc -->
+> ### Legal Notice
 >
 > When contributing to this project, you must agree that you have authored 100% of the content, that you have the necessary rights to the content and that the content you contribute may be provided under the project license.
 
 ### Reporting Bugs
 
-<!-- omit in toc -->
 #### Before Submitting a Bug Report
 
 A good bug report shouldn't leave others needing to chase you up for more information. Therefore, we ask you to investigate carefully, collect information and describe the issue in detail in your report. Please complete the following steps in advance to help us fix any potential bug as fast as possible.
@@ -69,7 +85,6 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 	- Can you reliably reproduce the issue? And can you also reproduce it with older versions?
 	- Steps to cleanly reproduce from scratch.
 
-<!-- omit in toc -->
 #### How Do I Submit a Good Bug Report?
 
 > You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to shclⒶyottacore.com.
@@ -96,7 +111,6 @@ Once it's filed:
 
 This section guides you through submitting an enhancement suggestion for SHCL, **including completely new features and minor improvements to existing functionality**. Following these guidelines will help maintainers and the community to understand your suggestion and find related suggestions.
 
-<!-- omit in toc -->
 #### Before Submitting an Enhancement
 
 - Make sure that you are using the latest version.
@@ -107,7 +121,6 @@ This section guides you through submitting an enhancement suggestion for SHCL, *
 
 - Find out whether your idea fits with the scope and aims of the project. It's up to you to make a strong case to convince the project's developers of the merits of this feature. Keep in mind that we want features that will be useful to the majority of our users and not just a small subset. If you're just targeting a minority of users, consider writing an add-on/plugin library.
 
-<!-- omit in toc -->
 #### How Do I Submit a Good Enhancement Suggestion?
 
 Enhancement suggestions are tracked as [GitHub issues](https://github.com/yottacore/shcl/issues).
@@ -128,9 +141,9 @@ The pipeline fast-forwards from the remote before it builds anything, so what it
 
 There is also a `pre-push` hook that runs the gate for you, but only when the push would move `main`. Everything else pushes straight through, `dev` and feature branches alike. `install-dev.bash` turns it on; to do it by hand:
 
-```sh
+~~~sh
 git config core.hooksPath cicd/hooks
-```
+~~~
 
 It skips the gate for a commit whose files a run already passed. Every `cicd.bash` run that gets through the tests and the cross checks without `--quick`, `--no-fmt`, `--no-lint`, `--no-cross` or a skipped tool records the tree it tested. So the push at the end of a full run goes straight out, and so does a `--no-ff` merge of a branch that passed onto a `main` that has not moved since. `SHCL_GATE_RERUN=1` runs the gate anyway, and `git push --no-verify` or `SHCL_SKIP_HOOK=1` gets past it when you need to.
 

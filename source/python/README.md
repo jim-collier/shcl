@@ -8,13 +8,13 @@ Pure standard library, no dependencies, one module. Held byte-for-byte against t
 
 ## Install
 
-```sh
+~~~sh
 pip install shcl
-```
+~~~
 
 ## Use
 
-```python
+~~~python
 from shcl import Document, FileStatus, Status
 
 # Reads and parses in one call, and never raises: the document is usable
@@ -43,7 +43,7 @@ roots = doc.read_string_array("site[*].root")
 if not doc.set_int("site[example.com].max-upload-mb", limit * 2):
 	print(doc.write_reason("site[example.com].max-upload-mb"))
 doc.save_file("server.shcl")
-```
+~~~
 
 `Document.parse` never raises, and neither does `load_file`. When you want a hard error instead, use `Document.parse_with(text, Strictness.Strict)`, which raises `LoadError`. A `get_*` call with no `default=` raises `StatusError` rather than inventing a value.
 
