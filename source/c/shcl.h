@@ -309,7 +309,7 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 	"## \"Simple Hierarchical Config Language\"\n" \
 	"##    Format   3\n" \
 	"##    Home     https://github.com/yottacore/shcl\n" \
-	"##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md\n" \
+	"##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0-beta1/project/spec.md\n" \
 	"##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.\n" \
 	"##\n"
 

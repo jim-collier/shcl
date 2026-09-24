@@ -11,7 +11,7 @@ Each case is a directory `NNN-short-name/` containing:
 
 - `expected.shcl` - the canonical formatter output for that input (block form, tabs, insertion order, minimal quoting, redundancy collapsed), at Standard strictness.
 
-- `reads.tsv` - expected typed reads (required). Columns, tab-separated: `query` `type` `expected` `status` `[level]` `[slots]`. `type` uses `int|float|bool|datetime|string|raw|rawinfo` and `[]` for array forms (except `raw`/`rawinfo`, which have no array form), or the pseudo-calls `count`/`instances`/`load`/`lost`/`children`/`paths`. `rawinfo` reads a raw block's info-string (the fence tag) rather than its content. `expected` is the value (`-` when not applicable); `status` is one of `Good|Empty|NotFound|BadType|Multiple`. The optional fifth column is the strictness level (`loose|standard|strict`), default `standard`. The optional sixth column (requires the fifth) pins the per-slot statuses of an array read, `|`-joined in slot order; the row's `status` is then the worst slot. The `load` pseudo-call asserts whether the document loads at that level: query `-`, expected `ok` or `fail`, status `-`. The `lost` pseudo-call asserts the document's lost count: query `-`, expected the number, status `-`. The `children` pseudo-call lists a path's children in file order, repeats kept, `|`-joined: an empty query is the root, a missing path lists nothing, status `-`. The `paths` pseudo-call lists every path in the document once, `|`-joined and quoted where a name needs it: query `-`, status `-`. In `expected`, a newline inside a raw-block value is written `\n` (a literal newline or tab would break the TSV).
+- `reads.tsv` - expected typed reads (required). Columns, tab-separated: `query` `type` `expected` `status` `[level]` `[slots]`. `type` uses `int|float|bool|datetime|string|raw|rawinfo` and `[]` for array forms (except `raw`/`rawinfo`, which have no array form), or the pseudo-calls `count`/`instances`/`load`/`lost`/`children`/`paths`/`instance_paths`. `rawinfo` reads a raw block's info-string (the fence tag) rather than its content. `expected` is the value (`-` when not applicable); `status` is one of `Good|Empty|NotFound|BadType|Multiple`. The optional fifth column is the strictness level (`loose|standard|strict`), default `standard`. The optional sixth column (requires the fifth) pins the per-slot statuses of an array read, `|`-joined in slot order; the row's `status` is then the worst slot. The `load` pseudo-call asserts whether the document loads at that level: query `-`, expected `ok` or `fail`, status `-`. The `lost` pseudo-call asserts the document's lost count: query `-`, expected the number, status `-`. The `children` pseudo-call lists a path's children in file order, repeats kept, `|`-joined: an empty query is the root, a missing path lists nothing, status `-`. The `paths` pseudo-call lists every path in the document once, `|`-joined and quoted where a name needs it: query `-`, status `-`. The `instance_paths` pseudo-call lists every binding's path once, in the same spelling with `[#i]` on each name its parent repeats: query `-`, status `-`. In `expected`, a newline inside a raw-block value is written `\n` (a literal newline or tab would break the TSV).
 
 - `expected-diags.txt` - the diagnostic golden (required): the exact `check` stdout at Standard strictness - one `line N: Severity: CODE` line per diagnostic in emission order, then the summary line (`ok (N diagnostic(s))`, or `failed: N diagnostic(s), M error(s)` when errors are present). Pins count, line, severity, and stable code per case, including the mandatory repeated-leaf hint (`H001`) and the zero-diagnostic cases.
 
@@ -145,7 +145,7 @@ Case `059` pins the two raw-block errors: a fence with no parent field (`E006`, 
 
 Case `060` pins the stacked-list errors: an element with no parent field (`E007`), an empty element (`E009`, a `*` followed only by a comment), a bare comma in an element (`E010`), and an element under a field that already holds a value (`E011`). The survivors still read as the list.
 
-Case `061` pins `E012`: a dedent to a column that matches no open level is skipped, and the next line at a real level binds where it belongs.
+Case `061` pins `E012`: a dedent to a column that matches no open level is skipped and written back as it was, and the next line at a real level binds where it belongs.
 
 Case `062` pins a writer fold: `empty b` clears the value of `b: 1, 2`, which then merges with the `b` below it. The `int b.c 5` before it names which `b` the setter picked, since the merged order differs by instance; the op it replaced set a value the `b` below already had, so the golden read the same either way.
 
@@ -161,7 +161,7 @@ Case `067` pins the i64 edge at the loose float fallback: `9223372036854775807.0
 
 Case `068` pins a `#` on a fence line in both spellings: it ends the label and opens the line's comment, so ```` ```c# ```` labels the block `c`.
 
-Case `069` pins traversal through the `children` and `paths` rows: children in file order with repeats kept, nothing for a missing path, and every path once, quoted where a name needs it.
+Case `069` pins traversal through the `children`, `paths` and `instance_paths` rows: children in file order with repeats kept, each instance's in turn where a path has several, nothing for a missing path, every path once, quoted where a name needs it, and every binding once with `[#i]` on a name its parent repeats.
 
 Case `070` pins a selector over a raw block and a scalar with the same display: `x[hi]` binds the raw block and `x["hi"]` the scalar, and a read of `x[hi]` counts both.
 
@@ -173,7 +173,7 @@ Case `073` pins `init` for a valued parent: the child lines select the instance 
 
 Case `074` pins the float range: a value past the double range is `BadType` at every level, as a scalar, an array element or loose currency, the largest double reads, and an underflow reads as 0.
 
-Case `075` pins that a skipped line holds its indent level in the other two skip shapes too: a line refused with `E012`, and a `*` line with no space (`E013`). What is written under either is skipped with it (`E018`), a fence line at a bad indent takes its whole body with it, and a second line at the same bad indent is refused the same way rather than binding one level up.
+Case `075` pins that a skipped line holds its indent level in the other two skip shapes too: a line refused with `E012`, and a `*` line with no space (`E013`). What is written under either is skipped with it (`E018`), a fence line at a bad indent takes its whole body with it, and a second line at the same bad indent is refused the same way rather than binding one level up. The `E012` lines and the lines under them are kept as written, since their indents hold a space. The fence and its body, and the lines under the `E013` line, are lost.
 
 Case `076` pins a value written after an index selector on the last segment (`a[0]: 2`): the instance is selected and the value is reported (`E002`) and counted as lost, exactly as after a value selector, so a save cannot quietly delete it. A same-line fence there is the same case. A value after an index that is not last still binds the deeper leaf.
 
@@ -295,7 +295,7 @@ Case `135` pins a schema path carrying a value selector, and the `bool-array` an
 
 Case `136` pins the number spellings a hand-edited file carries - `007`, `+5`, `-0`, `+0009` - which read as integers and keep the spelling the author wrote. Beside them, a closed quote followed by bare text (`"abc"def`) is `E017` and the whole text is the value, and the path spellings that resolve to nothing: an empty selector, a leading dot, a trailing dot and a doubled dot.
 
-Case `137` pins that a line matching no open level (`E012`) closes none of the levels open before it. A space-indented line in a tab-indented block used to drop every later sibling in the block. The siblings bind now, and so does the first child of a leaf written after the bad line. A line deeper than the bad line is still `E018`, as `075` pins.
+Case `137` pins that a line matching no open level (`E012`) closes none of the levels open before it. A space-indented line in a tab-indented block used to drop every later sibling in the block. The siblings bind now, and so does the first child of a leaf written after the bad line. A line deeper than the bad line is still `E018`, as `075` pins. Every bad line is kept as written, so nothing is lost.
 
 Case `138` pins that a run of whole-line comments keeps its order and its nesting. A commented-out header and its commented-out child, at the top level, inside a block and at the end of the file, and a run whose later comments sit deeper than the block the first one trails. The input is its own canonical form. The deeper comment used to hang on an earlier block and come back ahead of the comments written before it.
 
@@ -310,6 +310,10 @@ Case `142` pins a comment left above a block's later instance. `# c` follows `p`
 Case `143` pins where comments go once a merge or a write changes a block, which must be where a reload of the saved text puts them. Three layers merged at once keep `# inside` right after `c`, above the top layer's `d`, as merging two and then the third from saved text does. Two children written into `k`, whose only line is a comment, get the comment between them, as two separate runs of `set` do. And a raw block after an empty `b` has its trailing comment written on the line above it, which a reload files as a leading comment, so it stays there once the empty `b` is set to 5.
 
 Case `144` pins the `H003` hint (20260923 item 18). A bare stacked element spelled `name: value` or `name:` is one string, and the load says so, since a list of objects in the YAML style reads that way without a word. Text with a blank before its colon, a colon with no blank after it, and a quoted element get no hint.
+
+Case `145` pins which misplaced lines a save keeps. An `E012` line whose indent holds a space is written back as it was, and so is an `E018` line under it. An `E012` line indented with tabs alone would bind on a reload, so it is lost. A kept line that a re-opened block carries up to the top of the file would bind there as written, so it is written as a comment instead.
+
+Case `146` pins a stacked list holding kept lines among its elements and after the last one. The list stays stacked with each line where it was, so a line fixed by hand is still inside the list. Without them the same list is written inline.
 
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 

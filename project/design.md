@@ -110,7 +110,7 @@ Other points
 	- What changed at 3.0, and what `migrate` rewrites a 2.x file for: escapes are processed inside double quotes only, single quotes are literal, and bare text never processes a backslash, which is TOML's and YAML's rule. A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece; anywhere else a quote is a character. The `field:[disc]` sugar is gone, so a `[` right after a name is a selector and a `[` first after the colon is bracket text.
 	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning, and a bracket array 2.x folded into one string binds nothing. `migrate` rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
 	- What did not change: the comment rule is 2.x's, so a 2.x file's comments and values read the same before and after. Three edges do read differently, and `migrate` leaves all three: a fence label holding a `#`, which 2.x ran to the end of the line and which has no quoting; a carriage return at a piece's edge in the middle of a line, which 2.x kept and which is a blank now; and an indent landing on no open level's column, which 2.x placed by a looser comparison and which is `E012` now, since `migrate` rewrites spellings and not layout.
-	- Which rules wrote a file is not in the text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite and leaves those pieces as written, at exit 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes a second run a no-op rather than a second rewrite of the first one's output. The library never adds the whole block, since that would write bytes the document does not hold, and it does not stamp a file that never closes a raw block, since the line would end up inside the block as content.
+	- Which rules wrote a file is not in the text, so the info block carries a `Format` line naming the format's major and `migrate` is the only command that reads it. `format_version` hands a program the same answer, so it can ask before it rewrites anything. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite and leaves those pieces as written, at exit 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes a second run a no-op rather than a second rewrite of the first one's output. The library never adds the whole block, since that would write bytes the document does not hold, and it does not stamp a file that never closes a raw block, since the line would end up inside the block as content. `migrate_unstamped` leaves the stamp off for a program that writes the whole block itself as its footer, which then carries the line.
 	- `migrate` reports what it could not carry rather than exiting 0 over it: the pieces it could not decide between the two rule sets, and the one form 2.x bound that nothing binds now, bracket text after the colon. Both are exit 7, and each has its own override - `--from-2x` for the first, `--lossy` for the second on a rewrite - because one is a question the text cannot answer and the other is a real loss.
 	- `migrate --check` compares the input and the migrated text line by line, in the CLI. The rewrite never adds or drops a line ahead of its stamp, so line N is line N on both sides, and the library needs nothing new. A line to rewrite is exit 6, the code `check` uses for a file with something to fix, and exit 7 still wins when `migrate` could not finish or when the save gate would refuse the rewrite. `fmt --check` asks that gate the same way.
 
@@ -453,13 +453,15 @@ What a save does with each thing it can find at the path. The same answer comes 
 
 ### Load outcomes
 
-Every load-time code has one outcome, and the parser derives the lost count and the held indent level from that outcome alone. Each diagnosing arm names its code and its outcome and does nothing else; one function records the diagnostic, counts, and holds the level. Before this, every arm counted and pushed by hand, and an arm that skipped one or the other was a repeat defect. A line has one of four outcomes:
+Every load-time code has one outcome, and the parser derives the lost count and the held indent level from that outcome alone. Each diagnosing arm names its code and its outcome and does nothing else; one function records the diagnostic, counts, and holds the level. Before this, every arm counted and pushed by hand, and an arm that skipped one or the other was a repeat defect. A line has one of five outcomes:
 
 - **Bound**. The line binds as written. The diagnostic describes something about it, and nothing is counted or held.
 
 - **Retained**. Content-malformed at any position, so kept verbatim as trivia and written back in place, where it re-diagnoses identically and can never read as a binding. Counts nothing. Holds its indent level, so what is written deeper is `E018`.
 
 - **Dropped**. Read but not applicable where it sits; re-emitted it could bind somewhere else, so it is gone. Counts one lost. Holds its indent level the same way.
+
+- **Kept as written**. Refused for where it sits, with an indent that holds a space. No level canonical output opens is spelled with one, so written back exactly as it was, indent included, a reload refuses it the same way. Counts nothing. Holds its indent level the way a dropped line does.
 
 - **Value dropped**. The line binds, but a value it carried had nowhere to go. Counts one lost; the level is the bound node's.
 
@@ -478,13 +480,13 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 | `E009` | error         | dropped
 | `E010` | error         | dropped
 | `E011` | error         | dropped
-| `E012` | error         | dropped
+| `E012` | error         | kept as written when the indent holds a space and the line opens no raw block; dropped otherwise
 | `E013` | error         | retained
 | `E014` | error         | retained; dropped when the line begins with a BOM, which the file-start strip would rewrite into something that can bind
 | `E015` | error         | bound
 | `E016` | error         | dropped
 | `E017` | error         | bound
-| `E018` | error         | dropped
+| `E018` | error         | kept as written under a kept `E012` line when it opens no raw block; dropped otherwise
 | `E019` | error         | retained
 | `E020` | error         | the parse stopped: every later non-blank line is dropped, and no level is held
 | `E021` | error         | dropped
@@ -502,6 +504,18 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 - An indent that matched no open level (`E012`) already holds an unopened level from the resolve, which refuses a sibling at the same indent the same way. The funnel leaves that one in place rather than stacking a dead level on it.
 
 - The unopened level sits on top of the levels open before it and closes none of them. Popping every level its indent did not extend was rejected: one stray space-indented line in a tab-indented block then dropped every later sibling in that block, which 2.0.0 read fine. It holds until a line comes that is neither under it nor at its column, so the stack carries one at most.
+
+- Among dropping a misplaced line (which stopped every later save of the file), writing it back as a comment, and writing it back as it was, it was decided that it goes back as it was, and as a comment only where it would bind as written. A comment would hide an error the line still has, and one stray space in a hand-edited config should not stop a program saving its window size (the SilkTerm report, 2026-09-24). A tab-only indent is always one a level can be spelled with, so that line is still dropped.
+
+- A kept misplaced line never hangs on a block, and a line refused for where it sits never hangs the comments before it. Its indent is not one canonical output spells levels with, so the block it matches in the source is not the one it matches on a reload, and comments it measured differently moved on the next load. It waits for the next binding line, and whatever follows it waits with it.
+
+- The emitter asks the reload before it writes one. It runs the parser's own resolve on a model of the level stack the reload will have at that line: the levels up to the last binding line, and what the lines refused since then pushed. The line goes out as written only where the parser would keep it again. A merge or an edit can move a kept line to where it would bind, and there it is written as a comment. The document settles to that comment after every load and edit, so the next step lands the same whether or not the file was saved in between.
+
+- `migrate` refuses a rewrite that leaves a misplaced line, even kept. 2.x placed some such lines by a looser rule and read them, so the migration would lose a binding at exit 0.
+
+- A malformed or misplaced line kept among a stacked list's elements stays where it sat, and keeps the list in the stacked spelling. It used to ride the field line like a comment, so a fix typed into it landed outside the list (the SilkTerm report). Comments among the elements still ride the field line. A setter that replaces the list's value moves the kept lines above it, and so does a list after an empty binding of its name, whose bare header would merge into that binding on a reload.
+
+- A comment at a list element's column after the last element belongs inside the list's block. The element's column entry carries the list as its node, which read as the list's own level, so the comment went out a level up. Nothing showed while lists were always written inline; a stacked one moved the comment on its first reload.
 
 ### Lexical edges
 

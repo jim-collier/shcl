@@ -491,6 +491,10 @@ struct Trivia {
 	// could take them - a header whose children are all commented still owns
 	// those lines. Emitted after the subtree one level deeper than this node.
 	inside: Vec<Lead>,
+	// Kept lines that sat among this node's stacked list elements, each with
+	// the number of elements before it. They keep the list stacked on output,
+	// so a line fixed by hand is still inside the list.
+	among: Vec<(usize, Lead)>,
 }
 
 impl NodeData {
@@ -505,6 +509,9 @@ impl NodeData {
 	}
 	fn inside(&self) -> &[Lead] {
 		self.trivia.as_deref().map_or(&[], |t| &t.inside)
+	}
+	fn among(&self) -> &[(usize, Lead)] {
+		self.trivia.as_deref().map_or(&[], |t| &t.among)
 	}
 	fn triv_mut(&mut self) -> &mut Trivia {
 		self.trivia.get_or_insert_with(Default::default)
@@ -579,6 +586,8 @@ pub struct Document {
 	// already there.
 	probe: bool,
 	probe_doc: Option<Box<Document>>,
+	// Holds a misplaced line kept as written, so edits have to settle it.
+	kept: bool,
 }
 
 /// The first child of each (parent, name), chained on to the next same-named
@@ -679,6 +688,8 @@ fn fold_node_into(arena: &mut [NodeData], survivor: usize, loser: usize) {
 		}
 		st.after.append(&mut lt.after);
 		st.inside.append(&mut lt.inside);
+		st.among.append(&mut lt.among);
+		st.among.sort_by_key(|a| a.0);
 	}
 }
 
@@ -727,7 +738,11 @@ fn settle_block(arena: &mut [NodeData], n: usize, from: usize) {
 /// reload files that line as a leading comment, so file it there now.
 fn settle_fence_trailing(arena: &mut [NodeData], n: usize) {
 	let fenced = |nd: &NodeData| matches!(nd.value, Value::Raw(_)) && !nd.trailing().is_empty();
-	if !arena[n].children.iter().any(|&c| fenced(&arena[c])) {
+	if !arena[n]
+		.children
+		.iter()
+		.any(|&c| fenced(&arena[c]) || stacks(&arena[c]))
+	{
 		return;
 	}
 	let mut empties: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -735,9 +750,31 @@ fn settle_fence_trailing(arena: &mut [NodeData], n: usize) {
 		let nd = &mut arena[arena[n].children[i]];
 		if fenced(nd) && empties.contains(&nd.name) {
 			trailing_to_leading(nd);
+		} else if stacks(nd) && empties.contains(&nd.name) {
+			unstack(nd);
 		} else if nd.value.is_empty() {
 			empties.insert(nd.name.clone());
 		}
+	}
+}
+
+/// Written stacked: a list holding a kept line among its elements or after
+/// its last one.
+fn stacks(nd: &NodeData) -> bool {
+	matches!(nd.value, Value::Cell(_))
+		&& (!nd.among().is_empty()
+			|| (nd.star_list && nd.inside().iter().any(|c| !c.text.starts_with('#'))))
+}
+
+/// A list after an empty binding of its name cannot be written stacked: its
+/// bare header would merge into that binding on a reload. It goes inline,
+/// and the lines among its elements go above it, where a reload files what
+/// sits there.
+fn unstack(nd: &mut NodeData) {
+	nd.star_list = false;
+	if let Some(t) = nd.trivia.as_deref_mut() {
+		let moved: Vec<Lead> = t.among.drain(..).map(|a| a.1).collect();
+		t.leading.extend(moved);
 	}
 }
 
@@ -1547,6 +1584,21 @@ impl Slot {
 	}
 }
 
+/// The fence a field line's value opens, if it opens one. A line that did
+/// not tokenize has no value to read.
+fn line_fence(tok: &Tokens, rest: &str) -> Option<(u8, usize, String)> {
+	if tok.fault.is_some() || tok.sep.is_none() {
+		return None;
+	}
+	// A capped scan zeroed the value, and a fence is told by its leading run
+	// alone.
+	fence_open(if tok.capped {
+		trim_wsp(&rest[tok.value.0..])
+	} else {
+		&rest[tok.value.0..tok.value.1]
+	})
+}
+
 /// Opening fence: a run of >=3 backticks or tildes, then an optional info-string.
 fn fence_open(rest: &str) -> Option<(u8, usize, String)> {
 	let first = rest.as_bytes().first().copied()?;
@@ -1618,9 +1670,18 @@ struct Migrating {
 	lost: usize,
 }
 
-/// The major a `##    Format   N` line names, if the document carries one.
-/// Digits that do not fit read as "newer than this", since whatever wrote them
-/// was not 2.x. Only `migrate` reads this line.
+/// The format major a document's `##    Format   N` line names, read the way
+/// `migrate` reads it. None when no line names one, which is every 2.x file
+/// and a current one written without the info block. `migrate` hands a file
+/// back untouched exactly when this is `FORMAT_MAJOR` or more, so a program
+/// can ask before it rewrites anything.
+#[must_use]
+pub fn format_version(text: &str) -> Option<u32> {
+	format_line_version(text.strip_prefix('\u{feff}').unwrap_or(text))
+}
+
+/// format_version() on text with the BOM already off. Digits that do not fit
+/// read as "newer than this", since whatever wrote them was not 2.x.
 ///
 /// Raw bodies are skipped exactly where the rewrite skips them, by walking the
 /// lines through the same `migrate_line`. A Format line pasted into a block is
@@ -1628,7 +1689,7 @@ struct Migrating {
 /// file, or leave an old one alone. A file naming this format on any line has
 /// nothing to migrate, so the highest line decides: the stamp `migrate` adds
 /// comes after an older one, and the next run has to see it.
-fn format_version(text: &str) -> Option<u32> {
+fn format_line_version(text: &str) -> Option<u32> {
 	let mut tok = Tokens::default();
 	let mut fence: Option<(u8, usize)> = None;
 	// Only the blocks a line opens are wanted here, not what it counts.
@@ -1687,11 +1748,22 @@ fn format_version(text: &str) -> Option<u32> {
 /// to refuse over. A rewritten file is stamped with the version line, so the
 /// second run has an answer the first one did not.
 pub fn migrate(text: &str, from_v2: bool) -> Migration {
+	migrate_text(text, from_v2, true)
+}
+
+/// migrate() without the version line or the migrated note, for a program
+/// that writes `GEN_BANNER` itself, which carries the version line. The
+/// next run can tell the result is current only once that is written.
+pub fn migrate_unstamped(text: &str, from_v2: bool) -> Migration {
+	migrate_text(text, from_v2, false)
+}
+
+fn migrate_text(text: &str, from_v2: bool, stamp: bool) -> Migration {
 	let (bom, body_text) = match text.strip_prefix('\u{feff}') {
 		Some(t) => ("\u{feff}", t),
 		None => ("", text),
 	};
-	let version = format_version(body_text);
+	let version = format_line_version(body_text);
 	if version.is_some_and(|n| n >= FORMAT_MAJOR) {
 		return Migration {
 			text: text.to_string(),
@@ -1737,7 +1809,7 @@ pub fn migrate(text: &str, from_v2: bool) -> Migration {
 	// migration that did not finish, and the next run would then skip it. A
 	// document that never closes its raw block has nowhere to put the line
 	// either: appended, it would be another line of the block's content.
-	if st.ambiguous == 0 && fence.is_none() {
+	if stamp && st.ambiguous == 0 && fence.is_none() {
 		if !out.is_empty() && !out.ends_with('\n') {
 			out.push('\n');
 		}
@@ -2166,6 +2238,10 @@ struct Parser<'a> {
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered: HashMap<usize, usize>,
 	lost: usize, // dropped lines/values canonical output cannot re-emit
+	// Indent of the last E012 line kept as written, while the lines after it
+	// sit under it; those are E018 and are kept as written too.
+	kept_hold: Option<&'a str>,
+	kept_any: bool,
 	// parse_limited's caps, 0 = uncapped: nodes counted against the arena
 	// (root excluded), elements against a single value's cell, diagnostics
 	// against the list. Past the diagnostic cap nothing is listed, only
@@ -2174,6 +2250,58 @@ struct Parser<'a> {
 	max_elements: usize,
 	max_diags: usize,
 	unlisted: (usize, usize),
+}
+
+/// resolve_parent() on a level stack, without moving anything: the parent it
+/// hands back, and how it cuts the stack to get there. The emitter runs it on
+/// its model of the stack a reload will have.
+fn locate_in<S: AsRef<str>>(stack: &[(S, usize)], indent: &str) -> (Option<usize>, Cut) {
+	let mut hold = None;
+	for i in (0..stack.len()).rev() {
+		let (ind, node) = (stack[i].0.as_ref(), stack[i].1);
+		if ind == indent {
+			if node == UNOPENED {
+				// Back at a skipped line's column: refused the same way.
+				return (None, Cut::To(i + 1));
+			}
+			// Sibling of stack[i]: its parent is the entry below it.
+			let parent = if i == 0 { ROOT } else { stack[i - 1].1 };
+			// Keep the sentinel; a top-level line resolves to ROOT.
+			return (
+				Some(if parent == UNOPENED { DEAD } else { parent }),
+				Cut::To(i.max(1)),
+			);
+		}
+		if indent.len() > ind.len() && indent.starts_with(ind) {
+			// A skipped line's unopened level sits on top without opening
+			// anything, so it does not count as a level in between.
+			if stack.get(i + 1).is_some_and(|e| e.1 != UNOPENED) {
+				break;
+			}
+			return (
+				Some(if node == UNOPENED { DEAD } else { node }),
+				Cut::To(i + 1),
+			);
+		}
+		if node == UNOPENED {
+			hold = Some(i);
+		}
+	}
+	// Skipped, but it holds its own column: whatever is written deeper is
+	// skipped with it, and a line back at it is refused the same way
+	// instead of binding one level up. It closes nothing, so a later line
+	// that matches a level open before it still binds there, as in 2.0.0.
+	// The hold ends at the first line neither under it nor at it, this one
+	// included, which keeps one on the stack at most.
+	(None, Cut::Hold(hold))
+}
+
+/// How resolve_parent() cuts the stack: back to a length, or past a skipped
+/// line's column to push this one's.
+#[derive(Clone, Copy)]
+enum Cut {
+	To(usize),
+	Hold(Option<usize>),
 }
 
 /// What became of a line the parser did not bind whole. Only the funnel
@@ -2219,6 +2347,8 @@ impl<'a> Parser<'a> {
 			late_dups: Vec::new(),
 			reentered: HashMap::new(),
 			lost: 0,
+			kept_hold: None,
+			kept_any: false,
 			max_nodes: 0,
 			max_elements: 0,
 			max_diags: 0,
@@ -2277,11 +2407,20 @@ impl<'a> Parser<'a> {
 			Outcome::Stopped(rest) => rest.iter().filter(|l| !trim_wsp(l).is_empty()).count(),
 		};
 		if let Outcome::Retained { text, blank_before } = outcome {
+			// A line kept as written never hangs on a block: its indent is not
+			// one the output's levels are spelled with, so the block it would
+			// match here is not the one it matches on a reload. It waits for
+			// the next binding line, as do the pending lines after it.
+			let ceiling = if text.starts_with([' ', '\t']) {
+				0
+			} else {
+				indent.len()
+			};
 			self.pending.push(Pend {
 				text,
 				indent,
 				blank_before,
-				ceiling: indent.len(),
+				ceiling,
 			});
 		}
 		// A refused line owns its indent, so what is written deeper is skipped
@@ -2541,7 +2680,12 @@ impl<'a> Parser<'a> {
 							&& ind.len() >= new_indent.len()
 							&& p.indent.starts_with(*ind)
 					})
-					.map(|(si, (ind, n))| (si, *n, ind.len() == p.indent.len()));
+					// A list element's column is an entry with the list's node on
+					// the list's own entry. It is inside the list, not its level.
+					.map(|(si, (ind, n))| {
+						let column = si > 0 && self.stack[si - 1].1 == *n;
+						(si, *n, ind.len() == p.indent.len() && !column)
+					});
 				// A root node's trailing comment emits at column zero, which
 				// is exactly how the document's own trailing comment is
 				// spelled, so keeping the two apart here made a merge depend on
@@ -2594,46 +2738,65 @@ impl<'a> Parser<'a> {
 	/// top. Equal to a level is its sibling. Deeper than a level is its child,
 	/// unless a level opened under that one is still open, in which case the
 	/// line falls between the two. Anything else is a recoverable error.
-	fn resolve_parent(&mut self, indent: &'a str) -> Option<usize> {
-		let mut hold = None;
-		for i in (0..self.stack.len()).rev() {
-			let (ind, node) = (&self.stack[i].0, self.stack[i].1);
-			if *ind == indent {
-				if node == UNOPENED {
-					// Back at a skipped line's column: refused the same way.
-					self.stack.truncate(i + 1);
-					return None;
+	/// `found` is locate() on the same indent, which the line loop has
+	/// already asked.
+	fn resolve_parent(&mut self, indent: &'a str, found: (Option<usize>, Cut)) -> Option<usize> {
+		let (parent, cut) = found;
+		match cut {
+			Cut::To(n) => self.stack.truncate(n),
+			Cut::Hold(h) => {
+				if let Some(h) = h {
+					self.stack.truncate(h);
 				}
-				// Sibling of stack[i]: its parent is the entry below it.
-				let parent = if i == 0 { ROOT } else { self.stack[i - 1].1 };
-				// Keep the sentinel; a top-level line resolves to ROOT.
-				self.stack.truncate(i.max(1));
-				return Some(if parent == UNOPENED { DEAD } else { parent });
-			}
-			if indent.len() > ind.len() && indent.starts_with(*ind) {
-				// A skipped line's unopened level sits on top without opening
-				// anything, so it does not count as a level in between.
-				if self.stack.get(i + 1).is_some_and(|e| e.1 != UNOPENED) {
-					break;
-				}
-				self.stack.truncate(i + 1);
-				return Some(if node == UNOPENED { DEAD } else { node });
-			}
-			if node == UNOPENED {
-				hold = Some(i);
+				self.stack.push((indent, UNOPENED));
 			}
 		}
-		// Skipped, but it holds its own column: whatever is written deeper is
-		// skipped with it, and a line back at it is refused the same way
-		// instead of binding one level up. It closes nothing, so a later line
-		// that matches a level open before it still binds there, as in 2.0.0.
-		// The hold ends at the first line neither under it nor at it, this one
-		// included, which keeps one on the stack at most.
-		if let Some(h) = hold {
-			self.stack.truncate(h);
-		}
-		self.stack.push((indent, UNOPENED));
-		None
+		parent
+	}
+
+	/// resolve_parent() without moving anything.
+	fn locate(&self, indent: &str) -> (Option<usize>, Cut) {
+		locate_in(&self.stack, indent)
+	}
+
+	/// A line refused for where it sits rather than for what it says: `E012`,
+	/// or `E018` under one. Written back exactly as it was, it sits the same
+	/// way on a reload, as long as its indent holds a space, since no level
+	/// the emitter opens is spelled with one. A tab-only indent would bind
+	/// there, and a line opening a raw block would take its body along, so
+	/// those are dropped. An `E018` line is kept only under a kept `E012` one.
+	fn misplaced(
+		&mut self,
+		line: usize,
+		code: &'static str,
+		indent: &'a str,
+		rest: &str,
+		had_blank: bool,
+		raw: bool,
+	) {
+		let keep = !raw
+			&& if code == "E012" {
+				indent.contains(' ')
+			} else {
+				self.kept_hold
+					.is_some_and(|h| indent.len() > h.len() && indent.starts_with(h))
+			};
+		self.kept_any |= keep;
+		let msg = if code == "E012" {
+			self.kept_hold = keep.then_some(indent);
+			"indentation matches no open level"
+		} else {
+			"parent line was skipped; line skipped"
+		};
+		let outcome = if keep {
+			Outcome::Retained {
+				text: format!("{}{}", indent, trim_wsp_end(rest)),
+				blank_before: had_blank,
+			}
+		} else {
+			Outcome::Dropped
+		};
+		self.refuse(line, code, msg, outcome, indent);
 	}
 
 	/// Diagnose a line written under a skipped line, and skip it too. Its own
@@ -2662,17 +2825,7 @@ impl<'a> Parser<'a> {
 		tok: &Tokens,
 		rest: &str,
 	) -> usize {
-		if tok.fault.is_some() || tok.sep.is_none() {
-			return i + 1;
-		}
-		// A capped scan zeroed the value, and a fence is told by its leading
-		// run alone.
-		let value = if tok.capped {
-			trim_wsp(&rest[tok.value.0..])
-		} else {
-			&rest[tok.value.0..tok.value.1]
-		};
-		match fence_open(value) {
+		match line_fence(tok, rest) {
 			Some(fence) => self.consume_raw(lines, i + 1, i + 1, indent, fence).1,
 			None => i + 1,
 		}
@@ -2963,7 +3116,7 @@ impl<'a> Parser<'a> {
 		text: &str,
 		line: usize,
 		indent: &'a str,
-	) {
+	) -> bool {
 		if parent == ROOT {
 			self.refuse(
 				line,
@@ -2972,7 +3125,7 @@ impl<'a> Parser<'a> {
 				Outcome::Dropped,
 				indent,
 			);
-			return;
+			return false;
 		}
 		// Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if !self.arena[parent].children.is_empty() {
@@ -2983,7 +3136,7 @@ impl<'a> Parser<'a> {
 				Outcome::Dropped,
 				indent,
 			);
-			return;
+			return false;
 		}
 		// One scalar per line; a bare comma is an error, not a second element.
 		if tok.elements.len() > 1 {
@@ -2994,12 +3147,12 @@ impl<'a> Parser<'a> {
 				Outcome::Dropped,
 				indent,
 			);
-			return;
+			return false;
 		}
 		let piece = tok.elements[0];
 		let Some(el) = element_of(&piece, text) else {
 			self.refuse(line, "E009", "empty list element", Outcome::Dropped, indent);
-			return;
+			return false;
 		};
 		if piece.quote == Quote::Open {
 			self.err(line, "E017", "unterminated quote in value");
@@ -3023,7 +3176,7 @@ impl<'a> Parser<'a> {
 				Outcome::Dropped,
 				indent,
 			);
-			return;
+			return false;
 		}
 		if self.arena[parent].value.is_empty() {
 			let old_key = merge_hash(&self.arena[parent].name, &self.arena[parent].value);
@@ -3057,7 +3210,7 @@ impl<'a> Parser<'a> {
 				Outcome::Dropped,
 				indent,
 			);
-			return;
+			return false;
 		}
 		if binding_like {
 			self.diag(Diagnostic {
@@ -3074,6 +3227,36 @@ impl<'a> Parser<'a> {
 		// had been opened there and every later sibling was E012 (20260918b
 		// item 28).
 		self.stack.push((indent, parent));
+		true
+	}
+
+	/// Kept lines waiting for the list element that just joined sat among
+	/// the list's elements, so they stay there; comments still ride the field.
+	fn keep_among(&mut self, parent: usize) {
+		if !self.pending.iter().any(|p| !p.text.starts_with('#')) {
+			return;
+		}
+		let before = match &self.arena[parent].value {
+			Value::Cell(els) => els.len() - 1,
+			_ => return,
+		};
+		let mut rest = Vec::with_capacity(self.pending.len());
+		for p in self.pending.drain(..) {
+			if p.text.starts_with('#') {
+				rest.push(p);
+			} else {
+				self.arena[parent].triv_mut().among.push((
+					before,
+					Lead {
+						text: p.text,
+						blank_before: p.blank_before,
+						depth: 0,
+					},
+				));
+			}
+		}
+		self.pending = rest;
+		self.pend_marks.clear();
 	}
 
 	/// Legal input that looks like a common mistake: a field repeating as a bare
@@ -3205,12 +3388,26 @@ impl<'a> Parser<'a> {
 				i += 1;
 				continue;
 			}
+			// A kept misplaced line holds only the lines written under it.
+			if self
+				.kept_hold
+				.is_some_and(|h| !(indent.len() > h.len() && indent.starts_with(h)))
+			{
+				self.kept_hold = None;
+			}
 			// Any other line consumes the pending blank; only a field line that
 			// binds turns it into grouping.
 			let had_blank = std::mem::take(&mut self.saw_blank);
 			// A binding line claims the pending comments - but deeper-written
-			// ones hang on their own block first.
-			self.hang_deeper_pending(indent);
+			// ones hang on their own block first. A line refused for where it
+			// sits closes nothing, so it leaves them for the next line: kept,
+			// its indent would measure the levels differently on a reload,
+			// and dropped, a reload never sees it.
+			let found = self.locate(indent);
+			let placed = !matches!(found.0, None | Some(DEAD));
+			if placed {
+				self.hang_deeper_pending(indent);
+			}
 			// Child-indent fence: a value line for its parent field. The fence
 			// and its info string are the value; a comment may follow them.
 			if rest.starts_with(['`', '~'])
@@ -3225,7 +3422,7 @@ impl<'a> Parser<'a> {
 					})
 				} {
 				let comment = tok.comment.map(|c| &rest[c..]);
-				let parent = self.resolve_parent(indent);
+				let parent = self.resolve_parent(indent, found);
 				let (value, next) = self.consume_raw(&lines, i + 1, lineno, indent, fence);
 				let Some(parent) = parent else {
 					// The body goes with its fence: parsed live, it would read as
@@ -3273,19 +3470,13 @@ impl<'a> Parser<'a> {
 							.get(ilen + lead + 1)
 							.is_some_and(|&b| is_wsp_byte(b)));
 				if spaced {
-					let Some(parent) = self.resolve_parent(indent) else {
-						self.refuse(
-							lineno,
-							"E012",
-							"indentation matches no open level",
-							Outcome::Dropped,
-							indent,
-						);
+					let Some(parent) = self.resolve_parent(indent, found) else {
+						self.misplaced(lineno, "E012", indent, rest, had_blank, false);
 						i += 1;
 						continue;
 					};
 					if parent == DEAD {
-						self.skip_under_dead(lineno, indent);
+						self.misplaced(lineno, "E018", indent, rest, had_blank, false);
 						i += 1;
 						continue;
 					}
@@ -3295,32 +3486,31 @@ impl<'a> Parser<'a> {
 					// At the root there is no field (E007), so the comment rides
 					// the document like any other pending one.
 					if parent != ROOT {
+						if self.add_star_element(parent, &tok, rest, lineno, indent) {
+							self.keep_among(parent);
+						}
 						self.attach_trivia(parent, indent, comment);
-					} else if let Some(c) = comment {
-						self.pending.push(Pend {
-							text: c.to_string(),
-							indent,
-							blank_before: had_blank,
-							ceiling: indent.len(),
-						});
+					} else {
+						if let Some(c) = comment {
+							self.pending.push(Pend {
+								text: c.to_string(),
+								indent,
+								blank_before: had_blank,
+								ceiling: indent.len(),
+							});
+						}
+						self.add_star_element(parent, &tok, rest, lineno, indent);
 					}
-					self.add_star_element(parent, &tok, rest, lineno, indent);
 					i += 1;
 					continue;
 				}
-				let Some(parent) = self.resolve_parent(indent) else {
-					self.refuse(
-						lineno,
-						"E012",
-						"indentation matches no open level",
-						Outcome::Dropped,
-						indent,
-					);
+				let Some(parent) = self.resolve_parent(indent, found) else {
+					self.misplaced(lineno, "E012", indent, rest, had_blank, false);
 					i += 1;
 					continue;
 				};
 				if parent == DEAD {
-					self.skip_under_dead(lineno, indent);
+					self.misplaced(lineno, "E018", indent, rest, had_blank, false);
 					i += 1;
 					continue;
 				}
@@ -3343,19 +3533,15 @@ impl<'a> Parser<'a> {
 			// Field line.
 			tokenize(rest, b':', false, Rules::Current, &mut tok);
 			let comment = tok.comment.map(|c| &rest[c..]);
-			let Some(parent) = self.resolve_parent(indent) else {
-				self.refuse(
-					lineno,
-					"E012",
-					"indentation matches no open level",
-					Outcome::Dropped,
-					indent,
-				);
+			let Some(parent) = self.resolve_parent(indent, found) else {
+				let raw = line_fence(&tok, rest).is_some();
+				self.misplaced(lineno, "E012", indent, rest, had_blank, raw);
 				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			};
 			if parent == DEAD {
-				self.skip_under_dead(lineno, indent);
+				let raw = line_fence(&tok, rest).is_some();
+				self.misplaced(lineno, "E018", indent, rest, had_blank, raw);
 				i = self.skip_field_line(&lines, i, indent, &tok, rest);
 				continue;
 			}
@@ -3538,7 +3724,7 @@ impl<'a> Parser<'a> {
 				),
 			});
 		}
-		Document {
+		let mut doc = Document {
 			arena: self.arena,
 			diags: self.diags,
 			strictness,
@@ -3547,7 +3733,10 @@ impl<'a> Parser<'a> {
 			index: std::sync::OnceLock::new(),
 			probe: false,
 			probe_doc: None,
-		}
+			kept: self.kept_any,
+		};
+		doc.settle_kept();
+		doc
 	}
 }
 
@@ -3731,24 +3920,84 @@ impl Document {
 	/// redundancy collapsed, comments re-emitted as attached trivia. Scalar
 	/// text is never rewritten.
 	pub fn to_canonical(&self) -> String {
-		let mut out = String::with_capacity(self.arena.len() * 24);
-		self.emit_children(&self.arena[ROOT].children, 0, &mut out);
+		let mut e = Emit::new(self.arena.len() * 24, false);
+		self.emit_all(&mut e);
+		e.out
+	}
+
+	fn emit_all(&self, e: &mut Emit) {
+		self.emit_children(&self.arena[ROOT].children, 0, e);
 		// Comments that never found a following line re-emit at the end.
-		for c in &self.orphans {
-			if c.blank_before && !out.is_empty() {
-				out.push('\n');
-			}
-			out.extend(std::iter::repeat_n('\t', c.depth));
-			out.push_str(&c.text);
-			out.push('\n');
+		push_leads(e, &self.orphans, 0, (ROOT, Site::Orphans, 0));
+	}
+
+	/// Make a misplaced line kept as written into the comment the emitter
+	/// writes it as, wherever it would now bind as written, so the document
+	/// is the one its saved text reloads as and the next edit lands the same
+	/// either way. One among a list's elements goes above the list, as a
+	/// reload files a comment there. Runs after a load and after each edit,
+	/// and only while the document holds such a line.
+	fn settle_kept(&mut self) {
+		// A line moved out of a list can leave it written inline, which
+		// changes what the lines after it sit under, so go again until
+		// nothing moves.
+		while self.kept && self.settle_kept_once() {}
+	}
+
+	fn settle_kept_once(&mut self) -> bool {
+		let mut e = Emit::new(0, true);
+		self.emit_all(&mut e);
+		self.kept = e.verbatim > 0;
+		let mut among: Vec<(usize, usize)> = Vec::new();
+		for &(node, site, i, depth) in &e.fell {
+			let list = match site {
+				Site::Orphans => &mut self.orphans,
+				Site::Among => {
+					among.push((node, i));
+					continue;
+				}
+				_ => {
+					let t = self.arena[node].triv_mut();
+					match site {
+						Site::Leading => &mut t.leading,
+						Site::Inside => &mut t.inside,
+						_ => &mut t.after,
+					}
+				}
+			};
+			let l = &mut list[i];
+			l.text = commented(&l.text);
+			l.depth = depth;
 		}
-		out
+		// Out of each list latest first, so a removal leaves the earlier
+		// indices alone, then onto the end of the leading lines in order.
+		let moved_any = !among.is_empty();
+		let mut moved: Vec<Lead> = Vec::new();
+		while let Some((node, i)) = among.pop() {
+			let t = self.arena[node].triv_mut();
+			moved.push(t.among.remove(i).1);
+			if among.last().is_some_and(|a| a.0 == node) {
+				continue;
+			}
+			let depth = t
+				.leading
+				.iter()
+				.rev()
+				.find(|c| c.text.starts_with('#'))
+				.map_or(0, |c| c.depth);
+			for mut l in moved.drain(..).rev() {
+				l.text = commented(&l.text);
+				l.depth = depth;
+				t.leading.push(l);
+			}
+		}
+		moved_any
 	}
 
 	/// Emit a sibling run. The parent walk already knows whether an earlier
 	/// same-name sibling is empty (the raw same-line-fence hazard), so one
 	/// seen-empties set here replaces a per-child rescan of the whole run.
-	fn emit_children(&self, kids: &[usize], depth: usize, out: &mut String) {
+	fn emit_children(&self, kids: &[usize], depth: usize, e: &mut Emit) {
 		let mut empties: std::collections::HashSet<&str> = std::collections::HashSet::new();
 		for &c in kids {
 			let n = &self.arena[c];
@@ -3756,11 +4005,11 @@ impl Document {
 			if n.value.is_empty() {
 				empties.insert(n.name.as_str());
 			}
-			self.emit_node(c, depth, wm, out);
+			self.emit_node(c, depth, wm, e);
 		}
 	}
 
-	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, out: &mut String) {
+	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, e: &mut Emit) {
 		let node = &self.arena[idx];
 		let pad: String = "\t".repeat(depth);
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
@@ -3768,15 +4017,8 @@ impl Document {
 		// trailing comment joins the leading lines instead; the flag comes from
 		// the parent's walk. Each blank rides its own comment (or the binding
 		// line), never as the first output line.
-		for c in node.leading() {
-			if c.blank_before && !out.is_empty() {
-				out.push('\n');
-			}
-			out.push_str(&pad);
-			out.extend(std::iter::repeat_n('\t', c.depth));
-			out.push_str(&c.text);
-			out.push('\n');
-		}
+		push_leads(e, node.leading(), depth, (idx, Site::Leading, 0));
+		let out = &mut e.out;
 		if node.blank_before && !out.is_empty() {
 			out.push('\n');
 		}
@@ -3788,18 +4030,55 @@ impl Document {
 		out.push_str(&pad);
 		out.push_str(&emit_name(&node.name));
 		out.push(':');
+		e.bound(depth);
 		match &node.value {
 			Value::Empty => {
-				push_trailing(out, node.trailing());
-				out.push('\n');
+				push_trailing(&mut e.out, node.trailing());
+				e.out.push('\n');
+			}
+			Value::Cell(els) if stacks(node) => {
+				// Stacked, with the kept lines where they sat.
+				push_trailing(&mut e.out, node.trailing());
+				e.out.push('\n');
+				let among = node.among();
+				let mut next = 0;
+				for (i, el) in els.iter().enumerate() {
+					let from = next;
+					while next < among.len() && among[next].0 <= i {
+						next += 1;
+					}
+					for (j, (_, l)) in among[from..next].iter().enumerate() {
+						push_leads(
+							e,
+							std::slice::from_ref(l),
+							depth + 1,
+							(idx, Site::Among, from + j),
+						);
+					}
+					let column = "\t".repeat(depth + 1);
+					e.out.push_str(&column);
+					e.out.push_str("* ");
+					e.out.push_str(&emit_element(el));
+					e.out.push('\n');
+					e.placed(&column);
+				}
+				for (j, (_, l)) in among[next..].iter().enumerate() {
+					push_leads(
+						e,
+						std::slice::from_ref(l),
+						depth + 1,
+						(idx, Site::Among, next + j),
+					);
+				}
 			}
 			Value::Cell(els) => {
-				out.push(' ');
-				emit_cell_into(out, els);
-				push_trailing(out, node.trailing());
-				out.push('\n');
+				e.out.push(' ');
+				emit_cell_into(&mut e.out, els);
+				push_trailing(&mut e.out, node.trailing());
+				e.out.push('\n');
 			}
 			Value::Raw(r) => {
+				let out = &mut e.out;
 				let (content, fence_char, fence_len) = (&r.content, &r.fence_char, &r.fence_len);
 				// Child-indent spelling is canonical: bare name line, fenced
 				// block one level deeper, verbatim content. Exception: if an
@@ -3833,27 +4112,177 @@ impl Document {
 				out.push('\n');
 			}
 		}
-		self.emit_children(&self.arena[idx].children, depth + 1, out);
+		self.emit_children(&self.arena[idx].children, depth + 1, e);
 		// Comments this block owns with no child to carry them, one deeper.
-		for c in self.arena[idx].inside() {
-			if c.blank_before && !out.is_empty() {
-				out.push('\n');
-			}
-			out.extend(std::iter::repeat_n('\t', depth + 1));
-			out.extend(std::iter::repeat_n('\t', c.depth));
-			out.push_str(&c.text);
-			out.push('\n');
-		}
+		push_leads(
+			e,
+			self.arena[idx].inside(),
+			depth + 1,
+			(idx, Site::Inside, 0),
+		);
 		// Comments that hung on this block after its last child.
-		for c in self.arena[idx].after() {
-			if c.blank_before && !out.is_empty() {
-				out.push('\n');
-			}
-			out.push_str(&pad);
-			out.extend(std::iter::repeat_n('\t', c.depth));
-			out.push_str(&c.text);
-			out.push('\n');
+		push_leads(e, self.arena[idx].after(), depth, (idx, Site::After, 0));
+	}
+}
+
+/// Canonical text on its way out, with a model of the level stack a reload
+/// of it will have at this point: the sentinel and one level per tab up to
+/// `open`, which the last binding line leaves, then what the lines refused
+/// since then pushed, and the indent of a kept misplaced line that the
+/// lines under it are kept with.
+struct Emit {
+	out: String,
+	open: isize,
+	tail: Vec<(String, usize)>,
+	hold: Option<String>,
+	// settle_kept() only: the lines written as comments, where they sit and
+	// at what depth, and how many went out as written.
+	record: bool,
+	fell: Vec<(usize, Site, usize, usize)>,
+	verbatim: usize,
+}
+
+impl Emit {
+	fn new(cap: usize, record: bool) -> Emit {
+		Emit {
+			out: String::with_capacity(cap),
+			open: -1,
+			tail: Vec::new(),
+			hold: None,
+			record,
+			fell: Vec::new(),
+			verbatim: 0,
 		}
+	}
+
+	/// A binding line at this depth: the stack is its levels and nothing else.
+	fn bound(&mut self, depth: usize) {
+		self.open = depth as isize;
+		self.tail.clear();
+		self.hold = None;
+	}
+
+	/// A line at this indent through the reload's resolve_parent(): the
+	/// parent it finds, and the model as it leaves it, not yet taken.
+	fn resolve(&self, indent: &str) -> (Option<usize>, isize, Vec<(String, usize)>) {
+		let levels = (self.open + 2) as usize;
+		let mut stack: Vec<(String, usize)> = Vec::with_capacity(levels + self.tail.len() + 1);
+		stack.push((String::new(), ROOT));
+		for d in 0..levels - 1 {
+			stack.push(("\t".repeat(d), ROOT));
+		}
+		stack.extend(self.tail.iter().cloned());
+		let (parent, cut) = locate_in(&stack, indent);
+		match cut {
+			Cut::To(n) => stack.truncate(n),
+			Cut::Hold(h) => {
+				if let Some(h) = h {
+					stack.truncate(h);
+				}
+				stack.push((indent.to_string(), UNOPENED));
+			}
+		}
+		if stack.len() <= levels {
+			return (parent, stack.len() as isize - 2, Vec::new());
+		}
+		(parent, self.open, stack.split_off(levels))
+	}
+
+	/// Take a resolve, then the refusal's push: a refused line holds its own
+	/// column unless it already sits there as a skipped line's.
+	fn refused(&mut self, indent: &str, open: isize, tail: Vec<(String, usize)>) {
+		self.open = open;
+		self.tail = tail;
+		if !matches!(self.tail.last(), Some((i, n)) if i == indent && *n == UNOPENED) {
+			self.tail.push((indent.to_string(), DEAD));
+		}
+	}
+
+	/// A line a reload binds, such as a list element: it resolves, then
+	/// holds its column with a live node.
+	fn placed(&mut self, indent: &str) {
+		let (_, open, tail) = self.resolve(indent);
+		self.open = open;
+		self.tail = tail;
+		self.tail.push((indent.to_string(), ROOT));
+		self.hold = None;
+	}
+}
+
+/// Which trivia list a line sits in.
+#[derive(Clone, Copy, PartialEq)]
+enum Site {
+	Leading,
+	Inside,
+	After,
+	Among,
+	Orphans,
+}
+
+/// A misplaced line's text as the comment it falls back to.
+fn commented(text: &str) -> String {
+	format!("# {}", &text[leading_ws(text).len()..])
+}
+
+/// Write a run of comments and kept lines, `base` levels deep. A misplaced
+/// line kept as written (its text carries its own indent, a comment's never
+/// does) goes back as it was only where a reload keeps it again, which the
+/// model of the reload's stack answers the way the parser will: refused for
+/// its indent, or under the kept line before it. A merge or an edit can
+/// leave it where it would bind, and there it is written as a comment,
+/// which reads the same. `at` names the list and the index of its first
+/// line, for settle_kept().
+fn push_leads(e: &mut Emit, leads: &[Lead], base: usize, at: (usize, Site, usize)) {
+	let mut last_comment = 0;
+	for (i, c) in leads.iter().enumerate() {
+		if c.blank_before && !e.out.is_empty() {
+			e.out.push('\n');
+		}
+		if c.text.starts_with([' ', '\t']) {
+			let indent = leading_ws(&c.text);
+			let (parent, open, tail) = e.resolve(indent);
+			let under = e
+				.hold
+				.as_deref()
+				.is_some_and(|h| indent.len() > h.len() && indent.starts_with(h));
+			let keep = match parent {
+				None => indent.contains(' '),
+				Some(DEAD) => under,
+				Some(_) => false,
+			};
+			if keep {
+				if parent.is_none() {
+					e.hold = Some(indent.to_string());
+				}
+				e.refused(indent, open, tail);
+				e.verbatim += 1;
+				e.out.push_str(&c.text);
+				e.out.push('\n');
+			} else {
+				// Level with the comment before it, so the run's nesting reads
+				// back the same.
+				if e.record {
+					e.fell.push((at.0, at.1, at.2 + i, last_comment));
+				}
+				e.out.extend(std::iter::repeat_n('\t', base + last_comment));
+				e.out.push_str(&commented(&c.text));
+				e.out.push('\n');
+			}
+			continue;
+		}
+		let pad = base + c.depth;
+		if c.text.starts_with('#') {
+			last_comment = c.depth;
+		} else {
+			// A kept malformed line resolves and holds its column on a reload.
+			let indent = "\t".repeat(pad);
+			let (_, open, tail) = e.resolve(&indent);
+			e.hold = None;
+			e.refused(&indent, open, tail);
+		}
+		e.out.extend(std::iter::repeat_n('\t', pad));
+		e.out.push_str(&c.text);
+		e.out.push('\n');
 	}
 }
 
@@ -5176,22 +5605,63 @@ impl Document {
 
 	/// Child field names under a path, in file order, duplicates included -
 	/// the "what keys are in this section?" question paths() (deduplicated,
-	/// path-shaped) cannot answer. "" enumerates the top level. Names come
-	/// back as stored; quote_segment() makes one splice-safe in a path.
+	/// path-shaped) cannot answer. "" enumerates the top level. A path with
+	/// several instances lists the children of each in turn, the way a dotted
+	/// path reaches all of them. Names come back as stored; quote_segment()
+	/// makes one splice-safe in a path.
 	pub fn children(&self, path: &str) -> Vec<String> {
-		let node = if path.trim().is_empty() {
-			ROOT
+		let nodes = if path.trim().is_empty() {
+			vec![ROOT]
 		} else {
 			match self.resolve(path) {
-				Ok(Resolved::One(n)) => n,
+				Ok(Resolved::One(n)) => vec![n],
+				Ok(Resolved::Many(v)) => v,
+				Ok(Resolved::Slots(s)) => s.into_iter().flatten().collect(),
 				_ => return Vec::new(),
 			}
 		};
-		self.arena[node]
-			.children
+		nodes
 			.iter()
+			.flat_map(|&n| &self.arena[n].children)
 			.map(|&c| self.arena[c].name.clone())
 			.collect()
+	}
+
+	/// paths() one instance at a time: every binding's path in file order,
+	/// with `[#i]` on each segment whose name repeats under its parent, so
+	/// each path reads exactly one node and a repeated block is walked
+	/// instance by instance. Segments are spelled as paths() spells them.
+	pub fn instance_paths(&self) -> Vec<String> {
+		let mut out = Vec::new();
+		let mut stack: Vec<(usize, String)> = vec![(ROOT, String::new())];
+		while let Some((node, prefix)) = stack.pop() {
+			if node != ROOT {
+				out.push(prefix.clone());
+			}
+			let kids = &self.arena[node].children;
+			let mut total: HashMap<&str, usize> = HashMap::new();
+			for &c in kids {
+				*total.entry(self.arena[c].name.as_str()).or_insert(0) += 1;
+			}
+			let mut at: HashMap<&str, usize> = HashMap::new();
+			let mut paths = Vec::with_capacity(kids.len());
+			for &c in kids {
+				let name = self.arena[c].name.as_str();
+				let mut path = if prefix.is_empty() {
+					emit_name(name).into_owned()
+				} else {
+					format!("{}.{}", prefix, emit_name(name))
+				};
+				if total[name] > 1 {
+					let i = at.entry(name).or_insert(0);
+					path.push_str(&format!("[#{}]", i));
+					*i += 1;
+				}
+				paths.push((c, path));
+			}
+			stack.extend(paths.into_iter().rev());
+		}
+		out
 	}
 
 	/// Instance values at a path, in file order. Wildcard slots that did not
@@ -5433,6 +5903,8 @@ impl Document {
 			Some(node) => {
 				self.arena[node].value = value;
 				self.arena[node].src = None; // written value has no source spelling
+				// No longer the list the lines among its elements sat in.
+				unstack(&mut self.arena[node]);
 				// An empty binding or a raw block can put a fence after an
 				// empty sibling of its name.
 				let fence_side = matches!(self.arena[node].value, Value::Empty | Value::Raw(_));
@@ -5442,6 +5914,7 @@ impl Document {
 					self.settle_fence_name(parent, &self.arena[node].name.clone());
 				}
 				settle_first_blank(&mut self.arena, &mut self.orphans);
+				self.settle_kept();
 				true
 			}
 			None => false,
@@ -5502,6 +5975,8 @@ impl Document {
 			let nd = &mut self.arena[c];
 			if seen_empty && matches!(nd.value, Value::Raw(_)) && !nd.trailing().is_empty() {
 				trailing_to_leading(nd);
+			} else if seen_empty && stacks(nd) {
+				unstack(nd);
 			} else if nd.value.is_empty() {
 				seen_empty = true;
 			}
@@ -5613,6 +6088,7 @@ impl Document {
 			self.arena[p].children = keep;
 		}
 		settle_first_blank(&mut self.arena, &mut self.orphans);
+		self.settle_kept();
 		targets.len()
 	}
 
@@ -5643,6 +6119,7 @@ impl Document {
 				}
 				nd.triv_mut().leading.push(lead);
 				settle_first_blank(&mut self.arena, &mut self.orphans);
+				self.settle_kept();
 				true
 			}
 			None => false,
@@ -5875,6 +6352,7 @@ impl Document {
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;
+		self.kept |= over.kept;
 		// Only a block the overlay visited can have a changed child list or
 		// comments; the rest was settled when it was built. Settling the whole
 		// tree made every merge cost the document (20260924 item 6). A block's
@@ -5911,6 +6389,7 @@ impl Document {
 			}
 		}
 		settle_first_blank(&mut self.arena, &mut self.orphans);
+		self.settle_kept();
 	}
 
 	// One grouping pass over each side, then a single children rebuild: the
@@ -5935,6 +6414,8 @@ impl Document {
 		}
 		bt.after.extend_from_slice(&st.after);
 		bt.inside.extend_from_slice(&st.inside);
+		bt.among.extend_from_slice(&st.among);
+		bt.among.sort_by_key(|a| a.0);
 	}
 
 	fn overlay(
@@ -6021,7 +6502,14 @@ impl Document {
 					// (20260918b item 58).
 					for &b in by_name.get(name).map_or(&[][..], |v| v.as_slice()) {
 						let nd = &self.arena[b];
-						for l in nd.leading().iter().chain(nd.inside()).chain(nd.after()) {
+						let among = nd.among().iter().map(|a| &a.1);
+						for l in nd
+							.leading()
+							.iter()
+							.chain(among)
+							.chain(nd.inside())
+							.chain(nd.after())
+						{
 							if !l.text.starts_with('#') {
 								kept.push(l.clone());
 							}
@@ -8152,7 +8640,7 @@ pub const GEN_BANNER: &str = "\
 ## \"Simple Hierarchical Config Language\"
 ##    Format   3
 ##    Home     https://github.com/yottacore/shcl
-##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md
+##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0-beta1/project/spec.md
 ##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 ##
 ";

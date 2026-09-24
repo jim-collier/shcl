@@ -8,6 +8,7 @@
 
 use shcl::{
 	Document, Piece, Quote, Rules, SegTok, Severity, Strictness, Tokens, migrate, tokenize,
+	tokenize_value,
 };
 
 /// Small deterministic PRNG (xorshift64*); no external crates, stable across runs.
@@ -294,6 +295,26 @@ fn mutated_inputs_never_panic_and_format_is_fixpoint() {
 		let _ = doc.read_int("a.b");
 		let _ = doc.read_string_array("x");
 		let _ = doc.count("r");
+		// One instance path per node, each reading that node alone.
+		let each = doc.instance_paths();
+		let nodes: usize = doc.paths().iter().map(|p| doc.count(p)).sum();
+		assert_eq!(
+			each.len(),
+			nodes,
+			"instance paths miss a node at iteration {}:\n{}",
+			i,
+			text
+		);
+		for p in &each {
+			assert_eq!(
+				doc.count(p),
+				1,
+				"instance path {:?} does not read one node at iteration {}:\n{}",
+				p,
+				i,
+				text
+			);
+		}
 		// The formatter must be a fixpoint on its own output.
 		let once = doc.to_canonical();
 		let twice = Document::parse(&once).to_canonical();
@@ -341,7 +362,8 @@ fn writes_on_structural_soup_stay_fixpoint() {
 		// paths - or for text it could not write back.
 		let before = doc.to_canonical();
 		let v = soup_text(&mut rng, 7);
-		let applied = match rng.below(8) {
+		let op = rng.below(8);
+		let applied = match op {
 			0 => doc.set_int(&path, 7),
 			1 => doc.set_string(&path, &v),
 			2 => doc.remove(&path) > 0,
@@ -365,8 +387,8 @@ fn writes_on_structural_soup_stay_fixpoint() {
 		let twice = Document::parse(&once).to_canonical();
 		assert_eq!(
 			twice, once,
-			"write on structural soup not a fixpoint at iteration {} (path {:?}):\n{}",
-			i, path, text
+			"write on structural soup not a fixpoint at iteration {} (op {}, path {:?}, value {:?}):\n{}",
+			i, op, path, v, text
 		);
 	}
 }
@@ -432,6 +454,67 @@ fn comments_behind_selectors_stay_comments() {
 /// was dropped. Nine review items were an arm that counted without saying so
 /// or said so without counting; both show here. The retained half is checked
 /// by content: a retained line's text comes back in the canonical output.
+/// The misplaced lines the outcome table keeps: an `E012` line whose indent
+/// holds a space and that opens no raw block, and an `E018` line under one,
+/// on the lines up to the first that is not under it. Walked the way the
+/// parser walks, raw bodies skipped.
+fn kept_misplaced(
+	lines: &[&str],
+	codes: &std::collections::HashMap<usize, &str>,
+) -> std::collections::HashSet<usize> {
+	let mut kept = std::collections::HashSet::new();
+	let mut hold: Option<&str> = None;
+	let mut fence: Option<(u8, usize)> = None;
+	let mut tok = Tokens::default();
+	for (n, line) in lines.iter().enumerate() {
+		if let Some((ch, len)) = fence {
+			let t = line.trim_matches([' ', '\t']);
+			if t.len() >= len && t.bytes().all(|b| b == ch) {
+				fence = None;
+			}
+			continue;
+		}
+		let ilen = line.len() - line.trim_start_matches([' ', '\t']).len();
+		let indent = &line[..ilen];
+		let rest = line[ilen..].trim_start_matches([' ', '\t', '\r']);
+		if rest.trim_end_matches([' ', '\t', '\r']).is_empty() || rest.starts_with('#') {
+			continue;
+		}
+		let under = |h: &str| indent.len() > h.len() && indent.starts_with(h);
+		if hold.is_some_and(|h| !under(h)) {
+			hold = None;
+		}
+		let value = if rest.starts_with(['`', '~']) {
+			tokenize_value(rest, 0, Rules::Current, &mut tok);
+			Some(&rest[tok.value.0..tok.value.1])
+		} else if rest.starts_with('*') {
+			None
+		} else {
+			tokenize(rest, b':', false, Rules::Current, &mut tok);
+			(tok.fault.is_none() && tok.sep.is_some()).then(|| &rest[tok.value.0..tok.value.1])
+		};
+		let opens = value.and_then(|v| {
+			let ch = *v.as_bytes().first()?;
+			let run = v.bytes().take_while(|&b| b == ch).count();
+			((ch == b'`' || ch == b'~') && run >= 3).then_some((ch, run))
+		});
+		match codes.get(&(n + 1)) {
+			Some(&"E012") => {
+				hold = (indent.contains(' ') && opens.is_none()).then_some(indent);
+				if hold.is_some() {
+					kept.insert(n + 1);
+				}
+			}
+			Some(&"E018") if opens.is_none() && hold.is_some_and(under) => {
+				kept.insert(n + 1);
+			}
+			_ => {}
+		}
+		fence = opens.or(fence);
+	}
+	kept
+}
+
 #[test]
 fn lost_count_follows_the_outcome_table() {
 	let iters = iter_count(1);
@@ -448,12 +531,33 @@ fn lost_count_follows_the_outcome_table() {
 			.lines()
 			.collect();
 		let canon = doc.to_canonical();
+		let codes: std::collections::HashMap<usize, &str> =
+			doc.diagnostics().iter().map(|d| (d.line, d.code)).collect();
+		let kept = kept_misplaced(&lines, &codes);
 		let mut want = 0usize;
 		for d in doc.diagnostics() {
 			let src = lines.get(d.line.wrapping_sub(1)).copied().unwrap_or("");
 			match d.code {
 				"E002" | "E003" | "E004" | "E006" | "E007" | "E008" | "E009" | "E010" | "E011"
-				| "E012" | "E016" | "E018" | "E021" => want += 1,
+				| "E016" | "E021" => want += 1,
+				"E012" | "E018" if !kept.contains(&d.line) => want += 1,
+				"E012" | "E018" => {
+					kept_seen += 1;
+					let ilen = src.len() - src.trim_start_matches([' ', '\t']).len();
+					let rest = src[ilen..].trim_matches([' ', '\t', '\r']);
+					let as_written = format!("{}{}", &src[..ilen], rest);
+					let as_comment = format!("# {}", rest);
+					assert!(
+						canon
+							.lines()
+							.any(|l| l == as_written || l.trim_start_matches('\t') == as_comment),
+						"kept line {} not written back at iteration {}: {:?}\n{}",
+						d.line,
+						i,
+						as_written,
+						text
+					);
+				}
 				"E014" if src.trim_start_matches([' ', '\t']).starts_with('\u{feff}') => want += 1,
 				"E013" | "E014" | "E019" => {
 					kept_seen += 1;
