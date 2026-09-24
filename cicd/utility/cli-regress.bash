@@ -180,8 +180,9 @@ printf 'field: "a[b]"\n\trequired: yes\n\tdefault: hello\n' > "${tmpDir}/seldefb
 ## something to say that the parse does not.
 printf 'field: zz\n\trequired: yes\n' > "${tmpDir}/missreq.shcl"
 ## Two instances whose values hold a real line break, and one plain value, so a
-## listing that spans lines can be told from one that does not.
-printf 'srv: "a\\nb"\nsrv: "c\\nd"\nplain: x.y\n' > "${tmpDir}/nlvalue.shcl"
+## listing that spans lines can be told from one that does not. Then an array
+## and a scalar each holding one, for get.
+printf 'srv: "a\\nb"\nsrv: "c\\nd"\nplain: x.y\narr: "a\\nb", c\none: "x\\ny"\n' > "${tmpDir}/nlvalue.shcl"
 printf 'field: "a[b]"\n\trequired: yes\n\tdefault: b\n' > "${tmpDir}/seldefok.shcl"
 ## An optional field's line is commented, so the self-check never read its
 ## default. The second schema must still pass, since each line works alone;
@@ -517,6 +518,12 @@ rows=(
 	## is escaped; a plain one with a dot in it comes out as written.
 	'instances-one-per-line|instances %NV% srv|-|0|"a\\nb"\n"c\\nd"\n|-'
 	'instances-plain-unescaped|instances %NV% plain|-|0|x.y\n|-'
+	## 20260923 item 4: the same for get's array and slot listings, one line per
+	## element. A plain scalar read is the whole output, so it stays as it is.
+	'get-array-one-per-line|get --array %NV% arr|-|0|"a\\nb"\nc\n|-'
+	'get-slots-one-per-line|get --array --slots %NV% arr|-|0|Good\t"a\\nb"\nGood\tc\n|-'
+	'get-slots-scalar-escaped|get --slots %NV% one|-|0|Good\t"x\\ny"\n|-'
+	'get-scalar-unescaped|get %NV% one|-|0|x\ny\n|-'
 	## 20260830b item 22: usage and I/O shared exit 1, so a script could not
 	## tell "the command line is wrong" from "that file is not there".
 	'io-missing-file|get %M% a|-|8|-|-'

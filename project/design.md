@@ -332,6 +332,14 @@ Both open points are settled:
 
 - Suppression mechanics mirror the H001 one exactly: single wording site, leaf-name match, dropped where diagnostics and a schema meet.
 
+**`* key: value` is a string with a hint (`H003`), not an error.** It is how YAML writes a list of objects, and it loaded silently as the string `key: value`, while the spec said an element was colon-less (20260923 item 18).
+
+- An error would refuse a value the bare-value rule takes everywhere else. `a: b: c` binds `b: c`, and `* note: text` means the same text.
+
+- A hint changes no load, no read and no exit code, so no existing file breaks. It fires only on a bare element whose text up to its first colon has no blank, with a blank or the end after the colon. `* 14:30`, `* http://x` and `* note to self: x` stay quiet.
+
+- The fix it points at is to quote the element, which `fmt` already does, since a colon is reserved in canonical output.
+
 ### Formatter
 
 Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting, redundancy collapsed, value text untouched (it cannot know types).
@@ -483,6 +491,7 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 | `E022` | error or hint | bound (about the list, not a line) |
 | `H001` | hint | bound |
 | `H002` | hint | bound |
+| `H003` | hint | bound |
 
 - A line that qualifies for more than one refusal takes the first that applies, in this order: where it sits (`E012`, `E018`), then what it is (`E014`, `E019`, and on an element line `E007` to `E011`), and only then the element cap (`E021`). A cap refuses only a line that would otherwise bind. Bracket text under a cap is `E019` and kept, and an element under a field that already has a value is `E011`. The bracket test reads the value's first piece, which a capped scan keeps, not the value span, which it empties. The fuzz property `a_cap_refuses_only_a_line_that_would_bind` holds the order.
 

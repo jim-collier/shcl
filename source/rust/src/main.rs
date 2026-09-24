@@ -323,6 +323,10 @@ H002|hint|a binding merged with a non-adjacent earlier one
   Same name and value, so the two combine. Legal, and only the parser can
   see it happened. The prose names the earlier line, and a schema can
   disavow it per section with 'reopen: true'.
+H003|hint|a stacked '*' element spelled like a field binding
+  '* name: value' is the YAML habit for a list of objects. Here it is one
+  string element, the text 'name: value'. Quote it to keep the string; a
+  list of objects is written as instances of a field.
 V001|error|unknown field
   No schema path covers it. Only the topmost unknown node is reported; its
   subtree is skipped. The prose carries the did-you-mean suggestion.
@@ -1585,10 +1589,15 @@ fn do_get(o: &Opts) -> u8 {
 	};
 	// Per-line slot status: falls back to the aggregate for scalar reads.
 	let slot_at = |i: usize| slots.get(i).copied().unwrap_or(status);
+	// An array or a slot listing is one line per element, so a value holding a
+	// line break takes its escaped spelling there. A plain scalar read prints
+	// the value as it is, since the whole output is that one value.
 	let emit = |lines: &[String]| {
 		for (i, l) in lines.iter().enumerate() {
 			if o.slots {
-				outln!("{:?}\t{}", slot_at(i), l);
+				outln!("{:?}\t{}", slot_at(i), one_line(l));
+			} else if o.array {
+				outln!("{}", one_line(l));
 			} else {
 				outln!("{}", l);
 			}
@@ -1652,7 +1661,7 @@ fn do_get(o: &Opts) -> u8 {
 			} else {
 				let dv = o.default.clone().unwrap_or_default();
 				if o.slots {
-					outln!("{:?}\t{}", status, dv);
+					outln!("{:?}\t{}", status, one_line(&dv));
 				} else {
 					outln!("{}", dv);
 				}

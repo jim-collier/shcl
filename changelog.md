@@ -192,6 +192,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- On Windows, text piped through the PowerShell wrapper keeps its non-ASCII characters. Windows PowerShell 5.1 sent it to the binary as us-ascii, so `'a: café' | shcl fmt -` printed `a: caf?` at exit 0, and output read back into a variable was decoded with the console's code page. The wrapper now sets both to UTF-8 for the call and puts them back after.
+
+- `shcl.ps1` run as a script passes pipeline input on. `'a: 5' | .\shcl.ps1 fmt -` printed nothing at exit 0; the function and the typed helpers already did this.
+
+- On Windows, a C read through a dangling symlink no longer creates and deletes a file where the link points. The read went through the save side's probe, and if something held the new file open the delete failed and left an empty file, which the next load read as an empty document.
+
+- A stacked element spelled like a field binding, `* name: value`, gets the hint `H003`. It is one string, `name: value`, which is right by the bare-value rule, but it is how YAML writes a list of objects and it loaded without a word. The spec said an element could not hold a colon at all; it now says what the parser does.
+
+- `get --array` and `get --slots` print one line per element. An element holding a line break came out across several lines, so a script splitting on newlines counted more elements than there were, and under `--slots` one of the lines had no status. It is now printed in its quoted escaped spelling, as `instances` already does.
+
 - On Windows, a save that fails can no longer leave nothing at the path. `ReplaceFile` was given no backup name, and on some failures it deletes the old file or leaves it under a name the caller is never told, after which the save removed its temp file too. The old file now goes to a backup name beside the target. If the new one cannot be moved in, the old one is put back, and if even that fails, both files are kept and the error names them. The C binding can only set `errno`, so its header gives the two names. A short hold on the new file, such as a virus scanner reading it, no longer fails the save either: the publish is tried five times, 50 ms apart.
 
 - A load no longer drops a comment or a malformed line written under a stacked list whose field ends up equal to an earlier instance. The field folds into that instance at the end of the load, and what sat under it was filed on the instance that went away, so a save wrote the file without them at exit 0.

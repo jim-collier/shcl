@@ -936,6 +936,23 @@ func isWspByte(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\r'
 }
 
+// looksLikeBinding: `* name: value` is the YAML habit for a list of objects.
+// Here it is one string element, so the parser says so (H003): the text up to
+// its first colon has no blank, and the colon ends the text or a blank follows
+// it.
+func looksLikeBinding(s string) bool {
+	i := strings.IndexByte(s, ':')
+	if i <= 0 {
+		return false
+	}
+	for j := 0; j < i; j++ {
+		if isWspByte(s[j]) {
+			return false
+		}
+	}
+	return i+1 == len(s) || isWspByte(s[i+1])
+}
+
 func isBareNameByte(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || isASCIIDigit(b) || b == '-' || b == '_'
 }
@@ -2993,6 +3010,7 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 	if piece.Quote == QuoteOpen {
 		p.err(line, "E017", "unterminated quote in value")
 	}
+	bindingLike := !el.quoted && looksLikeBinding(el.text)
 	// Element cap: each element line past it is refused on its own, the way
 	// any other bad element line is. Only a line that would join the list:
 	// under a field that already has a value it is E011, cap or not.
@@ -3027,6 +3045,14 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 	default:
 		p.refuse(line, "E011", "field already has a value; list element ignored", outDropped, indent)
 		return
+	}
+	if bindingLike {
+		p.diag(Diagnostic{
+			Line:     line,
+			Severity: SeverityHint,
+			Message:  "list element looks like a field binding; it is read as a string (quote it to say so)",
+			Code:     "H003",
+		})
 	}
 	// A kept element holds its column as a dropped one does, with the field as
 	// that level's node: a line written deeper binds where it always did, and a

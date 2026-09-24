@@ -161,10 +161,31 @@ function _shcl_resolve {
 ## Pipeline input only reaches a function through $input, and only forward it
 ## when there is some: an empty $input would hand the binary a closed stdin, so
 ## `set` would read zero ops instead of falling through to the console.
+## The binary reads and writes UTF-8. PowerShell encodes what it pipes in with
+## $OutputEncoding, us-ascii on Windows PowerShell 5.1, so 'a: café' | shcl fmt -
+## printed 'a: caf?' at exit 0. What it reads back is decoded with the console's
+## code page. Both are UTF-8 for the call only and put back after. 5.1 reads the
+## global $OutputEncoding, not a local copy. A host with no console can refuse
+## the second, and then it is left as it was.
 function shcl {
 	if (-not (_shcl_resolve)) { $global:LASTEXITCODE = 1; return }
-	if ($MyInvocation.ExpectingInput) { $input | & $script:_SHCL_BIN @args }
-	else { & $script:_SHCL_BIN @args }
+	$utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
+	$pipeWas = $global:OutputEncoding
+	$global:OutputEncoding = $utf8
+	$consoleWas = $null
+	try {
+		if ([Console]::OutputEncoding.CodePage -ne 65001) {
+			$consoleWas = [Console]::OutputEncoding
+			[Console]::OutputEncoding = $utf8
+		}
+	} catch { $consoleWas = $null }
+	try {
+		if ($MyInvocation.ExpectingInput) { $input | & $script:_SHCL_BIN @args }
+		else { & $script:_SHCL_BIN @args }
+	} finally {
+		$global:OutputEncoding = $pipeWas
+		if ($consoleWas) { try { [Console]::OutputEncoding = $consoleWas } catch { $null = $_ } }
+	}
 }
 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
@@ -198,9 +219,11 @@ function shcl_tokens { if ($MyInvocation.ExpectingInput) { $input | shcl tokens 
 #••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
 
 ## When executed (not dot-sourced), be the CLI: forward args, forward the code.
-## InvocationName is '.' only when dot-sourced.
+## InvocationName is '.' only when dot-sourced. Pipeline input is forwarded the
+## way the function and the helpers forward it; without that, 'a: 5' |
+## .\shcl.ps1 fmt - printed nothing at exit 0.
 if ($MyInvocation.InvocationName -ne '.') {
-	shcl @args
+	if ($MyInvocation.ExpectingInput) { $input | shcl @args } else { shcl @args }
 	## Spelled the long way rather than with ??, so this runs on the Windows
 	## PowerShell 5.1 that ships with the OS as well as on 7.
 	$rc = $LASTEXITCODE

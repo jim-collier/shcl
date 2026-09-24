@@ -1023,6 +1023,16 @@ _BARE_NAME_RUN = re.compile(rb"[A-Za-z0-9_-]*")
 _VALUE_SLOW = re.compile(rb"[\"'#]")
 
 
+def _looks_like_binding(s):
+	"""`* name: value` is the YAML habit for a list of objects. Here it is one
+	string element, so the parser says so (H003): the text up to its first colon
+	has no blank, and the colon ends the text or a blank follows it."""
+	i = s.find(":")
+	if i <= 0 or any(c in _WSP for c in s[:i]):
+		return False
+	return i + 1 == len(s) or s[i + 1] in _WSP
+
+
 def _is_wsp_byte(b):
 	"""A blank: space, tab, or a carriage return, which is trimmed wherever a
 	blank is and content in the middle of a piece."""
@@ -2489,6 +2499,7 @@ class _Parser:
 			return
 		if piece.quote is Quote.OPEN:
 			self._err(line, "E017", "unterminated quote in value")
+		binding_like = not el.quoted and _looks_like_binding(el.text)
 		# Element cap: each element line past it is refused on its own, the way
 		# any other bad element line is. Only a line that would join the list:
 		# under a field that already has a value it is E011, cap or not.
@@ -2524,6 +2535,8 @@ class _Parser:
 		else:
 			self._refuse(line, "E011", "field already has a value; list element ignored", OUT_DROPPED, indent)
 			return
+		if binding_like:
+			self._diag(Diagnostic(line, Severity.Hint, "list element looks like a field binding; it is read as a string (quote it to say so)", "H003"))
 		# A kept element holds its column as a dropped one does, with the field
 		# as that level's node: a line written deeper binds where it always did,
 		# and a line back at the element's column is its sibling, where no level

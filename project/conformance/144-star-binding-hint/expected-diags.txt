@@ -1,0 +1,3 @@
+line 2: Hint: H003
+line 7: Hint: H003
+ok (2 diagnostic(s))

@@ -324,6 +324,10 @@ H002|hint|a binding merged with a non-adjacent earlier one
   Same name and value, so the two combine. Legal, and only the parser can
   see it happened. The prose names the earlier line, and a schema can
   disavow it per section with 'reopen: true'.
+H003|hint|a stacked '*' element spelled like a field binding
+  '* name: value' is the YAML habit for a list of objects. Here it is one
+  string element, the text 'name: value'. Quote it to keep the string; a
+  list of objects is written as instances of a field.
 V001|error|unknown field
   No schema path covers it. Only the topmost unknown node is reported; its
   subtree is skipped. The prose carries the did-you-mean suggestion.
@@ -1574,10 +1578,15 @@ func doGet(o *opts) int {
 		}
 		return status
 	}
+	// An array or a slot listing is one line per element, so a value holding a
+	// line break takes its escaped spelling there. A plain scalar read prints
+	// the value as it is, since the whole output is that one value.
 	emit := func(lines []string) {
 		for i, l := range lines {
 			if o.slots {
-				outf("%s\t%s\n", slotAt(i), l)
+				outf("%s\t%s\n", slotAt(i), oneLine(l))
+			} else if o.array {
+				outln(oneLine(l))
 			} else {
 				outln(l)
 			}
@@ -1629,7 +1638,7 @@ func doGet(o *opts) int {
 			}
 			emit(subbed)
 		} else if o.slots {
-			outf("%s\t%s\n", status, o.def)
+			outf("%s\t%s\n", status, oneLine(o.def))
 		} else {
 			outln(o.def)
 		}

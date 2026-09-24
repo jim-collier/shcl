@@ -264,7 +264,9 @@ reads a raw block's info-string \- the tag on its fence line \- rather than its
 content.
 .TP
 .B \-\-array
-Read the value as an array of the chosen type.
+Read the value as an array of the chosen type, one element per line. As in
+.BR instances ,
+an element holding a line break is printed in its quoted escaped spelling.
 .SH OPTIONS
 The subcommands each option belongs to are named in parentheses. An option a
 subcommand does not use is a usage error, not something quietly ignored.
@@ -299,7 +301,8 @@ default.
 .B \-\-slots
 .RB ( get )
 Prefix each output line with its slot status and a tab \- per element for an
-array, per matched instance for a wildcard.
+array, per matched instance for a wildcard. A value holding a line break is
+then printed in its quoted escaped spelling, so each slot stays one line.
 .TP
 .B \-\-no\-banner
 .RB ( init ", " "set \-\-write" " creating " FILE )
