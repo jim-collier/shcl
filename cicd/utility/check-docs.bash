@@ -656,7 +656,7 @@ fBuildToc(){  ## fBuildToc FILE: the contents block those headings would generat
 		{ prev = $0 }
 	' "$1"
 }
-for doc in README.md project/design.md project/spec.md ai_acceptability_guidelines.md; do
+for doc in README.md project/design.md project/spec.md ai_policy.md; do
 	[[ -f "${repoDir}/${doc}" ]] || continue
 	live="$(sed -n '/^<!-- TOC -->$/,/^<!-- \/TOC -->$/p' "${repoDir}/${doc}" | sed '1d;$d' | sed '/^$/d')"
 	if [[ -z "${live}" ]]; then
