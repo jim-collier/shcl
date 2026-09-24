@@ -338,7 +338,8 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- `.ps1` scripts that can run on Windows should have no unicode in them, so that they don't need a BOM. (Unless a BOM is needed for other reasons.)
+- ✅ `.ps1` scripts that can run on Windows should have no unicode in them, so that they don't need a BOM. (Unless a BOM is needed for other reasons.)
+	- Done: every `.ps1` is ASCII with no BOM. The copyright line takes the plain `(C)` form, as `install.ps1` already did, and section rules are `#===`. `check-docs.bash` refuses a BOM or a non-ASCII byte in any PowerShell file.
 
 - Code review 20260923:
 

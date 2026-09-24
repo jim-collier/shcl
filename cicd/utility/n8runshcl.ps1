@@ -1,5 +1,5 @@
-﻿#!/usr/bin/env pwsh
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#!/usr/bin/env pwsh
+#==============================================================================
 ## n8runshcl.ps1
 ##
 ##	Runs the newest release build of shcl without disturbing the dogfooded
@@ -28,9 +28,9 @@
 ##		source   <repo>/source/rust/target/release/shcl[.exe]
 ##
 ##	The exit code is the binary's own.
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
-##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Copyright (C) 2026 Jim Collier
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
@@ -70,9 +70,9 @@ $repoRoot  = Split-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -Parent
 $sourceBin = Join-Path -Path $repoRoot -ChildPath "source/rust/target/release/shcl$exeSuffix"
 $copyDir   = Join-Path -Path $repoRoot -ChildPath 'cicd/artifacts/runbuilds'
 
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 # Helpers
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
 function Get-StagedCopy {
 	[CmdletBinding()]
@@ -134,9 +134,9 @@ function Remove-AgedCopy {
 	}
 }
 
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 # Main
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
 if ($ListCopies) {
 	## Objects rather than formatted lines, so this composes with Where-Object

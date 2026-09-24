@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 ## winpath-sandbox.ps1 - run winpath-regress.ps1 inside Windows Sandbox, so a
 ## developer box gets the registry gate the hosted runner gets without its own
 ## PATH being rewritten. The sandbox is a throwaway machine with a throwaway
@@ -8,7 +8,7 @@
 ##
 ## Exit: 0 = the inner run passed, 1 = it failed, 2 = cannot set up.
 ##
-##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Copyright (C) 2026 Jim Collier
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT

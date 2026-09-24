@@ -1,5 +1,5 @@
-﻿#!/usr/bin/env pwsh
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#!/usr/bin/env pwsh
+#==============================================================================
 ## shcl.ps1
 ##
 ##	Shell binding for shcl (Simple Hierarchical Config Language): a convenient
@@ -59,9 +59,9 @@
 ##
 ##	Runs on Windows PowerShell 5.1 and PowerShell 7 on Windows; elsewhere it
 ##	needs PowerShell 7.3 or newer (the execute-bit check reads UnixFileMode).
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
-##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Copyright (C) 2026 Jim Collier
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
@@ -81,9 +81,9 @@ pwsh shcl.ps1 get --int app.shcl server.port
 ## parameters. Without one, every argument lands in $args verbatim, exactly what
 ## a passthrough front end wants.
 
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 # Core
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
 ## Plain one-line stderr message (Write-Error decorates with a multi-line block).
 function _shcl_err([string]$msg) { [Console]::Error.WriteLine($msg) }
@@ -162,14 +162,14 @@ function _shcl_resolve {
 ## when there is some: an empty $input would hand the binary a closed stdin, so
 ## `set` would read zero ops instead of falling through to the console.
 ## The binary reads and writes UTF-8. PowerShell encodes what it pipes in with
-## $OutputEncoding, us-ascii on Windows PowerShell 5.1, so 'a: café' | shcl fmt -
-## printed 'a: caf?' at exit 0. What it reads back is decoded with the console's
-## code page. Both are UTF-8 for the call only and put back after. 7 reads the
-## nearest scope, where a caller's own copy would win over the global, so it
-## also gets a local one. 5.1 does not: with a local copy here it stops reading
-## the global and pipes ASCII again, and a caller's own copy wins there either
-## way. A host with no console can refuse the console's, and then it is left as
-## it was.
+## $OutputEncoding, us-ascii on Windows PowerShell 5.1, so an accented letter
+## piped to shcl fmt - printed as '?' at exit 0. What it reads back is decoded
+## with the console's code page. Both are UTF-8 for the call only and put back
+## after. 7 reads the nearest scope, where a caller's own copy would win over
+## the global, so it also gets a local one. 5.1 does not: with a local copy
+## here it stops reading the global and pipes ASCII again, and a caller's own
+## copy wins there either way. A host with no console can refuse the console's,
+## and then it is left as it was.
 function shcl {
 	if (-not (_shcl_resolve)) { $global:LASTEXITCODE = 1; return }
 	$utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
@@ -192,9 +192,9 @@ function shcl {
 	}
 }
 
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 # Typed sugar (dot-sourced use; the reason to source rather than call the binary)
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
 ##	Each one forwards pipeline input the way `shcl` does. A function's own
 ##	$input does not reach the function it calls, so `'a: 5' | shcl_fmt -` read
@@ -218,9 +218,9 @@ function shcl_paths { if ($MyInvocation.ExpectingInput) { $input | shcl paths @a
 function shcl_migrate { if ($MyInvocation.ExpectingInput) { $input | shcl migrate @args } else { shcl migrate @args } }
 function shcl_tokens { if ($MyInvocation.ExpectingInput) { $input | shcl tokens @args } else { shcl tokens @args } }
 
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 # Run path
-#••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••
+#==============================================================================
 
 ## When executed (not dot-sourced), be the CLI: forward args, forward the code.
 ## InvocationName is '.' only when dot-sourced. Pipeline input is forwarded the

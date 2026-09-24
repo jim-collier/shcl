@@ -1,4 +1,4 @@
-﻿## shclpath.ps1 - the setup's machine-PATH edit, packed into the installer and
+## shclpath.ps1 - the setup's machine-PATH edit, packed into the installer and
 ## run at install and uninstall. It goes straight at the registry, never through
 ## NSIS variables: NSIS strings are capped at NSIS_MAX_STRLEN (1024), so a
 ## longer PATH came back truncated - or empty, which no length guard can tell
@@ -7,7 +7,7 @@
 ## suppress the append), the value is read unexpanded so %VAR% references
 ## survive, and it is written back REG_EXPAND_SZ so the type does not downgrade.
 ##
-##	Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]
+##	Copyright (C) 2026 Jim Collier
 ##	Licensed under The MIT License (MIT). Full text at:
 ##		https://mit-license.org/
 ##	SPDX-License-Identifier: MIT
