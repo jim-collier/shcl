@@ -38,6 +38,14 @@ while IFS= read -r op; do
 	grep -qF -- "  ${base}[-default]<TAB>" "${mainRs}" || fBad "write op ${op} is dispatched but the help's op table never spells ${base}[-default]"
 done <<<"${defaultOps}"
 
+##	Cargo.toml is the version source, and the crosscheck holds the four CLIs to
+##	it. The Python package's own version is read by nothing but pip, so a bump
+##	that misses it goes out to PyPI under the old number.
+cargoVer="$(sed -n '/^version = "/{s/^version = "\(.*\)"$/\1/p;q;}' "${repoDir}/source/rust/Cargo.toml" || true)"
+pyVer="$(sed -n '/^version = "/{s/^version = "\(.*\)"$/\1/p;q;}' "${repoDir}/source/python/pyproject.toml" || true)"
+[[ -n "${cargoVer}" && "${cargoVer}" == "${pyVer}" ]] \
+	|| fBad "source/python/pyproject.toml is version '${pyVer}', but Cargo.toml says '${cargoVer}'"
+
 ##	`migrate` is the one path across the 3.0 lexical change, and it needs a
 ##	place in the spec and the man page that says what it rewrites and what it
 ##	leaves alone. A doc pass once tidied the section away.

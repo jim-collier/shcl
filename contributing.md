@@ -122,7 +122,7 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/yottac
 
 ## How to develop
 
-Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/cicd.bash --ci` run locally is the same gate GitHub CI runs, so if it passes on your box it passes upstream.
+Everything routes through the local pipeline, `cicd/cicd.bash`. A green `cicd/cicd.bash --ci` run locally is the same gate GitHub CI runs on Linux. GitHub also runs a Windows job that `--ci` does not.
 
 The pipeline fast-forwards from the remote before it builds anything, so what it tests is what you would push. It stops and says so if your branch and its upstream have both moved. `--no-sync` skips that.
 

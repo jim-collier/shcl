@@ -52,7 +52,7 @@ Design, requirements, and direction. The task list is in `backlog.md`. The full 
 
 	- Tier 2: Go, C (with a C++ veneer), Python.
 
-	- Tier 3: the rest (C#, Java with Kotlin, JavaScript with TypeScript), after v1.0, corpus-gated, designed for from the start.
+	- Tier 3: the rest (C#, Java with Kotlin, JavaScript with TypeScript), deferred for now, corpus-gated, designed for from the start.
 
 	- Bash and PowerShell are thin wrappers around the CLI, not independent parsers. They inherit conformance for free. The companion typed surfaces (C++, Kotlin, TypeScript) are one core plus a veneer, not separate parsers.
 
@@ -101,7 +101,7 @@ Other points
 - It was decided that `-` (stdin) may be named only once across FILE, `--layer` and `--schema`. There is one stream, so two names for it each read part of a document, and which name got the real content depended on read order; the second name is a usage error instead.
 
 - **Nothing on the command line resolves last-wins.** Two options asking for different answers are a usage error whichever order they came in, and the message names both. The rule covers two different type options on `get` and one value option given two different values; a repeat with the same value competes with nothing, and `--layer` and `--set` are ordered lists, so they repeat by design. The rule is what a new option is judged against, not the list of pairs.
-	- Why: `get --raw --int` printed the int and `get --int --raw` failed at exit 4, so the same two flags gave two answers and neither said anything. That is the shape 20260902 item 41 already fixed for `--default` against `--on-bad=error`, one pair at a time; the rule closes the class instead. Decided 20260920.
+	- Why: `get --raw --int` printed the int and `get --int --raw` failed at exit 4, so the same two flags gave two answers and neither said anything. That is the same problem 20260902 item 41 already fixed for `--default` against `--on-bad=error`, one pair at a time; the rule closes the class instead. Decided 20260920.
 
 - Those outputs print with a blank line above and below, so the block does not butt up against the shell prompts either side of it. Bare `shcl` counts as asking: it prints the same padded help as `shcl help` and exits 0. `version` stays unpadded on purpose, a single bare line so a script can still capture it cleanly. The rule is "padded when a person asked for it", not "padded when it is long".
 
@@ -110,8 +110,8 @@ Other points
 	- What changed at 3.0, and what `migrate` rewrites a 2.x file for: escapes are processed inside double quotes only, single quotes are literal, and bare text never processes a backslash, which is TOML's and YAML's rule. A quoted piece opens with a quote as its first character and closes at the next matching quote, which has to be the last thing in the piece; anywhere else a quote is a character. The `field:[disc]` sugar is gone, so a `[` right after a name is a selector and a `[` first after the colon is bracket text.
 	- The cost, said once: a bare `\n` or `\t` and a single-quoted escape change meaning, and a bracket array 2.x folded into one string binds nothing. `migrate` rewrites a file in one pass, and a 2.x reader is unaffected by the migrated file. There is no 2.1.0; everything since 2.0.0 goes out in 3.0.0.
 	- What did not change: the comment rule is 2.x's, so a 2.x file's comments and values read the same before and after. Three edges do read differently, and `migrate` leaves all three: a fence label holding a `#`, which 2.x ran to the end of the line and which has no quoting; a carriage return at a piece's edge in the middle of a line, which 2.x kept and which is a blank now; and an indent landing on no open level's column, which 2.x placed by a looser comparison and which is `E012` now, since `migrate` rewrites spellings and not layout.
-	- Which rules wrote a file is not in the text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite and leaves those pieces as written, at exit 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes a second run a no-op rather than a second rewrite of the first one's output. The library never adds the whole block, since that would write bytes the document does not hold, and it does not stamp a file that never closes a raw block, since the line would land inside the block as content.
-	- `migrate` reports what it could not carry rather than exiting 0 over it: the pieces it could not decide between the two rule sets, and the one shape 2.x bound that nothing binds now, bracket text after the colon. Both are exit 7, and each has its own override - `--from-2x` for the first, `--lossy` for the second on a rewrite - because one is a question the text cannot answer and the other is a real loss.
+	- Which rules wrote a file is not in the text, so the info block carries a `Format` line naming the format's major and `migrate` is the only thing that reads it. A file carrying the current major has nothing to migrate; one carrying an older major, or a caller passing `--from-2x`, gets the backslash re-spellings; anything else gets every other rewrite and leaves those pieces as written, at exit 7. A rewritten file is stamped with the line and a migrated-from note, which is what makes a second run a no-op rather than a second rewrite of the first one's output. The library never adds the whole block, since that would write bytes the document does not hold, and it does not stamp a file that never closes a raw block, since the line would end up inside the block as content.
+	- `migrate` reports what it could not carry rather than exiting 0 over it: the pieces it could not decide between the two rule sets, and the one form 2.x bound that nothing binds now, bracket text after the colon. Both are exit 7, and each has its own override - `--from-2x` for the first, `--lossy` for the second on a rewrite - because one is a question the text cannot answer and the other is a real loss.
 	- `migrate --check` compares the input and the migrated text line by line, in the CLI. The rewrite never adds or drops a line ahead of its stamp, so line N is line N on both sides, and the library needs nothing new. A line to rewrite is exit 6, the code `check` uses for a file with something to fix, and exit 7 still wins when `migrate` could not finish or when the save gate would refuse the rewrite. `fmt --check` asks that gate the same way.
 
 - One tokenizer per binding is the only reader of a line's parts. It takes text and a separator and hands back spans: per segment a name and an optional selector body, each with how it was quoted; the separator; the value and its elements; the comment; or the fault that makes the line malformed. Nothing is copied. The parser's line dispatch, the path scanner behind every lookup and setter, `SetLiteral`, `SetRaw`'s info check and the CLI's `--set` split all read those spans, and the seven scanners they replaced are deleted rather than wrapped. A 2.x flag on the same tokenizer is what `migrate` reads with, so the old rules live in one place too.
@@ -171,7 +171,7 @@ One question - "how do you pull SHCL into your project?" - with two kinds of ans
 
 - **Drop-in**. Copy one source file into your project. No dependency and no build step. You own the copy.
 
-- **Package**. Add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `npm i`, and so on).
+- **Package**. Add it as an ordinary dependency and let the package manager fetch it (`go get`, `pip install`, `cargo add`, and so on).
 
 - **Shared library**. Compile a drop-in source file into a `.so`, `.dll`, or `.dylib` and link it at runtime. The library stays a separate file.
 
@@ -205,7 +205,7 @@ Compared to schema-bearing config languages (Pkl, CUE), SHCL is deliberately wea
 	- Among the options for the footer it was decided to write it by default and spell the knob negatively (`no_banner`, `--no-banner`): a generated file is usually the first SHCL a person ever sees, so the pointer to the spec earns its place, and a negative flag means the useful behavior is what a caller gets by saying nothing. It goes at the bottom so the settings, not the boilerplate, are what the file opens with.
 	- Its `Legal` line leads with SHCL as the subject rather than with the copyright, so a reader cannot take it as a claim over the config it sits in.
 	- Prose the generator writes carries `##`, a commented-out setting a single `# `. A starter config is mostly comment, and one `#` for both left the reader sorting prose from settings by eye. Nothing keys on the difference: to the language both are comments, and a config author may spell a comment however they like. The banner is a public constant in every binding, so the CLI writing it into a created file is not a second copy of it.
-	- `set --write` creating a file writes the same block, since that is the other way a new config file comes into being. It is seeded as the created document's text rather than appended after the fact, so the edits land above it and the write still runs through the library's save gate.
+	- `set --write` creating a file writes the same block, since that is the other way a new config file comes into being. It is seeded as the created document's text rather than appended after the fact, so the edits go above it and the write still runs through the library's save gate.
 
 Explicitly out of scope, with finality unless something big changes: in-language expressions, functions, inheritance, interpolation, imports, anchors/references. The moment config files can compute, they need debugging - that is the complexity cliff to avoid.
 
@@ -213,7 +213,7 @@ Explicitly out of scope, with finality unless something big changes: in-language
 
 The schema is a plain SHCL file, read with the ordinary parser and the ordinary Accessor. No grammar change, no reserved words, no new parser feature - the whole design was prototyped against the released binary before being written down.
 
-**Shape: a flat list of path descriptions, not a mirror of the document.** Each constraint is one instance of a field named `field`, whose *value* is the path it describes and whose children are the constraints:
+**Layout: a flat list of path descriptions, not a mirror of the document.** Each constraint is one instance of a field named `field`, whose *value* is the path it describes and whose children are the constraints:
 
 ```shcl
 field: server.port
@@ -280,7 +280,7 @@ Both open points are settled:
 
 - Naming: `use` was rejected as overloaded English (verb-directive or "purpose"); `parent` collides with the parent/child vocabulary of a nesting language; `inherits` reads as a single plain word beside `type`/`required`/`allowed` and is accurate - the mount inherits the fragment's fields and can add its own.
 
-- Design properties worth keeping true: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself. Two places had to be taught not to walk the same mount twice: the mount evaluation, where two constraint paths matching one node both mount the same fragment, and the unknown-field sweep's chain matcher, where a fragment mounted by two paths offers two ways to consume the same chain. Each remembers the (fragment, depth) states it has finished, so a chain that ends unknown costs the schema's size per level rather than doubling per level.
+- Design properties to keep: expansion is demand-driven (a mount is followed only where the document has nodes), so recursion has no depth limit, needs no cycle detection, and costs document-proportional time and memory; the generator is the one place expansion could run away, and it cuts exactly where a fragment would re-enter itself. Two places had to be taught not to walk the same mount twice: the mount evaluation, where two constraint paths matching one node both mount the same fragment, and the unknown-field sweep's chain matcher, where a fragment mounted by two paths offers two ways to consume the same chain. Each remembers the (fragment, depth) states it has finished, so a chain that ends unknown costs the schema's size per level rather than doubling per level.
 
 - Suggestions do not descend mounts, same rationale as below stars.
 
@@ -350,7 +350,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - The gate uses standard strictness, fixed, so canonical form cannot vary with load strictness, and the rule only ever adds quoting over the reserved-character minimum, so no bare emit can become unsafe.
 
-**A raw block's nesting is the closing fence's own indent, and the rule is symmetric.** The nesting used to be the common indent of the body's non-blank lines, which made a shared body indent unrepresentable and needed an emit exception for a body with no non-blank line at all - the shape that once grew by a level per pass.
+**A raw block's nesting is the closing fence's own indent, and the rule is symmetric.** The nesting used to be the common indent of the body's non-blank lines, which made a shared body indent unrepresentable and needed an emit exception for a body with no non-blank line at all - the case that once grew by a level per pass.
 
 - It was decided that the fence, not the body, defines the nesting: each body line loses only what it shares with the closing fence's indent (the opening line's when the block never closes), and emit pads every non-empty body line by that same indent.
 
@@ -364,17 +364,17 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 
 - It was decided that merge adopts the parser's own empty-fill rule, so a merge and a parse of the concatenation agree. The fill is limited to raw blocks because that is the limit of the parser's rule: a valued instance still appends.
 
-**A run of whole-line comments keeps its written order and its nesting.** A comment written deeper than the next binding hangs on the block it sits in, and the rest of the run goes to the next binding. Each comment chose its block alone, so one could land ahead of the comments written before it: a commented-out header followed by its commented-out child came back child first, and once both were uncommented the child sat under the wrong field.
+**A run of whole-line comments keeps its written order and its nesting.** A comment written deeper than the next binding hangs on the block it sits in, and the rest of the run goes to the next binding. Each comment chose its block alone, so one could end up ahead of the comments written before it: a commented-out header followed by its commented-out child came back child first, and once both were uncommented the child sat under the wrong field.
 
 - It was decided that a comment never goes ahead of the one before it. Once one stays for the next binding, every later one stays too, and one whose block is written out before the last one's goes there with it. Order is the one thing a reader of a commented-out block cannot fix by eye.
 
-- A comment kept away from its own block keeps its depth under the comment before it, one tab per level. A comment no deeper than the place it lands sits at that place's level, as before, which also keeps a run's first comment there, so a reload files the run the same way.
+- A comment kept away from its own block keeps its depth under the comment before it, one tab per level. A comment no deeper than the place it ends up sits at that place's level, as before, which also keeps a run's first comment there, so a reload files the run the same way.
 
 - A malformed line kept verbatim keeps the place's level. It holds its level on a reload, so written deeper it would move the lines after it.
 
 - A reload puts a comment at most one level past the comment before it. A merge that drops a layer's repeated footer line can drop the one the next line sat under, so that line comes no deeper than one level past what it now follows.
 
-- A block's inside comments are written out after its last child's block, at that child's level, and a reload files them on that child. The load files them there too, once the tree is final, since a merge treats the two differently. It has to wait for the end: a block reopened later gains children, and filed on the child it had at the time, the comment would land ahead of them.
+- A block's inside comments are written out after its last child's block, at that child's level, and a reload files them on that child. The load files them there too, once the tree is final, since a merge treats the two differently. It has to wait for the end: a block reopened later gains children, and filed on the child it had at the time, the comment would end up ahead of them.
 
 - A block reopened later in the file gains children after the one that was last. That child's comments at its own level then sit right above a sibling, and a reload files them on the sibling, so the load moves them there too, once the tree is final.
 
@@ -437,7 +437,7 @@ Structure-only canonicalizer: block form, tabs, insertion order, minimal quoting
 What a save does with each thing it can find at the path. The same answer comes from the library's save in every binding and from the CLI's `--write`, and the CLI reports every refusal at exit 8. The table is the rule. Six review items in three weeks were one row answered at one site and not its sibling, so a new case gets a row here before it gets code.
 
 | At the path, after links are followed                                   | A save                                                                                                                                                                                                                               | Settled by
-| :---------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------
+| :---                                                                    | :---                                                                                                                                                                                                                                 | :---
 | A regular file                                                          | Replaces it. The mode and the group come over. What does not is under Saving a file.                                                                                                                                                 | 20260725 item 7
 | Nothing, in a directory that exists                                     | Creates it, at `0666` narrowed by the umask. Anything that turns up before the publish is left alone and the save fails.                                                                                                             | 20260909 item 6
 | A link to a regular file                                                | Replaces the file the link reaches. The link stays.                                                                                                                                                                                  | 20260725 item 7
@@ -465,33 +465,33 @@ Every load-time code has one outcome, and the parser derives the lost count and 
 
 The table is the rule. If a code's behavior ever disagrees with its row, the code is wrong.
 
-| Code | Severity | Outcome |
-|------|----------|---------|
-| `E001` | error | bound |
-| `E002` | error | value dropped |
-| `E003` | error | dropped |
-| `E004` | error | dropped |
-| `E005` | error | bound |
-| `E006` | error | dropped |
-| `E007` | error | dropped |
-| `E008` | error | dropped |
-| `E009` | error | dropped |
-| `E010` | error | dropped |
-| `E011` | error | dropped |
-| `E012` | error | dropped |
-| `E013` | error | retained |
-| `E014` | error | retained; dropped when the line begins with a BOM, which the file-start strip would rewrite into something that can bind |
-| `E015` | error | bound |
-| `E016` | error | dropped |
-| `E017` | error | bound |
-| `E018` | error | dropped |
-| `E019` | error | retained |
-| `E020` | error | the parse stopped: every later non-blank line is dropped, and no level is held |
-| `E021` | error | dropped |
-| `E022` | error or hint | bound (about the list, not a line) |
-| `H001` | hint | bound |
-| `H002` | hint | bound |
-| `H003` | hint | bound |
+| Code   | Severity      | Outcome
+| :---   | :---          | :---
+| `E001` | error         | bound
+| `E002` | error         | value dropped
+| `E003` | error         | dropped
+| `E004` | error         | dropped
+| `E005` | error         | bound
+| `E006` | error         | dropped
+| `E007` | error         | dropped
+| `E008` | error         | dropped
+| `E009` | error         | dropped
+| `E010` | error         | dropped
+| `E011` | error         | dropped
+| `E012` | error         | dropped
+| `E013` | error         | retained
+| `E014` | error         | retained; dropped when the line begins with a BOM, which the file-start strip would rewrite into something that can bind
+| `E015` | error         | bound
+| `E016` | error         | dropped
+| `E017` | error         | bound
+| `E018` | error         | dropped
+| `E019` | error         | retained
+| `E020` | error         | the parse stopped: every later non-blank line is dropped, and no level is held
+| `E021` | error         | dropped
+| `E022` | error or hint | bound (about the list, not a line)
+| `H001` | hint          | bound
+| `H002` | hint          | bound
+| `H003` | hint          | bound
 
 - A line that qualifies for more than one refusal takes the first that applies, in this order: where it sits (`E012`, `E018`), then what it is (`E014`, `E019`, and on an element line `E007` to `E011`), and only then the element cap (`E021`). A cap refuses only a line that would otherwise bind. Bracket text under a cap is `E019` and kept, and an element under a field that already has a value is `E011`. The bracket test reads the value's first piece, which a capped scan keeps, not the value span, which it empties. The fuzz property `a_cap_refuses_only_a_line_that_would_bind` holds the order.
 
@@ -507,15 +507,15 @@ The table is the rule. If a code's behavior ever disagrees with its row, the cod
 
 Where a byte sits decides whether it is content or trivia, and this table is the rule. The tokenizer, the emitter and every setter follow it; if any of them disagrees with a row, that code is wrong. Three positions cover everything: bare text (a name, a selector body, a value or element, a fence label, a comment - anything outside quotes), inside matching quotes (a piece that opens with a quote and closes with the same quote as its last character), and a raw body (the lines between fences).
 
-| Byte | Bare text | Inside matching quotes | Raw body |
-|------|-----------|------------------------|----------|
-| `#` | opens a comment, whatever sits before it | content | content |
-| space, tab, carriage return | trimmed at a piece's edge, content in the middle | content | content; only the trailing carriage-return run comes off each line |
-| `"` or `'` | content, unless first in the piece, where it opens a quoted piece | ends the piece when it is the matching quote and the last thing in the piece; content otherwise | content |
-| `\` | content | starts an escape inside double quotes; content inside single quotes | content |
-| `,` | ends an element | content | content |
-| `[` | after a name opens a selector; first after the colon is bracket text (`E019`); content anywhere else | content | content |
-| line break | ends the line | none; a setter spells one as `\n` in a name or a selector | ends the body line |
+| Byte                        | Bare text                                                                                            | Inside matching quotes                                                                          | Raw body
+| :---                        | :---                                                                                                 | :---                                                                                            | :---
+| `#`                         | opens a comment, whatever sits before it                                                             | content                                                                                         | content
+| space, tab, carriage return | trimmed at a piece's edge, content in the middle                                                     | content                                                                                         | content; only the trailing carriage-return run comes off each line
+| `"` or `'`                  | content, unless first in the piece, where it opens a quoted piece                                    | ends the piece when it is the matching quote and the last thing in the piece; content otherwise | content
+| `\`                         | content                                                                                              | starts an escape inside double quotes; content inside single quotes                             | content
+| `,`                         | ends an element                                                                                      | content                                                                                         | content
+| `[`                         | after a name opens a selector; first after the colon is bracket text (`E019`); content anywhere else | content                                                                                         | content
+| line break                  | ends the line                                                                                        | none; a setter spells one as `\n` in a name or a selector                                       | ends the body line
 
 What follows from the table:
 
@@ -548,7 +548,7 @@ The mirror of the load outcomes, on the write side. A setter builds its line tex
 What `init` writes for each kind of line, and what proves the line reads back. The table is the rule. `init` output that failed its own check is the longest-running class in the backlog, seventeen items by 20260918b, and every one was the generator predicting what the scanner would read. It does not predict now: each spelling it picks is scanned back as a file line first, the way the load will scan it, and every line it writes is read back.
 
 | A generated line           | How it is spelled                                                                                                                                                                                            | How it is checked
-| :------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------
+| :---                       | :---                                                                                                                                                                                                         | :---
 | A field's path             | The schema's own spelling when a file line reads it back as the same path, else rendered from the path's segments.                                                                                           | The whole output loads with no error and validates clean against the schema.
 | A child of a valued parent | Selects the parent by its value. The body is the first candidate a file line reads back as a value selector for that value: a single element as written, bare, then quoted. An array has only the bare body. | No candidate reads back: `V097`.
 | Two lines on one path      | The first is written, and its value is the instance the children select. Two by-value fields with different values are two instances, and both are written.                                                  | The same as a field's path.
@@ -655,7 +655,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 - Everything else (cross-compile, packaging, publish) stays in the local pipeline, `cicd/cicd.bash`, config-driven via `cicd/config.bash`.
 
-- Both share one definition of "passing": the workflow just runs `cicd.bash --ci`. Per-language toolchain setup lives in the workflow YAML; what passing means lives in the engine, so the two cannot drift.
+- Both share one definition of "passing": the workflow runs `cicd.bash --ci` on Linux, plus a Windows job for the binding runners. Per-language toolchain setup lives in the workflow YAML; what passing means lives in the engine, so the two cannot drift.
 
 - The formatter rewrites in place locally but is check-only (fail on diff) in CI.
 
@@ -696,7 +696,7 @@ The responsibility is split rather than duplicate the pipeline:
 
 ### Go binding (Tier 2)
 
-- Module at `source/go/`: single-file library (`shcl.go`, zero dependencies, generics for the typed reads). The CLI under `cmd/shcl/` is its own module, so it stays out of the published one - same flags, output, and exit codes as the reference, but it exists to be driven by the differential check rather than installed.
+- Module at `source/go/`: single-file library (`shcl.go`, zero dependencies, generics for the typed reads). The CLI under `cmd/` is its own module, so it stays out of the published one - same flags, output, and exit codes as the reference, but it exists to be driven by the differential check rather than installed.
 
 - Conformance runs natively as `go test` (a port of the Rust runner over the same corpus), so the Go binding is corpus-green on its own, and the cicd crosscheck holds it byte-for-byte to the reference besides.
 
