@@ -11,19 +11,22 @@
 ##	Needs curl or wget, plus openssl for the signature check.
 ##
 ##	Usage (one-liner):
-##		curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
-##		wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
+##		bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)
+##		bash <(wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)
 ##	With options:
-##		curl -fsSL .../install.bash | bash -s -- --target=user --yes
+##		bash <(curl -fsSL .../install.bash) --target=system --yes
+##	The piped form, `curl ... | bash -s -- OPTIONS`, works too.
 ##
 ##	Options (both --opt=VALUE and --opt VALUE work):
-##		--release <dev|stable>   dev = newest release including pre-releases
-##		                         (default); stable = newest full release.
-##		--target <user|system>   system (default): /opt/shcl + a symlink at
+##		--release <stable|dev>   stable (default) = newest full release, or the
+##		                         newest pre-release while there is no full one;
+##		                         dev = newest release including pre-releases.
+##		--target <user|system>   user (default): ~/.local/share/shcl + a symlink
+##		                         at ~/.local/bin/shcl. No sudo.
+##		                         system: /opt/shcl + a symlink at
 ##		                         /usr/local/bin/shcl (sudo if not root).
-##		                         user: ~/.local/share/shcl + a symlink at
-##		                         ~/.local/bin/shcl. No sudo.
 ##		--yes | -y               skip the confirmation prompt.
+##		--version                print this installer's version and exit.
 ##		--uninstall              remove what an install of the same --target
 ##		                         laid down (binary, symlinks, code/, scripts/,
 ##		                         man/, completions/), and nothing else.
@@ -48,9 +51,10 @@
 
 set -euo pipefail
 
+installer_version="1.1.0"
 REPO="yottacore/shcl"
-release="dev"
-target="system"
+release="stable"
+target="user"
 assume_yes=0
 uninstall=0
 
@@ -74,15 +78,14 @@ l9XHvwp0Iucfi8zCg7ozDcU3dsDnUJ8A3PtJ47jEt1n37/oiM6pWDXVVBjz4DI9i
 ACmdUphTcGhYvn91ORZVxt0CAwEAAQ==
 -----END PUBLIC KEY-----'
 
-fDie() { printf 'install.bash: %s\n' "$*" >&2; exit 1; }
+fDie() { printf 'install.bash: %s\n\n' "$*" >&2; exit 1; }
 
-## Usage text lives here, not in a sed slice of "$0": under the documented
+## Usage text lives here, not in a sed slice of "$0": under a
 ## `curl | bash -s -- --help` pipe, $0 is just "bash" and sed reads the wrong
 ## file (or a stray one named "bash" in the cwd).
 fUsage() {
-	echo
-	cat <<'EOF'
-install.bash - release installer for shcl on Linux
+	cat <<EOF
+install.bash ${installer_version} - release installer for shcl on Linux
 
 Downloads the latest release from GitHub, checks the sha256sums file against the
 release signing key before trusting a checksum out of it, and lays out the binary
@@ -92,20 +95,22 @@ an existing install in place.
 Needs curl or wget, plus openssl for the signature check.
 
 Usage (one-liner):
-  curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
-  wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)
+  bash <(wget -qO- https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)
 
 With options:
-  curl -fsSL .../install.bash | bash -s -- --target=user --yes
+  bash <(curl -fsSL .../install.bash) --target=system --yes
 
 Options (both --opt=VALUE and --opt VALUE work):
-  --release <dev|stable>   dev = newest release including pre-releases
-                           (default); stable = newest full release.
-  --target <user|system>   system (default): /opt/shcl plus a symlink at
+  --release <stable|dev>   stable (default): newest full release, or the
+                           newest pre-release while there is no full one.
+                           dev: newest release including pre-releases.
+  --target <user|system>   user (default): ~/.local/share/shcl plus a symlink
+                           at ~/.local/bin/shcl. No sudo.
+                           system: /opt/shcl plus a symlink at
                            /usr/local/bin/shcl (sudo if not root).
-                           user: ~/.local/share/shcl plus a symlink at
-                           ~/.local/bin/shcl. No sudo.
   --yes, -y                skip the confirmation prompt.
+  --version                print this installer's version and exit.
   --uninstall              remove what an install of the same --target laid
                            down (binary, symlinks, code/, scripts/, man/,
                            completions/), and nothing else.
@@ -118,9 +123,12 @@ Layout under the install dir:
   man/          the man page, symlinked into the target's man1 dir
   completions/  bash and zsh completions, enabled by hand (see the note the
                 install prints - the .deb/.rpm put these in place for you)
+
 EOF
-	echo
 }
+
+## Every run opens with a blank line and ends with one, errors included.
+echo
 
 ## Value options accept --opt=VALUE and --opt VALUE, like the shcl CLI.
 while (( $# )); do
@@ -132,6 +140,7 @@ while (( $# )); do
 		-y|--yes)    assume_yes=1 ;;
 		--uninstall) uninstall=1 ;;
 		-h|--help)   fUsage; exit 0 ;;
+		--version)   printf 'install.bash %s\n\n' "${installer_version}"; exit 0 ;;
 		*) fDie "unknown option: $1" ;;
 	esac
 	shift
@@ -215,14 +224,13 @@ fRemoveLaidDown(){   ## fRemoveLaidDown DEST
 ## symlinks, the binary, and the payload files, then each directory if it is
 ## empty. Never a recursive delete of a path the user may have pointed elsewhere.
 if (( uninstall )); then
-	echo
 	printf 'removing shcl: %s, %s and %s\n' "${dest}" "${link}" "${manlink}"
 	if (( ! assume_yes )); then
 		reply=""
 		if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 			fDie "no terminal to confirm on - pass --yes"
 		fi
-		case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+		case "${reply}" in y|Y|yes|Yes|YES) ;; *) printf 'aborted\n\n'; exit 1 ;; esac
 	fi
 	## Only ours: a bin/shcl or man1/shcl.1 that is not a symlink into dest was
 	## put there by hand or by a package, and removing it would break that install.
@@ -286,23 +294,28 @@ esac
 ## The three fields are read in the order the API emits them, so a whole release
 ## on one line has to be split first: a compact response used to yield no tag at
 ## all, and the run said no release was published.
+## Only vX.Y.Z tags count, as in install.ps1. A tag such as `vnext` sorts above
+## every version under sort -V. Stable falls back to the newest pre-release when
+## there is no full release at all, so a first beta still installs by default.
 fPickTag(){
-	local channel="$1" json="$2" tags
-	tags="$(awk -v channel="${channel}" '
+	local channel="$1" json="$2" tags pick
+	tags="$(awk '
 		{ buf = buf $0 "\n" }
 		END {
 			gsub(/"(tag_name|draft|prerelease)":/, "\n&", buf)
 			n = split(buf, line, "\n")
 			for (i = 1; i <= n; i++) {
 				s = line[i]
-				if (s ~ /^"tag_name":/)               { t = s; sub(/^"tag_name": *"/, "", t); sub(/".*/, "", t) }
+				if (s ~ /^"tag_name":/)               { t = s; sub(/^"tag_name": *"/, "", t); sub(/".*/, "", t); if (t !~ /^v[0-9]+\.[0-9]+\.[0-9]+/) t = "" }
 				else if (s ~ /^"draft": *true/)       { t = "" }
-				else if (s ~ /^"prerelease": *true/)  { if (channel != "stable" && t != "") print t; t = "" }
-				else if (s ~ /^"prerelease": *false/) { if (t != "") print t; t = "" }
+				else if (s ~ /^"prerelease": *true/)  { if (t != "") print "pre " t; t = "" }
+				else if (s ~ /^"prerelease": *false/) { if (t != "") print "full " t; t = "" }
 			}
 		}
 	' "${json}")"
-	printf '%s\n' "${tags}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
+	[[ "${channel}" == stable ]] && pick="$(grep '^full ' <<<"${tags}" || true)"
+	[[ -n "${pick:-}" ]] || pick="${tags}"
+	cut -d' ' -f2 <<<"${pick}" | sed 's/-/~/' | sort -V | tail -n1 | sed 's/~/-/'
 }
 
 api="https://api.github.com/repos/${REPO}/releases?per_page=100"
@@ -326,12 +339,14 @@ fFetchApi "${api}" "${tmp}/rel.json" || fDie "$(fApiFailure "$(fApiStatus "${api
 tag="$(fPickTag "${release}" "${tmp}/rel.json")"
 [[ -n "${tag}" && "${tag}" != null ]] || fDie "no ${release} release found"
 version="${tag#v}"
+channel="${release}"
+[[ "${release}" == stable && "${tag}" == *-* ]] && channel="stable, but no full release yet, so the newest pre-release"
 
 ## State the plan; abort is the default when there is no tty to confirm on.
-echo
 existing="new install"
 [[ -e "${dest}/shcl" ]] && existing="updates the existing install"
-printf 'shcl %s (%s, linux-%s) -> %s (%s)\n' "${version}" "${release}" "${arch}" "${dest}" "${existing}"
+printf 'shcl %s (%s, linux-%s) -> %s (%s)\n' "${version}" "${channel}" "${arch}" "${dest}" "${existing}"
+printf '  from     https://github.com/%s/releases/tag/%s\n' "${REPO}" "${tag}"
 printf '  binary   %s/shcl (symlink %s)\n' "${dest}" "${link}"
 printf '  drop-ins %s/code/, wrappers %s/scripts/\n' "${dest}" "${dest}"
 printf '  man page %s (symlink %s)\n' "${dest}/man/shcl.1" "${manlink}"
@@ -345,7 +360,7 @@ if (( ! assume_yes )); then
 	if ! read -r -p "Proceed? [y/N] " reply 2>/dev/null </dev/tty; then
 		fDie "no terminal to confirm on - pass --yes"
 	fi
-	case "${reply}" in y|Y|yes|Yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
+	case "${reply}" in y|Y|yes|Yes|YES) ;; *) printf 'aborted\n\n'; exit 1 ;; esac
 fi
 
 ## Nothing is downloaded before the destinations are known to be writable: a
@@ -530,9 +545,9 @@ if (( have_docs )); then
 elif (( have_dropins )); then
 	printf 'note: this release ships no man page or completions - they arrived after it was cut\n'
 fi
-## Under the documented pipe $0 is "bash" (or a /dev/fd path), so the hint
+## Under the one-liner $0 is a /dev/fd path (or "bash" when piped), so the hint
 ## names the one-liner unless this really is a file on disk.
-rerun="curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash | bash -s --"
+rerun="bash <(curl -fsSL https://raw.githubusercontent.com/yottacore/shcl/main/install.bash)"
 [[ -f "$0" ]] && rerun="$0"
 printf 'to remove it again: %s --uninstall --target=%s\n' "${rerun}" "${target}"
 ## Both targets: an install nobody can invoke by name looks fine to the version
