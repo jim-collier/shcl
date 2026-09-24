@@ -284,12 +284,24 @@ done
 			echo '"decoded=$($r -eq $cafe) restored=$([Console]::OutputEncoding.CodePage)"'
 			echo "\$r = 'a: 5' | & '${repoDir}/source/powershell/shcl.ps1' get --int - a"
 			echo '"script=$r rc=$LASTEXITCODE"'
+			echo 'function f { $OutputEncoding = [System.Text.Encoding]::ASCII; $r = "a: $cafe" | shcl get - a; "scoped=$($r -eq $cafe)" }'
+			echo 'f'
 		} > "${tmpDir}/wenc.ps1"
 		out="$(pwsh -NoProfile -File "${tmpDir}/wenc.ps1" </dev/null 2>&1 || true)"
 		[[ "${out}" == *"piped=True"* ]] || fBad "shcl.ps1 pipes text in with the caller's \$OutputEncoding: ${out@Q}"
 		[[ "${out}" == *"decoded=True restored=28591"* ]] \
 			|| fBad "shcl.ps1 decodes output with the console's code page, or does not put it back: ${out@Q}"
 		[[ "${out}" == *"script=5 rc=0"* ]] || fBad "shcl.ps1 run as a script drops pipeline input: ${out@Q}"
+		[[ "${out}" == *"scoped=True"* ]] || fBad "shcl.ps1 pipes text in with a caller's own \$OutputEncoding: ${out@Q}"
+		## 20260924 item 1: started by -File with stdin from outside PowerShell,
+		## the script must hand the binary the bytes, not text PowerShell decoded.
+		printf 'a: 1\n' > "${tmpDir}/wbyte.shcl"
+		rc=0; printf 'string\tk\tx\377y\n' | pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" set --write "${tmpDir}/wbyte.shcl" >/dev/null 2>&1 || rc=$?
+		[[ "${rc}" == 8 && "$(cat "${tmpDir}/wbyte.shcl")" == "a: 1" ]] \
+			|| fBad "shcl.ps1 run by -File saves stdin it re-encoded: rc ${rc}, file ${tmpDir}/wbyte.shcl"
+		#  shellcheck disable=2016  ## The backticks are a fence.
+		out="$(printf 'r: ```\n\tab\rcd\n```\n' | pwsh -NoProfile -File "${repoDir}/source/powershell/shcl.ps1" get --raw - r 2>&1 || true)"
+		[[ "${out}" == *$'ab\rcd'* ]] || fBad "shcl.ps1 run by -File turns a CR in stdin into a line break: ${out@Q}"
 	fi
 	unset SHCL_BIN
 }
