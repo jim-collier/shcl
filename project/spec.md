@@ -291,12 +291,12 @@ An array is multiple values in a **single cell**. It has two interchangeable spe
 
 **Stacked (`*`) form** - an empty-valued field whose child lines are all `*`-marked is the same array, one element per line:
 
-```text
+~~~text
 sizes:
 	* small
 	* medium
 	* "extra, large"
-```
+~~~
 
 is exactly `sizes: small, medium, "extra, large"`. The rules that keep it unambiguous:
 
@@ -342,7 +342,7 @@ A raw block embeds verbatim multi-line content - a DDL, a code snippet, a templa
 
 - **Indentation:** the block is visually nested at a child indent for clarity. The parser strips that nesting from each content line: the closing fence's own indentation (the opening line's, when the block never closes), and only as much of it as the line actually carries. Relative internal indentation is preserved, and so is any indentation the body shares beyond the fence's, so a writer can store an indented snippet and read it back as given. Content `a` then `  b` under nesting yields the value `"a\n  b"`; a body whose every line sits two spaces past the fence keeps those two spaces. A whitespace-only line loses only what it shares with the nesting, so its spacing survives verbatim. The formatter emits the body at the fence's indent, which is exactly what the load strips back off.
 
-```text
+~~~~text
 config:
 	ddl:
 		~~~sql
@@ -355,7 +355,7 @@ config:
 		free-form paragraph, kept verbatim,
 		    including this deeper indent.
 		~~~
-```
+~~~~
 
 Both blocks bind as values: `GetRaw("config.ddl")` returns the DDL, `GetRaw("config.notes")` the paragraph. No wrapper, no index needed.
 
@@ -367,25 +367,23 @@ The library is uniform across languages; each binding realizes the same concepts
 
 - **Tier 2**: Go, C (+ C++ veneer), Python - independent parsers, released when corpus-green.
 
-- **Tier 3**: everything else (C#, Java (+ Kotlin), JavaScript (+ TypeScript), ...) - after v1.0, corpus-gated, designed-for from the start.
+- **Tier 3**: everything else (C#, Java (+ Kotlin), JavaScript, ...) - after v1.0, corpus-gated, designed-for from the start.
 
 - **CLI wrappers**: Bash and PowerShell are thin wrappers around the `shcl` CLI, not independent parsers - they inherit conformance from Tier 1 for free.
 
 The consumer-facing surface has two halves: the **Accessor** reads values (by lookup or traversal), and the **Writer** emits them.
 
-Three of these are not separate implementations but a base core plus a thin **companion typed surface** - one parser, two call surfaces:
+Two of these are not separate implementations but a base core plus a thin **companion typed surface** - one parser, two call surfaces:
 
 - **C++ over the C core**: the C source, its public header wrapped in `extern "C"`, plus a header-only C++ template veneer (`Get<T>()` over the typed C functions). C is not a strict subset of C++, so the shared header is kept C++-clean; only the `.c` need compile as C.
 
 - **Kotlin over the Java core**: Kotlin calls the Java classes directly via JVM interop with no runtime work; the companion is a small extensions file giving `reified`-generic `get<T>()` instead of Java's `Class<T>` token form.
 
-- **TypeScript over the JavaScript core**: one `.js` implementation plus a hand-authored `.d.ts` whose overloads/generics realize the typed entry points. TS support means the declaration file, not a second port - and the JS API must be shaped so those declarations can be precise (not a single `Get` returning `any`).
-
 ### The core call
 
-The conceptual operation is **"get the value at `path`, coerced to a target type, with a default and an on-bad policy."** The critical portability rule: **the target type is expressed by the entry point (a typed variant or a compile-time generic), never by a runtime field in an options object.** This is the only shape that assigns straight into a strongly-typed variable with no consumer-side cast in *every* target language. A runtime `type` value cannot drive a static language's return type (Go, Rust, C, C++, C# all forbid it; Java can only via a `Class<T>` token, TypeScript only via overload typing), so we do not rely on it.
+The conceptual operation is **"get the value at `path`, coerced to a target type, with a default and an on-bad policy."** The critical portability rule: **the target type is expressed by the entry point (a typed variant or a compile-time generic), never by a runtime field in an options object.** This is the only shape that assigns straight into a strongly-typed variable with no consumer-side cast in *every* target language. A runtime `type` value cannot drive a static language's return type (Go, Rust, C, C++, C# all forbid it; Java can only via a `Class<T>` token), so we do not rely on it.
 
-- **type**: chosen by which method/generic you call - `GetInt` / `GetFloat` / `GetBool` / `GetDateTime` / `GetString` / `GetRaw` and their array forms, or a generic `Get<T>` where idiomatic (Rust always; Go/C++/C# optional). Realizations: Go typed methods or generics; Rust trait + turbofish/inference; C typed functions with out-param + status; C++ templates (`Get<T>`) over those C functions; C# explicit generics; Java `get(path, Integer.class, ...)`; Kotlin `reified`-generic `get<T>()` extensions over the Java methods; Python `get_int(...)` (or `get(..., type=int)` since it is dynamic); JS typed methods with `.d.ts` overloads/generics typing them for TS; PowerShell typed variable coercion on assign; POSIX sh a single command returning text (type flag only *validates*).
+- **type**: chosen by which method/generic you call - `GetInt` / `GetFloat` / `GetBool` / `GetDateTime` / `GetString` / `GetRaw` and their array forms, or a generic `Get<T>` where idiomatic (Rust always; Go/C++/C# optional). Realizations: Go typed methods or generics; Rust trait + turbofish/inference; C typed functions with out-param + status; C++ templates (`Get<T>`) over those C functions; C# explicit generics; Java `get(path, Integer.class, ...)`; Kotlin `reified`-generic `get<T>()` extensions over the Java methods; Python `get_int(...)` (or `get(..., type=int)` since it is dynamic); JS typed methods; PowerShell typed variable coercion on assign; POSIX sh a single command returning text (type flag only *validates*).
 
 - **on-bad**: how to react to a bad/empty/missing/ambiguous value - `Error` (surface it), `Default` (substitute the default), or `Flag` (return the zero/empty value plus a soft indicator, never erroring).
 
@@ -415,7 +413,7 @@ The convenience tier has the same shape everywhere (a mandatory, call-site-visib
 | Java       | `int pop = doc.getIntOr(path, 0);`           | `var r = doc.getInt(path); // .value() .status()`
 | Kotlin     | `val pop = doc.getIntOr(path, 0)`            | `val r = doc.getInt(path)`
 | Python     | `pop = doc.get_int_or(path, 0)`              | `r = doc.read_int(path)  # r.value, r.status`
-| JS / TS    | `const pop = doc.getIntOr(path, 0)`          | `const r = doc.getInt(path)  // {value, status}`
+| JS         | `const pop = doc.getIntOr(path, 0)`          | `const r = doc.getInt(path)  // {value, status}`
 | PowerShell | `[int]$pop = $doc.GetIntOr($path, 0)`        | `$r = $doc.GetInt($path)  # .Value .Status`
 | POSIX sh   | `pop=$(shcl get --int --default=0 f 'path')` | `shcl get --int f 'path'; status=$?`
 
@@ -563,7 +561,7 @@ The formatter normalizes structure only - it cannot know value types, so it neve
 
 A schema is an ordinary SHCL file: a flat list of instances of one field named `field`, each whose *value* is a document path and whose children are the constraints on it. Document paths appear in value position, never as field names, so the schema vocabulary can never collide with a document's own field names. `Validate(doc, schemaDoc)` returns the same structured diagnostics loading produces; a one-shot `LoadAndValidate(text, schemaText, strictness)` parses and validates in one call, handing back the document carrying one combined diagnostics list (parse first, then validation - the order `check --schema` prints) so half the errors cannot vanish because a caller merged only one of the two lists, and it never fails: a strict-failing document comes back as the document plus its diagnostics, with `ErrorCount()` as the "did this file have errors?" predicate; the `shcl check --schema SCHEMA FILE` CLI appends them to `check`'s normal output under the same stdout/exit contract, at strict as well: `check` writes nothing, so a strict-failing load still gets validated and still reports what the schema found. The summary line stays `strict load failed`. No grammar change is involved: the schema vocabulary is interpreted by the validator, the parser knows nothing of it.
 
-```shcl
+~~~shcl
 field: server.port
 	type: int
 	required: yes
@@ -572,7 +570,7 @@ field: server.port
 
 field: "server[*].host"
 	type: string
-```
+~~~
 
 A path containing a bracket selector must be quoted (a bare selector's scan ends at the first `]`); the canonical formatter applies that quoting itself. Two `field` instances with the same path merge by the language's own merge rule, so constraints for one path can be written in one place or several.
 
@@ -703,7 +701,7 @@ The output, per schema field in schema order:
 
 - After the last field, and after the trailing block if there is one, a footer names the format and points at its spec, separated from what precedes it by one blank line:
 
-	```text
+	~~~text
 	##
 	## This config file format is SHCL.
 	## "Simple Hierarchical Config Language"
@@ -712,7 +710,7 @@ The output, per schema field in schema order:
 	##    Syntax   https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md
 	##    Legal    SHCL is Copyright © 2026 Jim Collier [ID: 2უNაɘ«҂թȹɤξπ๙¿ձϖ]. License: MIT. No warranty.
 	##
-	```
+	~~~
 
 	These bytes are part of the generated file, so they are a cross-binding contract like the annotation line. The `Legal` line names SHCL as its subject: it says nothing about the config it sits in. The footer is written unless the caller asks for it to be left out - `no_banner` on the library call, `--no-banner` on `init` - and the flag is negative so a caller that says nothing gets the footer. Every binding exposes the same bytes as a constant (`GEN_BANNER`, `GenBanner` in Go, `SHCL_GEN_BANNER` in C), so a program writing its own config file writes the block without keeping a second copy of it. It is the only difference the flag makes: everything above it is byte-for-byte identical either way. The `Syntax` link points at the spec as tagged by the release that opened the format major (`v3.0.0` for format 3), so a file keeps pointing at the rules it was written for. It changes only when the `Format` line does.
 
@@ -784,7 +782,7 @@ Three edges read differently, and `migrate` leaves all three as written:
 
 ## Cross-language parity and conformance
 
-The guarantee is the corpus, not the binding count: **every released binding is corpus-green**. A binding that has not passed the full conformance corpus is not released, full stop. A companion surface (C++/Kotlin/TypeScript) inherits its core's conformance for free, and the CLI-wrapper bindings (Bash, PowerShell) inherit the Tier 1 CLI's. The safeguards:
+The guarantee is the corpus, not the binding count: **every released binding is corpus-green**. A binding that has not passed the full conformance corpus is not released, full stop. A companion surface (C++/Kotlin) inherits its core's conformance for free, and the CLI-wrapper bindings (Bash, PowerShell) inherit the Tier 1 CLI's. The safeguards:
 
 - This spec plus `grammar.abnf` are the single source of truth; behavior is specified, not left to each implementation.
 
