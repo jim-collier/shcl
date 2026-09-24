@@ -1524,6 +1524,43 @@ func TestIndexRebuildIgnoresRemovedNodes(t *testing.T) {
 	}
 }
 
+// A merge settles the comments of the blocks it visited, not of the whole tree:
+// a whole-tree pass made each small merge cost the document, and a caller
+// folding many layers onto a big one paid it every time. Timed against the same
+// merges with the big block left out. Same fixture in every runner.
+func TestMergeSettlesOnlyWhatItTouched(t *testing.T) {
+	var ms [2]float64
+	for big := 0; big < 2; big++ {
+		var text strings.Builder
+		text.WriteString("g:\n\tk: 1\n")
+		if big == 1 {
+			text.WriteString("big:\n")
+			for i := 0; i < 100000; i++ {
+				fmt.Fprintf(&text, "\tc%d: %d\n", i, i)
+			}
+		}
+		d := Parse(text.String())
+		other := Parse("g:\n\tk: 1\n")
+		t0 := time.Now()
+		for i := 0; i < 2000; i++ {
+			d.Merge(other)
+		}
+		ms[big] = float64(time.Since(t0).Microseconds()) / 1000.0
+		if got := d.GetIntOr("g.k", -1); got != 1 {
+			t.Fatalf("merged read: got %d", got)
+		}
+	}
+	// The same bound as the index fixture above: the defect is a walk over a
+	// hundred thousand nodes per merge, seconds past the constant term.
+	bound := ms[0]*25 + 1000
+	if ms[0] <= 0 {
+		bound = 3000
+	}
+	if ms[1] > bound {
+		t.Errorf("2000 merges beside a big block %.1f ms against %.1f ms without it (bound %.1f ms) - the merge settles blocks it never touched", ms[1], ms[0], bound)
+	}
+}
+
 func TestLostAndSaveGate(t *testing.T) {
 	// Content-malformed lines are retained as trivia (LostCount 0, the line
 	// survives a save); position-dependent drops count as lost and make

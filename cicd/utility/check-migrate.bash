@@ -121,12 +121,22 @@ fUnclean2x(){
 		sub(/:$/, "", $2); print $2 }'
 }
 
+##	The string array goes through `--slots`, one status and one line per element.
+##	2.x prints an element holding a line break as it is, over several lines, and
+##	the current CLI escapes it onto one. The 2.x side is put back together at each
+##	status and escaped by the CLI's rule, so the two compare element by element.
+fOneLine2x(){ awk '
+	function put() { if (!have) return; if (v ~ /[\n\r]/) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); gsub(/\n/, "\\n", v); gsub(/\r/, "\\r", v); gsub(/\t/, "\\t", v); v = "\"" v "\"" } print s "\t" v }
+	/^(Good|Empty|NotFound|BadType|Multiple)\t/ { put(); i = index($0, "\t"); s = substr($0, 1, i - 1); v = substr($0, i + 1); have = 1; next }
+	{ v = v "\n" $0 }
+	END { put() }'; }
+
 ##	Everything a tree is, read through one CLI: the paths, the count at each,
 ##	and per instance the string array, the raw body and the info string, with
 ##	the exit codes, one line per read. A path holding a tab cannot ride the
 ##	loop; those are left to the native runners.
 fReadTree(){
-	local cli="$1" doc="$2" p n i q
+	local cli="$1" doc="$2" p n i q rc
 	"${cli}" paths "${doc}" 2>/dev/null || echo "paths exit $?"
 	while IFS= read -r p; do
 		[[ -n "${p}" && "${p}" != *$'\t'* ]] || continue
@@ -135,7 +145,9 @@ fReadTree(){
 		[[ "${n}" =~ ^[0-9]+$ ]] || continue
 		for ((i = 0; i < n; i++)); do
 			q="${p}[#${i}]"
-			"${cli}" get --string --array "${doc}" "${q}" 2>/dev/null || echo "string exit $?"
+			rc=0; "${cli}" get --string --array --slots "${doc}" "${q}" > "${tmpDir}/array" 2>/dev/null || rc=$?
+			if [[ "${cli}" == "${oldCli}" ]]; then fOneLine2x < "${tmpDir}/array"; else cat "${tmpDir}/array"; fi
+			[[ "${rc}" == 0 ]] || echo "string exit ${rc}"
 			"${cli}" get --raw "${doc}" "${q}" 2>/dev/null || echo "raw exit $?"
 			"${cli}" get --rawinfo "${doc}" "${q}" 2>/dev/null || echo "rawinfo exit $?"
 		done

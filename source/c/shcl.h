@@ -4751,7 +4751,8 @@ static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t 
 // shape re-filtered the over side per distinct name and re-scanned (and
 // re-keyed) the base side per over node - three O(K^2) terms at one parent,
 // plus a fresh children vector per replaced name.
-static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
+static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op, ShclVecSize *touched) {
+	ShclVecSize_push(&d->scratch, touched, bp);
 	ShclArena *a = &d->arena;
 	ShclArena *t = &d->scratch;
 	ShclVecSize okids = over->nodes.data[op].children; // const doc: stable
@@ -4898,7 +4899,7 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op) {
 						b = emt;
 					}
 				}
-				if (b != (size_t)-1) { adopt_trivia(d, b, over, ok); w_overlay(d, b, over, ok); }
+				if (b != (size_t)-1) { adopt_trivia(d, b, over, ok); w_overlay(d, b, over, ok, touched); }
 				else { app_at[pos] = w_clone_subtree(d, over, ok, bp); nappended++; }
 			}
 		}
@@ -4953,14 +4954,13 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	d->lost += over->lost;
 	ShclArena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
-	w_overlay(d, ROOT, over, ROOT);
-	ShclVecSize stack = {0};
-	ShclVecSize_push(&d->scratch, &stack, ROOT);
-	while (stack.len) {
-		size_t n = stack.data[--stack.len];
-		settle_block(d, n, 1);
-		for (size_t k = 0; k < NODE(d, n).children.len; k++) ShclVecSize_push(&d->scratch, &stack, NODE(d, n).children.data[k]);
-	}
+	/* Only a block the overlay visited can have a changed child list or
+	   comments; the rest was settled when it was built. Settling the whole tree
+	   made every merge cost the document (20260924 item 6). A block's settle
+	   writes only below it, so the order does not matter. */
+	ShclVecSize touched = {0};
+	w_overlay(d, ROOT, over, ROOT, &touched);
+	for (size_t k = 0; k < touched.len; k++) settle_block(d, touched.data[k], 1);
 	// Layers commonly share a footer; keeping one copy of each keeps a stack
 	// of files from repeating it once per layer. Only the lines already here
 	// count: a layer's own repeats are its content.

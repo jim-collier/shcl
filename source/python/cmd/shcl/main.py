@@ -1209,6 +1209,8 @@ def do_get(o):
 			emit([ln if slot_at(i) == shcl.Status.Good else dv for i, ln in enumerate(lines)])
 		elif o.slots:
 			print(f"{status.name}\t{one_line(dv)}")
+		elif o.array:
+			print(one_line(dv))
 		else:
 			print(dv)
 		return 0

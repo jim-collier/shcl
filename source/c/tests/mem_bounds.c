@@ -287,6 +287,45 @@ int main(void) {
 #endif
 	}
 
+	/* A merge settles the comments of the blocks it visited, not of the whole
+	   tree: a whole-tree pass made each small merge cost the document, and a
+	   caller folding many layers onto a big one paid it every time. Timed
+	   against the same merges with the big block left out. Same fixture in
+	   every runner. */
+	{
+		double t[2];
+		size_t cap = 3000000, len = 0;
+		char *mtext = (char *)malloc(cap);
+		if (!mtext) { fail("merge fixture: no memory"); return 1; }
+		for (int withbig = 0; withbig < 2; withbig++) {
+			len = (size_t)snprintf(mtext, cap, "g:\n\tk: 1\n");
+			if (withbig) {
+				len += (size_t)snprintf(mtext + len, cap - len, "big:\n");
+				for (int i = 0; i < 100000; i++) len += (size_t)snprintf(mtext + len, cap - len, "\tc%d: %d\n", i, i);
+			}
+			shcl_doc *md = shcl_parse(mtext, len);
+			shcl_doc *ov = shcl_parse("g:\n\tk: 1\n", 9);
+			double c0 = wall_ms();
+			for (int i = 0; i < 2000; i++) shcl_merge(md, ov);
+			t[withbig] = wall_ms() - c0;
+			if (shcl_get_int_or(md, "g.k", 3, -1) != 1) fail("merge fixture: wrong result");
+			shcl_free(ov);
+			shcl_free(md);
+		}
+		free(mtext);
+		printf("mem_bounds: merge settle: %.1f ms alone, %.1f ms beside a 100k-child block\n", t[0], t[1]);
+#ifdef SHCL_UNDER_ASAN
+		printf("mem_bounds: merge settle ratio not judged under a sanitizer\n");
+#else
+		// The same bound as the index fixture above: the defect is a walk over
+		// a hundred thousand nodes per merge, seconds past the constant term.
+		{
+			double bound = t[0] <= 0.0 ? 3000.0 : t[0] * 25 + 1000;
+			if (t[1] > bound) fail("the merge settles blocks it never touched");
+		}
+#endif
+	}
+
 	// shcl_authored_name hands back the stored spelling, which lives in the
 	// document's own arena - so it outlives shcl_reads_release, where the header
 	// used to promise the shorter read-arena lifetime.

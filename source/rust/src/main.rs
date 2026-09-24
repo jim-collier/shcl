@@ -1662,6 +1662,8 @@ fn do_get(o: &Opts) -> u8 {
 				let dv = o.default.clone().unwrap_or_default();
 				if o.slots {
 					outln!("{:?}\t{}", status, one_line(&dv));
+				} else if o.array {
+					outln!("{}", one_line(&dv));
 				} else {
 					outln!("{}", dv);
 				}

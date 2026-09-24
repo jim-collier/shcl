@@ -1238,6 +1238,27 @@ def main():
 	bound = 3000.0 if ms[0] <= 0 else ms[0] * 25 + 1000
 	if ms[1] > bound:
 		raise SystemExit(f"index rebuild after churn {ms[1]:.1f} ms against {ms[0]:.1f} ms fresh (bound {bound:.1f} ms)")
+	# A merge settles the comments of the blocks it visited, not of the whole
+	# tree: a whole-tree pass made each small merge cost the document, and a
+	# caller folding many layers onto a big one paid it every time. Timed
+	# against the same merges with the big block left out. Same fixture in every
+	# runner, with 200 merges here rather than 2000: the defect is still seconds.
+	ms = []
+	for big in (False, True):
+		text = "g:\n\tk: 1\n"
+		if big:
+			text += "big:\n" + "".join(f"\tc{i}: {i}\n" for i in range(100000))
+		mdoc = shcl.Document.parse(text)
+		mother = shcl.Document.parse("g:\n\tk: 1\n")
+		t0 = time.perf_counter()
+		for _ in range(200):
+			mdoc.merge(mother)
+		ms.append((time.perf_counter() - t0) * 1000.0)
+		if mdoc.get_int_or("g.k", -1) != 1:
+			raise SystemExit("merge fixture: wrong result")
+	bound = 3000.0 if ms[0] <= 0 else ms[0] * 25 + 1000
+	if ms[1] > bound:
+		raise SystemExit(f"200 merges beside a big block {ms[1]:.1f} ms against {ms[0]:.1f} ms without it (bound {bound:.1f} ms) - the merge settles blocks it never touched")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.

@@ -5875,11 +5875,14 @@ impl Document {
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;
-		self.overlay(ROOT, over, ROOT);
-		let mut stack = vec![ROOT];
-		while let Some(n) = stack.pop() {
+		// Only a block the overlay visited can have a changed child list or
+		// comments; the rest was settled when it was built. Settling the whole
+		// tree made every merge cost the document (20260924 item 6). A block's
+		// settle writes only below it, so the order does not matter.
+		let mut touched = Vec::new();
+		self.overlay(ROOT, over, ROOT, &mut touched);
+		for n in touched {
 			settle_block(&mut self.arena, n, 1);
-			stack.extend_from_slice(&self.arena[n].children);
 		}
 		// Layers commonly share a footer; keeping one copy of each keeps a
 		// stack of files from repeating it once per layer. Only the lines
@@ -5934,7 +5937,14 @@ impl Document {
 		bt.inside.extend_from_slice(&st.inside);
 	}
 
-	fn overlay(&mut self, base_parent: usize, over: &Document, over_parent: usize) {
+	fn overlay(
+		&mut self,
+		base_parent: usize,
+		over: &Document,
+		over_parent: usize,
+		touched: &mut Vec<usize>,
+	) {
+		touched.push(base_parent);
 		let over_kids = &over.arena[over_parent].children;
 		// Over side: name -> node bucket, in first-appearance order.
 		let mut order: Vec<&str> = Vec::new();
@@ -6053,7 +6063,7 @@ impl Document {
 					match target {
 						Some(b) => {
 							self.adopt_trivia(b, over, ok);
-							self.overlay(b, over, ok);
+							self.overlay(b, over, ok, touched);
 						}
 						None => {
 							let c = self.clone_subtree(over, ok, base_parent);
