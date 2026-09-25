@@ -404,9 +404,19 @@ Things that would relax it:
 
 The second list is closer than it looks. That is most of why this document exists rather than a shorter one saying no.
 
+## About the author
+
+This project's original author has decades of programming experience. Hobby, then professional, then a decades-long foray into management and executive leadership (almost always with programmers in the chain of my responsibility) - all the while still an enthusiastic hobby programmer myself.
+
+When AI started becoming a "thing" in programming, I was against it. Which was convenient, because it sucked at it.
+
+That view has softened with the emergence of frontier models like Claude Fable. (Again convenient now that it's pretty capable.) For a few years I've been running large AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up.
+
+One outcome is that this nearly decade-old main account no longer has a blanket "no-AI" policy; but allowed only under strict, human-driven constraints.
+
 ## The use of AI in writing this document
 
-Everyone who knows me knows I love to write. *A lot*. Especially about highly technical subjects.
+Everyone who knows me knows I love to write. Especially about highly technical subjects.
 
 AI was used on this document for:
 
