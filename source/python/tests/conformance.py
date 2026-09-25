@@ -581,8 +581,9 @@ class SeqGen:
 
 	def doc(self):
 		# Lines that carry comments and blanks somewhere a later step can move
-		# them: comments at every depth, empty and reopened blocks, and a
-		# same-line fence with a comment after an empty binding.
+		# them: comments at every depth, empty and reopened blocks, a same-line
+		# fence with a comment after an empty binding, and misplaced lines kept
+		# as written, one of them among a list's elements.
 		out = []
 		depth = 0
 		for _ in range(1 + self.below(10)):
@@ -595,7 +596,7 @@ class SeqGen:
 				depth = min(depth + 1, 3)
 			ind = "\t" * depth
 			name = SEQ_NAMES[self.below(3)]
-			shape = self.below(8)
+			shape = self.below(10)
 			if shape == 0:
 				out.append(f"{ind}# c{self.below(3)}")
 			elif shape == 1:
@@ -610,6 +611,10 @@ class SeqGen:
 				out.append(f"{ind}{name}: {self.below(3)}  # t")
 			elif shape == 6:
 				out.append(f"{ind}{name}.{name}: 1")
+			elif shape == 7:
+				out.append(f"{ind} {name}: {self.below(3)}")
+			elif shape == 8:
+				out.append(f"{ind}{name}:\n{ind}\t* 1\n{ind} x: 1\n{ind}\t* 2")
 			else:
 				out.append(f"{ind}\t# deep")
 		return "".join(line + "\n" for line in out)
@@ -1304,6 +1309,33 @@ def main():
 	bound = 3000.0 if ms[0] <= 0 else ms[0] * 25 + 1000
 	if ms[1] > bound:
 		raise SystemExit(f"200 merges beside a big block {ms[1]:.1f} ms against {ms[0]:.1f} ms without it (bound {bound:.1f} ms) - the merge settles blocks it never touched")
+	# A misplaced line kept as written made every edit and merge re-emit the
+	# whole document to settle it, even one far from the line. Timed against the
+	# same steps on the same document without the line. Same fixture in every
+	# runner, with 50 of each here rather than 500: the defect is still seconds.
+	# Edits first, since a merge drops the name index and the edit after it
+	# would rebuild it over the whole document either way.
+	ms = []
+	for with_line in (False, True):
+		text = "g:\n\tk: 1\nbig:\n" + "".join(f"\tc{i}: {i}\n" for i in range(100000))
+		if with_line:
+			text += " x: y\n"
+		kdoc = shcl.Document.parse(text)
+		kother = shcl.Document.parse("g:\n\tj: 1\n")
+		t0 = time.perf_counter()
+		for i in range(50):
+			if not kdoc.set_int("g.k", i):
+				raise SystemExit("kept-line fixture: set_int refused")
+		for _ in range(50):
+			kdoc.merge(kother)
+		ms.append((time.perf_counter() - t0) * 1000.0)
+		if kdoc.get_int_or("g.k", -1) != 49:
+			raise SystemExit("kept-line fixture: wrong result")
+		if kdoc.to_canonical().endswith("\n x: y\n") != with_line:
+			raise SystemExit("kept-line fixture: the kept line is not where the fixture put it")
+	bound = 3000.0 if ms[0] <= 0 else ms[0] * 25 + 1000
+	if ms[1] > bound:
+		raise SystemExit(f"50 edits and merges beside a kept line {ms[1]:.1f} ms against {ms[0]:.1f} ms without it (bound {bound:.1f} ms) - each one settles the whole document")
 	# What a read hands out must not be the document's own list: a caller
 	# clearing it used to take the document's diagnostics with it, and a failed
 	# strict load handed out the same list again. Same fixture in Go.

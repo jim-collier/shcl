@@ -326,6 +326,45 @@ int main(void) {
 #endif
 	}
 
+	/* A misplaced line kept as written made every edit and merge re-emit the
+	   whole document to settle it, even one far from the line. Timed against
+	   the same steps on the same document without the line. Same fixture in
+	   every runner. Edits first, since a merge drops the name index and the
+	   edit after it would rebuild it over the whole document either way. */
+	{
+		double t[2];
+		size_t cap = 3000000, len = 0;
+		char *ktext = (char *)malloc(cap);
+		if (!ktext) { fail("kept-line fixture: no memory"); return 1; }
+		for (int kept = 0; kept < 2; kept++) {
+			len = (size_t)snprintf(ktext, cap, "g:\n\tk: 1\nbig:\n");
+			for (int i = 0; i < 100000; i++) len += (size_t)snprintf(ktext + len, cap - len, "\tc%d: %d\n", i, i);
+			if (kept) len += (size_t)snprintf(ktext + len, cap - len, " x: y\n");
+			shcl_doc *kd = shcl_parse(ktext, len);
+			shcl_doc *ov = shcl_parse("g:\n\tj: 1\n", 9);
+			double c0 = wall_ms();
+			for (int i = 0; i < 500; i++) if (!shcl_set_int(kd, "g.k", 3, i)) fail("kept-line fixture: set refused");
+			for (int i = 0; i < 500; i++) shcl_merge(kd, ov);
+			t[kept] = wall_ms() - c0;
+			if (shcl_get_int_or(kd, "g.k", 3, -1) != 499) fail("kept-line fixture: wrong result");
+			shcl_str canon = shcl_to_canonical(kd);
+			int tail = canon.n >= 7 && memcmp(canon.p + canon.n - 7, "\n x: y\n", 7) == 0;
+			if (tail != kept) fail("kept-line fixture: the kept line is not where the fixture put it");
+			shcl_free(ov);
+			shcl_free(kd);
+		}
+		free(ktext);
+		printf("mem_bounds: kept-line settle: %.1f ms without the line, %.1f ms with it\n", t[0], t[1]);
+#ifdef SHCL_UNDER_ASAN
+		printf("mem_bounds: kept-line settle ratio not judged under a sanitizer\n");
+#else
+		{
+			double bound = t[0] <= 0.0 ? 3000.0 : t[0] * 25 + 1000;
+			if (t[1] > bound) fail("each edit and merge settles the whole document");
+		}
+#endif
+	}
+
 	// shcl_authored_name hands back the stored spelling, which lives in the
 	// document's own arena - so it outlives shcl_reads_release, where the header
 	// used to promise the shorter read-arena lifetime.

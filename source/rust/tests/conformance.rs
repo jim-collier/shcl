@@ -1776,6 +1776,50 @@ fn merge_settles_only_what_it_touched() {
 	);
 }
 
+/// A misplaced line kept as written made every edit and merge re-emit the
+/// whole document to settle it, even one far from the line. Timed against
+/// the same steps on the same document without the line. Same fixture in
+/// every runner.
+#[test]
+fn a_far_kept_line_costs_an_edit_nothing() {
+	let mut ms = [0.0f64; 2];
+	for (kept, slot) in ms.iter_mut().enumerate() {
+		let mut text = String::from("g:\n\tk: 1\nbig:\n");
+		for i in 0..100_000 {
+			text.push_str(&format!("\tc{i}: {i}\n"));
+		}
+		if kept == 1 {
+			text.push_str(" x: y\n");
+		}
+		let mut d = Document::parse(&text);
+		let other = Document::parse("g:\n\tj: 1\n");
+		let t0 = std::time::Instant::now();
+		// Edits first: a merge drops the name index, and the edit after it
+		// would rebuild it over the whole document either way.
+		for i in 0..500 {
+			assert!(d.set_int("g.k", i));
+		}
+		for _ in 0..500 {
+			d.merge(&other);
+		}
+		*slot = t0.elapsed().as_secs_f64() * 1000.0;
+		assert_eq!(d.get_int_or("g.k", -1), 499);
+		assert_eq!(d.to_canonical().ends_with("\n x: y\n"), kept == 1);
+	}
+	let bound = if ms[0] <= 0.0 {
+		3000.0
+	} else {
+		ms[0] * 25.0 + 1000.0
+	};
+	assert!(
+		ms[1] <= bound,
+		"500 edits and merges beside a kept line {:.1} ms against {:.1} ms without it (bound {:.1} ms) - each one settles the whole document",
+		ms[1],
+		ms[0],
+		bound
+	);
+}
+
 #[test]
 fn standard_trait_surface() {
 	// Rust-only: the traits a rust user reaches for before reading any docs.
