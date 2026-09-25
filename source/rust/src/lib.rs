@@ -3933,7 +3933,7 @@ impl Document {
 
 	/// Make a misplaced line kept as written into the comment the emitter
 	/// writes it as, wherever it would now bind as written, so the document
-	/// is the one its saved text reloads as and the next edit lands the same
+	/// is the one its saved text reloads as and the next edit comes out the same
 	/// either way. One among a list's elements goes above the list, as a
 	/// reload files a comment there. Runs after a load and after each edit,
 	/// and only while the document holds such a line.

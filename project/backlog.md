@@ -98,22 +98,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- Feedback from gitsby:
-
-	- 🔘 Children still returns nothing on a repeated key without saying so, and there's still no way to walk each instance of a key.
-
-- Feedback from SilkTerm:
-
-	- 🔘 A `*` line with no space moves out of its block on save.
-		- Reproduced: `outer:` / `x: 1` / `list:` / `* a` / `*bad` / `* b` / `y: 2`, each level one tab deeper, through `fmt`. `*bad` comes back one level up, above `list:`. E013, lost count 0.
-		- Note: a silent wrong answer one step removed. Fixed later to `* bad`, the line is no longer in `list`. An E019 line is kept in place at its own indent, and this should be too.
-		- Opened: 20260924-142912
-
-	- 🔘 `GEN_BANNER`'s Syntax link is dead until 3.0.0 final.
-		- Reproduced: `https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md` returns 404. A beta is tagged `v3.0.0-beta.1`, so every file written during the betas points at nothing.
-		- Note: a rough edge. Either accept the gap, or link the beta's own tag while it is the latest.
-		- Opened: 20260924-142912
-
 - Code review 20260924c:
 
 	- 🔘 Item 1: the help's `set` paragraph says set-if-absent and removal go in only as a stdin ops script.
@@ -181,18 +165,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- Feedback from SilkTerm:
-
-	- 🔘 Keep a line at a bad indent (E012), and the lines under it (E018), on save, the way an E019 line is kept.
-		- Reproduced: `window:` / `opacity: 1.0` at one tab / `margin: 4` at four spaces / `columns: 160` at one tab, through `fmt`. The `margin` line is gone and counts as lost, so `save_file` refuses.
-		- Note: a missing capability. One stray space in a hand-edited config stops every save, including ones nobody asked for, like a program saving its window size. Wanted: the line written bait was, and a lost count of 0.
-		- Opened: 20260924-142912
-
-	- 🔘 Let a caller ask whether a file needs `migrate`, and get the rewrite without the stamp.
-		- Note: `format_version` is private, so a consumer checks `FORMAT_LINE_HEAD` itself, and that check does not skip raw bodies the way shcl's does. `migrate` always adds the Format line at end, even when nothing else changed, so a program that writes `GEN_BANNER` as its own footer has to strip it off again.
-		- Wanted: a public `format_version` or `needs_migrate`, and an option to leave the stamp off.
-		- Opened: 20260924-142912
-
 - Code review 20260924c:
 
 	- 🔘 Idea 8: the pipeline calls `git` and `gh` directly.
@@ -216,6 +188,32 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 ### Done
 
 #### Done - Bugs
+
+- ✅ Children still returns nothing on a repeated key without saying so, and there's still no way to walk each instance of a key.
+	- Note: reported from gitsby, whose details.md has the repro (`account[#0].email` gives `[]`).
+	- Fixed: `children` lists the children of each instance in turn, the way a dotted path reaches all of them. `instance_paths` is new: every binding's path with `[#i]` on each name its parent repeats. `children` and `instance_paths` in Rust and Python, `Children` and `InstancePaths` in Go, `shcl_children` and `shcl_instance_paths` in C, and the veneer.
+	- Pinned by: corpus case `069`'s rows, gitsby's repro in all four runners, and a fuzz property that `instance_paths` has one path per node, each reading one node.
+	- Opened: 20260924-151327
+	- Closed: 20260924-180219
+
+- ✅ A `*` line with no space moves out of its block on save.
+	- Reproduced: `outer:` / `x: 1` / `list:` / `* a` / `*bad` / `* b` / `y: 2`, each level one tab deeper, through `fmt`. `*bad` comes back one level up, above `list:`. E013, lost count 0.
+	- Note: a silent wrong answer one step removed. Fixed later to `* bad`, the line is no longer in `list`. An E019 line is kept in place at its own indent, and this should be too.
+	- Note: reported from SilkTerm.
+	- Fixed: a kept line among a stacked list's elements stays where it sat, and the list is written stacked. `keep_among` and `stacks` in Rust, Python and C, `keepAmong` and `stacks` in Go. A setter, or a list after an empty binding of its name, unstacks it and moves the lines above (`unstack`).
+	- Fixed: a comment at an element's column after the last element stays inside the list. It went out a level up.
+	- Pinned by: corpus case `146-stacked-kept-line`.
+	- Opened: 20260924-142912
+	- Closed: 20260924-180219
+
+- ✅ `GEN_BANNER`'s Syntax link is dead until 3.0.0 final.
+	- Reproduced: `https://github.com/yottacore/shcl/blob/v3.0.0/project/spec.md` returns 404. A beta is tagged `v3.0.0-beta.1`, so every file written during the betas points at nothing.
+	- Note: a rough edge. Either accept the gap, or link the beta's own tag while it is the latest.
+	- Note: reported from SilkTerm.
+	- Decided: the link names `v3.0.0-beta1`, the first release of format 3, by the rule item 57 set, and stays for all of format 3. The first cut has to tag exactly that.
+	- Fixed: the banner in all four bindings, the spec, the README, `cli-regress.bash` and the `init` goldens.
+	- Opened: 20260924-142912
+	- Closed: 20260924-180219
 
 - ✅ `perf-gate` fails now and then on the hosted runner: Rust's `badlines` goes past its budget.
 	- Reproduced: hosted run 36044384924 on dev, 325 ms against a 294 ms budget. The same workload has read 95 to 282 ms on earlier hosted runs against about 300.
@@ -4607,6 +4605,25 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ Keep a line at a bad indent (E012), and the lines under it (E018), on save, the way an E019 line is kept.
+	- Reproduced: `window:` / `opacity: 1.0` at one tab / `margin: 4` at four spaces / `columns: 160` at one tab, through `fmt`. The `margin` line is gone and counts as lost, so `save_file` refuses.
+	- Note: a missing capability. One stray space in a hand-edited config stops every save, including ones nobody asked for, like a program saving its window size. Wanted: the line written as it was, and a lost count of 0.
+	- Note: reported from SilkTerm.
+	- Done: an `E012` line whose indent holds a space is written back as it was, and so is an `E018` line under it, with a lost count of 0. An indent of tabs alone would bind on a reload, so that line is still lost. Where a merge or an edit moves a kept line to a spot where it would bind, it is written as a comment. `misplaced` and `settle_kept` in Rust, Python and C, `misplaced` and `settleKept` in Go.
+	- Done: `migrate` still refuses at exit 7 while such a line is left, since 2.x read some of them.
+	- Pinned by: corpus cases `145-kept-misplaced`, `061`, `075` and `137`, the save-gate fixture in all four runners, and the fuzz lost-count property, which now works the kept lines out from the source.
+	- Opened: 20260924-142912
+	- Closed: 20260924-180219
+
+- ✅ Let a caller ask whether a file needs `migrate`, and get the rewrite without the stamp.
+	- Note: `format_version` is private, so a consumer checks `FORMAT_LINE_HEAD` itself, and that check does not skip raw bodies the way shcl's does. `migrate` always adds the Format line at end, even when nothing else changed, so a program that writes `GEN_BANNER` as its own footer has to strip it off again.
+	- Wanted: a public `format_version` or `needs_migrate`, and an option to leave the stamp off.
+	- Note: reported from SilkTerm.
+	- Done: `format_version` and `migrate_unstamped` in Rust and Python, `FormatVersion` and `MigrateUnstamped` in Go, `shcl_format_version` and `shcl_migrate_unstamped` in C, and the veneer. The C reader also read "300" as 30; it parses the way the others do now.
+	- Pinned by: a runner test in all four that `migrate_unstamped` differs from `migrate` only by the stamp, and that `current` agrees with `format_version`, over every corpus input.
+	- Opened: 20260924-142912
+	- Closed: 20260924-180219
 
 - ✅ `.ps1` scripts that can run on Windows should have no unicode in them, so that they don't need a BOM. (Unless a BOM is needed for other reasons.)
 	- Done: every `.ps1` is ASCII with no BOM. The copyright line takes the plain `(C)` form, as `install.ps1` already did, and section rules are `#===`. `check-docs.bash` refuses a BOM or a non-ASCII byte in any PowerShell file.
