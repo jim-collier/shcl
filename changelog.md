@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrading from 2.x
 
+- `children` on a path with several instances lists each one's children, where it listed nothing.
+
 - Escapes are read inside double quotes only. Single quotes are literal, and a backslash in bare text is a plain character, so `path: C:\dir\new` reads as written.
 
 - `\,` and `\#` no longer protect a comma or a `#` in bare text. Quote the value instead.
@@ -37,6 +39,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The installers default to the newest full release, installed for the current user. With no full release yet, that is the newest pre-release.
 
 ### New
+
+- `instance_paths()` in every binding walks a file one instance at a time, with `[#i]` on each repeated name.
+
+- `format_version()` and `migrate_unstamped()` in every binding, for a program that writes its own info block.
 
 - `shcl explain [CODE]` gives the rule behind a diagnostic code, or lists every code.
 
@@ -138,6 +144,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Writes and saving
 
+- A line at an indent no level matches is written back as it was when the indent holds a space, and so are the lines under it. A save no longer refuses over one. A tab-only one is still lost.
+
+- A malformed line among stacked list elements keeps the list stacked, with the line where it was.
+
 - A setter writes only what reads back, and refuses anything else.
 
 - `SetFloat` refuses infinity and NaN, and `SetDateTime` refuses a date that cannot exist.
@@ -203,6 +213,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `check --schema` prints the schema's own diagnostics, and still validates at strict.
 
 ### CLI
+
+- `migrate` refuses while a line sits at an indent no level matches, since 2.x read some of them.
 
 - `get`, `count`, `instances`, `fmt` and `set` print the load's diagnostics to stderr, once, before any edit runs.
 

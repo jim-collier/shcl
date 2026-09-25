@@ -227,6 +227,21 @@ public:
 		std::unique_ptr<char, void (*)(void *)> p(m.text, &std::free);
 		return Migration{std::string(p.get(), m.len), m.current != 0, m.ambiguous, m.lost};
 	}
+	// migrate() without the version line or the migrated note, for a program
+	// that writes SHCL_GEN_BANNER itself, which carries the version line.
+	static Migration migrate_unstamped(std::string_view t, bool from_v2) {
+		shcl_migration m = shcl_migrate_unstamped(t.data(), t.size(), from_v2 ? 1 : 0);
+		std::unique_ptr<char, void (*)(void *)> p(m.text, &std::free);
+		return Migration{std::string(p.get(), m.len), m.current != 0, m.ambiguous, m.lost};
+	}
+	// The format major a document's Format line names, read the way migrate
+	// reads it; none when no line names one. migrate hands a file back
+	// untouched exactly when this is SHCL_FORMAT_MAJOR or more.
+	static std::optional<std::uint32_t> format_version(std::string_view t) {
+		std::int64_t v = shcl_format_version(t.data(), t.size());
+		if (v < 0) return std::nullopt;
+		return static_cast<std::uint32_t>(v);
+	}
 
 #ifndef SHCL_NO_FILE_IO
 	// File tier: load does not fail on the file's account (the document always
@@ -386,6 +401,16 @@ public:
 		return r;
 	}
 
+	// paths() one instance at a time: every binding's path, with [#i] on each
+	// segment whose name its parent repeats, so each path reads one node.
+	std::vector<std::string> instance_paths() const {
+		shcl_reads_release(d_.get());
+		shcl_str *v; std::size_t n = shcl_instance_paths(d_.get(), &v);
+		std::vector<std::string> r; r.reserve(n);
+		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
+		return r;
+	}
+
 	// Instance display values at a path, in file order.
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_reads_release(d_.get());
@@ -504,7 +529,8 @@ public:
 	}
 
 	// Child field names under a path, file order, duplicates included; "" is
-	// the top level. Names as stored - quote_segment() splices one into a path.
+	// the top level, and a path with several instances lists each one's in
+	// turn. Names as stored - quote_segment() splices one into a path.
 	std::vector<std::string> children(std::string_view p) const {
 		shcl_reads_release(d_.get());
 		shcl_str *a; std::size_t n = shcl_children(d_.get(), p.data(), p.size(), &a);

@@ -295,7 +295,9 @@ E011|error|stacked '*' element for a field that already has a value
   one way or the other, not both.
 E012|error|indentation matches no open level
   The line is skipped, and anything written deeper is skipped with it
-  (E018). Indent to a column some open parent already uses.
+  (E018). A save writes them back as they were when the indent holds a
+  space. One indented with tabs alone would bind there, so it is lost.
+  Indent to a column some open parent already uses.
 E013|error|malformed '*' line ('*' not followed by a space)
   The line is skipped, and what is written under it goes with it.
 E014|error|malformed line skipped (the message names the reason)
@@ -1836,6 +1838,15 @@ fn do_migrate(o: &Opts) -> u8 {
 		}
 	}
 	let rewritten = rewritten_lines(&text, &m.text);
+	// A save keeps a line at an indent no level matches, but 2.x placed some
+	// such lines by a looser rule and read them, so a migration that leaves
+	// one has not carried the file across. With nothing lost, every one of
+	// them is kept.
+	let misplaced = doc
+		.diagnostics()
+		.iter()
+		.filter(|d| d.code == "E012" || d.code == "E018")
+		.count();
 	if o.check {
 		for n in &rewritten {
 			errln!("{}:{}: migrate would rewrite this line", file, n);
@@ -1847,6 +1858,13 @@ fn do_migrate(o: &Opts) -> u8 {
 				"{}: migrate --write would refuse: the migrated text drops {} line(s)/value(s) on load (--lossy overrides)",
 				file,
 				doc.lost_count()
+			);
+			rc = 7;
+		} else if rc == 0 && !o.lossy && misplaced != 0 {
+			errln!(
+				"{}: migrate --write would refuse: the migrated text leaves {} line(s) unread at an indent no open level matches (--lossy overrides)",
+				file,
+				misplaced
 			);
 			rc = 7;
 		}
@@ -1865,6 +1883,14 @@ fn do_migrate(o: &Opts) -> u8 {
 				"{}: refusing to rewrite: the migrated text drops {} line(s)/value(s) on load (--lossy overrides)",
 				file,
 				doc.lost_count()
+			);
+			return 7;
+		}
+		if misplaced != 0 && !o.lossy {
+			errln!(
+				"{}: refusing to rewrite: the migrated text leaves {} line(s) unread at an indent no open level matches (--lossy overrides)",
+				file,
+				misplaced
 			);
 			return 7;
 		}

@@ -835,6 +835,28 @@ def main():
 		once = shcl.migrate(case["input"], True).text
 		if shcl.migrate(once, True).text != once:
 			fails.append(f"{case['name']}: migrate changes its own output")
+	# Over every input, not only the migrate cases: the stamp is the one
+	# difference, and a file is current exactly when its Format line says so.
+	for case in cases:
+		for from_v2 in (True, False):
+			stamped = shcl.migrate(case["input"], from_v2)
+			unstamped = shcl.migrate_unstamped(case["input"], from_v2)
+			if (unstamped.current, unstamped.ambiguous, unstamped.lost) != (stamped.current, stamped.ambiguous, stamped.lost):
+				fails.append(f"{case['name']}: counts differ without the stamp")
+			if shcl.FORMAT_LINE_HEAD in unstamped.text and shcl.FORMAT_LINE_HEAD not in case["input"]:
+				fails.append(f"{case['name']}: migrate_unstamped wrote a Format line")
+			stamp_want = unstamped.text
+			if not stamped.current and stamped.text != unstamped.text:
+				if stamp_want and not stamp_want.endswith("\n"):
+					stamp_want += "\n"
+				stamp_want += shcl.FORMAT_LINE + "\n"
+				if unstamped.text != case["input"]:
+					stamp_want += shcl.MIGRATED_LINE + "\n"
+			if stamped.text != stamp_want:
+				fails.append(f"{case['name']}: the stamp is not the only difference")
+			named = shcl.format_version(case["input"])
+			if stamped.current != (named is not None and named >= shcl.FORMAT_MAJOR):
+				fails.append(f"{case['name']}: current disagrees with format_version")
 
 	# Diagnostics: count, line, severity, and stable code per case - the same
 	# shape `check` prints to stdout at Standard (its cross-binding contract).
@@ -933,6 +955,11 @@ def main():
 				got = "|".join(doc.paths())
 				if got != expected:
 					fails.append(f"{at}: paths got {got!r} want {expected!r}")
+				continue
+			if kind == "instance_paths":
+				got = "|".join(doc.instance_paths())
+				if got != expected:
+					fails.append(f"{at}: instance_paths got {got!r} want {expected!r}")
 				continue
 
 			got_value, got_status, got_slots = scalar_read(doc, kind, query)
@@ -1066,6 +1093,24 @@ def main():
 	rcanon = rdoc.to_canonical()
 	if shcl.Document.parse(rcanon).to_canonical() != rcanon:
 		raise SystemExit("raw block with CR is not a formatter fixpoint")
+	# gitsby's report: children() on a repeated key answered nothing, and a
+	# walk had to know to index each instance.
+	gdoc = shcl.Document.parse("account: w\n\temail: e@x\n\t\tsshkey: k1\n\temail: f@x\n\t\tsshkey: k2\n")
+	if gdoc.children("account[#0].email") != ["sshkey", "sshkey"]:
+		raise SystemExit(f"children across instances got {gdoc.children('account[#0].email')}")
+	if gdoc.children("account.email[#1]") != ["sshkey"]:
+		raise SystemExit(f"children of one instance got {gdoc.children('account.email[#1]')}")
+	want_paths = [
+		"account",
+		"account.email[#0]",
+		"account.email[#0].sshkey",
+		"account.email[#1]",
+		"account.email[#1].sshkey",
+	]
+	if gdoc.instance_paths() != want_paths:
+		raise SystemExit(f"instance_paths() got {gdoc.instance_paths()}")
+	if gdoc.get_string("account.email[#1].sshkey") != "k2":
+		raise SystemExit("an instance path did not read its node")
 	# line/quoted on the read result, line(path), children(path). Same
 	# fixture in every runner (C pins the same answers on shcl_quoted and
 	# shcl_line; its read structs stay value+status).
@@ -1731,7 +1776,15 @@ def main():
 			raise SystemExit(f"kept lost_count got {kept.lost_count()}")
 		if "square-miles 300\n" not in kept.to_canonical():
 			raise SystemExit("retained line missing from canonical output")
-		lostdoc = shcl.Document.parse("a:\n\tb: 1\n  c: 2\n")  # indent matches no level
+		# An indent matching no level is kept as written when it holds a
+		# space, which no level the emitter writes can equal, and lost when it
+		# is tabs.
+		spaced = shcl.Document.parse("a:\n\tb: 1\n  c: 2\n\td: 3\n")
+		if spaced.lost_count() != 0:
+			raise SystemExit(f"spaced lost_count got {spaced.lost_count()}")
+		if spaced.to_canonical() != "a:\n\tb: 1\n  c: 2\n\td: 3\n":
+			raise SystemExit(f"spaced line not kept as written: {spaced.to_canonical()!r}")
+		lostdoc = shcl.Document.parse("a:\n\t\tb: 1\n\tc: 2\n")
 		if lostdoc.lost_count() != 1:
 			raise SystemExit(f"lost lost_count got {lostdoc.lost_count()}")
 		kept.save_file(fpath)

@@ -320,7 +320,9 @@ static const char *CODES =
 	"  one way or the other, not both.\n"
 	"E012|error|indentation matches no open level\n"
 	"  The line is skipped, and anything written deeper is skipped with it\n"
-	"  (E018). Indent to a column some open parent already uses.\n"
+	"  (E018). A save writes them back as they were when the indent holds a\n"
+	"  space. One indented with tabs alone would bind there, so it is lost.\n"
+	"  Indent to a column some open parent already uses.\n"
 	"E013|error|malformed '*' line ('*' not followed by a space)\n"
 	"  The line is skipped, and what is written under it goes with it.\n"
 	"E014|error|malformed line skipped (the message names the reason)\n"
@@ -1046,11 +1048,23 @@ static int do_migrate(const Opts *o) {
 		if (!o->lossy) rc = 7;
 	}
 	size_t rewritten = rewritten_lines(o->check ? file : NULL, text, len, m.text, m.len);
+	// A save keeps a line at an indent no level matches, but 2.x placed some
+	// such lines by a looser rule and read them, so a migration that leaves one
+	// has not carried the file across. With nothing lost, every one of them is
+	// kept.
+	size_t misplaced = 0;
+	for (size_t k = 0; k < shcl_diag_count(d); k++) {
+		const char *c = shcl_diag_code(d, k);
+		if (!strcmp(c, "E012") || !strcmp(c, "E018")) misplaced++;
+	}
 	if (o->check) {
 		// Same as fmt --check: the save gate --write goes through is asked
 		// before 6, so 6 never promises a rewrite that would be refused.
 		if (rc == 0 && !o->lossy && shcl_lost_count(d) != 0) {
 			fprintf(stderr, "%s: migrate --write would refuse: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
+			rc = 7;
+		} else if (rc == 0 && !o->lossy && misplaced != 0) {
+			fprintf(stderr, "%s: migrate --write would refuse: the migrated text leaves %zu line(s) unread at an indent no open level matches (--lossy overrides)\n", file, misplaced);
 			rc = 7;
 		}
 		if (rc == 0 && rewritten) rc = 6;
@@ -1059,6 +1073,9 @@ static int do_migrate(const Opts *o) {
 			fprintf(stderr, "%s: refusing to rewrite; nothing changed\n", file);
 		} else if (shcl_lost_count(d) != 0 && !o->lossy) {
 			fprintf(stderr, "%s: refusing to rewrite: the migrated text drops %zu line(s)/value(s) on load (--lossy overrides)\n", file, shcl_lost_count(d));
+			rc = 7;
+		} else if (misplaced != 0 && !o->lossy) {
+			fprintf(stderr, "%s: refusing to rewrite: the migrated text leaves %zu line(s) unread at an indent no open level matches (--lossy overrides)\n", file, misplaced);
 			rc = 7;
 		} else if (!unchanged_since_read(file, text, len)) {
 			rc = EXIT_IO;

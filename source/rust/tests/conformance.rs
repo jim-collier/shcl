@@ -5,7 +5,10 @@
 //! the Rust reference runs it natively here. Case layout and reads.tsv column
 //! meanings are documented in project/conformance/README.md.
 
-use shcl::{Document, Strictness, generate, migrate, parse_datetime, quote_segment};
+use shcl::{
+	Document, FORMAT_LINE, FORMAT_LINE_HEAD, FORMAT_MAJOR, MIGRATED_LINE, Strictness,
+	format_version, generate, migrate, migrate_unstamped, parse_datetime, quote_segment,
+};
 use std::path::{Path, PathBuf};
 
 fn corpus_dir() -> PathBuf {
@@ -439,6 +442,11 @@ fn reads_match_expected() {
 				assert_eq!(got, expected, "{}", at);
 				continue;
 			}
+			if kind == "instance_paths" {
+				let got = doc.instance_paths().join("|");
+				assert_eq!(got, expected, "{}", at);
+				continue;
+			}
 
 			let (got_value, got_status, got_slots): (String, shcl::Status, Vec<shcl::Status>) =
 				match kind {
@@ -716,6 +724,52 @@ fn migrate_is_a_fixpoint() {
 			"{}: migrate changes its own output",
 			case.name
 		);
+	}
+}
+
+#[test]
+fn migrate_unstamped_is_migrate_without_the_stamp() {
+	// Over every input, not only the migrate cases: the stamp is the one
+	// difference, and a file is current exactly when its Format line says so.
+	for case in load_cases() {
+		for from_v2 in [true, false] {
+			let full = migrate(&case.input, from_v2);
+			let bare = migrate_unstamped(&case.input, from_v2);
+			assert_eq!(
+				(bare.current, bare.ambiguous, bare.lost),
+				(full.current, full.ambiguous, full.lost),
+				"{}: counts differ without the stamp",
+				case.name
+			);
+			assert!(
+				!bare.text.contains(FORMAT_LINE_HEAD) || case.input.contains(FORMAT_LINE_HEAD),
+				"{}: migrate_unstamped wrote a Format line",
+				case.name
+			);
+			let mut want = bare.text.clone();
+			if !full.current && full.text != bare.text {
+				if !want.is_empty() && !want.ends_with('\n') {
+					want.push('\n');
+				}
+				want.push_str(FORMAT_LINE);
+				want.push('\n');
+				if bare.text != case.input {
+					want.push_str(MIGRATED_LINE);
+					want.push('\n');
+				}
+			}
+			assert_eq!(
+				full.text, want,
+				"{}: the stamp is not the only difference",
+				case.name
+			);
+			assert_eq!(
+				full.current,
+				format_version(&case.input).is_some_and(|v| v >= FORMAT_MAJOR),
+				"{}: current disagrees with format_version",
+				case.name
+			);
+		}
 	}
 }
 
@@ -1181,6 +1235,30 @@ fn raw_block_line_endings_normalize_and_round_trip() {
 	assert_eq!(doc.read_raw("r").value, "one\na\rb");
 	let canon = doc.to_canonical();
 	assert_eq!(Document::parse(&canon).to_canonical(), canon);
+}
+
+#[test]
+fn children_and_instance_paths_walk_a_repeated_key() {
+	// gitsby's report: children() on a repeated key answered nothing, and a
+	// walk had to know to index each instance.
+	let doc =
+		Document::parse("account: w\n\temail: e@x\n\t\tsshkey: k1\n\temail: f@x\n\t\tsshkey: k2\n");
+	assert_eq!(doc.children("account[#0].email"), vec!["sshkey", "sshkey"]);
+	assert_eq!(doc.children("account.email[#1]"), vec!["sshkey"]);
+	assert_eq!(
+		doc.instance_paths(),
+		vec![
+			"account",
+			"account.email[#0]",
+			"account.email[#0].sshkey",
+			"account.email[#1]",
+			"account.email[#1].sshkey",
+		]
+	);
+	assert_eq!(
+		doc.get_string("account.email[#1].sshkey"),
+		Ok("k2".to_string())
+	);
 }
 
 #[test]
@@ -1730,7 +1808,12 @@ fn lost_and_save_gate() {
 	let kept = Document::parse("a: 1\nsquare-miles 300\nb: 2\n");
 	assert_eq!(kept.lost_count(), 0);
 	assert!(kept.to_canonical().contains("square-miles 300\n"));
-	let lost = Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level
+	// An indent matching no level is kept as written when it holds a space,
+	// which no level the emitter writes can equal, and lost when it is tabs.
+	let spaced = Document::parse("a:\n\tb: 1\n  c: 2\n\td: 3\n");
+	assert_eq!(spaced.lost_count(), 0);
+	assert_eq!(spaced.to_canonical(), "a:\n\tb: 1\n  c: 2\n\td: 3\n");
+	let lost = Document::parse("a:\n\t\tb: 1\n\tc: 2\n");
 	assert_eq!(lost.lost_count(), 1);
 	let dir = std::env::temp_dir().join(format!("shcl-lostgate-{}", std::process::id()));
 	std::fs::create_dir_all(&dir).unwrap();
