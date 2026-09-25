@@ -121,13 +121,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Origin: `eefd1db` put the new function between them. Confirmed.
 		- Opened: 20260924-190225
 
-- Code review 20260924c:
-
-	- 🔘 Item 1: the help's `set` paragraph says set-if-absent and removal go in only as a stdin ops script.
-		- Reproduced: `shcl help` in all four CLIs, and `shcl.1`. The option list below it has `--set-default`, `--set-literal-default` and `--remove`, which do both.
-		- Note: the help is byte-identical across the four CLIs, so all four and the man page change together.
-		- Opened: 20260924-133723
-
 - Code review 20260924:
 
 	- 🔘 Item 7: Windows PowerShell 5.1 puts a BOM in front of text piped to the binary, and `set` refuses the ops.
@@ -178,12 +171,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Reproduced, all four: `shcl version --int` and `version extra` exit 0, while `help get extra` exits 1.
 		- Rests on: the UI guide says an option a subcommand does not use is a usage error and is never ignored. The flag spellings still work anywhere, as `design.md` says.
 		- Origin: 2026-08-03. Confirmed.
-		- Opened: 20260923-145138
-
-	- 🔘 Item 19: the C header's list of when to reset a `shcl_tokens` leaves out `shcl_compact`, and reuse after one writes into freed memory.
-		- Reproduced under ASan: tokenize, `shcl_compact`, tokenize again with the same struct, and the second call writes to the freed reads arena.
-		- Note: a doc fix. The per-document serial was declined in 20260918b item 23.
-		- Origin: the tokens contract, 2026-09-19. The fourth time this handle's lifetime has come up. Confirmed.
 		- Opened: 20260923-145138
 
 ### Features and enhancements
@@ -692,6 +679,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 - Code review 20260924c:
 
+	- ✅ Item 1: the help's `set` paragraph says set-if-absent and removal go in only as a stdin ops script.
+		- Reproduced: `shcl help` in all four CLIs, and `shcl.1`. The option list below it has `--set-default`, `--set-literal-default` and `--remove`, which do both.
+		- Note: the help is byte-identical across the four CLIs, so all four and the man page change together.
+		- Fixed: the paragraph names all five options, says any of them stops the stdin read, and says raw blocks go in only through the ops script. The man page's `set` entry says the same.
+		- Verified: the help is byte-identical across the four CLIs, and `cli-regress.bash` and the crosscheck pass.
+		- Opened: 20260924-133723
+		- Closed: 20260925-110937
+
 	- ✅ Item 2: five doc claims the code had moved past.
 		- Reproduced: the README named the sums file `sha256sums.txt` and said Go needs its module in a subdirectory. The README, `contributing.md` and `design.md` said a local `--ci` is all hosted CI runs, but it also runs a Windows job. `design.md` listed `npm i`, called Tier 3 "after v1.0", and put the Go CLI module at `cmd/shcl/`. The spec said load diagnostics print on `fmt` and `set` only.
 		- Fixed: each sentence now matches the code.
@@ -796,6 +791,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260923-160833
 
 - Code review 20260923:
+
+	- ✅ Item 19: the C header's list of when to reset a `shcl_tokens` leaves out `shcl_compact`, and reuse after one writes into freed memory.
+		- Reproduced under ASan: tokenize, `shcl_compact`, tokenize again with the same struct, and the second call writes to the freed reads arena.
+		- Note: a doc fix. The per-document serial was declined in 20260918b item 23.
+		- Origin: the tokens contract, 2026-09-19. The fourth time this handle's lifetime has come up. Confirmed.
+		- Fixed: the header's list names `shcl_compact` beside `shcl_free` and `shcl_reads_release`.
+		- Opened: 20260923-145138
+		- Closed: 20260925-110937
 
 	- ✅ Item 1: the gate records a tree as passed before the cross checks run, and `--no-cross` records one too.
 		- Reproduced: a stubbed engine repo with one cross check that fails. `--ci` prints "tree recorded", then fails the cross check and exits 1. `green-tree.bash passed` then says yes for that tree, so a retried push to main skips the gate. `--ci --no-cross` records the tree with no cross check run.

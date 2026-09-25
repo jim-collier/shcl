@@ -118,14 +118,14 @@ Usage:
   shcl about | donate                    what shcl is, or how to support it
                                          (also --about, --donate)
 
-set edits FILE, the base document. Values go in as repeatable --set PATH=VALUE
-(data) or --set-literal PATH=TEXT (value syntax, so arrays work) options, which
-persist with --write; given either, no ops are read from stdin. Raw blocks,
-set-only-if-absent and removal go in as a write-ops script on stdin, one op per
-line, tab-separated. FILE '-' follows stdin: the document when an option holds
-the edits, an empty base when the ops script has stdin instead. With --write,
-a FILE that does not exist yet is created. PATH ends at the first '=' outside
-quotes and brackets, so a selector may hold one. Ops:
+set edits FILE, the base document. Edits go in as the repeatable --set,
+--set-literal, --set-default, --set-literal-default and --remove options, which
+persist with --write; given any of them, no ops are read from stdin. Raw blocks
+go in only as a write-ops script on stdin, which can make the other edits too,
+one op per line, tab-separated. FILE '-' follows stdin: the document when an
+option holds the edits, an empty base when the ops script has stdin instead.
+With --write, a FILE that does not exist yet is created. PATH ends at the first
+'=' outside quotes and brackets, so a selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent

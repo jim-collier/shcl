@@ -116,12 +116,15 @@ when nothing is there yet, giving it the same info block
 .B init
 writes unless
 .BR \-\-no\-banner .
-Simple values go in as repeatable
-.B \-\-set
-or
-.B \-\-set\-literal
-options; raw blocks, set-only-if-absent and removal go in as a write-ops script
-on stdin. See
+Edits go in as the repeatable
+.BR \-\-set ,
+.BR \-\-set\-literal ,
+.BR \-\-set\-default ,
+.B \-\-set\-literal\-default
+and
+.B \-\-remove
+options. Raw blocks go in only as a write-ops script on stdin, which can make
+the other edits too. See
 .B WRITE OPS
 below.
 .TP

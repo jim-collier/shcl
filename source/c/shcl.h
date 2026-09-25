@@ -454,8 +454,8 @@ typedef struct { shcl_piece name; shcl_piece selector; int has_selector; int sta
 // The spans of one line, or of one lookup path. Each call clears and reuses
 // it, and the two arrays grow in the read arena of the document passed on
 // that call. Zero it before its first use, before handing it a different
-// document, and after shcl_free or shcl_reads_release on the one it last
-// used; the arrays die with that arena. cap is the caller's element cap (0 = none):
+// document, and after shcl_free, shcl_compact or shcl_reads_release on the one
+// it last used; the arrays die with that arena. cap is the caller's element cap (0 = none):
 // the scan stops as soon as the value holds more elements than this, and
 // capped says it did, with elements then incomplete. cap is kept across calls.
 typedef struct {
