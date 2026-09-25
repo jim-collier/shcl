@@ -560,6 +560,17 @@ rows=(
 	'remove-ephemeral|get --remove=a %F2% a|-|3|-|-'
 	'remove-write-refused|fmt --write --remove=a %F2%|-|1|-|cannot be combined with --remove'
 	'remove-empty-path|set --remove= %F2%|-|1|-|bad --remove value'
+	##	20260923 idea 2: a path that can never parse was taken as a miss and
+	##	exited 0. It is refused now, while a missing path or a wildcard still
+	##	removes nothing at exit 0. The ops script's remove and clear-comments
+	##	refuse the same way.
+	'remove-bad-path|set --remove=b[ %F2%|-|1||^bad --remove value \(not a usable path\): b\[ \(see --help\)$'
+	'remove-value-in-path|set --remove=a:1 %F2%|-|1||^bad --remove value \(not a usable path\): a:1 \(see --help\)$'
+	'remove-bad-path-on-get|get --remove=a..b %F2% a|-|1||^bad --remove value \(not a usable path\)'
+	'remove-missing-ok|set --remove=nope %F2%|-|0|a: 1\nb: 2\n|-'
+	'remove-wildcard-ok|set --remove=a.* %F2%|-|0|a: 1\nb: 2\n|-'
+	'ops-remove-bad-path|set %F2%|remove\tb[|1||^op line 1: cannot remove b\[: not a usable path$'
+	'ops-clear-comments-bad-path|set %F2%|clear-comments\ta..b|1||^op line 1: cannot clear-comments a\.\.b: not a usable path$'
 	## 20260830b item 19: a script could read an open section's values but never
 	## learn its keys, so the only route was parsing fmt output in shell. A name
 	## needing quotes comes back path-ready, or enumerating it buys nothing.
@@ -614,6 +625,14 @@ rows=(
 	'type-clash-first-pair-named|get --float --float --bool %F% a|-|1|-|^--float cannot be combined with --bool \(see --help\)$'
 	'type-repeat-ok|get --int --int %F% a|-|0|1\n|-'
 	'type-clash-after-cmd-refusal|check --int --raw %F%|-|1|-|^type options are not valid for check \(see --help\)$'
+	##	20260923 idea 1: every edit option that shares --set's list gets the
+	##	pipeline hint on check, not only the first three.
+	'check-layer-hint|check --layer %F% %F%|-|1|-|^option --layer not valid for check: .*Pipe instead: shcl fmt --layer \.\.\. FILE '
+	'check-set-hint|check --set a=1 %F%|-|1|-|^option --set not valid for check: .*Pipe instead: shcl fmt --set '
+	'check-set-literal-hint|check --set-literal a=1 %F%|-|1|-|^option --set-literal not valid for check: .*Pipe instead: shcl fmt --set-literal '
+	'check-set-default-hint|check --set-default a=1 %F%|-|1|-|^option --set-default not valid for check: .*Pipe instead: shcl fmt --set-default '
+	'check-set-literal-default-hint|check --set-literal-default a=1 %F%|-|1|-|^option --set-literal-default not valid for check: .*Pipe instead: shcl fmt --set-literal-default '
+	'check-remove-hint|check --remove a %F%|-|1|-|^option --remove not valid for check: .*Pipe instead: shcl fmt --remove '
 	'strictness-clash|get --int --strictness=1 --strictness=3 %F% a|-|1|-|^--strictness=1 cannot be combined with --strictness=3 \(see --help\)$'
 	'strictness-same-level-ok|get --int --strictness=1 --strictness=loose %F% a|-|0|1\n|-'
 	'onbad-clash|get --int --on-bad=error --on-bad=flag %F% nope|-|1|-|^--on-bad=error cannot be combined with --on-bad=flag \(see --help\)$'

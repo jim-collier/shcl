@@ -179,7 +179,8 @@ static const char *HELP =
 	"                                         defaults half of the writer\n"
 	"  --remove=PATH                          (same) delete what is at the path,\n"
 	"                                         with its subtree. Removing nothing is\n"
-	"                                         not an error\n"
+	"                                         not an error, but a PATH that cannot\n"
+	"                                         parse is\n"
 	"The five above share one ordered list, so two of them touching the same path\n"
 	"resolve in the order given. Raw blocks still go in through the ops script.\n"
 	"\n"
@@ -667,6 +668,14 @@ static void say_layered_diagnostics(const LayeredDoc *L) {
 // overrides on top - the layered-load fold. Every layer parses at the requested
 // strictness; a strict-load failure on any aborts (exit 6). Returns 0 and fills
 // *out on success, else an exit code (nothing to free on failure).
+// A path no document can hold, which a remove would take as a miss and exit
+// 0: one the scanner rejects, or one with a value part. A missing path or a
+// wildcard is still fine.
+static int unusable_path(shcl_doc *d, const char *path, size_t plen) {
+	shcl_write_reason r = shcl_write_reason_(d, path, plen);
+	return r == SHCL_W_BAD_PATH || r == SHCL_W_VALUE_IN_PATH;
+}
+
 // PATH=VALUE at the first `=` outside quotes and brackets, so a selector
 // holding one (`x[a=b].c=1`) still addresses its instance. The tokenizer reads
 // the path half with `=` as its separator, so quotes and brackets mean here
@@ -1354,6 +1363,9 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	else if (OP("raw")) { const char *cont = nf > 3 ? fp[3] : ""; size_t contn = nf > 3 ? fn[3] : 0; char *b = (char *)xrealloc(NULL, contn ? contn : 1); size_t m = unescape_ops(cont, contn, b); wrote = SET(shcl_set_raw, b, m, v, vn); free(b); }
 	else if (OP("empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (OP("comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
+	else if ((OP("remove") || OP("clear-comments")) && !only_absent && unusable_path(d, path, plen)) {
+		op_err(lineno, "cannot %.*s %.*s: not a usable path", (int)fn[0], fp[0], (int)plen, path); rc = 1;
+	}
 	else if (OP("remove") && !only_absent) shcl_remove(d, path, plen);
 	else if (OP("clear-comments") && !only_absent) shcl_clear_comments(d, path, plen);
 	// The second field is on or off, not a path.
@@ -1694,6 +1706,10 @@ static int set_value_opt(Opts *o, const char *name, const char *v) {
 		opt_push(&o->layers, &o->nlayers, v); opt_seen(o, "--layer");
 	} else if (!strcmp(name, "--remove")) {
 		if (!*v) { fprintf(stderr, "bad --remove value (want PATH) (see --help)\n"); return 1; }
+		shcl_doc *empty = shcl_parse("", 0);
+		int unusable = unusable_path(empty, v, strlen(v));
+		shcl_free(empty);
+		if (unusable) { fprintf(stderr, "bad --remove value (not a usable path): %s (see --help)\n", v); return 1; }
 		set_push(o, v, strlen(v), "", "--remove"); opt_seen(o, "--remove");
 	} else if (!strcmp(name, "--set") || !strcmp(name, "--set-literal")
 	           || !strcmp(name, "--set-default") || !strcmp(name, "--set-literal-default")) {
@@ -1852,15 +1868,16 @@ static int check_opts(const char *cmd, const Opts *o) {
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
 		if (!ok) {
 			if (!strcmp(o->seen[i], "--<type>")) fprintf(stderr, "type options are not valid for %s (see --help)\n", cmd);
-			// The one refusal a user is likely to want anyway: check reports
-			// line numbers, and a merged document has no single file to number
-			// against. Naming the pipeline turns a dead end into a one-liner.
 			// Deliberate, not an oversight: the schema is a program artifact, so
 			// it always loads at Standard - the same rule `check --schema`
 			// follows for the schema half.
 			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
 				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n");
-			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
+			// The one refusal a user is likely to want anyway: check reports
+			// line numbers, and a merged document has no single file to number
+			// against. Naming the pipeline turns a dead end into a one-liner.
+			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")
+				|| !strcmp(o->seen[i], "--set-default") || !strcmp(o->seen[i], "--set-literal-default") || !strcmp(o->seen[i], "--remove")))
 				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
 			return 1;

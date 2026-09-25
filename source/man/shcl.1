@@ -448,7 +448,9 @@ write-out-defaults half of the writer.
 .RB ( get ", " fmt ", " count ", " instances ", " children ", " paths ", " set )
 Delete whatever is at
 .IR PATH ,
-with its subtree. Repeatable. Removing nothing is not an error.
+with its subtree. Repeatable. Removing nothing is not an error, but a
+.I PATH
+that cannot parse is.
 .PP
 The five options above share one ordered list, so two of them touching the same
 path resolve in the order given. Raw blocks still go in through the ops script.

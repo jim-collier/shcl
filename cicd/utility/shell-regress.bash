@@ -1609,6 +1609,13 @@ if declare -F fBuildNumber >/dev/null; then
 		got="$(fBuildNumber "${row% *}")"
 		[[ "${got}" == "${row#* }" ]] || fBad "cicd.bash build number for ${row% *} is ${got@Q}, want ${row#* }"
 	done
+	##	20260924d idea 3: a time that is not one gives no build and fails, and
+	##	the argument never reaches arithmetic.
+	marker="${tmpDir}/build-number-ran"
+	for bad in "" "abc" "946684799" "-5" "1.5" " 946684800" "x[\$(touch ${marker})]"; do
+		if got="$(fBuildNumber "${bad}" 2>/dev/null)"; then fBad "cicd.bash build number took ${bad@Q} and gave ${got@Q}"; fi
+	done
+	if [[ -e "${marker}" ]]; then fBad "cicd.bash build number ran a command from its argument"; fi
 else
 	fBad "cicd.bash no longer carries fBuildNumber"
 fi

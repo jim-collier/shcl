@@ -196,7 +196,14 @@ fVersion(){ sed -n '/^version *= *"/{ s/^version *= *"\(.*\)".*/\1/p; q; }' "${r
 ## 2000-01-01 UTC to a unix time, rounded, in lower-case Crockford base32.
 fBuildNumber(){   ## fBuildNumber EPOCH_SECONDS
 	local digits="0123456789abcdefghjkmnpqrstvwxyz" n out=""
-	n=$(( ($1 - 946684800 + 30) / 60 ))
+	## An empty time, from a git that gave none, or anything else that is not
+	## a count of seconds since 2000 would print a build that looks real. The
+	## digits test also comes before any arithmetic reads the argument.
+	if [[ ! "${1:-}" =~ ^[0-9]{1,15}$ ]] || ((10#$1 < 946684800)); then
+		echo "fBuildNumber: not a time since 2000: '${1:-}'" >&2
+		return 1
+	fi
+	n=$(( (10#$1 - 946684800 + 30) / 60 ))
 	while :; do
 		out="${digits:n % 32:1}${out}"
 		n=$((n / 32))
@@ -515,7 +522,7 @@ if ((${#RELEASE_NATIVE_CMD[@]})); then
 	## Stamped from the commit, not the clock, so a rebuild of one commit gives
 	## the same bytes. Only these builds carry it: the gate's own builds stay
 	## unstamped, the same as the other three CLIs they are compared against.
-	SHCL_BUILD="$(fBuildNumber "$(git -C "${root}" log -1 --format=%ct)")"
+	SHCL_BUILD="$(fBuildNumber "$(git -C "${root}" log -1 --format=%ct)")" || fDie "no build number from the commit time"
 	export SHCL_BUILD
 	fEcho "build ${SHCL_BUILD}"
 	"${RELEASE_NATIVE_CMD[@]}"

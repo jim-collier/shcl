@@ -190,7 +190,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          defaults half of the writer
   --remove=PATH                          (same) delete what is at the path,
                                          with its subtree. Removing nothing is
-                                         not an error
+                                         not an error, but a PATH that cannot
+                                         parse is
 The five above share one ordered list, so two of them touching the same path
 resolve in the order given. Raw blocks still go in through the ops script.
 
@@ -593,6 +594,16 @@ fn asked_for(argv: &[String]) -> Option<&'static str> {
 /// reads the path half with `=` as its separator, so quotes and brackets
 /// mean here exactly what they mean in a file; an argument whose path half
 /// is not a path at all has no `=` to split at.
+/// A path no document can hold, which a remove would take as a miss and
+/// exit 0: one the scanner rejects, or one with a value part. A missing path
+/// or a wildcard is still fine.
+fn unusable_path(doc: &Document, path: &str) -> bool {
+	matches!(
+		doc.write_reason(path),
+		shcl::WriteReason::BadPath | shcl::WriteReason::ValueInPath
+	)
+}
+
 fn split_set(arg: &str) -> Option<(&str, &str)> {
 	let mut tok = Tokens::default();
 	tokenize(arg, b'=', true, Rules::Current, &mut tok);
@@ -886,6 +897,12 @@ fn set_value_opt(o: &mut Opts, name: &str, v: &str) -> Result<(), String> {
 			if v.is_empty() {
 				return Err("bad --remove value (want PATH) (see --help)".to_string());
 			}
+			if unusable_path(&Document::new(), v) {
+				return Err(format!(
+					"bad --remove value (not a usable path): {} (see --help)",
+					v
+				));
+			}
 			o.sets.push(Set {
 				path: v.to_string(),
 				value: String::new(),
@@ -1077,7 +1094,14 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 				errln!(
 					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)"
 				);
-			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
+			} else if cmd == "check"
+				&& matches!(
+					*s,
+					"--layer"
+						| "--set" | "--set-literal"
+						| "--set-default" | "--set-literal-default"
+						| "--remove"
+				) {
 				// The one refusal a user is likely to want anyway: check reports
 				// line numbers, and a merged document has no single file to
 				// number against. Naming the pipeline turns a dead end into a
@@ -2238,6 +2262,9 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 		}
 		"empty" => doc.set_empty(path),
 		"comment" => doc.set_comment(path, &unescape_ops(val())),
+		"remove" | "clear-comments" if unusable_path(doc, path) => {
+			return Err(format!("cannot {} {}: not a usable path", f[0], path));
+		}
 		"remove" => {
 			doc.remove(path);
 			true
