@@ -3185,7 +3185,8 @@ static int resolve_parent(ShclParser *P, ShclStr indent, ShclLocated found, size
 	} else {
 		P->stack.len = found.to;
 	}
-	if (found.found) *out = found.parent;
+	/* Set either way: an older gcc cannot see that no caller reads it on a miss. */
+	*out = found.found ? found.parent : ROOT;
 	return found.found;
 }
 
