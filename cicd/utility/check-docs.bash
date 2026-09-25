@@ -291,6 +291,21 @@ if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 	done < <(git -C "${repoDir}" grep -nIE -o 'jim.{0,4}collier/shcl' -- . ':!changelog.md' ':!project/backlog.md' | cut -d: -f1,2 || true)
 fi
 
+##	US spelling. "model" and "label" with a doubled l came back two rounds
+##	running, each closed by a sweep that left nothing behind. The -ise forms go by stem, so
+##	promise, premise, treatise and arise pass. The code of conduct is the
+##	Contributor Covenant's own text, and the backlog quotes old findings.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	british='\b(label|model|travel|cancel|signal|level|fuel|channel|tunnel|total|marshal)l(ed|ing|er|ers)\b'
+	british+='|\b(col|behavi|fav|hon|flav|lab|neighb|harb|rum|hum|arm|vap|od|endeav|sav|rig|vig|cand)our(s|ed|ing|ite|ites|able|ably|ful|less|ly)?\b'
+	british+='|\b[a-z]+(al|an|ar|en|er|gn|ic|il|im|it|ol|on|or)is(e|ed|es|er|ers|ing|ation|ations)\b'
+	british+='|\b(custom|random|econom)is(e|ed|es|er|ers|ing|ation|ations)\b|\b(ana|para|cata)lys(e|ed|es|er|ers|ing)\b'
+	british+='|\blicence\b|\b(cent|fib|lit|theat)re(s|d)?\b|\b(defen|offen|preten)ce\b|\bartefacts?\b'
+	while IFS= read -r hit; do
+		fBad "British spelling: ${hit}"
+	done < <(git -C "${repoDir}" grep -nIiEo "${british}" -- . ':!project/backlog.md' ':!*code_of_conduct.md' || true)
+fi
+
 ##	The grammar is the oracle harnesses are written against. It has to read as
 ##	ABNF and derive what the parser reads; the samples live in check-abnf.py.
 python3 "${repoDir}/cicd/utility/check-abnf.py" "${repoDir}/project/grammar.abnf" >/dev/null \
@@ -791,3 +806,5 @@ echo "check-docs: OK"
 ##		2026-09-23  No Go doc comment opens with another declared name, and every
 ##		            veneer declaration heading a group has a comment.
 ##		2026-09-24  Every PowerShell file is ASCII with no byte-order mark.
+##		2026-09-25  No British spelling outside the code of conduct and the
+##		            backlog.
