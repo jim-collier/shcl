@@ -6,8 +6,8 @@
 //! meanings are documented in project/conformance/README.md.
 
 use shcl::{
-	Document, FORMAT_LINE, FORMAT_LINE_HEAD, FORMAT_MAJOR, MIGRATED_LINE, Strictness, format_version, generate,
-	migrate, migrate_unstamped, parse_datetime, quote_segment,
+	Document, FORMAT_LINE, FORMAT_LINE_HEAD, FORMAT_MAJOR, MIGRATED_LINE, Strictness,
+	format_version, generate, migrate, migrate_unstamped, parse_datetime, quote_segment,
 };
 use std::path::{Path, PathBuf};
 

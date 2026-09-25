@@ -3404,7 +3404,7 @@ impl<'a> Parser<'a> {
 			// its indent would measure the levels differently on a reload,
 			// and dropped, a reload never sees it.
 			let found = self.locate(indent);
-			let placed = !matches!(found.0, None | Some(DEAD));
+			let placed = found.0.is_some_and(|p| p != DEAD);
 			if placed {
 				self.hang_deeper_pending(indent);
 			}
