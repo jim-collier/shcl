@@ -1207,7 +1207,7 @@ fn say_diagnostics(diags: &[Diagnostic]) {
 	say_diagnostics_from("", diags);
 }
 
-/// The same, labelled with the file the diagnostics came from. Under `--layer`
+/// The same, labeled with the file the diagnostics came from. Under `--layer`
 /// several files are loaded and their line numbers share one space on the
 /// screen, so two layers with a bad line 2 printed the same thing twice with
 /// nothing to tell them apart.
@@ -1284,7 +1284,7 @@ fn load_layered_from(
 		})?,
 	};
 	texts.push(base_text);
-	// Lowest layer first, each labelled with its own file when there is more
+	// Lowest layer first, each labeled with its own file when there is more
 	// than one: the line numbers share a space on the screen otherwise, and two
 	// layers with a bad line 2 printed the same thing twice.
 	let names: Vec<&str> = o
@@ -1516,7 +1516,7 @@ fn read_input(file: &str) -> Result<String, String> {
 	}
 }
 
-/// A load, labelled with the file the text came from, so a strict failure in
+/// A load, labeled with the file the text came from, so a strict failure in
 /// one layer of a fold says which layer.
 fn load_from(file: &str, text: &str, strictness: Strictness, keep: bool) -> Result<Document, u8> {
 	let loaded = if keep {

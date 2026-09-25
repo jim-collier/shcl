@@ -1251,7 +1251,7 @@ func sayDiagnostics(diags []shcl.Diagnostic) {
 	sayDiagnosticsFrom("", diags)
 }
 
-// sayDiagnosticsFrom is the same, labelled with the file the diagnostics came
+// sayDiagnosticsFrom is the same, labeled with the file the diagnostics came
 // from. Under --layer several files are loaded and their line numbers share one
 // space on the screen, so two layers with a bad line 2 printed the same thing
 // twice with nothing to tell them apart.
@@ -1363,7 +1363,7 @@ func readInput(file string) (string, error) {
 	return string(b), nil
 }
 
-// loadDocFrom is a load labelled with the file the text came from, so a strict
+// loadDocFrom is a load labeled with the file the text came from, so a strict
 // failure in one layer of a fold says which layer.
 func loadDocFrom(file, text string, strictness shcl.Strictness, keep bool) (*shcl.Document, int) {
 	load := shcl.ParseWith
@@ -1490,7 +1490,7 @@ func loadLayeredFrom(o *opts, file string, given *string, keep bool) (*shcl.Docu
 		base = t
 	}
 	texts = append(texts, base)
-	// Lowest layer first, each labelled with its own file when there is more
+	// Lowest layer first, each labeled with its own file when there is more
 	// than one: the line numbers share a space on the screen otherwise, and two
 	// layers with a bad line 2 printed the same thing twice.
 	names := append(append([]string(nil), o.layers...), file)
