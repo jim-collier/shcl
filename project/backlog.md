@@ -175,27 +175,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- Code review 20260925b:
-
-	- 🔘 Idea 1: `oom_recover.c` does not run `shcl_parse_keep_lines` or `shcl_load_file_keep_lines`, which arm a recovery point of their own.
-		- Note: a scratch copy of the test over every budget up to a finished parse came back NULL each time, clean under ASan. The header says a parse never reaches `SHCL_OOM()`, and nothing checks that for these two.
-		- Opened: 20260925-144920
-
-- Code review 20260924d:
-
-	- 🔘 Idea 3: `fBuildNumber` accepts an empty or non-numeric date and returns a build that looks valid.
-		- Opened: 20260924-190225
-
-- Code review 20260923:
-
-	- 🔘 Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
-		- Note: least surprise. The help says the five edit options share one list, and the last three came in 20260830b item 21 without this site. All four CLIs.
-		- Opened: 20260923-145138
-
-	- 🔘 Idea 2: `--remove` takes a path that can never parse, such as `b[` or `a: 1`, and exits 0 with the document unchanged.
-		- Note: least surprise. `--set b[=1` is refused at option parse. Refusing a bad path would keep a missing path or a wildcard at exit 0, as the help says. All four CLIs.
-		- Opened: 20260923-145138
-
 **Stop here for a release cut**.
 
 - 🔘 Cut `v3.0.0-beta1`, after everything above.
@@ -5509,6 +5488,23 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Opened: n/a
 	- Closed: 20260713-065600
 
+- Code review 20260925b:
+
+	- ✅ Idea 1: `oom_recover.c` does not run `shcl_parse_keep_lines` or `shcl_load_file_keep_lines`, which arm a recovery point of their own.
+		- Note: a scratch copy of the test over every budget up to a finished parse came back NULL each time, clean under ASan. The header says a parse never reaches `SHCL_OOM()`, and nothing checks that for these two.
+		- Done: `oom_recover.c` runs every budget through `shcl_parse_keep_lines` and `shcl_load_file_keep_lines` on a text that is not canonical, so the copy is made. Each call comes back NULL or finishes with its text kept.
+		- Verified: with the recovery point taken out of `keep_source`, the test fails at `SHCL_OOM()`.
+		- Opened: 20260925-144920
+		- Closed: 20260925-160837
+
+- Code review 20260924d:
+
+	- ✅ Idea 3: `fBuildNumber` accepts an empty or non-numeric date and returns a build that looks valid.
+		- Done: `fBuildNumber` in `cicd.bash` takes digits only, from 2000 on, and otherwise says so and returns 1, which stops the release stage. The digits test comes before any arithmetic reads the argument.
+		- Pinned by: `shell-regress.bash` rows for an empty, a word, a negative, a padded and a pre-2000 argument, and one that would run a command. Four fail on the old function.
+		- Opened: 20260924-190225
+		- Closed: 20260925-160837
+
 - Code review 20260924c:
 
 	- ✅ Idea 1: the installers take no `--version` (`-Version` in PowerShell).
@@ -5601,6 +5597,24 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: moving the file example and a quick start up, and trimming the benchmarks, were turned down.
 		- Opened: 20260924-133723
 		- Closed: 20260924-152433
+
+- Code review 20260923:
+
+	- ✅ Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
+		- Note: least surprise. The help says the five edit options share one list, and the last three came in 20260830b item 21 without this site. All four CLIs.
+		- Done: all six edit options get the hint. `check_opts` in Rust, Python and C, `checkOpts` in Go.
+		- Pinned by: six `cli-regress.bash` rows. The three new ones fail on the old CLI.
+		- Opened: 20260923-145138
+		- Closed: 20260925-160837
+
+	- ✅ Idea 2: `--remove` takes a path that can never parse, such as `b[` or `a: 1`, and exits 0 with the document unchanged.
+		- Note: least surprise. `--set b[=1` is refused at option parse. Refusing a bad path would keep a missing path or a wildcard at exit 0, as the help says. All four CLIs.
+		- Done: `--remove` refuses a path the scanner rejects or one with a value part, at option parse, in every subcommand that takes it. A missing path or a wildcard still removes nothing at exit 0. The help and the man page say so.
+		- Done: the ops script's `remove` and `clear-comments` refuse the same paths. They took them as a miss too.
+		- Swept: `unusable_path` in Rust, Python and C, `unusablePath` in Go, called from `set_value_opt` and `apply_op` (`setValueOpt` and `applyOp` in Go, `_set_value_opt` in Python).
+		- Pinned by: seven `cli-regress.bash` rows. Five fail on the old CLI.
+		- Opened: 20260923-145138
+		- Closed: 20260925-160837
 
 - Code review 20260922:
 
