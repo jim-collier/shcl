@@ -1,10 +1,10 @@
 # Service config, kept by hand.
-Name: "Billing Two"      # shown in the UI
+Name:     "Billing Two"      # shown in the UI
 
 Server:
     # public name
     Host:   api.example.com
-    Port: 9443     # behind the proxy
+    Port:   9443     # behind the proxy
     Paths: /v1, /v3
 
     TLS:

@@ -2641,6 +2641,26 @@ func (g *seqGen) doc() string {
 	return out.String()
 }
 
+// noNewErrors: every error code text loads with, base loaded with at least as
+// often.
+func noNewErrors(text, base string) bool {
+	count := map[string]int{}
+	for _, d := range Parse(base).Diagnostics() {
+		if d.Severity == SeverityError {
+			count[d.Code]++
+		}
+	}
+	for _, d := range Parse(text).Diagnostics() {
+		if d.Severity == SeverityError {
+			count[d.Code]--
+			if count[d.Code] < 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // TestEditsAndMergesMatchAReload: a merge or an edit leaves the document its own
 // saved text reloads as, comments included, so the next step lands the same
 // whether or not the file was saved in between. Comments were filed one way by
@@ -2697,10 +2717,12 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 			if a, b := live.ToCanonical(), back.ToCanonical(); a != b {
 				t.Fatalf("a step on the document and on its reload differ at iteration %d:\n%s--- live\n%s--- reload\n%s", i, log, a, b)
 			}
-			// The save that keeps lines reloads as the document, or is its
-			// canonical form.
+			// The save that keeps lines reloads as the document with no error
+			// the base did not have, or is its canonical form.
 			if text, kept := live.ToTextKeepLines(); kept && Parse(text).ToCanonical() != live.ToCanonical() {
 				t.Fatalf("kept lines reload as another document at iteration %d:\n%s--- wrote\n%s", i, log, text)
+			} else if kept && !noNewErrors(text, base) {
+				t.Fatalf("kept lines load with a new error at iteration %d:\n%s--- wrote\n%s", i, log, text)
 			} else if !kept && text != live.ToCanonical() {
 				t.Fatalf("a save that kept no lines is not canonical at iteration %d:\n%s", i, log)
 			}

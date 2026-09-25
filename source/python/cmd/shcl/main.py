@@ -785,7 +785,7 @@ def read_input(file):
 
 def load_doc_from(file, text, strictness, keep=False):
 	# Returns (doc, None) or (None, code). On strict load failure, prints the
-	# diagnostic lines to stderr, labelled with the file the text came from so
+	# diagnostic lines to stderr, labeled with the file the text came from so
 	# a strict failure in one layer of a fold says which layer, and reports 6.
 	try:
 		if keep:
@@ -878,7 +878,7 @@ def load_layered_from(o, file, given, keep):
 	# it. Returns (doc, text, None) or (None, "", code).
 	texts = [read_input(lf) for lf in o.layers]
 	texts.append(read_input(file) if given is None else given)
-	# Lowest layer first, each labelled with its own file when there is more than
+	# Lowest layer first, each labeled with its own file when there is more than
 	# one: the line numbers share a space on the screen otherwise, and two layers
 	# with a bad line 2 printed the same thing twice.
 	names = list(o.layers) + [file]
@@ -1100,7 +1100,7 @@ def say_diagnostics(diags):
 
 
 def say_diagnostics_from(file, diags):
-	# The same, labelled with the file the diagnostics came from. Under --layer
+	# The same, labeled with the file the diagnostics came from. Under --layer
 	# several files are loaded and their line numbers share one space on the
 	# screen, so two layers with a bad line 2 printed the same thing twice with
 	# nothing to tell them apart.

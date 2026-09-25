@@ -4536,13 +4536,15 @@ fn push_leads(e: &mut Emit, leads: &[Lead], base: usize, at: (usize, Site, usize
 }
 
 /// A run of canonical lines from one source line on (0: from none), with
-/// the blank lines written before it and the spans of its values.
+/// the blank lines written before it and the spans of its values. As a
+/// group, `line` is the first source line of its runs and `parts` the runs.
 struct Unit {
 	line: usize,
 	start: usize,
 	end: usize,
 	blanks: usize,
 	spans: std::ops::Range<usize>,
+	parts: std::ops::Range<usize>,
 }
 
 fn units_of(e: &Emit) -> Vec<Unit> {
@@ -4573,6 +4575,7 @@ fn units_of(e: &Emit) -> Vec<Unit> {
 					end: next,
 					blanks,
 					spans: 0..0,
+					parts: 0..0,
 				});
 				blanks = 0;
 				open = true;
@@ -4591,7 +4594,51 @@ fn units_of(e: &Emit) -> Vec<Unit> {
 		}
 		u.spans = from..si;
 	}
+	for (i, u) in units.iter_mut().enumerate() {
+		u.parts = i..i + 1;
+	}
 	units
+}
+
+/// The runs one source line wrote, and every run between them, as one
+/// group, with a line inside a raw block or a stacked list counted as the
+/// binding line's. A comment the canonical form writes between a dotted
+/// line's block and its child sits inside such a group, and the group is
+/// kept or rewritten whole (20260925b item 2).
+fn group_units(units: &[Unit], owner: &[usize]) -> Vec<Unit> {
+	let of = |u: &Unit| owner.get(u.line).copied().unwrap_or(u.line);
+	let mut last = vec![
+		0;
+		owner
+			.len()
+			.max(units.iter().map(|u| u.line + 1).max().unwrap_or(0))
+	];
+	for (i, u) in units.iter().enumerate() {
+		last[of(u)] = i;
+	}
+	let mut groups = Vec::new();
+	let mut i = 0;
+	while i < units.len() {
+		let (mut j, mut line, mut k) = (i, 0, i);
+		while k <= j {
+			let o = of(&units[k]);
+			if o != 0 {
+				j = j.max(last[o]);
+				line = if line == 0 { o } else { line.min(o) };
+			}
+			k += 1;
+		}
+		groups.push(Unit {
+			line,
+			start: units[i].start,
+			end: units[j].end,
+			blanks: units[i].blanks,
+			spans: units[i].spans.start..units[j].spans.end,
+			parts: i..j + 1,
+		});
+		i = j + 1;
+	}
+	groups
 }
 
 /// Where the line starting at `pos` ends, past its newline.
@@ -4737,14 +4784,56 @@ fn splice_value(line: &str, was: &Emit, w: &Unit, now: &Emit, u: &Unit) -> Optio
 	if fence_open(&rest[a..b]).is_some() || bracket_text(&tok, rest) {
 		return None;
 	}
-	let from = if a == b { colon + 1 } else { b };
+	// The blanks after the colon stay as they were when there was a value
+	// and still is one; the canonical value comes with one space.
+	let (gap, value, from) = match value.strip_prefix(' ') {
+		Some(v) if a != b => (&rest[colon + 1..a], v, b),
+		_ if a == b => ("", value, colon + 1),
+		_ => ("", value, b),
+	};
 	Some(format!(
-		"{}{}{}{}",
+		"{}{}{}{}{}",
 		&t[..head + colon + 1],
+		gap,
 		value,
 		&rest[from..],
 		tail
 	))
+}
+
+/// splice_value() for a group: the runs line up one for one and differ in
+/// one, the last its source line wrote, so the line's last value is its
+/// value. The line and its new text.
+fn splice_group(
+	lines: &[&str],
+	was: &Emit,
+	(wr, w): (&[Unit], &Unit),
+	now: &Emit,
+	(ur, u): (&[Unit], &Unit),
+) -> Option<(usize, String)> {
+	let (a, b) = (&wr[w.parts.clone()], &ur[u.parts.clone()]);
+	if a.len() != b.len() {
+		return None;
+	}
+	let mut hit = None;
+	for (k, (x, y)) in a.iter().zip(b).enumerate() {
+		if x.line != y.line || x.blanks != y.blanks {
+			return None;
+		}
+		if was.out[x.start..x.end] != now.out[y.start..y.end] {
+			if hit.is_some() {
+				return None;
+			}
+			hit = Some(k);
+		}
+	}
+	let k = hit?;
+	if a[k + 1..].iter().any(|x| x.line == a[k].line) {
+		return None;
+	}
+	let line = lines.get(a[k].line.wrapping_sub(1))?;
+	let t = splice_value(line, was, &a[k], now, &b[k])?;
+	Some((a[k].line, t))
 }
 
 /// to_text_keep_lines() on a loaded text: the loaded document's canonical
@@ -4752,7 +4841,6 @@ fn splice_value(line: &str, was: &Emit, w: &Unit, now: &Emit, u: &Unit) -> Optio
 /// edited document's runs that match one exactly take that line's text.
 /// None when the result would not reload as `doc`.
 fn keep_lines(src: &str, doc: &Document) -> Option<String> {
-	const TWICE: usize = NIL - 1;
 	// A text that was canonical keeps its lines as the canonical form.
 	if src.is_empty() {
 		return Some(doc.to_canonical());
@@ -4781,34 +4869,53 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		let t = line(l);
 		&t[..t.bytes().take_while(|&b| b == b' ' || b == b'\t').count()]
 	};
-	let (was, is) = (units_of(&loaded), units_of(&now));
-	// Each source line's run in the loaded text, and the lines it stands for:
-	// its own, through the end of a raw block or a stacked list.
+	// The lines each source line stands for: its own, through the end of a
+	// raw block or a stacked list. Ranges that overlap, as a list taken up
+	// again further down, run together, and each line in a run counts as
+	// the run's first line, which stands for the whole run.
+	let mut own: Vec<usize> = (0..n + 2).collect();
+	for &(l, e) in &loaded_doc.ends {
+		if l <= n {
+			own[l] = own[l].max(e.min(n));
+		}
+	}
+	let mut owner: Vec<usize> = (0..n + 2).collect();
+	let mut end = own.clone();
+	let (mut first, mut reach) = (0, 0);
+	for k in 1..=n {
+		if k <= reach {
+			owner[k] = first;
+		} else {
+			first = k;
+		}
+		reach = reach.max(own[k]);
+		end[first] = reach;
+	}
+	let (was_runs, is_runs) = (units_of(&loaded), units_of(&now));
+	let (was, is) = (
+		group_units(&was_runs, &owner),
+		group_units(&is_runs, &owner),
+	);
+	// Each source line's group in the loaded text, and the lines it stands
+	// for, through its last run's.
 	let mut at = vec![NIL; n + 2];
-	for (i, u) in was.iter().enumerate() {
-		if u.line != 0 && u.line <= n {
-			at[u.line] = if at[u.line] == NIL { i } else { TWICE };
+	for (i, g) in was.iter().enumerate() {
+		if g.line != 0 && g.line <= n {
+			at[g.line] = i;
+			for r in &was_runs[g.parts.clone()] {
+				if r.line != 0 && r.line <= n {
+					end[g.line] = end[g.line].max(end[owner[r.line]]);
+				}
+			}
 		}
 	}
 	let claimed: Vec<usize> = (1..=n).filter(|&l| at[l] != NIL).collect();
-	let mut end: Vec<usize> = (0..n + 2).collect();
-	for &(l, e) in &loaded_doc.ends {
-		if l <= n && at[l] != NIL {
-			end[l] = end[l].max(e.min(n));
-		}
-	}
-	// The first run after each one's lines, for telling two runs that sat
-	// next to each other.
+	// The first group after each one's lines, for telling two that sat next
+	// to each other.
 	let mut next = vec![0; n + 2];
 	for &l in &claimed {
 		next[l] = claimed.partition_point(|&c| c <= end[l]);
 		next[l] = claimed.get(next[l]).copied().unwrap_or(n + 1);
-	}
-	let mut seen = vec![0u8; n + 2];
-	for u in &is {
-		if u.line != 0 && u.line <= n {
-			seen[u.line] = seen[u.line].saturating_add(1);
-		}
 	}
 	let eol = if n > 0 && line(1).ends_with("\r\n") {
 		"\r\n"
@@ -4817,9 +4924,9 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 	};
 	// One level of the source's indent: a line one level in, or failing that
 	// the first indented line, a list element or a fence.
-	let step = was
+	let step = was_runs
 		.iter()
-		.filter(|u| u.line != 0 && tabs(&loaded.out[u.start..]) == 1)
+		.filter(|u| u.line != 0 && u.line <= n && tabs(&loaded.out[u.start..]) == 1)
 		.map(|u| indent(u.line))
 		.chain((1..=n).filter(|&l| !blank(l)).map(indent))
 		.find(|i| !i.is_empty())
@@ -4832,23 +4939,41 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		}
 	};
 	let mut indents: Vec<Option<String>> = vec![Some(String::new())];
-	// The end of the last source run written, and its line while the run just
-	// written is one.
-	let (mut last, mut prev) = (0, 0);
+	// The line of the group just written while it is a source one, and the
+	// end of the last source group met, kept or not.
+	let (mut prev, mut reach) = (0, 0);
 	for (i, u) in is.iter().enumerate() {
 		let l = u.line;
-		let known = l != 0 && l <= n && seen[l] == 1 && at[l] < TWICE;
-		let from = (known && l > last).then(|| &was[at[l]]);
+		let known = l != 0 && l <= n && at[l] != NIL;
+		if known {
+			// The canonical form writes this above a source line that sat
+			// above it: blocks folded together from two places, or a
+			// selector's child under an earlier block. Keeping some of the
+			// lines would move the others, so the save falls back.
+			if l <= reach {
+				return None;
+			}
+			reach = end[l];
+		}
+		let from = known.then(|| &was[at[l]]);
 		let same = from.is_some_and(|w| loaded.out[w.start..w.end] == now.out[u.start..u.end]);
 		let spliced = match from {
-			Some(w) if !same => splice_value(line(l), &loaded, w, &now, u),
+			Some(w) if !same => splice_group(&lines, &loaded, (&was_runs, w), &now, (&is_runs, u)),
 			_ => None,
 		};
 		let kept = same || spliced.is_some();
-		// Between two runs that stay next to each other, the source's own
+		// The blank lines above a group stay while it has a blank before it.
+		// The canonical form can write that blank inside a kept group, as a
+		// dotted line's child's, while the source has it above.
+		let blanks_stay = u.blanks > 0
+			|| (kept
+				&& is_runs[u.parts.start + 1..u.parts.end]
+					.iter()
+					.any(|r| r.blanks > 0));
+		// Between two groups that stay next to each other, the source's own
 		// lines: a repeat the load folded away stays, and so do the blank
-		// lines, unless the edits took the blank out. The same before the
-		// first run. Before any other run from the source, its own blank lines.
+		// lines. The same before the first group. Before any other group from
+		// the source, its own blank lines.
 		break_line(&mut out);
 		if i == 0 {
 			if kept && claimed.first() == Some(&l) {
@@ -4858,14 +4983,14 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			let gap = end[prev] + 1..l;
 			let blanks = gap.clone().any(blank);
 			for k in gap {
-				if u.blanks > 0 || !blank(k) {
+				if blanks_stay || !blank(k) {
 					out.push_str(line(k));
 				}
 			}
 			if !blanks {
 				(0..u.blanks).for_each(|_| out.push_str(eol));
 			}
-		} else if known && u.blanks > 0 && l > 1 && blank(l - 1) {
+		} else if known && blanks_stay && l > 1 && blank(l - 1) {
 			let mut k = l - 1;
 			while k > 1 && blank(k - 1) {
 				k -= 1;
@@ -4875,14 +5000,30 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			(0..u.blanks).for_each(|_| out.push_str(eol));
 		}
 		let depth = tabs(&now.out[u.start..u.end]);
-		if same {
-			(l..=end[l]).for_each(|k| out.push_str(line(k)));
-		} else if let Some(t) = &spliced {
-			out.push_str(t);
+		if kept {
+			// A spliced line's value replaces the lines it took, as a
+			// stacked list's elements.
+			let mut k = l;
+			while k <= end[l] {
+				match &spliced {
+					Some((s, t)) if *s == k => {
+						out.push_str(t);
+						k = own[k];
+					}
+					_ => out.push_str(line(k)),
+				}
+				k += 1;
+			}
+			// A line kept as written holds no level's indent.
+			if !now.out[u.start + depth..].starts_with(' ') {
+				let head = was_runs[from.map_or(0, |w| w.parts.start)].line;
+				note_indent(&mut indents, depth, indent(head));
+			}
+			prev = l;
 		} else {
 			// A binding the edits rewrote keeps its line's indent and name.
 			let mut from = u.start;
-			if known {
+			if known && u.parts.len() == 1 {
 				let first = line_end(now.out.as_bytes(), u.start);
 				if let Some(t) = authored_head(line(l), &now.out[u.start..first - 1]) {
 					out.push_str(&t);
@@ -4892,20 +5033,12 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 				}
 			}
 			write_run(&mut out, &now, (from, u.end), &mut indents, step, eol);
-		}
-		if kept {
-			// A line kept as written holds no level's indent.
-			if !now.out[u.start + depth..].starts_with(' ') {
-				note_indent(&mut indents, depth, indent(l));
-			}
-			(last, prev) = (end[l], l);
-		} else {
 			prev = 0;
 		}
 	}
 	// The blank lines the source ends with stay at the end.
 	break_line(&mut out);
-	let tail = claimed.iter().map(|&l| end[l] + 1).max().unwrap_or(n + 1);
+	let tail = claimed.iter().map(|&l| end[l] + 1).max().unwrap_or(1);
 	if out.len() > bom.len() && (tail..=n).all(blank) {
 		(tail..=n).for_each(|k| out.push_str(line(k)));
 	}
@@ -4913,8 +5046,38 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 	if !body.is_empty() && !body.ends_with('\n') && out.ends_with(eol) {
 		out.truncate(out.len() - eol.len());
 	}
+	// The reload has to be the document, and it may not load with an error
+	// the source did not have: a child the edits gave an element list that
+	// stayed stacked reads back the same and is E001 (20260925b item 1).
 	let back = Parser::new().parse(&out, doc.strictness);
-	(back.lost == 0 && back.to_canonical() == now.out).then_some(out)
+	(back.lost == 0 && back.to_canonical() == now.out && errors_within(&back, &loaded_doc))
+		.then_some(out)
+}
+
+/// Each error code `d` loads with, `of` loaded with at least as often.
+fn errors_within(d: &Document, of: &Document) -> bool {
+	let codes = |d: &Document| {
+		let mut c: Vec<&str> = d
+			.diags
+			.iter()
+			.filter(|x| x.severity == Severity::Error)
+			.map(|x| x.code)
+			.collect();
+		c.sort_unstable();
+		c
+	};
+	let (mine, theirs) = (codes(d), codes(of));
+	let mut j = 0;
+	for c in mine {
+		while j < theirs.len() && theirs[j] < c {
+			j += 1;
+		}
+		if theirs.get(j) != Some(&c) {
+			return false;
+		}
+		j += 1;
+	}
+	true
 }
 
 /// Inline comment, canonically two spaces before the `#`.
@@ -6375,6 +6538,11 @@ impl Document {
 	}
 
 	fn new_child(&mut self, parent: usize, name: &str, name_src: &str, value: Value) -> usize {
+		// A list written stacked would get the child after its elements,
+		// which reloads as E001, so it goes inline.
+		if stacks(&self.arena[parent]) {
+			unstack(&mut self.arena[parent]);
+		}
 		let idx = self.arena.len();
 		self.arena.push(NodeData {
 			name: name.to_string(),

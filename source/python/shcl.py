@@ -3211,8 +3211,9 @@ class _Marked:
 
 class _Unit:
 	"""A run of canonical lines from one source line on (0: from none), with
-	the blank lines written before it and the spans of its values."""
-	__slots__ = ("line", "start", "end", "blanks", "spans")
+	the blank lines written before it and the spans of its values. As a group,
+	`line` is the first source line of its runs and `parts` the runs."""
+	__slots__ = ("line", "start", "end", "blanks", "spans", "parts")
 
 	def __init__(self, line, start, end, blanks):
 		self.line = line
@@ -3220,6 +3221,7 @@ class _Unit:
 		self.end = end
 		self.blanks = blanks
 		self.spans = (0, 0)
+		self.parts = (0, 0)
 
 
 def _units_of(m):
@@ -3257,7 +3259,39 @@ def _units_of(m):
 		while si < len(spans) and spans[si][0] < u.end:
 			si += 1
 		u.spans = (frm, si)
+	for i, u in enumerate(units):
+		u.parts = (i, i + 1)
 	return units
+
+
+def _group_units(units, owner):
+	"""The runs one source line wrote, and every run between them, as one
+	group, with a line inside a raw block or a stacked list counted as the
+	binding line's. A comment the canonical form writes between a dotted
+	line's block and its child sits inside such a group, and the group is kept
+	or rewritten whole (20260925b item 2)."""
+	def of(u):
+		return owner[u.line] if u.line < len(owner) else u.line
+
+	last = [0] * max(len(owner), max((u.line + 1 for u in units), default=0))
+	for i, u in enumerate(units):
+		last[of(u)] = i
+	groups = []
+	i = 0
+	while i < len(units):
+		j, line, k = i, 0, i
+		while k <= j:
+			o = of(units[k])
+			if o != 0:
+				j = max(j, last[o])
+				line = o if line == 0 else min(line, o)
+			k += 1
+		g = _Unit(line, units[i].start, units[j].end, units[i].blanks)
+		g.spans = (units[i].spans[0], units[j].spans[1])
+		g.parts = (i, j + 1)
+		groups.append(g)
+		i = j + 1
+	return groups
 
 
 def _line_end(text, pos):
@@ -3395,9 +3429,41 @@ def _splice_value(line, was, w, now, u):
 	sb = tok.src
 	if _fence_open(sb[a:b].decode("utf-8", "surrogatepass")) is not None or _bracket_text(tok):
 		return None
-	frm = colon + 1 if a == b else b
-	return (t[:head] + sb[:colon + 1].decode("utf-8", "surrogatepass") + value
+	# The blanks after the colon stay as they were when there was a value and
+	# still is one; the canonical value comes with one space.
+	gap = ""
+	if a == b:
+		frm = colon + 1
+	else:
+		frm = b
+		if value.startswith(" "):
+			gap, value = sb[colon + 1:a].decode("utf-8", "surrogatepass"), value[1:]
+	return (t[:head] + sb[:colon + 1].decode("utf-8", "surrogatepass") + gap + value
 		+ sb[frm:].decode("utf-8", "surrogatepass") + tail)
+
+
+def _splice_group(lines, was, wr, w, now, ur, u):
+	"""_splice_value() for a group: the runs line up one for one and differ in
+	one, the last its source line wrote, so the line's last value is its value.
+	The line and its new text."""
+	a, b = wr[w.parts[0]:w.parts[1]], ur[u.parts[0]:u.parts[1]]
+	if len(a) != len(b):
+		return None
+	hit = None
+	for k, (x, y) in enumerate(zip(a, b)):
+		if x.line != y.line or x.blanks != y.blanks:
+			return None
+		if was.text[x.start:x.end] != now.text[y.start:y.end]:
+			if hit is not None:
+				return None
+			hit = k
+	if hit is None or any(x.line == a[hit].line for x in a[hit + 1:]):
+		return None
+	k = a[hit].line
+	if not 1 <= k <= len(lines):
+		return None
+	t = _splice_value(lines[k - 1], was, a[hit], now, b[hit])
+	return None if t is None else (k, t)
 
 
 def _keep_lines(src, doc):
@@ -3405,7 +3471,7 @@ def _keep_lines(src, doc):
 	runs line up with the text by the source line each came from, and the
 	edited document's runs that match one exactly take that line's text.
 	None when the result would not reload as `doc`."""
-	no, twice = -1, -2
+	no = -1
 	# A text that was canonical keeps its lines as the canonical form.
 	if not src:
 		return doc.to_canonical()
@@ -3414,8 +3480,8 @@ def _keep_lines(src, doc):
 	loaded = loaded_doc._emit_marked()
 	if now.text == loaded.text:
 		return src
-	if src.startswith("﻿"):
-		bom, body = "﻿", src[1:]
+	if src.startswith("\ufeff"):
+		bom, body = "\ufeff", src[1:]
 	else:
 		bom, body = "", src
 	parts = body.split("\n")
@@ -3434,32 +3500,46 @@ def _keep_lines(src, doc):
 		t = lines[k - 1]
 		return t[:len(t) - len(t.lstrip(" \t"))]
 
-	was, is_ = _units_of(loaded), _units_of(now)
-	# Each source line's run in the loaded text, and the lines it stands for:
-	# its own, through the end of a raw block or a stacked list.
-	at = [no] * (n + 2)
-	for i, u in enumerate(was):
-		if u.line != 0 and u.line <= n:
-			at[u.line] = i if at[u.line] == no else twice
-	claimed = [k for k in range(1, n + 1) if at[k] != no]
-	end = list(range(n + 2))
+	# The lines each source line stands for: its own, through the end of a raw
+	# block or a stacked list. Ranges that overlap, as a list taken up again
+	# further down, run together, and each line in a run counts as the run's
+	# first line, which stands for the whole run.
+	own = list(range(n + 2))
 	for k, e in loaded_doc._ends:
-		if k <= n and at[k] != no:
-			end[k] = max(end[k], min(e, n))
-	# The first run after each one's lines, for telling two runs that sat
-	# next to each other.
+		if k <= n:
+			own[k] = max(own[k], min(e, n))
+	owner = list(range(n + 2))
+	end = list(own)
+	first = reach = 0
+	for k in range(1, n + 1):
+		if k <= reach:
+			owner[k] = first
+		else:
+			first = k
+		reach = max(reach, own[k])
+		end[first] = reach
+	was_runs, is_runs = _units_of(loaded), _units_of(now)
+	was, is_ = _group_units(was_runs, owner), _group_units(is_runs, owner)
+	# Each source line's group in the loaded text, and the lines it stands for,
+	# through its last run's.
+	at = [no] * (n + 2)
+	for i, g in enumerate(was):
+		if g.line != 0 and g.line <= n:
+			at[g.line] = i
+			for r in was_runs[g.parts[0]:g.parts[1]]:
+				if r.line != 0 and r.line <= n:
+					end[g.line] = max(end[g.line], end[owner[r.line]])
+	claimed = [k for k in range(1, n + 1) if at[k] != no]
+	# The first group after each one's lines, for telling two that sat next to
+	# each other.
 	nxt = [0] * (n + 2)
 	for k in claimed:
 		j = bisect.bisect_right(claimed, end[k])
 		nxt[k] = claimed[j] if j < len(claimed) else n + 1
-	seen = [0] * (n + 2)
-	for u in is_:
-		if u.line != 0 and u.line <= n:
-			seen[u.line] += 1
 	eol = "\r\n" if n > 0 and line(1).endswith("\r\n") else "\n"
 	# One level of the source's indent: a line one level in, or failing that
 	# the first indented line, a list element or a fence.
-	step = next((indent(u.line) for u in was if u.line != 0 and _tabs(loaded.text, u.start) == 1 and indent(u.line)), "")
+	step = next((indent(u.line) for u in was_runs if u.line != 0 and u.line <= n and _tabs(loaded.text, u.start) == 1 and indent(u.line)), "")
 	if not step:
 		step = next((indent(k) for k in range(1, n + 1) if not blank(k) and indent(k)), "\t")
 	out: list[str] = []
@@ -3470,20 +3550,32 @@ def _keep_lines(src, doc):
 			out.append(eol)
 
 	indents: list[str | None] = [""]
-	# The end of the last source run written, and its line while the run just
-	# written is one.
-	last = prev = 0
+	# The line of the group just written while it is a source one, and the end
+	# of the last source group met, kept or not.
+	prev = reach = 0
 	for i, u in enumerate(is_):
 		k = u.line
-		known = k != 0 and k <= n and seen[k] == 1 and at[k] >= 0
-		w = was[at[k]] if known and k > last else None
+		known = k != 0 and k <= n and at[k] != no
+		if known:
+			# The canonical form writes this above a source line that sat above
+			# it: blocks folded together from two places, or a selector's child
+			# under an earlier block. Keeping some of the lines would move the
+			# others, so the save falls back.
+			if k <= reach:
+				return None
+			reach = end[k]
+		w = was[at[k]] if known else None
 		same = w is not None and loaded.text[w.start:w.end] == now.text[u.start:u.end]
-		spliced = _splice_value(line(k), loaded, w, now, u) if w is not None and not same else None
+		spliced = _splice_group(lines, loaded, was_runs, w, now, is_runs, u) if w is not None and not same else None
 		kept = same or spliced is not None
-		# Between two runs that stay next to each other, the source's own
-		# lines: a repeat the load folded away stays, and so do the blank
-		# lines, unless the edits took the blank out. The same before the
-		# first run. Before any other run from the source, its own blank lines.
+		# The blank lines above a group stay while it has a blank before it.
+		# The canonical form can write that blank inside a kept group, as a
+		# dotted line's child's, while the source has it above.
+		blanks_stay = u.blanks > 0 or (kept and any(r.blanks > 0 for r in is_runs[u.parts[0] + 1:u.parts[1]]))
+		# Between two groups that stay next to each other, the source's own
+		# lines: a repeat the load folded away stays, and so do the blank lines.
+		# The same before the first group. Before any other group from the
+		# source, its own blank lines.
 		break_line()
 		if i == 0:
 			if kept and claimed and claimed[0] == k:
@@ -3492,11 +3584,11 @@ def _keep_lines(src, doc):
 			gap = range(end[prev] + 1, k)
 			blanks = any(blank(g) for g in gap)
 			for g in gap:
-				if u.blanks > 0 or not blank(g):
+				if blanks_stay or not blank(g):
 					out.append(line(g))
 			if not blanks:
 				out.extend([eol] * u.blanks)
-		elif known and u.blanks > 0 and k > 1 and blank(k - 1):
+		elif known and blanks_stay and k > 1 and blank(k - 1):
 			g = k - 1
 			while g > 1 and blank(g - 1):
 				g -= 1
@@ -3504,14 +3596,25 @@ def _keep_lines(src, doc):
 		else:
 			out.extend([eol] * u.blanks)
 		depth = _tabs(now.text, u.start)
-		if same:
-			out.extend(lines[k - 1:end[k]])
-		elif spliced is not None:
-			out.append(spliced)
+		if kept:
+			# A spliced line's value replaces the lines it took, as a stacked
+			# list's elements.
+			g = k
+			while g <= end[k]:
+				if spliced is not None and spliced[0] == g:
+					out.append(spliced[1])
+					g = own[g]
+				else:
+					out.append(line(g))
+				g += 1
+			# A line kept as written holds no level's indent.
+			if w is not None and not now.text.startswith(" ", u.start + depth):
+				_note_indent(indents, depth, indent(was_runs[w.parts[0]].line))
+			prev = k
 		else:
 			# A binding the edits rewrote keeps its line's indent and name.
 			frm = u.start
-			if known:
+			if known and u.parts[1] - u.parts[0] == 1:
 				first = _line_end(now.text, u.start)
 				t = _authored_head(line(k), now.text[u.start:first - 1])
 				if t is not None:
@@ -3520,16 +3623,10 @@ def _keep_lines(src, doc):
 					_note_indent(indents, depth, indent(k))
 					frm = first
 			_write_run(out, now, frm, u.end, indents, step, eol)
-		if kept:
-			# A line kept as written holds no level's indent.
-			if not now.text.startswith(" ", u.start + depth):
-				_note_indent(indents, depth, indent(k))
-			last, prev = end[k], k
-		else:
 			prev = 0
 	# The blank lines the source ends with stay at the end.
 	break_line()
-	tail = max((end[k] + 1 for k in claimed), default=n + 1)
+	tail = max((end[k] + 1 for k in claimed), default=1)
 	if _last_piece(out) and all(blank(g) for g in range(tail, n + 1)):
 		out.extend(lines[tail - 1:])
 	text = "".join(out)
@@ -3537,10 +3634,29 @@ def _keep_lines(src, doc):
 	if body and not body.endswith("\n") and text.endswith(eol):
 		text = text[:-len(eol)]
 	text = bom + text
+	# The reload has to be the document, and it may not load with an error the
+	# source did not have: a child the edits gave an element list that stayed
+	# stacked reads back the same and is E001 (20260925b item 1).
 	back = _Parser().parse(text, doc._strictness)
-	if back._lost == 0 and back.to_canonical() == now.text:
+	if back._lost == 0 and back.to_canonical() == now.text and _errors_within(back, loaded_doc):
 		return text
 	return None
+
+
+def _errors_within(d, of):
+	"""Each error code `d` loads with, `of` loaded with at least as often."""
+	def codes(doc):
+		return sorted(x.code for x in doc.diags if x.severity == Severity.Error)
+
+	mine, theirs = codes(d), codes(of)
+	j = 0
+	for c in mine:
+		while j < len(theirs) and theirs[j] < c:
+			j += 1
+		if j == len(theirs) or theirs[j] != c:
+			return False
+		j += 1
+	return True
 
 
 class Document:
@@ -4333,6 +4449,10 @@ class Document:
 		return Document.parse("")
 
 	def _new_child(self, parent, name, name_src, value):
+		# A list written stacked would get the child after its elements, which
+		# reloads as E001, so it goes inline.
+		if _stacks(self.arena[parent]):
+			_unstack(self.arena[parent])
 		idx = len(self.arena)
 		node = _Node(name, value, parent, 0, name_src)
 		# Hand-written files separate top-level sections with a blank line;

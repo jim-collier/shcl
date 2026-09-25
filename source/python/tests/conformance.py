@@ -6,6 +6,7 @@
 # binding must pass; column meanings live in project/conformance/README.md. Plain
 # stdlib (no pytest) so cicd runs it with a bare python3. Exit nonzero on any miss.
 
+import collections
 import math
 import os
 import stat
@@ -636,6 +637,13 @@ class SeqGen:
 SEQ_NAMES = ["a", "b", "m"]
 
 
+def no_new_errors(text, base):
+	"""Every error code text loads with, base loaded with at least as often."""
+	count = collections.Counter(d.code for d in shcl.Document.parse(base).diagnostics() if d.severity == shcl.Severity.Error)
+	count.subtract(d.code for d in shcl.Document.parse(text).diagnostics() if d.severity == shcl.Severity.Error)
+	return min(count.values(), default=0) >= 0
+
+
 def edits_and_merges_match_a_reload():
 	# A merge or an edit leaves the document its own saved text reloads as,
 	# comments included, so the next step lands the same whether or not the file
@@ -688,6 +696,8 @@ def edits_and_merges_match_a_reload():
 			t, kept = live.to_text_keep_lines()
 			if kept and shcl.Document.parse(t).to_canonical() != a:
 				raise SystemExit(f"kept lines reload as another document at iteration {i}:\n{log}--- wrote\n{t}")
+			if kept and not no_new_errors(t, base):
+				raise SystemExit(f"kept lines load with a new error at iteration {i}:\n{log}--- wrote\n{t}")
 			if not kept and t != a:
 				raise SystemExit(f"a save that kept no lines is not canonical at iteration {i}:\n{log}")
 

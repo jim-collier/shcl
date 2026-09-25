@@ -98,33 +98,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- Code review 20260925b:
-
-	- 🔘 Item 1: a save that keeps lines can write a file that loads with a new error. A field set under a stacked list keeps the elements and writes the field after them, which is `E001`.
-		- Reproduced, all four: `a:` with `\t* x` and `\t* y`, then `set --write --strictness=strict --set a.b=2` exits 0, and the next strict load of the file exits 6. The canonical form, `a: x, y` with the child under it, loads clean. Eight hits over 2322 corpus edits, all this one.
-		- Rests on: the spec says the kept text has to load back as the edited document. The reload check compares the canonical text and the lost count, not the errors.
-		- Note: at the release bar, since a strict reader of the file breaks after an edit that reported success.
-		- Origin: `d426c74`, ports `03e4bf0`. New code, not seen before. Confirmed.
-		- Opened: 20260925-144920
-
-	- 🔘 Item 2: a comment above a flat dotted line moves on any edit anywhere in the file, and the dotted line comes out as a block.
-		- Reproduced, all four: `# db settings`, `db.host: localhost`, `port: 1`, then `set --set port=2` gives `db:`, the comment at column 0, then `\thost: localhost`. That is neither the source nor the canonical form.
-		- Same for a selector line under a comment. In corpus 127 an edit to `env.url` rewrites `repo["org/name#123"].branch` further down. Corpus 001's blocks folded from two places come out partly moved rather than falling back.
-		- Rests on: the spec says each line no edit touched comes back byte for byte. design.md lists what falls back, and this does neither.
-		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
-		- Opened: 20260925-144920
-
-	- 🔘 Item 3: a changed value loses the spacing between the colon and the value.
-		- Reproduced, all four: `a:  1   # c` with `--set a=2` gives `a: 2   # c`.
-		- Rests on: the spec says a changed value goes into its own line with the spacing left alone.
-		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
-		- Opened: 20260925-144920
-
-	- 🔘 Item 4: the British "labelled" is in twelve comments across the four CLIs.
-		- Note: the sibling of 20260925 item 1, whose sweep looked for "modelled" only.
-		- Origin: `3f3e506` and `be2c3ea`, older than 3.0 work. Confirmed.
-		- Opened: 20260925-144920
-
 - Code review 20260924d:
 
 	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.
@@ -202,15 +175,32 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- 🔘 Cut `v3.0.0-beta1`, after everything above.
-	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
-	- Opened: 20260925-115006
-
 - Code review 20260925b:
 
 	- 🔘 Idea 1: `oom_recover.c` does not run `shcl_parse_keep_lines` or `shcl_load_file_keep_lines`, which arm a recovery point of their own.
 		- Note: a scratch copy of the test over every budget up to a finished parse came back NULL each time, clean under ASan. The header says a parse never reaches `SHCL_OOM()`, and nothing checks that for these two.
 		- Opened: 20260925-144920
+
+- Code review 20260924d:
+
+	- 🔘 Idea 3: `fBuildNumber` accepts an empty or non-numeric date and returns a build that looks valid.
+		- Opened: 20260924-190225
+
+- Code review 20260923:
+
+	- 🔘 Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
+		- Note: least surprise. The help says the five edit options share one list, and the last three came in 20260830b item 21 without this site. All four CLIs.
+		- Opened: 20260923-145138
+
+	- 🔘 Idea 2: `--remove` takes a path that can never parse, such as `b[` or `a: 1`, and exits 0 with the document unchanged.
+		- Note: least surprise. `--set b[=1` is refused at option parse. Refusing a bad path would keep a missing path or a wildcard at exit 0, as the help says. All four CLIs.
+		- Opened: 20260923-145138
+
+**Stop here for a release cut**.
+
+- 🔘 Cut `v3.0.0-beta1`, after everything above.
+	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
+	- Opened: 20260925-115006
 
 - Code review 20260924d:
 
@@ -222,32 +212,21 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: seen in an empty scratch HOME. With `user` now the default, a 1.0-era system install gets the same message and stays.
 		- Opened: 20260924-190225
 
-	- 🔘 Idea 3: `fBuildNumber` accepts an empty or non-numeric date and returns a build that looks valid.
-		- Opened: 20260924-190225
-
 	- 🔘 Idea 4: `dogfood_shcl.ps1` has no `#Requires -Version 7.0`.
 		- Note: started directly under 5.1, `$IsWindows` is empty, so it searches the Linux dirs and says no build is held.
+		- Fix: Make it work under 5.1.
 		- Opened: 20260924-190225
 
 - Code review 20260924c:
 
 	- 🔘 Idea 8: the pipeline calls `git` and `gh` directly.
 		- Note: use `gitsby raw` when it is installed and plain `git` otherwise, so a fresh clone still builds. The publisher is a copied file, so only its changed block would be patched.
+		- Note: Don't fix.
 		- Opened: 20260924-133723
 
 	- 🔘 Idea 12: `nfpm` and `makensis` are not in `TOOL_PINS`.
 		- Note: packages are the same bytes on one box, but a different tool version on another box changes them with no warning. `ci.yml` must install the pinned versions in the same commit.
 		- Opened: 20260924-133723
-
-- Code review 20260923:
-
-	- 🔘 Idea 1: `check` gives the "Pipe instead" hint for `--layer`, `--set` and `--set-literal`, but not for `--set-default`, `--set-literal-default` or `--remove`.
-		- Note: least surprise. The help says the five edit options share one list, and the last three came in 20260830b item 21 without this site. All four CLIs.
-		- Opened: 20260923-145138
-
-	- 🔘 Idea 2: `--remove` takes a path that can never parse, such as `b[` or `a: 1`, and exits 0 with the document unchanged.
-		- Note: least surprise. `--set b[=1` is refused at option parse. Refusing a bad path would keep a missing path or a wildcard at exit 0, as the help says. All four CLIs.
-		- Opened: 20260923-145138
 
 ### Done
 
@@ -674,6 +653,49 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Fixed: escapes are applied on both sides at every compare and index site, in all four bindings - the resolver, the parser's attach path, the writer's place walk, and the validator's contexts. The spec now pins the logical-string match, and corpus case 033 pins both the reads and the write path.
 	- Opened: n/a
 	- Closed: 20260804-095938
+
+- Code review 20260925b:
+
+	- ✅ Item 1: a save that keeps lines can write a file that loads with a new error. A field set under a stacked list keeps the elements and writes the field after them, which is `E001`.
+		- Reproduced, all four: `a:` with `\t* x` and `\t* y`, then `set --write --strictness=strict --set a.b=2` exits 0, and the next strict load of the file exits 6. The canonical form, `a: x, y` with the child under it, loads clean. Eight hits over 2322 corpus edits, all this one.
+		- Rests on: the spec says the kept text has to load back as the edited document. The reload check compares the canonical text and the lost count, not the errors.
+		- Note: at the release bar, since a strict reader of the file breaks after an edit that reported success.
+		- Origin: `d426c74`, ports `03e4bf0`. New code, not seen before. Confirmed.
+		- Opened: 20260925-144920
+		- Fixed: the kept text may not load with an error the source did not have, counted by code. `keep_lines` and `errors_within` in Rust and C, `keepLines` and `errorsWithin` in Go, `_keep_lines` and `_errors_within` in Python.
+		- Fixed: a child added under a list that a kept line holds stacked made the canonical form itself load with `E001`. The list now goes inline, as it already did for a setter on the list. `new_child` in Rust, `newChild` in Go, `_new_child` in Python, `w_new_child` in C.
+		- Pinned by: corpus case `154-keep-lines-list-child`, in the keep and write dimensions. The Rust fuzz property `keeping_lines_reloads_as_the_document` and the shared sequence fixture in the Go, Python and C runners check the kept text's errors against the base's.
+		- Verified: case 154 fails on the old Rust CLI. The Go fixture fails at iteration 64 with the fix taken out.
+		- Closed: 20260925-155637
+
+	- ✅ Item 2: a comment above a flat dotted line moves on any edit anywhere in the file, and the dotted line comes out as a block.
+		- Reproduced, all four: `# db settings`, `db.host: localhost`, `port: 1`, then `set --set port=2` gives `db:`, the comment at column 0, then `\thost: localhost`. That is neither the source nor the canonical form.
+		- Same for a selector line under a comment. In corpus 127 an edit to `env.url` rewrites `repo["org/name#123"].branch` further down. Corpus 001's blocks folded from two places come out partly moved rather than falling back.
+		- Rests on: the spec says each line no edit touched comes back byte for byte. design.md lists what falls back, and this does neither.
+		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
+		- Opened: 20260925-144920
+		- Fixed: the runs one source line gave, whatever the canonical form writes between them, and the lines inside a raw block or stacked list are one group, kept or rewritten whole. A changed value in a group goes into its line. `group_units` and `splice_group` in Rust and C, `groupUnits` and `spliceGroup` in Go, `_group_units` and `_splice_group` in Python.
+		- Fixed: where the canonical order puts a source line above one that sat above it, as with folded blocks or a selector's child under an earlier block, the save falls back to the canonical form rather than moving some lines. design.md's fallback list says so.
+		- Pinned by: corpus cases `153-keep-lines-groups` (a comment above a dotted line and above a selector line, with edits beside and on them) and `155-keep-lines-order`. The Rust fuzz's tidy configs now have dotted lines, and a new field at the top must keep every line of the base that is not blank, in order.
+		- Verified: both cases fail on the old Rust CLI, and so does the new fuzz property. 2,000,000 fuzz clean.
+		- Closed: 20260925-155637
+
+	- ✅ Item 3: a changed value loses the spacing between the colon and the value.
+		- Reproduced, all four: `a:  1   # c` with `--set a=2` gives `a: 2   # c`.
+		- Rests on: the spec says a changed value goes into its own line with the spacing left alone.
+		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
+		- Opened: 20260925-144920
+		- Fixed: the blanks after the colon stay when the old and the new value are both there. `splice_value` in Rust and C, `spliceValue` in Go, `_splice_value` in Python.
+		- Pinned by: `expected-keep.shcl` of corpus cases 150 and 151, which the old code fails.
+		- Closed: 20260925-155637
+
+	- ✅ Item 4: the British "labelled" is in twelve comments across the four CLIs.
+		- Note: the sibling of 20260925 item 1, whose sweep looked for "modelled" only.
+		- Origin: `3f3e506` and `be2c3ea`, older than 3.0 work. Confirmed.
+		- Opened: 20260925-144920
+		- Fixed: all twelve read "labeled".
+		- Swept: `git grep` over source, cicd, spec, design and README for labelled, modelled, travelled, cancelled, signalled, levelled, colour, behaviour, favour, honour and the -ise forms finds none. Closed backlog items keep their spelling.
+		- Closed: 20260925-155637
 
 - Code review 20260924d:
 

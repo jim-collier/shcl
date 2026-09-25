@@ -586,7 +586,7 @@ static void say_diag(size_t line, shcl_severity sev, const char *code, shcl_str 
 	say_diag_from("", line, sev, code, msg);
 }
 
-// The same, labelled with the file the diagnostic came from. Under --layer
+// The same, labeled with the file the diagnostic came from. Under --layer
 // several files are loaded and their line numbers share one space on the
 // screen, so two layers with a bad line 2 printed the same thing twice with
 // nothing to tell them apart.
@@ -611,7 +611,7 @@ static void say_diagnostics_from(const char *file, const shcl_doc *d) {
 static int strict_gate_from(const char *file, const shcl_doc *d);
 static int strict_gate(const shcl_doc *d) { return strict_gate_from("", d); }
 
-// The same, labelled with the file the document came from, so a strict failure
+// The same, labeled with the file the document came from, so a strict failure
 // in one layer of a fold says which layer.
 static int strict_gate_from(const char *file, const shcl_doc *d) {
 	if (!shcl_strict_failed(d)) return 0;
@@ -655,7 +655,7 @@ static void layered_free(LayeredDoc *L) {
 // Every layer's diagnostics, lowest first. Reading them off the merged doc
 // alone would drop the ones for FILE itself, which is the one the caller named.
 static void say_layered_diagnostics(const LayeredDoc *L) {
-	// Each labelled with its own file when there is more than one: the line
+	// Each labeled with its own file when there is more than one: the line
 	// numbers share a space on the screen otherwise.
 	int lbl = L->nnames > 1;
 	say_diagnostics_from(lbl ? L->names[0] : "", L->doc);

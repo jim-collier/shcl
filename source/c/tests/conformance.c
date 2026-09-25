@@ -535,6 +535,21 @@ static void seq_doc(SeqBuf *b) {
 	}
 }
 
+/* Every error code `d` loads with, `of` loaded with at least as often. */
+static int no_new_errors(const shcl_doc *d, const shcl_doc *of) {
+	for (size_t i = 0; i < shcl_diag_count(d); i++) {
+		if (shcl_diag_severity(d, i) != SHCL_SEV_ERROR) continue;
+		const char *code = shcl_diag_code(d, i);
+		size_t mine = 0, theirs = 0;
+		for (size_t j = 0; j < shcl_diag_count(d); j++)
+			mine += shcl_diag_severity(d, j) == SHCL_SEV_ERROR && strcmp(shcl_diag_code(d, j), code) == 0;
+		for (size_t j = 0; j < shcl_diag_count(of); j++)
+			theirs += shcl_diag_severity(of, j) == SHCL_SEV_ERROR && strcmp(shcl_diag_code(of, j), code) == 0;
+		if (mine > theirs) return 0;
+	}
+	return 1;
+}
+
 /* A merge or an edit leaves the document its own saved text reloads as,
    comments included, so the next step lands the same whether or not the file
    was saved in between. Comments were filed one way by a load and another by a
@@ -601,6 +616,12 @@ static void edits_and_merges_match_a_reload(void) {
 					fprintf(stderr, "FAIL edits_and_merges: kept lines reload as another document at iteration %d:\n%s--- wrote\n%.*s", i, log.p, (int)kt.n, kt.p);
 					nfail++; bad = 1;
 				}
+				shcl_doc *bd = shcl_parse(base.p, base.n);
+				if (!bad && !no_new_errors(kd, bd)) {
+					fprintf(stderr, "FAIL edits_and_merges: kept lines load with a new error at iteration %d:\n%s--- wrote\n%.*s", i, log.p, (int)kt.n, kt.p);
+					nfail++; bad = 1;
+				}
+				shcl_free(bd);
 				shcl_free(kd);
 			} else if (!bad && (kt.n != a.n || memcmp(kt.p, a.p, a.n) != 0)) {
 				fprintf(stderr, "FAIL edits_and_merges: a save that kept no lines is not canonical at iteration %d:\n%s", i, log.p);
