@@ -39,6 +39,8 @@ struct Case {
 	// Write dimension (optional): an ops script and its golden canonical output.
 	write_ops: Option<String>,
 	expected_write: Option<String>,
+	// The same ops through the save that keeps lines.
+	expected_keep: Option<String>,
 	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
 	write_bad_ops: Option<String>,
 	// Schema dimension (optional): a schema and the golden `check --schema` stdout.
@@ -211,6 +213,7 @@ fn load_cases() -> Vec<Case> {
 			expected_diags: std::fs::read_to_string(path.join("expected-diags.txt")).unwrap(),
 			write_ops: read_opt("write.ops"),
 			expected_write: read_opt("expected-write.shcl"),
+			expected_keep: read_opt("expected-keep.shcl"),
 			write_bad_ops: read_opt("write-bad.ops"),
 			schema: read_opt("schema.shcl"),
 			expected_validate: read_opt("expected-validate.txt"),
@@ -571,27 +574,44 @@ fn reads_match_expected() {
 #[test]
 fn write_ops_match_expected() {
 	for case in load_cases() {
-		let (ops, want) = match (&case.write_ops, &case.expected_write) {
-			(Some(o), Some(w)) => (o, w),
-			(None, None) => continue,
+		let (ops, want, keep) = match (&case.write_ops, &case.expected_write, &case.expected_keep) {
+			(Some(o), Some(w), Some(k)) => (o, w, k),
+			(None, None, None) => continue,
 			_ => panic!(
-				"{}: write.ops and expected-write.shcl must come as a pair",
+				"{}: write.ops, expected-write.shcl and expected-keep.shcl come together",
 				case.name
 			),
 		};
 		// Base doc loads at Standard; ops build/edit it via the library Writer.
+		// The one that keeps lines is the same document.
 		let mut doc = Document::parse(&case.input);
+		let mut kept = Document::parse_keep_lines(&case.input, Strictness::Standard).unwrap();
 		for (n, line) in ops.lines().enumerate() {
 			if line.is_empty() || line.starts_with('#') {
 				continue;
 			}
-			apply_op(
-				&mut doc,
-				line,
-				&format!("{}: write.ops line {}", case.name, n + 1),
-			);
+			let at = format!("{}: write.ops line {}", case.name, n + 1);
+			apply_op(&mut doc, line, &at);
+			apply_op(&mut kept, line, &at);
 		}
 		let got = doc.to_canonical();
+		let (text, lines) = kept.to_text_keep_lines();
+		assert_eq!(
+			&text, keep,
+			"{}: output differs from expected-keep.shcl",
+			case.name
+		);
+		assert!(
+			lines || text == got,
+			"{}: a save that kept no lines is not canonical",
+			case.name
+		);
+		assert_eq!(
+			Document::parse(&text).to_canonical(),
+			got,
+			"{}: expected-keep.shcl reloads as another document",
+			case.name
+		);
 		assert_eq!(
 			&got, want,
 			"{}: writer output differs from expected-write.shcl",
@@ -602,6 +622,21 @@ fn write_ops_match_expected() {
 		assert_eq!(
 			again, got,
 			"{}: written output is not a fmt fixpoint",
+			case.name
+		);
+	}
+}
+
+/// Loaded to keep its lines and saved with no edits, every input is its own
+/// text again, byte for byte.
+#[test]
+fn keeping_lines_without_edits_writes_the_input() {
+	for case in load_cases() {
+		let doc = Document::parse_keep_lines(&case.input, Strictness::Standard)
+			.unwrap_or_else(|e| e.document);
+		assert!(
+			doc.to_text_keep_lines() == (case.input.clone(), true),
+			"{}: an unedited save changed the text",
 			case.name
 		);
 	}

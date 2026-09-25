@@ -1022,6 +1022,117 @@ fn edits_and_merges_match_a_reload() {
 	}
 }
 
+/// A config the way people write one: a steady indent of tabs or spaces,
+/// comments, blank lines, odd spacing, quoted values, lists and raw blocks,
+/// sometimes with CRLF line ends.
+fn tidy(rng: &mut Rng) -> String {
+	let unit = ["\t", "  ", "    "][rng.below(3)];
+	let eol = if rng.below(5) == 0 { "\r\n" } else { "\n" };
+	let mut out = String::new();
+	let mut depth = 0usize;
+	for n in 0..(1 + rng.below(14)) {
+		if depth > 0 && rng.below(4) == 0 {
+			depth -= 1;
+		}
+		let ind = unit.repeat(depth);
+		let inner = unit.repeat(depth + 1);
+		let name = format!("{}{}", ["k", "Srv", "port", "x_y"][rng.below(4)], n);
+		let line = match rng.below(10) {
+			0 => format!("{ind}# note {n}"),
+			1 => String::new(),
+			2 => {
+				depth += 1;
+				format!("{ind}{name}:")
+			}
+			3 => format!("{ind}{name}:   \"quoted {n}\"   # c{n}"),
+			4 => format!("{ind}{name}: a, b,  c"),
+			5 => format!("{ind}{name}:{eol}{inner}* one{eol}{inner}* two"),
+			6 => format!(
+				"{ind}{name}:{eol}{inner}```{eol}{inner}body {n}{eol}{inner}  deeper{eol}{inner}```"
+			),
+			_ => format!("{ind}{name}: {}", rng.below(100)),
+		};
+		out.push_str(&line);
+		out.push_str(eol);
+	}
+	out
+}
+
+/// The save that keeps lines writes text that reloads as the document, or
+/// the canonical form when it cannot; a load with no edits writes its own
+/// text back. On tidy configs, plain edits keep their lines nearly always,
+/// so a change that quietly fell back to the canonical form every time
+/// fails here too.
+#[test]
+fn keeping_lines_reloads_as_the_document() {
+	let iters = iter_count(300);
+	let seeds = seed_texts();
+	let mut rng = Rng(0x5EED_0925_4B33_0001);
+	let (mut tries, mut kept_tidy) = (0usize, 0usize);
+	for i in 0..iters {
+		let shape = rng.below(4);
+		let base = match shape {
+			0 => {
+				let seed = rng.below(seeds.len());
+				mutate(&mut rng, &seeds[seed])
+			}
+			1 => structural(&mut rng),
+			_ => tidy(&mut rng),
+		};
+		let mut doc =
+			Document::parse_keep_lines(&base, Strictness::Standard).unwrap_or_else(|e| e.document);
+		assert_eq!(
+			doc.to_text_keep_lines(),
+			(base.clone(), true),
+			"iteration {i}: no edits, text changed:\n{base}"
+		);
+		let mut log = format!("base:\n{base}");
+		for step in 0..(1 + rng.below(3)) {
+			let paths = doc.paths();
+			let path = if paths.is_empty() || rng.below(4) == 0 {
+				format!("z{step}")
+			} else {
+				paths[rng.below(paths.len())].clone()
+			};
+			let op = rng.below(9);
+			let _ = match op {
+				0 => doc.set_int(&path, 7),
+				1 => doc.set_string(&path, "new text"),
+				2 => doc.remove(&path) > 0,
+				3 => doc.set_comment(&path, "added"),
+				4 => doc.clear_comments(&path) > 0,
+				5 => doc.set_int(&format!("{path}.kid{step}"), 3),
+				6 => doc.set_empty(&path),
+				7 => doc.set_banner(true) > 0,
+				_ => doc.set_raw(&path, "one\n\ttwo", "sh"),
+			};
+			log.push_str(&format!("op {op} at {path:?}\n"));
+		}
+		let want = doc.to_canonical();
+		let (text, kept) = doc.to_text_keep_lines();
+		if kept {
+			assert_eq!(
+				Document::parse(&text).to_canonical(),
+				want,
+				"iteration {i}: kept lines reload as another document:\n{log}--- wrote\n{text}"
+			);
+		} else {
+			assert_eq!(
+				text, want,
+				"iteration {i}: a fallback that is not canonical:\n{log}"
+			);
+		}
+		if shape >= 2 {
+			tries += 1;
+			kept_tidy += usize::from(kept);
+		}
+	}
+	assert!(
+		kept_tidy * 10 >= tries * 9,
+		"only {kept_tidy} of {tries} tidy configs kept their lines"
+	);
+}
+
 /// Lines built from the grammar with their spans known as they are laid
 /// down, so the tokenizer has an oracle outside itself: the four bindings
 /// agreeing on `tokens` proves parity, and this is what proves the spans are
