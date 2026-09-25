@@ -536,6 +536,21 @@ SRVEOF
 	[[ "${out}" == *"cannot fetch the stable release (none published yet, or network down)"* ]] \
 		|| fBad "install.ps1 does not say the network is down: ${out@Q}"
 
+	##	20260924d items 1 and 3: the plan line, from a fixed release list in
+	##	place of the API. An inner [bool]$Version once took the release's
+	##	$version, since names ignore case, and every install asked for
+	##	shcl-True. Stable keeps the full release while dev takes the beta.
+	printf '[{"tag_name":"v2.0.0","prerelease":false,"draft":false},{"tag_name":"v3.0.0-beta1","prerelease":true,"draft":false}]\n' > "${tmpDir}/rel.json"
+	#  shellcheck disable=2016  ## PowerShell's own $Release, matched literally.
+	sed "/^\tparam(\[string\]\$Release, /a\\
+\tfunction Invoke-RestMethod { Get-Content -Raw -LiteralPath '${tmpDir}/rel.json' | ConvertFrom-Json }" "${tmpDir}/nogate.ps1" > "${tmpDir}/fakeapi.ps1"
+	grep -q '^	function Invoke-RestMethod' "${tmpDir}/fakeapi.ps1" || fBad "install.ps1's inner param line moved; the fake API row found nowhere to go"
+	for release in stable dev; do
+		out="$(env -u DISPLAY PROCESSOR_ARCHITECTURE=AMD64 LOCALAPPDATA="${tmpDir}/lad" pwsh -NoProfile -NonInteractive -File "${tmpDir}/fakeapi.ps1" -Release "${release}" < /dev/null 2>&1 || true)"
+		want="shcl 2.0.0 (stable, windows-x86_64)"; [[ "${release}" == dev ]] && want="shcl 3.0.0-beta1 (dev, windows-x86_64)"
+		[[ "${out}" == *"${want}"* ]] || fBad "install.ps1 -Release ${release} planned the wrong install: ${out@Q}"
+	done
+
 	##	20260921 idea 6: a file the uninstall could not remove, which a running
 	##	shcl.exe causes on Windows, went unsaid, and the dir it kept was blamed
 	##	on files the installer never wrote. A read-only dir stands in for the
