@@ -78,17 +78,18 @@ param(
 ## there ends the shell that ran it. Only a file invocation may exit;
 ## everything else returns or throws.
 & {
-	param([string]$Release, [string]$Target, [bool]$Yes, [bool]$Uninstall, [bool]$Version, [bool]$Help, [bool]$invokedAsFile, [string]$scriptPath)
+	## ShowVersion, not Version: names ignore case, and $version below is the release's.
+	param([string]$Release, [string]$Target, [bool]$Yes, [bool]$Uninstall, [bool]$ShowVersion, [bool]$Help, [bool]$invokedAsFile, [string]$scriptPath)
 
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = 'Stop'
 
-	$installerVersion = '1.1.0'
+	$installerVersion = '1.1.1'
 
 	## Every run opens with a blank line and ends with one, errors included.
 	Write-Output ''
 
-	if ($Version) {
+	if ($ShowVersion) {
 		Write-Output "install.ps1 $installerVersion"
 		Write-Output ''
 		return
