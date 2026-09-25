@@ -98,6 +98,50 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260924d:
+
+	- 🔘 Item 1: every Windows install asks for `shcl-True-windows-x86_64.exe` and fails.
+		- Reproduced: `install.ps1` under pwsh 7 with only the `$IsWindows` guard patched out and a scratch profile. The plan line says `shcl True`, then the download 404s and it exits 1.
+		- Cause: the inner script block gained a `[bool]$Version` parameter, and `$version = $tag.TrimStart('v')` assigns into it, since PowerShell names ignore case.
+		- Note: this copy is on main, so the documented one-liner is broken now. Fails loudly and writes nothing. No gate runs `install.ps1` past its argument parse.
+		- Origin: `ce64bbe` on dev, `67f21d3` on main. Not seen before. Confirmed.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 2: with a kept misplaced line in the document, every edit and merge re-emits the whole document.
+		- Measured: a 20,000-line document, 2000 `set_int` calls. 3 ms without a kept line, 2.7 s with one ` x: y` line.
+		- Cause: `settle_kept` runs a recording emit after each of the four edit sites and after `merge` while `kept` is set, and `kept` stays set as long as one line still goes out as written.
+		- Note: the same class as 20260924 item 6, which made merge settle only what it visited. The timed fixtures from that item have no kept line, so they cannot see it. All four bindings mirror the reference.
+		- Origin: `d0b200c` (reference) and `c62b3a5` (ports), the feedback round. Confirmed in Rust, the ports by reading.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 3: the stable channel will not install `v3.0.0-beta1` once it is cut.
+		- Reproduced: the live `/releases` list plus a `v3.0.0-beta1` pre-release, through `install.bash`'s `fPickTag`: stable gives `v2.0.0`, dev gives the beta. `install.ps1`'s `Select-ReleaseTag` picks the same way.
+		- Cause: stable falls back to a pre-release only when there is no full release, and v1.0.0 to v2.0.0 are full releases.
+		- Note: the code matches its help. What fails is the expectation that the beta installs by default, while main's README will describe format 3. Needs a call on which side moves.
+		- Origin: `ce64bbe`. Not seen before. Confirmed.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.
+		- Reproduced: scratch HOME with `~/.local/bin/shcl` linked to an installer copy. `dogfood_shcl --no-update version` ran the installed release.
+		- Rests on: `Get-RunTarget`'s comment says it uses the fixed name when it names a pool version.
+		- Origin: `eefd1db`. Not seen before. Confirmed.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 5: on Windows the dogfood runner's fixed name is `%LOCALAPPDATA%\Programs\shcl.exe`, which is neither where a user install goes nor on PATH.
+		- Rests on: the runner's header says the fixed name is where a user install puts shcl, and idea 11 of 20260924c set the latest link at the user install location. `install.ps1` uses `Programs\Shcl\shcl.exe` and puts that folder on PATH.
+		- Origin: `eefd1db`. Not seen before. Plausible.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 6: the dogfood runner repeats its "left alone" note, and on Windows its "in use" note, on every run.
+		- Reproduced: two runs in a row in a scratch HOME print the same note.
+		- Rests on: the header says it writes to stderr only when it changed something.
+		- Origin: `eefd1db`. Confirmed.
+		- Opened: 20260924-190225
+
+	- 🔘 Item 7: `fFirstWritableDir`'s comment in `cicd.bash` now sits above `fInUse`.
+		- Origin: `eefd1db` put the new function between them. Confirmed.
+		- Opened: 20260924-190225
+
 - Code review 20260924c:
 
 	- 🔘 Item 1: the help's `set` paragraph says set-if-absent and removal go in only as a stdin ops script.
@@ -164,6 +208,23 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Opened: 20260923-145138
 
 ### Features and enhancements
+
+- Code review 20260924d:
+
+	- 🔘 Idea 1: stage 7's fallback destination `~/.local/bin` is now also the dogfood runner's link and the installer's user link.
+		- Note: `fInstallAtomic` there would replace the runner's link with a regular file, which the runner and `install.bash` then both refuse. Dropping `~/.local/bin` from `DOGFOOD_FIXED_DESTS` avoids it. Not run.
+		- Opened: 20260924-190225
+
+	- 🔘 Idea 2: `install.bash --uninstall` says it removed shcl when nothing was there.
+		- Note: seen in an empty scratch HOME. With `user` now the default, a 1.0-era system install gets the same message and stays.
+		- Opened: 20260924-190225
+
+	- 🔘 Idea 3: `fBuildNumber` accepts an empty or non-numeric date and returns a build that looks valid.
+		- Opened: 20260924-190225
+
+	- 🔘 Idea 4: `dogfood_shcl.ps1` has no `#Requires -Version 7.0`.
+		- Note: started directly under 5.1, `$IsWindows` is empty, so it searches the Linux dirs and says no build is held.
+		- Opened: 20260924-190225
 
 - Code review 20260924c:
 
