@@ -1,0 +1,6 @@
+# A child under a stacked list gives the canonical form.
+a: x, y
+b:
+	* p
+	*bad
+	* q

@@ -1050,6 +1050,7 @@ fn tidy(rng: &mut Rng) -> String {
 			6 => format!(
 				"{ind}{name}:{eol}{inner}```{eol}{inner}body {n}{eol}{inner}  deeper{eol}{inner}```"
 			),
+			7 => format!("{ind}{name}.sub: {}", rng.below(100)),
 			_ => format!("{ind}{name}: {}", rng.below(100)),
 		};
 		out.push_str(&line);
@@ -1058,11 +1059,12 @@ fn tidy(rng: &mut Rng) -> String {
 	out
 }
 
-/// The save that keeps lines writes text that reloads as the document, or
-/// the canonical form when it cannot; a load with no edits writes its own
-/// text back. On tidy configs, plain edits keep their lines nearly always,
-/// so a change that quietly fell back to the canonical form every time
-/// fails here too.
+/// The save that keeps lines writes text that reloads as the document with
+/// no error the base did not have, or the canonical form when it cannot; a
+/// load with no edits writes its own text back. On tidy configs, plain
+/// edits keep their lines nearly always, so a change that quietly fell back
+/// to the canonical form every time fails here too, and a new field at the
+/// top keeps every line of the base that is not blank, in order.
 #[test]
 fn keeping_lines_reloads_as_the_document() {
 	let iters = iter_count(300);
@@ -1086,6 +1088,19 @@ fn keeping_lines_reloads_as_the_document() {
 			(base.clone(), true),
 			"iteration {i}: no edits, text changed:\n{base}"
 		);
+		if shape >= 2 {
+			let mut added = doc.clone();
+			assert!(added.set_int("zz_new", 1));
+			let (text, kept) = added.to_text_keep_lines();
+			let mut rest = text.split_inclusive('\n');
+			assert!(
+				kept && base
+					.split_inclusive('\n')
+					.filter(|l| !l.trim().is_empty())
+					.all(|l| rest.any(|t| t == l)),
+				"iteration {i}: a new field moved or dropped a line:\n{base}--- wrote\n{text}"
+			);
+		}
 		let mut log = format!("base:\n{base}");
 		for step in 0..(1 + rng.below(3)) {
 			let paths = doc.paths();
@@ -1111,10 +1126,26 @@ fn keeping_lines_reloads_as_the_document() {
 		let want = doc.to_canonical();
 		let (text, kept) = doc.to_text_keep_lines();
 		if kept {
+			let back = Document::parse(&text);
 			assert_eq!(
-				Document::parse(&text).to_canonical(),
+				back.to_canonical(),
 				want,
 				"iteration {i}: kept lines reload as another document:\n{log}--- wrote\n{text}"
+			);
+			let errors = |d: &Document| {
+				let mut c: Vec<&str> = d
+					.diagnostics()
+					.iter()
+					.filter(|d| d.severity == Severity::Error)
+					.map(|d| d.code)
+					.collect();
+				c.sort_unstable();
+				c
+			};
+			let mut had = errors(&Document::parse(&base)).into_iter();
+			assert!(
+				errors(&back).iter().all(|c| had.any(|h| h == *c)),
+				"iteration {i}: kept lines load with a new error:\n{log}--- wrote\n{text}"
 			);
 		} else {
 			assert_eq!(
