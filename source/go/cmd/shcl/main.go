@@ -132,6 +132,8 @@ With --write, a FILE that does not exist yet is created. PATH ends at the first
   literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+  clear-comments<TAB>PATH                                 drop comments above
+  banner<TAB>on|off                                       add or drop info block
 string/raw values decode \n \t \\; a line starting with # is a script comment.
 
 Types (get only; default --string):
@@ -2172,7 +2174,7 @@ func applyOp(doc *shcl.Document, line string) error {
 	// escape for a tab inside a value is `\t`.
 	want := 0
 	switch f[0] {
-	case "empty", "remove":
+	case "empty", "remove", "clear-comments", "banner":
 		want = 2
 	case "raw", "raw-default":
 		want = 4
@@ -2384,6 +2386,16 @@ func applyOp(doc *shcl.Document, line string) error {
 		wrote = doc.SetComment(path, unescapeOps(v))
 	case "remove":
 		doc.Remove(path)
+		wrote = true
+	case "clear-comments":
+		doc.ClearComments(path)
+		wrote = true
+	case "banner":
+		// The second field is on or off, not a path.
+		if path != "on" && path != "off" {
+			return fmt.Errorf("bad banner: %s (on or off)", path)
+		}
+		doc.SetBanner(path == "on")
 		wrote = true
 	default:
 		return fmt.Errorf("unknown op: %s", f[0])

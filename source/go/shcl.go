@@ -6143,6 +6143,123 @@ func (d *Document) SetComment(path, text string) bool {
 	return true
 }
 
+// ClearComments takes off the comment lines above the node(s) at a path, the
+// lines SetComment adds to, so a program can replace a comment rather than
+// stack another one on it. Which lines those are is where the load put them:
+// everything between the node and the binding line before it, so a heading
+// written for a group of fields goes too. A comment on the node's own line
+// stays, and so does a line kept as written for being malformed. Returns how
+// many lines came off, 0 when the path reaches nothing.
+func (d *Document) ClearComments(path string) int {
+	r, ok := d.resolveGroup(path)
+	if !ok {
+		return 0
+	}
+	var targets []int
+	switch r.kind {
+	case resOne:
+		targets = []int{r.one}
+	case resMany:
+		targets = r.many
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				targets = append(targets, s)
+			}
+		}
+	}
+	cleared := 0
+	for _, t := range targets {
+		nd := &d.arena[t]
+		tr := nd.trivia
+		if tr == nil {
+			continue
+		}
+		before := len(tr.leading)
+		// The blank above the run is the one that separates it from what comes
+		// before, so it stays with whatever is now first.
+		blank := before > 0 && tr.leading[0].blankBefore
+		kept := tr.leading[:0]
+		for _, l := range tr.leading {
+			if !strings.HasPrefix(l.text, "#") {
+				kept = append(kept, l)
+			}
+		}
+		tr.leading = kept
+		gone := before - len(kept)
+		if gone == 0 {
+			continue
+		}
+		cleared += gone
+		if len(kept) > 0 {
+			kept[0].blankBefore = kept[0].blankBefore || blank
+		} else {
+			nd.blankBefore = nd.blankBefore || blank
+		}
+	}
+	if cleared > 0 {
+		settleFirstBlank(d.arena, d.orphans)
+		d.resettleKept()
+	}
+	return cleared
+}
+
+// SetBanner puts the info block (GenBanner) at the end of the document, or
+// with on false just takes it off. An old block in the footer comes off first,
+// found by its "This config file format is SHCL." line or its version line,
+// never by its links or Legal line, which a later release may spell
+// differently. A version line Migrate stamped counts too. A block is a run of
+// "##" lines with no blank inside, so a "##" comment of the file's own, written
+// right against it, goes with it. The library save never adds the block by
+// itself; this is for a program that wants it in a file it writes. Returns how
+// many old blocks came off.
+func (d *Document) SetBanner(on bool) int {
+	isBlockLine := func(t string) bool {
+		return t == "## This config file format is SHCL." || strings.HasPrefix(t, FormatLineHead)
+	}
+	keep := make([]lead, 0, len(d.orphans))
+	removed := 0
+	for i := 0; i < len(d.orphans); {
+		end := i + 1
+		if strings.HasPrefix(d.orphans[i].text, "##") {
+			for end < len(d.orphans) && strings.HasPrefix(d.orphans[end].text, "##") && !d.orphans[end].blankBefore {
+				end++
+			}
+			hit := false
+			for _, l := range d.orphans[i:end] {
+				if isBlockLine(l.text) {
+					hit = true
+					break
+				}
+			}
+			if hit {
+				// The blank that set the block off moves to whatever followed
+				// it, so the lines around it stay apart.
+				if end < len(d.orphans) {
+					d.orphans[end].blankBefore = d.orphans[end].blankBefore || d.orphans[i].blankBefore
+				}
+				removed++
+				i = end
+				continue
+			}
+		}
+		keep = append(keep, d.orphans[i:end]...)
+		i = end
+	}
+	d.orphans = keep
+	if on {
+		open := len(d.orphans) > 0 || len(d.arena[root].children) > 0
+		for n, line := range strings.Split(strings.TrimSuffix(GenBanner, "\n"), "\n") {
+			l := plainLead(line)
+			l.blankBefore = n == 0 && open
+			d.orphans = append(d.orphans, l)
+		}
+	}
+	settleFirstBlank(d.arena, d.orphans)
+	d.resettleKept()
+	return removed
+}
+
 // SetInt binds an integer at path, creating the path as needed; false = path
 // not writable (WriteReason says why - same for every setter). Worth checking
 // rather than assuming: an ignored false means the save that follows writes a

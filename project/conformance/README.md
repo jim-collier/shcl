@@ -21,7 +21,8 @@ Each case is a directory `NNN-short-name/` containing:
 	- `<T>[-array]-default<TAB>...` - set only if the path does not already resolve.
 	- `literal<TAB>PATH<TAB>TEXT` (and `literal-default`) - set from value syntax rather than data, so `80, 443` stores a two-element array where the `string` op would store one quoted string. `TEXT` is read as the value half of a line: it is trimmed, a `#` outside quotes ends it wherever it sits, and text carrying a line break, an unclosed quote or a leading `[` is rejected.
 	- `raw<TAB>PATH<TAB>INFO<TAB>CONTENT` (and `raw-default`) - set a raw block; `INFO` may be empty. `INFO` is taken as written - the escape decode below is for `CONTENT` only.
-	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `remove<TAB>PATH`.
+	- `empty<TAB>PATH`, `comment<TAB>PATH<TAB>TEXT`, `clear-comments<TAB>PATH`, `remove<TAB>PATH`.
+	- `banner<TAB>on` puts the info block at the end, taking an old one off first. `banner<TAB>off` only takes it off.
 	- `string` and `raw` `CONTENT` values decode `\n` `\t` `\\` (so a multi-line value fits on one op line); no other escapes are interpreted. A `comment` value decodes them too, but a comment is one line, so a decoded `\n` only gets the op refused. The setters re-encode for storage, so a value read back equals the logical value it was set from.
 	- Op values are gated with the reference's grammar before any write: an int is an optional sign plus ASCII digits within i64 range; a float follows the Rust `f64` grammar (sign, `inf`/`infinity`/`nan` case-insensitive, or decimal digits with optional `.`/exponent - no underscores, hex, padding, or non-ASCII digits, and a value that overflows to an infinity is refused with every other infinity and NaN). A malformed value, a bad datetime, or an unusable path (wildcard, missing `[#N]`) rejects the op: the CLI exits 1 with empty stdout.
 
@@ -316,6 +317,10 @@ Case `145` pins which misplaced lines a save keeps. An `E012` line whose indent 
 Case `146` pins a stacked list holding kept lines among its elements and after the last one. The list stays stacked with each line where it was, so a line fixed by hand is still inside the list. Without them the same list is written inline.
 
 Case `147` pins how a misplaced line fares by indent style (`design.md` -> Load outcomes). Output is always tabs, so a stray space in a tab-indented block and a miscounted run of spaces in a space-indented block are kept as written. A tab line in a block that skips a level and a stray tab in a space-indented block would line up with a tab level on a reload, so both are lost and a save refuses.
+
+Case `148` pins `clear-comments`: every comment line above a node comes off, a group heading included, while the comment on its own line stays. The blank that set the run off stays with the node, so a comment set after it sits where the old one did. A path that reaches nothing changes nothing.
+
+Case `149` pins `banner on`: an old info block in the footer comes off, found by its version line, not its links, and so does a bare version stamp from `migrate`. A `##` comment set off by a blank line stays. A second `banner on` changes nothing. Its `write-bad.ops` refuses a value other than `on` or `off`.
 
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too.
 

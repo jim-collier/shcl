@@ -396,6 +396,25 @@ shcl_read_bool_arr shcl_read_bool_array(shcl_doc *d, const char *path, size_t pl
 shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_t plen);
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
 
+// Copy-out reads, for a caller that keeps what it reads and would rather not
+// have to call shcl_reads_release. Each leaves the read arena as it found it.
+// shcl_read_string_to writes at most cap - 1 bytes and a NUL, like snprintf,
+// and sets *len to the whole length, so *len >= cap means the buffer was
+// short. The value can hold a NUL, so go by *len. A plain single-string read
+// never needed this; one of an array's joined text did.
+// The array forms copy the first cap values into out, and the per-slot
+// statuses into slots unless it is NULL, and set *n to the whole count, so
+// *n > cap means the buffers were short. A string element, and a datetime's
+// fraction digits, point into the document itself, valid until shcl_free or
+// shcl_compact, not into the read arena. The return is the status the plain
+// read gives.
+shcl_status shcl_read_string_to(shcl_doc *d, const char *path, size_t plen, char *buf, size_t cap, size_t *len);
+shcl_status shcl_read_int_array_to(shcl_doc *d, const char *path, size_t plen, int64_t *out, shcl_status *slots, size_t cap, size_t *n);
+shcl_status shcl_read_float_array_to(shcl_doc *d, const char *path, size_t plen, double *out, shcl_status *slots, size_t cap, size_t *n);
+shcl_status shcl_read_bool_array_to(shcl_doc *d, const char *path, size_t plen, int *out, shcl_status *slots, size_t cap, size_t *n);
+shcl_status shcl_read_datetime_array_to(shcl_doc *d, const char *path, size_t plen, shcl_datetime *out, shcl_status *slots, size_t cap, size_t *n);
+shcl_status shcl_read_string_array_to(shcl_doc *d, const char *path, size_t plen, shcl_str *out, shcl_status *slots, size_t cap, size_t *n);
+
 // Give back everything the read calls have handed out. Every result from a read
 // - shcl_read_*, shcl_children, shcl_paths, shcl_instance_paths, shcl_instances, shcl_lines,
 // shcl_quote_segment, shcl_to_canonical, shcl_generate - is invalid after this; the document itself is untouched
@@ -536,6 +555,23 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 // A removed node's storage is not reclaimed until shcl_compact or shcl_free.
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+// Take off the comment lines above the node(s) at a path, the ones
+// shcl_set_comment adds to, so a comment can be replaced rather than stacked.
+// Those are the lines the load put between the node and the binding line
+// before it, so a heading written for a group of fields goes too. A comment on
+// the node's own line stays, and so does a line kept as written for being
+// malformed. Returns how many lines came off, 0 when the path reaches nothing.
+size_t shcl_clear_comments(shcl_doc *d, const char *path, size_t plen);
+// Put the info block (SHCL_GEN_BANNER) at the end of the document, or with on
+// 0 just take it off. An old block in the footer comes off first, found by its
+// "This config file format is SHCL." line or its version line, never by its
+// links or Legal line, which a later release may spell differently. A version
+// line shcl_migrate stamped counts too. A block is a run of "##" lines with no
+// blank inside, so a "##" comment of the file's own, written right against it,
+// goes with it. The library save never adds the block by itself; this is for a
+// program that wants it in a file it writes. Returns how many old blocks came
+// off.
+size_t shcl_set_banner(shcl_doc *d, int on);
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
 // Why a write at this path would fail - the reason behind a setter's bare 0,
 // so a consumer's error message need not guess. SHCL_W_WRITABLE means the same
@@ -4840,6 +4876,74 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	return 1;
 }
 
+size_t shcl_clear_comments(shcl_doc *d, const char *path, size_t plen) {
+	ShclArena *a = &d->scratch; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
+	if (!resolve_group(d, p, &r)) return 0;
+	ShclVecSize targets = {0};
+	if (r.kind == R_ONE) ShclVecSize_push(a, &targets, r.one);
+	else if (r.kind == R_MANY) targets = r.many;
+	else if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) ShclVecSize_push(a, &targets, r.slots.data[i].idx);
+	size_t cleared = 0;
+	for (size_t i = 0; i < targets.len; i++) {
+		ShclNode *nd = &NODE(d, targets.data[i]);
+		ShclTrivia *t = nd->trivia;
+		if (!t) continue;
+		ShclVecLead *ld = &t->leading;
+		/* The blank above the run is the one that separates it from what
+		   comes before, so it stays with whatever is now first. */
+		int blank = ld->len && ld->data[0].blank_before;
+		size_t w = 0;
+		for (size_t k = 0; k < ld->len; k++) if (!(ld->data[k].text.n && ld->data[k].text.p[0] == '#')) ld->data[w++] = ld->data[k];
+		size_t gone = ld->len - w;
+		ld->len = w;
+		if (!gone) continue;
+		cleared += gone;
+		if (w) ld->data[0].blank_before |= blank;
+		else nd->blank_before |= blank;
+	}
+	if (cleared) { settle_first_blank(d); resettle_kept(d); }
+	return cleared;
+}
+
+static int banner_line(ShclStr t) {
+	return s_eq(t, s_lit("## This config file format is SHCL.")) || s_starts(t, SHCL_FORMAT_LINE_HEAD);
+}
+
+size_t shcl_set_banner(shcl_doc *d, int on) {
+	ShclVecLead *o = &d->orphans;
+	size_t w = 0, removed = 0, i = 0;
+	while (i < o->len) {
+		size_t end = i + 1;
+		if (s_starts(o->data[i].text, "##")) {
+			while (end < o->len && s_starts(o->data[end].text, "##") && !o->data[end].blank_before) end++;
+			int hit = 0;
+			for (size_t k = i; k < end && !hit; k++) hit = banner_line(o->data[k].text);
+			if (hit) {
+				/* The blank that set the block off moves to whatever followed
+				   it, so the lines around it stay apart. */
+				if (end < o->len) o->data[end].blank_before |= o->data[i].blank_before;
+				removed++; i = end; continue;
+			}
+		}
+		for (; i < end; i++) o->data[w++] = o->data[i];
+	}
+	o->len = w;
+	if (on) {
+		int open = o->len || NODE(d, ROOT).children.len;
+		/* The lines point into the literal, which outlives any document. */
+		const char *b = SHCL_GEN_BANNER;
+		for (size_t n = 0; *b; n++) {
+			const char *nl = strchr(b, '\n');
+			ShclStr line; line.p = b; line.n = (size_t)(nl - b);
+			ShclVecLead_push(&d->arena, o, lead_make(line, n == 0 && open, 0));
+			b = nl + 1;
+		}
+	}
+	settle_first_blank(d);
+	resettle_kept(d);
+	return removed;
+}
+
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen) { ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(&d->arena); return w_set_marked(d, p, v_empty(), m); }
 int shcl_set_int(shcl_doc *d, const char *path, size_t plen, int64_t v) { ShclArena *a = &d->arena; ShclStr p; p.p = path; p.n = plen; ShclMark m = arena_mark(a); return w_set_marked(d, p, w_cell1(a, w_int_text(a, v)), m); }
 /* An infinity or a NaN has no spelling the reader accepts, and neither does a
@@ -5420,6 +5524,50 @@ shcl_read_str_arr shcl_read_string_array(shcl_doc *d, const char *path, size_t p
 	shcl_str *out = (shcl_str *)arena_alloc(&d->reads, (n ? n : 1) * sizeof(shcl_str));
 	for (size_t i = 0; i < n; i++) out[i] = els[i] ? els[i]->text : s_empty();
 	R.values = out; R.n = n; R.status = worst_slot(sts, n, st); R.statuses = sts; return R;
+}
+
+shcl_status shcl_read_string_to(shcl_doc *d, const char *path, size_t plen, char *buf, size_t cap, size_t *len) {
+	ShclMark m = arena_mark(&d->reads);
+	shcl_read_str r = shcl_read_string(d, path, plen);
+	if (len) *len = r.value.n;
+	if (buf && cap) {
+		size_t k = r.value.n < cap - 1 ? r.value.n : cap - 1;
+		if (k) memcpy(buf, r.value.p, k);
+		buf[k] = '\0';
+	}
+	arena_release(&d->reads, m);
+	return r.status;
+}
+
+/* The shared tail of the array forms: copy what fits, then give the read
+   arena back to the mark taken before the read. */
+static shcl_status read_copied(shcl_doc *d, ShclMark m, const void *vals, const shcl_status *sts, size_t count, shcl_status st, void *out, size_t size, shcl_status *slots, size_t cap, size_t *n) {
+	size_t k = count < cap ? count : cap;
+	if (k && out && vals) memcpy(out, vals, k * size);
+	if (k && slots && sts) memcpy(slots, sts, k * sizeof *slots);
+	if (n) *n = count;
+	arena_release(&d->reads, m);
+	return st;
+}
+shcl_status shcl_read_int_array_to(shcl_doc *d, const char *path, size_t plen, int64_t *out, shcl_status *slots, size_t cap, size_t *n) {
+	ShclMark m = arena_mark(&d->reads); shcl_read_i64_arr r = shcl_read_int_array(d, path, plen);
+	return read_copied(d, m, r.values, r.statuses, r.n, r.status, out, sizeof *out, slots, cap, n);
+}
+shcl_status shcl_read_float_array_to(shcl_doc *d, const char *path, size_t plen, double *out, shcl_status *slots, size_t cap, size_t *n) {
+	ShclMark m = arena_mark(&d->reads); shcl_read_f64_arr r = shcl_read_float_array(d, path, plen);
+	return read_copied(d, m, r.values, r.statuses, r.n, r.status, out, sizeof *out, slots, cap, n);
+}
+shcl_status shcl_read_bool_array_to(shcl_doc *d, const char *path, size_t plen, int *out, shcl_status *slots, size_t cap, size_t *n) {
+	ShclMark m = arena_mark(&d->reads); shcl_read_bool_arr r = shcl_read_bool_array(d, path, plen);
+	return read_copied(d, m, r.values, r.statuses, r.n, r.status, out, sizeof *out, slots, cap, n);
+}
+shcl_status shcl_read_datetime_array_to(shcl_doc *d, const char *path, size_t plen, shcl_datetime *out, shcl_status *slots, size_t cap, size_t *n) {
+	ShclMark m = arena_mark(&d->reads); shcl_read_dt_arr r = shcl_read_datetime_array(d, path, plen);
+	return read_copied(d, m, r.values, r.statuses, r.n, r.status, out, sizeof *out, slots, cap, n);
+}
+shcl_status shcl_read_string_array_to(shcl_doc *d, const char *path, size_t plen, shcl_str *out, shcl_status *slots, size_t cap, size_t *n) {
+	ShclMark m = arena_mark(&d->reads); shcl_read_str_arr r = shcl_read_string_array(d, path, plen);
+	return read_copied(d, m, r.values, r.statuses, r.n, r.status, out, sizeof *out, slots, cap, n);
 }
 
 // --- formatter (canonical output) -------------------------------------------

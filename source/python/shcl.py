@@ -4167,6 +4167,91 @@ class Document:
 		self._resettle_kept()
 		return True
 
+	def clear_comments(self, path: str) -> int:
+		"""Take off the comment lines above the node(s) at a path, the lines
+		set_comment adds to, so a program can replace a comment rather than
+		stack another one on it. Which lines those are is where the load put
+		them: everything between the node and the binding line before it, so a
+		heading written for a group of fields goes too. A comment on the node's
+		own line stays, and so does a line kept as written for being malformed.
+		Returns how many lines came off, 0 when the path reaches nothing."""
+		r = self._resolve(path, True)
+		tag = r[0]
+		if tag == "one":
+			targets = [r[1]]
+		elif tag == "many":
+			targets = list(r[1])
+		elif tag == "slots":
+			targets = [n for n in r[1] if isinstance(n, int)]
+		else:
+			targets = []
+		cleared = 0
+		for t in targets:
+			nd = self.arena[t]
+			tr = nd.trivia
+			if tr is None:
+				continue
+			before = len(tr.leading)
+			# The blank above the run is the one that separates it from what
+			# comes before, so it stays with whatever is now first.
+			blank = before > 0 and tr.leading[0].blank_before
+			tr.leading = [c for c in tr.leading if not c.text.startswith("#")]
+			gone = before - len(tr.leading)
+			if gone == 0:
+				continue
+			cleared += gone
+			if tr.leading:
+				tr.leading[0].blank_before = tr.leading[0].blank_before or blank
+			else:
+				nd.blank_before = nd.blank_before or blank
+		if cleared:
+			_settle_first_blank(self.arena, self.orphans)
+			self._resettle_kept()
+		return cleared
+
+	def set_banner(self, on: bool) -> int:
+		"""Put the info block (GEN_BANNER) at the end of the document, or with
+		on False just take it off. An old block in the footer comes off first,
+		found by its "This config file format is SHCL." line or its version
+		line, never by its links or Legal line, which a later release may spell
+		differently. A version line migrate stamped counts too. A block is a
+		run of "##" lines with no blank inside, so a "##" comment of the file's
+		own, written right against it, goes with it. The library save never
+		adds the block by itself; this is for a program that wants it in a file
+		it writes. Returns how many old blocks came off."""
+		_want("set_banner", on, "bool")
+
+		def is_block_line(t):
+			return t == "## This config file format is SHCL." or t.startswith(FORMAT_LINE_HEAD)
+
+		orphans = self.orphans
+		keep: list[_Lead] = []
+		removed = 0
+		i = 0
+		while i < len(orphans):
+			end = i + 1
+			if orphans[i].text.startswith("##"):
+				while end < len(orphans) and orphans[end].text.startswith("##") and not orphans[end].blank_before:
+					end += 1
+				if any(is_block_line(c.text) for c in orphans[i:end]):
+					# The blank that set the block off moves to whatever
+					# followed it, so the lines around it stay apart.
+					if end < len(orphans):
+						orphans[end].blank_before = orphans[end].blank_before or orphans[i].blank_before
+					removed += 1
+					i = end
+					continue
+			keep.extend(orphans[i:end])
+			i = end
+		self.orphans = keep
+		if on:
+			open_ = bool(keep) or bool(self.arena[ROOT].children)
+			for n, line in enumerate(GEN_BANNER.rstrip("\n").split("\n")):
+				keep.append(_Lead(line, n == 0 and open_))
+		_settle_first_blank(self.arena, self.orphans)
+		self._resettle_kept()
+		return removed
+
 	def set_int(self, path: str, v: int) -> bool:
 		"""Bind an integer at path, creating the path as needed; False = path not
 		writable (write_reason says why - same for every setter). Worth checking

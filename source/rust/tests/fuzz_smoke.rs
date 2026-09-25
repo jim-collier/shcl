@@ -362,7 +362,7 @@ fn writes_on_structural_soup_stay_fixpoint() {
 		// paths - or for text it could not write back.
 		let before = doc.to_canonical();
 		let v = soup_text(&mut rng, 7);
-		let op = rng.below(8);
+		let op = rng.below(10);
 		let applied = match op {
 			0 => doc.set_int(&path, 7),
 			1 => doc.set_string(&path, &v),
@@ -371,6 +371,11 @@ fn writes_on_structural_soup_stay_fixpoint() {
 			4 => doc.set_empty(&path),
 			5 => doc.set_comment(&path, &v),
 			6 => doc.set_literal(&path, &v),
+			7 => doc.clear_comments(&path) > 0,
+			8 => {
+				doc.set_banner(v.len().is_multiple_of(2));
+				true
+			}
 			_ => doc.set_raw(&path, &v, &soup_text(&mut rng, 7)),
 		};
 		if !applied {
@@ -981,7 +986,7 @@ fn edits_and_merges_match_a_reload() {
 				paths[rng.below(paths.len())].clone()
 			};
 			let v = format!("v{}", rng.below(3));
-			let op = rng.below(10);
+			let op = rng.below(12);
 			let layer = structural(&mut rng);
 			for d in [&mut live, &mut back] {
 				let _ = match op {
@@ -996,7 +1001,12 @@ fn edits_and_merges_match_a_reload() {
 					6 => d.set_empty(&path),
 					7 => d.set_raw(&path, "body", &v),
 					8 => d.set_int_default(&path, 1),
-					_ => d.set_literal(&path, &v),
+					9 => d.set_literal(&path, &v),
+					10 => d.clear_comments(&path) > 0,
+					_ => {
+						d.set_banner(v != "v0");
+						true
+					}
 				};
 			}
 			log.push_str(&match op {

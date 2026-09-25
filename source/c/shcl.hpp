@@ -505,6 +505,12 @@ public:
 	// there is none so a section can be annotated. A missing `#` is added. Text
 	// holding a line break is refused, since a comment is one line.
 	[[nodiscard]] bool set_comment(std::string_view p, std::string_view text) { return shcl_set_comment(d_.get(), p.data(), p.size(), text.data(), text.size()) != 0; }
+	// Take off the comment lines above the nodes at a path, so a comment can be
+	// replaced, and say how many came off.
+	std::size_t clear_comments(std::string_view p) { return shcl_clear_comments(d_.get(), p.data(), p.size()); }
+	// The info block at the end, an old one taken off first; false only takes
+	// it off. Says how many old blocks came off.
+	std::size_t set_banner(bool on) { return shcl_set_banner(d_.get(), on ? 1 : 0); }
 	// An empty value, which is not the empty string.
 	[[nodiscard]] bool set_empty(std::string_view p) { return shcl_set_empty(d_.get(), p.data(), p.size()) != 0; }
 

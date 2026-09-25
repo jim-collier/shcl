@@ -119,6 +119,8 @@ With --write, a FILE that does not exist yet is created. PATH ends at the first
   literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+  clear-comments<TAB>PATH                                 drop comments above
+  banner<TAB>on|off                                       add or drop info block
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (get only; default --string):
@@ -1599,7 +1601,7 @@ def _op_flt(s):
 
 
 _OP_FIELDS = {
-	"empty": 2, "remove": 2,
+	"empty": 2, "remove": 2, "clear-comments": 2, "banner": 2,
 	"raw": 4, "raw-default": 4,
 	"int": 3, "float": 3, "bool": 3, "string": 3, "datetime": 3, "literal": 3, "comment": 3,
 	"int-default": 3, "float-default": 3, "bool-default": 3, "string-default": 3,
@@ -1677,6 +1679,15 @@ def apply_op(doc, line):
 		wrote = doc.set_comment(path, _unescape_ops(v))
 	elif op == "remove":
 		doc.remove(path)
+		wrote = True
+	elif op == "clear-comments":
+		doc.clear_comments(path)
+		wrote = True
+	elif op == "banner":
+		# The second field is on or off, not a path.
+		if path not in ("on", "off"):
+			raise ValueError(f"bad banner: {path} (on or off)")
+		doc.set_banner(path == "on")
 		wrote = True
 	else:
 		raise ValueError(f"unknown op: {op}")

@@ -281,6 +281,10 @@ rows=(
 	'closed-stdout|fmt %F%|@closedout|0|-|^$'
 	## 20260830 item 16: C dropped the line number and the offending op.
 	'bad-op-unknown|set %F%|bogus\ta\t1\n|1|-|op line 1: unknown op: bogus'
+	## 20260925: the banner op takes on or off where other ops take a path.
+	'banner-on-off|set %F%|banner\ton\nbanner\toff\n|0|a: 1\n|-'
+	'banner-bad-value|set %F%|banner\tmaybe\n|1|-|op line 1: bad banner: maybe \(on or off\)$'
+	'clear-comments-extra-field|set %F%|clear-comments\ta\tx\n|1|-|clear-comments takes 2 tab-separated field'
 	## 20260830 item 18: C answered a directory with a bare "read error". Exit 8
 	## since 20260830b item 22 split I/O out of the usage code. The wording is
 	## the CLIs' own, from a stat ahead of the read, so the row can expect one

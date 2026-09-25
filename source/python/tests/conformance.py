@@ -339,6 +339,14 @@ def try_apply_op(doc, line):
 		elif op == "remove":
 			doc.remove(path)
 			wrote = True
+		elif op == "clear-comments":
+			doc.clear_comments(path)
+			wrote = True
+		elif op == "banner":
+			if path not in ("on", "off"):
+				return f"bad banner: {path}"
+			doc.set_banner(path == "on")
+			wrote = True
 		else:
 			return f"{_UNKNOWN_OP}{op}"
 	except ValueError as e:
@@ -643,7 +651,7 @@ def edits_and_merges_match_a_reload():
 			else:
 				path = paths[g.below(len(paths))]
 			v = f"v{g.below(3)}"
-			op = g.below(9)
+			op = g.below(11)
 			layer = g.doc()
 			for d in (live, back):
 				if op <= 1:
@@ -660,8 +668,12 @@ def edits_and_merges_match_a_reload():
 					d.set_empty(path)
 				elif op == 7:
 					d.set_raw(path, "body", v)
-				else:
+				elif op == 8:
 					d.set_int_default(path, 1)
+				elif op == 9:
+					d.clear_comments(path)
+				else:
+					d.set_banner(v != "v0")
 			log += f"merge:\n{layer}" if op <= 1 else f"op {op} at {path!r}\n"
 			a, b = live.to_canonical(), back.to_canonical()
 			if a != b:

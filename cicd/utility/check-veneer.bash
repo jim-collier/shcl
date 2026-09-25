@@ -36,6 +36,12 @@ declare -A covered=(
 	[shcl_get_int_or]="get_or<int64_t> reads through get<T> and checks the status itself"
 	[shcl_get_float_or]="get_or<double> reads through get<T> and checks the status itself"
 	[shcl_get_bool_or]="get_or<bool> reads through get<T> and checks the status itself"
+	[shcl_read_string_to]="every veneer read releases first and copies into a std container"
+	[shcl_read_int_array_to]="every veneer read releases first and copies into a std container"
+	[shcl_read_float_array_to]="every veneer read releases first and copies into a std container"
+	[shcl_read_bool_array_to]="every veneer read releases first and copies into a std container"
+	[shcl_read_datetime_array_to]="every veneer read releases first and copies into a std container"
+	[shcl_read_string_array_to]="every veneer read releases first and copies into a std container"
 )
 
 ## Declarations start at column 0 with their return type; everything above the
