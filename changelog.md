@@ -36,9 +36,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `shcl version` prints `shcl v3.0.0`, plus a build number on a release binary.
 
+- `shcl set` writes back the lines its edits leave alone, printing or with `--write`, where it wrote the canonical form. `shcl fmt` still writes the canonical form.
+
 - The installers default to the newest full release, installed for the current user. With no full release yet, that is the newest pre-release.
 
 ### New
+
+- `parse_keep_lines()`, `load_file_keep_lines()`, `to_text_keep_lines()` and `save_file_keep_lines()` in every binding save a file with the lines no edit touched left as they were, and fall back to the canonical form when that would not load back the same.
 
 - `instance_paths()` in every binding walks a file one instance at a time, with `[#i]` on each repeated name.
 

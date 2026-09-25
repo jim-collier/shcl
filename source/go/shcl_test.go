@@ -57,6 +57,8 @@ type corpusCase struct {
 	writeOps      string
 	expectedWrite string
 	hasWrite      bool
+	// The same ops through the save that keeps lines.
+	expectedKeep string
 	// Bad-op dimension (optional): ops that must each be rejected, applied alone.
 	writeBadOps string
 	hasWriteBad bool
@@ -119,12 +121,14 @@ func loadCases(t *testing.T) []corpusCase {
 			reads:         string(reads),
 			expectedDiags: string(diags),
 		}
-		if ops, err := os.ReadFile(filepath.Join(caseDir, "write.ops")); err == nil {
-			ew, err2 := os.ReadFile(filepath.Join(caseDir, "expected-write.shcl"))
-			if err2 != nil {
-				t.Fatalf("%s: write.ops without expected-write.shcl", entry.Name())
-			}
-			cc.writeOps, cc.expectedWrite, cc.hasWrite = string(ops), string(ew), true
+		ops, errOps := os.ReadFile(filepath.Join(caseDir, "write.ops"))
+		ew, errWrite := os.ReadFile(filepath.Join(caseDir, "expected-write.shcl"))
+		ek, errKeep := os.ReadFile(filepath.Join(caseDir, "expected-keep.shcl"))
+		if (errOps == nil) != (errWrite == nil) || (errOps == nil) != (errKeep == nil) {
+			t.Fatalf("%s: write.ops, expected-write.shcl and expected-keep.shcl come together", entry.Name())
+		}
+		if errOps == nil {
+			cc.writeOps, cc.expectedWrite, cc.expectedKeep, cc.hasWrite = string(ops), string(ew), string(ek), true
 		}
 		if bad, err := os.ReadFile(filepath.Join(caseDir, "write-bad.ops")); err == nil {
 			cc.writeBadOps, cc.hasWriteBad = string(bad), true
@@ -691,21 +695,49 @@ func TestWriteOpsMatchExpected(t *testing.T) {
 		if !c.hasWrite {
 			continue
 		}
+		// The one that keeps lines is the same document.
 		doc := Parse(c.input)
+		kept, err := ParseKeepLines(c.input, Standard)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
 		for n, line := range strings.Split(c.writeOps, "\n") {
 			line = strings.TrimSuffix(line, "\r")
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			applyOpTest(t, doc, line, fmt.Sprintf("%s: write.ops line %d", c.name, n+1))
+			at := fmt.Sprintf("%s: write.ops line %d", c.name, n+1)
+			applyOpTest(t, doc, line, at)
+			applyOpTest(t, kept, line, at)
 		}
 		got := doc.ToCanonical()
+		text, lines := kept.ToTextKeepLines()
+		if text != c.expectedKeep {
+			t.Errorf("%s: output differs from expected-keep.shcl\ngot:\n%s\nwant:\n%s", c.name, text, c.expectedKeep)
+		}
+		if !lines && text != got {
+			t.Errorf("%s: a save that kept no lines is not canonical", c.name)
+		}
+		if Parse(text).ToCanonical() != got {
+			t.Errorf("%s: expected-keep.shcl reloads as another document", c.name)
+		}
 		if got != c.expectedWrite {
 			t.Errorf("%s: writer output differs from expected-write.shcl\ngot:\n%s\nwant:\n%s", c.name, got, c.expectedWrite)
 			continue
 		}
 		if again := Parse(got).ToCanonical(); again != got {
 			t.Errorf("%s: written output is not a fmt fixpoint", c.name)
+		}
+	}
+}
+
+// TestKeepingLinesWithoutEditsWritesTheInput: loaded to keep its lines and
+// saved with no edits, every input is its own text again, byte for byte.
+func TestKeepingLinesWithoutEditsWritesTheInput(t *testing.T) {
+	for _, c := range loadCases(t) {
+		doc, _ := ParseKeepLines(c.input, Standard)
+		if text, kept := doc.ToTextKeepLines(); text != c.input || !kept {
+			t.Errorf("%s: an unedited save changed the text", c.name)
 		}
 	}
 }
@@ -2619,7 +2651,7 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 	g := seqGen{s: 0x5EED0923C0DE0003}
 	for i := 0; i < 3000; i++ {
 		base := g.doc()
-		live := Parse(base)
+		live, _ := ParseKeepLines(base, Standard)
 		log := "base:\n" + base
 		for steps := 2 + g.below(3); steps > 0; steps-- {
 			back := Parse(live.ToCanonical())
@@ -2664,6 +2696,13 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 			}
 			if a, b := live.ToCanonical(), back.ToCanonical(); a != b {
 				t.Fatalf("a step on the document and on its reload differ at iteration %d:\n%s--- live\n%s--- reload\n%s", i, log, a, b)
+			}
+			// The save that keeps lines reloads as the document, or is its
+			// canonical form.
+			if text, kept := live.ToTextKeepLines(); kept && Parse(text).ToCanonical() != live.ToCanonical() {
+				t.Fatalf("kept lines reload as another document at iteration %d:\n%s--- wrote\n%s", i, log, text)
+			} else if !kept && text != live.ToCanonical() {
+				t.Fatalf("a save that kept no lines is not canonical at iteration %d:\n%s", i, log)
 			}
 		}
 	}

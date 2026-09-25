@@ -547,7 +547,9 @@ static void edits_and_merges_match_a_reload(void) {
 	int bad = 0;
 	for (int i = 0; i < 3000 && !bad; i++) {
 		seq_doc(&base);
-		shcl_doc *live = shcl_parse(base.p, base.n);
+		/* The same tree as a plain parse, with the text kept for the save
+		   that keeps lines, which is checked after every step too. */
+		shcl_doc *live = shcl_parse_keep_lines(base.p, base.n, SHCL_STANDARD);
 		log.n = 0; seq_puts(&log, "base:\n"); seq_put(&log, base.p, base.n);
 		for (size_t steps = 2 + seq_below(3); steps > 0 && !bad; steps--) {
 			shcl_str t = shcl_to_canonical(live);
@@ -588,6 +590,20 @@ static void edits_and_merges_match_a_reload(void) {
 			t = shcl_to_canonical(back); b.n = 0; seq_put(&b, t.p, t.n);
 			if (a.n != b.n || memcmp(a.p, b.p, a.n) != 0) {
 				fprintf(stderr, "FAIL edits_and_merges: a step on the document and on its reload differ at iteration %d:\n%s--- live\n%s--- reload\n%s", i, log.p, a.p, b.p);
+				nfail++; bad = 1;
+			}
+			int kept = 0;
+			shcl_str kt = shcl_to_text_keep_lines(live, &kept);
+			if (kept) {
+				shcl_doc *kd = shcl_parse(kt.p, kt.n);
+				shcl_str kc = shcl_to_canonical(kd);
+				if (!bad && (kc.n != a.n || memcmp(kc.p, a.p, a.n) != 0)) {
+					fprintf(stderr, "FAIL edits_and_merges: kept lines reload as another document at iteration %d:\n%s--- wrote\n%.*s", i, log.p, (int)kt.n, kt.p);
+					nfail++; bad = 1;
+				}
+				shcl_free(kd);
+			} else if (!bad && (kt.n != a.n || memcmp(kt.p, a.p, a.n) != 0)) {
+				fprintf(stderr, "FAIL edits_and_merges: a save that kept no lines is not canonical at iteration %d:\n%s", i, log.p);
 				nfail++; bad = 1;
 			}
 			shcl_free(back);
@@ -772,23 +788,52 @@ int main(int argc, char **argv) {
 			free(lines);
 		}
 
-		// Write dimension (optional): apply write.ops and match expected-write.shcl.
+		// Loaded to keep its lines and saved with no edits, every input is its
+		// own text again, byte for byte.
+		{
+			shcl_doc *kd = shcl_parse_keep_lines(input, ilen, SHCL_STANDARD);
+			int kept = 0;
+			shcl_str kt = shcl_to_text_keep_lines(kd, &kept);
+			if (!kept || kt.n != ilen || (ilen && memcmp(kt.p, input, ilen) != 0)) fail(names[ci], "an unedited save changed the text");
+			shcl_free(kd);
+		}
+
+		// Write dimension (optional): apply write.ops and match expected-write.shcl,
+		// and the same ops through the save that keeps lines, expected-keep.shcl.
+		// The three files come together.
 		snprintf(path, sizeof path, "%s/%s/write.ops", corpus, names[ci]); size_t olen; char *ops = read_file(path, &olen);
-		if (ops) {
-			snprintf(path, sizeof path, "%s/%s/expected-write.shcl", corpus, names[ci]); size_t wlen; char *ew = read_file(path, &wlen);
+		snprintf(path, sizeof path, "%s/%s/expected-write.shcl", corpus, names[ci]); size_t wlen; char *ew = read_file(path, &wlen);
+		snprintf(path, sizeof path, "%s/%s/expected-keep.shcl", corpus, names[ci]); size_t klen; char *ek = read_file(path, &klen);
+		if (!ops != !ew || !ops != !ek) fail(names[ci], "write.ops, expected-write.shcl and expected-keep.shcl come together");
+		if (ops && ew && ek) {
 			shcl_doc *wd = shcl_parse(input, ilen);
+			shcl_doc *kd = shcl_parse_keep_lines(input, ilen, SHCL_STANDARD);
 			char **olines; size_t nol = split_lines(ops, olen, &olines);
 			for (size_t li = 0; li < nol; li++) {
 				if (olines[li][0] == '\0' || olines[li][0] == '#') continue;
+				// The op is split in place, so each document gets its own copy.
+				size_t on = strlen(olines[li]);
+				char *op2 = (char *)xrealloc(NULL, on + 1);
+				memcpy(op2, olines[li], on + 1);
 				apply_op_c(wd, olines[li]);
+				apply_op_c(kd, op2);
+				free(op2);
 			}
 			shcl_str wgot = shcl_to_canonical(wd);
-			if (!ew || wgot.n != wlen || (wlen && memcmp(wgot.p, ew, wlen) != 0)) fail(names[ci], "writer output differs from expected-write.shcl");
+			if (wgot.n != wlen || (wlen && memcmp(wgot.p, ew, wlen) != 0)) fail(names[ci], "writer output differs from expected-write.shcl");
 			shcl_doc *wd2 = shcl_parse(wgot.p, wgot.n);
 			shcl_str wagain = shcl_to_canonical(wd2);
 			if (wagain.n != wgot.n || (wgot.n && memcmp(wagain.p, wgot.p, wgot.n) != 0)) fail(names[ci], "written output is not a fmt fixpoint");
-			shcl_free(wd2); shcl_free(wd); free(olines); free(ops); free(ew);
+			int kept = 0;
+			shcl_str kt = shcl_to_text_keep_lines(kd, &kept);
+			if (kt.n != klen || (klen && memcmp(kt.p, ek, klen) != 0)) fail(names[ci], "output differs from expected-keep.shcl");
+			if (!kept && (kt.n != wgot.n || (wgot.n && memcmp(kt.p, wgot.p, wgot.n) != 0))) fail(names[ci], "a save that kept no lines is not canonical");
+			shcl_doc *kd2 = shcl_parse(kt.p, kt.n);
+			shcl_str kc = shcl_to_canonical(kd2);
+			if (kc.n != wgot.n || (wgot.n && memcmp(kc.p, wgot.p, wgot.n) != 0)) fail(names[ci], "expected-keep.shcl reloads as another document");
+			shcl_free(kd2); shcl_free(kd); shcl_free(wd2); shcl_free(wd); free(olines);
 		}
+		free(ops); free(ew); free(ek);
 
 		// Bad-op dimension (optional): each write-bad.ops line, applied alone,
 		// must be rejected and leave the document unchanged.

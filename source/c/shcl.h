@@ -273,6 +273,12 @@ char *shcl_read_file(const char *path, size_t max_bytes, size_t *len, shcl_file_
 shcl_save_result shcl_save_file(shcl_doc *d, const char *path);
 shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path);
 int shcl_write_file_atomic(const char *path, const char *data, size_t n);
+// shcl_load_file_with, keeping the text for shcl_to_text_keep_lines.
+shcl_doc *shcl_load_file_keep_lines(const char *path, shcl_strictness s, shcl_file_status *status);
+// shcl_save_file with shcl_to_text_keep_lines: *kept (when not NULL) is 1 when
+// it kept the lines, 0 when it wrote the canonical form instead. Refuses the
+// same way shcl_save_file does.
+shcl_save_result shcl_save_file_keep_lines(shcl_doc *d, const char *path, int *kept);
 #endif
 
 // Schema-driven generation (`shcl init --schema`): a commented, typed starter
@@ -318,6 +324,17 @@ shcl_str shcl_generate(shcl_doc *schema, int no_banner, int *ok);
 // until shcl_reads_release. The
 // bytes may contain NUL - never hand them to a strlen-based API.
 shcl_str shcl_to_canonical(shcl_doc *d);
+// shcl_parse_with, keeping a copy of the text for shcl_to_text_keep_lines. The
+// document is the same one shcl_parse_with gives; only that save differs.
+shcl_doc *shcl_parse_keep_lines(const char *text, size_t len, shcl_strictness s);
+// The text a save that keeps lines writes, and in *kept (when not NULL) whether
+// it kept them. Each line the edits did not touch is the loaded text's own
+// line, byte for byte; a changed value is written into its line; new lines are
+// indented the way the lines around them are. The result has to reload as this
+// document. When it does not, or the document was not loaded with
+// shcl_parse_keep_lines or shcl_load_file_keep_lines, or it took a merge, this
+// is shcl_to_canonical and *kept is 0. Same lifetime as shcl_to_canonical.
+shcl_str shcl_to_text_keep_lines(shcl_doc *d, int *kept);
 
 // Instance count at a path (0 when nothing matches).
 size_t shcl_count(shcl_doc *d, const char *path, size_t plen);
@@ -1030,11 +1047,16 @@ DEFINE_VEC(ShclVecS, ShclStr)
    (blank runs collapse to one, same as nodes). */
 /* depth: levels deeper than the place it is emitted at. A comment written under
    the one before it keeps that nesting, so a commented-out block comes back in
-   its shape. */
-typedef struct { ShclStr text; int blank_before; size_t depth; } ShclLead;
+   its shape.
+   line: the source line it was read from, for the save that keeps lines; 0 for
+   one a write made or moved. */
+typedef struct { ShclStr text; int blank_before; size_t depth; size_t line; } ShclLead;
 DEFINE_VEC(ShclVecLead, ShclLead)
-static ShclLead lead_make(ShclStr text, int blank_before, size_t depth) { ShclLead l; l.text = text; l.blank_before = blank_before; l.depth = depth; return l; }
+static ShclLead lead_at(ShclStr text, int blank_before, size_t depth, size_t line) { ShclLead l; l.text = text; l.blank_before = blank_before; l.depth = depth; l.line = line; return l; }
+static ShclLead lead_make(ShclStr text, int blank_before, size_t depth) { return lead_at(text, blank_before, depth, 0); }
 static ShclLead lead_plain(ShclStr text) { return lead_make(text, 0, 0); }
+/* A copy into another arena, source line and all. */
+static ShclLead lead_copy(ShclArena *a, const ShclLead *l) { return lead_at(s_dup(a, l->text), l->blank_before, l->depth, l->line); }
 /* A kept line among a stacked list's elements, with how many elements come
    before it. */
 typedef struct { size_t before; ShclLead lead; } ShclAmong;
@@ -1154,6 +1176,15 @@ struct shcl_doc {
 	   and nothing is wrong. malloc'd; shcl_free and shcl_compact give it back. */
 	size_t *kept_near; size_t kept_near_len, kept_near_cap;
 	uint64_t kept_sum;
+	/* The parse's multi-line bindings, as pairs: a raw block's or a stacked
+	   list's binding line and the last line it took. Edits leave it alone;
+	   only a reparse reads it. */
+	ShclVecSize ends;
+	/* The text a load kept for shcl_to_text_keep_lines, BOM and all, and
+	   empty when that text was already canonical, since the canonical form is
+	   then the one that keeps its lines. A merge drops it: the layer's lines
+	   are not this text's. */
+	int has_source; ShclStr source;
 };
 
 /* Point every allocation a document can make at one recovery point, or back at
@@ -2746,7 +2777,7 @@ static void cmap_del(ShclCMap *m, uint64_t h, size_t val) {
    Both strings slice the retained input copy. ceiling is the shortest
    incoming indent already checked against it: a later check can only hang it
    from a shorter one, so a longer one skips it. */
-typedef struct { ShclStr text; ShclStr indent; int blank_before; size_t ceiling; } ShclPend;
+typedef struct { ShclStr text; ShclStr indent; int blank_before; size_t ceiling; size_t line; } ShclPend;
 /* One comment on a comment_depth chain: its indent and depth. */
 typedef struct { ShclStr indent; size_t depth; } ShclDepthEnt;
 DEFINE_VEC(ShclVecDepth, ShclDepthEnt)
@@ -3095,7 +3126,7 @@ static void attach_trivia(ShclParser *P, size_t node, ShclStr indent, ShclStr tr
 		P->depth_chain.len = 0;
 		for (size_t k = 0; k < P->pending.len; k++) {
 			const ShclPend *p = &P->pending.data[k];
-			ShclVecLead_push(a, &t->leading, lead_make(p->text, p->blank_before, comment_depth(P, indent, p->text, p->indent)));
+			ShclVecLead_push(a, &t->leading, lead_at(p->text, p->blank_before, comment_depth(P, indent, p->text, p->indent), p->line));
 		}
 		P->pending.len = 0;
 		P->pend_marks.len = 0;
@@ -3158,7 +3189,7 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 				if (last_si != (size_t)-1 && (si > last_si || (si == last_si && !at_own_level && last_own))) { si = last_si; target = last_node; at_own_level = last_own; }
 				if (si != last_si || at_own_level != last_own) P->depth_chain.len = 0;
 				last_si = si; last_node = target; last_own = at_own_level;
-				ShclLead lead = lead_make(p.text, p.blank_before, comment_depth(P, P->stack.data[si].indent, p.text, p.indent));
+				ShclLead lead = lead_at(p.text, p.blank_before, comment_depth(P, P->stack.data[si].indent, p.text, p.indent), p.line);
 				ShclTrivia *t = triv_mut(a, &NODE(P->d, target));
 				if (at_own_level) ShclVecLead_push(a, &t->after, lead);
 				else ShclVecLead_push(a, &t->inside, lead);
@@ -3266,7 +3297,7 @@ static void p_refuse(ShclParser *P, size_t line, const char *code, ShclStr msg, 
 		   the output's levels are spelled with, so the block it would match
 		   here is not the one it matches on a reload. It waits for the next
 		   binding line, as do the pending lines after it. */
-		ShclPend pd; pd.text = out.text; pd.indent = indent; pd.blank_before = out.blank_before;
+		ShclPend pd; pd.text = out.text; pd.indent = indent; pd.blank_before = out.blank_before; pd.line = line;
 		pd.ceiling = out.text.n && (out.text.p[0] == ' ' || out.text.p[0] == '\t') ? 0 : indent.n;
 		ShclVecPend_push(P->tmp, &P->pending, pd);
 	}
@@ -3786,7 +3817,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		   comment-only regions survives the round-trip. Text and indent are
 		   slices of the retained input copy, so they store as-is. */
 		if (rest.p[0] == '#') {
-			ShclPend pd; pd.text = rest; pd.indent = indent; pd.blank_before = P.saw_blank; pd.ceiling = indent.n; P.saw_blank = 0;
+			ShclPend pd; pd.text = rest; pd.indent = indent; pd.blank_before = P.saw_blank; pd.ceiling = indent.n; pd.line = lineno; P.saw_blank = 0;
 			ShclVecPend_push(P.tmp, &P.pending, pd);
 			i++; continue;
 		}
@@ -3828,7 +3859,10 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			}
 			else {
 				size_t bnode = bind_block(&P, parent, val, lineno, indent);
-				if (bnode != (size_t)-1) attach_trivia(&P, bnode, indent, fcomment);
+				if (bnode != (size_t)-1) {
+					ShclVecSize_push(a, &d->ends, NODE(d, bnode).line); ShclVecSize_push(a, &d->ends, next);
+					attach_trivia(&P, bnode, indent, fcomment);
+				}
 			}
 			i = next; continue;
 		}
@@ -3850,9 +3884,12 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 				   like any other pending one. */
 				if (parent != ROOT) {
 					if (add_star_element(&P, parent, &tok, rest, lineno, indent)) keep_among(&P, parent);
+					size_t head = NODE(d, parent).line;
+					if (d->ends.len && d->ends.data[d->ends.len - 2] == head) d->ends.data[d->ends.len - 1] = lineno;
+					else { ShclVecSize_push(a, &d->ends, head); ShclVecSize_push(a, &d->ends, lineno); }
 					attach_trivia(&P, parent, indent, ecomment);
 				} else {
-					if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
+					if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; pd.line = 0; ShclVecPend_push(P.tmp, &P.pending, pd); }
 					(void)add_star_element(&P, parent, &tok, rest, lineno, indent);
 				}
 				i++; continue;
@@ -3932,6 +3969,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		size_t node = 0; /* attach_path fills it; the init quiets gcc's inlining-dependent maybe-uninitialized */
 		if (attach_path(&P, parent, scan.segs.data, scan.segs.len, value, lineno, indent, &node)) {
 			if (had_blank) NODE(d, node).blank_before = 1;
+			if (next > i + 1) { ShclVecSize_push(a, &d->ends, lineno); ShclVecSize_push(a, &d->ends, next); }
 			attach_trivia(&P, node, indent, comment);
 			ShclStackEnt se; se.indent = indent; se.node = node; ShclVecStack_push(P.tmp, &P.stack, se);
 		}
@@ -3953,7 +3991,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	emit_repeated_leaf_hints(&P);
 	P.depth_chain.len = 0;
 	for (size_t k = 0; k < P.pending.len; k++)
-		ShclVecLead_push(a, &d->orphans, lead_make(P.pending.data[k].text, P.pending.data[k].blank_before, comment_depth(&P, s_empty(), P.pending.data[k].text, P.pending.data[k].indent)));
+		ShclVecLead_push(a, &d->orphans, lead_at(P.pending.data[k].text, P.pending.data[k].blank_before, comment_depth(&P, s_empty(), P.pending.data[k].text, P.pending.data[k].indent), P.pending.data[k].line));
 	settle_first_blank(d);
 	/* The one entry past the cap: what was not listed, and whether any of it
 	   was an error, so a consumer scanning the list for errors still finds
@@ -5083,12 +5121,12 @@ static ShclTrivia *w_clone_trivia(ShclArena *a, const ShclTrivia *st) {
 	ShclTrivia *nt = (ShclTrivia *)arena_alloc(a, sizeof(ShclTrivia));
 	memset(nt, 0, sizeof(ShclTrivia));
 	nt->trailing = s_dup(a, st->trailing);
-	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before, st->leading.data[i].depth));
-	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before, st->after.data[i].depth));
-	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before, st->inside.data[i].depth));
+	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_copy(a, &st->leading.data[i]));
+	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_copy(a, &st->after.data[i]));
+	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_copy(a, &st->inside.data[i]));
 	for (size_t i = 0; i < st->among.len; i++) {
 		ShclAmong am; am.before = st->among.data[i].before;
-		am.lead = lead_make(s_dup(a, st->among.data[i].lead.text), st->among.data[i].lead.blank_before, st->among.data[i].lead.depth);
+		am.lead = lead_copy(a, &st->among.data[i].lead);
 		ShclVecAmong_push(a, &nt->among, am);
 	}
 	return nt;
@@ -5354,6 +5392,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	// grew until SHCL_OOM.
 	if (over == d) return;
 	index_drop(d);
+	d->has_source = 0;
 	d->lost += over->lost;
 	/* The layer's own kept lines were modeled against its own tree. */
 	int fresh = over->kept;
@@ -5870,6 +5909,11 @@ typedef struct {
 	   pairs. */
 	int record; ShclVecFell fell; size_t verbatim;
 	ShclVecSize near; size_t flushed; ShclVecSize kept_near;
+	/* shcl_to_text_keep_lines only: where the lines from each source line
+	   start (offset, line; 0 for none), each raw body with the tabs its lines
+	   are padded with (start, end, pad), and where each value is spelled on
+	   its binding line (start, end), all flat. */
+	int lines; ShclVecSize marks, bodies, spans;
 } ShclEmit;
 
 static void emit_init(ShclEmit *e, ShclArena *a, size_t cap, int record) {
@@ -5900,6 +5944,19 @@ static void emit_bound(ShclEmit *e, size_t depth) {
 	e->has_hold = 0;
 	e->near.len = 0;
 	e->flushed = 0;
+}
+
+static void emit_mark(ShclEmit *e, size_t line) {
+	if (!e->lines) return;
+	ShclVecSize_push(e->a, &e->marks, e->out.len);
+	ShclVecSize_push(e->a, &e->marks, line);
+}
+
+/* A value written from at to here, the space before it included. */
+static void emit_span(ShclEmit *e, size_t at) {
+	if (!e->lines) return;
+	ShclVecSize_push(e->a, &e->spans, at);
+	ShclVecSize_push(e->a, &e->spans, e->out.len);
 }
 
 static void emit_near(ShclEmit *e, size_t idx, size_t pos) {
@@ -5976,6 +6033,8 @@ static void push_leads(ShclEmit *e, const ShclLead *leads, size_t n, size_t base
 	for (size_t i = 0; i < n; i++) {
 		const ShclLead *c = &leads[i];
 		if (c->blank_before && e->out.len) sb_putc(a, &e->out, '\n');
+		/* A kept line among list elements is part of the list's run. */
+		if (site != SITE_AMONG) emit_mark(e, c->line);
 		if (c->text.n && (c->text.p[0] == ' ' || c->text.p[0] == '\t')) {
 			ShclStr indent = leading_ws(c->text);
 			ShclTrial t = emit_resolve(e, indent);
@@ -6052,6 +6111,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 	emit_near(e, idx, pos);
 	push_leads(e, lead.data, lead.len, depth, idx, SITE_LEADING, 0);
 	if (node->blank_before && out->len) sb_putc(a, out, '\n');
+	emit_mark(e, node->line);
 	if (would_merge && trailing.n) {
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
 		sb_putS(a, out, trailing); sb_putc(a, out, '\n');
@@ -6061,7 +6121,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 	sb_putc(a, out, ':');
 	emit_bound(e, depth);
 	emit_near(e, idx, pos);
-	if (v->kind == V_EMPTY) { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
+	if (v->kind == V_EMPTY) { emit_span(e, out->len); emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
 	else if (v->kind == V_CELL && stacks(node)) {
 		/* Stacked, with the kept lines where they sat. */
 		emit_trailing(a, out, trailing);
@@ -6082,8 +6142,10 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 		for (size_t j = next; j < am.len; j++) push_leads(e, &am.data[j].lead, 1, depth + 1, idx, SITE_AMONG, j);
 	}
 	else if (v->kind == V_CELL) {
+		size_t at = out->len;
 		sb_putc(a, out, ' ');
 		sb_putS(a, out, emit_cell(a, v->els, v->nels));
+		emit_span(e, at);
 		emit_trailing(a, out, trailing);
 		sb_putc(a, out, '\n');
 	} else {
@@ -6093,6 +6155,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 		if (!would_merge) for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
 		sb_putS(a, out, emit_fence_line(a, r));
 		sb_putc(a, out, '\n');
+		size_t body = out->len;
 		if (r->content.n > 0) {
 			size_t start = 0;
 			for (size_t i = 0; i <= r->content.n; i++) if (i == r->content.n || r->content.p[i] == '\n') {
@@ -6102,9 +6165,15 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 				start = i + 1;
 			}
 		}
+		size_t end = out->len;
 		for (size_t k = 0; k < depth + 1; k++) sb_putc(a, out, '\t');
 		for (size_t k = 0; k < r->fence_len; k++) sb_putc(a, out, (char)r->fence_char);
 		sb_putc(a, out, '\n');
+		if (e->lines) {
+			ShclVecSize_push(e->a, &e->bodies, body);
+			ShclVecSize_push(e->a, &e->bodies, end);
+			ShclVecSize_push(e->a, &e->bodies, depth + 1);
+		}
 	}
 	ShclVecSize ch = NODE(d, idx).children;
 	emit_children(d, &ch, depth + 1, e);
@@ -6183,6 +6252,7 @@ static int settle_kept_once(shcl_doc *d) {
 			ShclLead l = moved.data[q];
 			l.text = commented(a, l.text);
 			l.depth = depth;
+			l.line = 0;
 			ShclVecLead_push(a, &t->leading, l);
 		}
 		moved.len = 0;
@@ -6258,6 +6328,450 @@ shcl_str shcl_to_canonical(shcl_doc *d) {
 	   contract. A save goes through emit_canonical directly, so it retains
 	   nothing (200 saves of 79 KB grew a document by 17 MB). */
 	return s_dup(&d->reads, emit_canonical(d));
+}
+
+/* The canonical text with what the save that keeps lines needs to line it up
+   against the source, built in scratch. */
+static void emit_marked(shcl_doc *d, ShclEmit *e) {
+	arena_reset(&d->scratch);
+	emit_init(e, &d->scratch, d->nodes.len * 24, 0);
+	e->lines = 1;
+	emit_all(d, e);
+}
+
+/* A run of canonical lines from one source line on (0: from none), with the
+   blank lines written before it and the spans of its values, as a range of
+   the emit's flat span pairs. */
+typedef struct { size_t line, start, end, blanks, span_from, span_to; } ShclUnit;
+DEFINE_VEC(ShclVecUnit, ShclUnit)
+
+/* Where the line starting at pos ends, past its newline. */
+static size_t line_end(ShclStr text, size_t pos) {
+	const char *nl = (const char *)memchr(text.p + pos, '\n', text.n - pos);
+	return nl ? (size_t)(nl - text.p) + 1 : text.n;
+}
+
+static size_t tabs_of(ShclStr s) {
+	size_t n = 0;
+	while (n < s.n && s.p[n] == '\t') n++;
+	return n;
+}
+
+static ShclVecUnit units_of(ShclArena *a, ShclEmit *e) {
+	ShclStr text = sb_S(&e->out);
+	ShclVecUnit units = {0};
+	size_t mi = 0, bi = 0, tag = 0, blanks = 0, pos = 0;
+	int open = 0;
+	while (pos < text.n) {
+		size_t next = line_end(text, pos);
+		while (mi < e->marks.len && e->marks.data[mi] <= pos) { tag = e->marks.data[mi + 1]; mi += 2; }
+		while (bi < e->bodies.len && e->bodies.data[bi + 1] <= pos) bi += 3;
+		int in_body = bi < e->bodies.len && e->bodies.data[bi] <= pos;
+		if (text.p[pos] == '\n' && !in_body) { blanks++; open = 0; }
+		else if (open && units.len && units.data[units.len - 1].line == tag) units.data[units.len - 1].end = next;
+		else {
+			ShclUnit u; u.line = tag; u.start = pos; u.end = next; u.blanks = blanks; u.span_from = 0; u.span_to = 0;
+			ShclVecUnit_push(a, &units, u);
+			blanks = 0;
+			open = 1;
+		}
+		pos = next;
+	}
+	size_t si = 0;
+	for (size_t k = 0; k < units.len; k++) {
+		ShclUnit *u = &units.data[k];
+		while (si < e->spans.len && e->spans.data[si] < u->start) si += 2;
+		u->span_from = si;
+		while (si < e->spans.len && e->spans.data[si] < u->end) si += 2;
+		u->span_to = si;
+	}
+	return units;
+}
+
+/* One level's indent as the source spells it, when known. */
+typedef struct { int has; ShclStr s; } ShclIndent;
+DEFINE_VEC(ShclVecIndent, ShclIndent)
+
+static void indents_resize(ShclArena *a, ShclVecIndent *v, size_t n) {
+	if (v->len > n) { v->len = n; return; }
+	while (v->len < n) { ShclIndent none; none.has = 0; none.s = s_empty(); ShclVecIndent_push(a, v, none); }
+}
+
+/* The indent a new line depth levels down gets: the last one written there,
+   or the nearest shallower one plus a level. */
+static ShclStr indent_for(ShclArena *a, const ShclVecIndent *indents, size_t depth, ShclStr step) {
+	size_t j = depth;
+	while (j > 0 && (j >= indents->len || !indents->data[j].has)) j--;
+	ShclStr base = j < indents->len && indents->data[j].has ? indents->data[j].s : s_empty();
+	ShclSB b = {0, 0, 0};
+	sb_putS(a, &b, base);
+	for (size_t k = j; k < depth; k++) sb_putS(a, &b, step);
+	return sb_S(&b);
+}
+
+/* A source line written at depth. One whose indent does not nest under the
+   level above it, a dotted path for one, says nothing about the levels after
+   it. */
+static void note_indent(ShclArena *a, ShclVecIndent *indents, size_t depth, ShclStr indent) {
+	int fits;
+	if (depth == 0) fits = indent.n == 0;
+	else {
+		fits = indent.n != 0;
+		if (fits && depth - 1 < indents->len && indents->data[depth - 1].has) {
+			ShclStr up = indents->data[depth - 1].s;
+			fits = indent.n > up.n && memcmp(indent.p, up.p, up.n) == 0;
+		}
+	}
+	if (fits) {
+		indents_resize(a, indents, depth + 1);
+		indents->data[depth].has = 1; indents->data[depth].s = indent;
+	} else if (indents->len > 1) indents->len = 1;
+}
+
+/* A run the edits wrote, indented the way the lines around it are. A raw
+   body keeps its own tabs past the pad, and a kept line its indent. */
+static void write_run(ShclArena *a, ShclSB *out, ShclEmit *e, size_t pos, size_t end, ShclVecIndent *indents, ShclStr step, const char *eol) {
+	ShclStr text = sb_S(&e->out);
+	while (pos < end) {
+		size_t next = line_end(text, pos);
+		ShclStr line = s_slice(text, pos, next - 1);
+		size_t lo = 0, hi = e->bodies.len / 3;
+		while (lo < hi) { size_t mid = (lo + hi) / 2; if (e->bodies.data[mid * 3] <= pos) lo = mid + 1; else hi = mid; }
+		if (lo > 0 && pos < e->bodies.data[(lo - 1) * 3 + 1]) {
+			size_t pad = e->bodies.data[(lo - 1) * 3 + 2];
+			if (line.n) {
+				sb_putS(a, out, indent_for(a, indents, pad, step));
+				sb_putS(a, out, s_slice(line, pad, line.n));
+			}
+		} else {
+			size_t depth = tabs_of(line);
+			if (depth < line.n && line.p[depth] == ' ') sb_putS(a, out, line);
+			else {
+				ShclStr indent = indent_for(a, indents, depth, step);
+				sb_putS(a, out, indent);
+				sb_putS(a, out, s_slice(line, depth, line.n));
+				indents_resize(a, indents, depth + 1);
+				indents->data[depth].has = 1; indents->data[depth].s = indent;
+			}
+		}
+		sb_puts(a, out, eol);
+		pos = next;
+	}
+}
+
+/* A source line split for an edit: the text without its trailing blanks, what
+   followed that, and where the part after the indent starts. */
+typedef struct { ShclStr t, tail, rest; size_t head; } ShclSrcLine;
+static ShclSrcLine src_line(ShclStr line) {
+	ShclSrcLine r;
+	ShclStr body = line;
+	if (body.n && body.p[body.n - 1] == '\n') body.n--;
+	r.t = trim_wsp_end(body);
+	r.tail = s_slice(line, r.t.n, line.n);
+	r.rest = trim_wsp_start(s_slice(r.t, leading_ws(r.t).n, r.t.n));
+	r.head = r.t.n - r.rest.n;
+	return r;
+}
+
+/* A binding line the edits rewrote, with the name spelled the way the source
+   line spelled it. 0 unless both lines bind one plain name. */
+static int authored_head(ShclArena *a, ShclStr src, ShclStr canon, ShclStr *out) {
+	ShclSrcLine sl = src_line(src);
+	ShclStr c = s_slice(canon, tabs_of(canon), canon.n);
+	ShclStr texts[2]; texts[0] = sl.rest; texts[1] = c;
+	size_t sep[2];
+	for (size_t k = 0; k < 2; k++) {
+		ShclStr text = texts[k];
+		if (text.n && (text.p[0] == '#' || text.p[0] == '*')) return 0;
+		ShclTokens tok; memset(&tok, 0, sizeof tok);
+		tokenize(a, text, ':', 0, SHCL_RULES_CURRENT, &tok);
+		if (tok.nseg != 1 || tok.segments[0].has_selector || tok.has_fault || !tok.has_sep) return 0;
+		sep[k] = tok.sep;
+	}
+	ShclSB b = {0, 0, 0};
+	sb_putS(a, &b, s_slice(sl.t, 0, sl.head + sep[0] + 1));
+	sb_putS(a, &b, s_slice(c, sep[1] + 1, c.n));
+	*out = sb_S(&b);
+	return 1;
+}
+
+/* A run whose only change is its last value, written into the source line in
+   place of the old one, so the name, spacing and comment stay as they were.
+   0 when anything else changed or the line is not a plain field. */
+static int splice_value(ShclArena *a, ShclStr line, ShclEmit *was, const ShclUnit *w, ShclEmit *now, const ShclUnit *u, ShclStr *out) {
+	size_t n0 = (w->span_to - w->span_from) / 2, n1 = (u->span_to - u->span_from) / 2;
+	if (n0 == 0 || n0 != n1) return 0;
+	ShclStr t0 = sb_S(&was->out), t1 = sb_S(&now->out);
+	const size_t *s0 = was->spans.data + w->span_from, *s1 = now->spans.data + u->span_from;
+	size_t p0 = w->start, p1 = u->start;
+	for (size_t k = 0; k < n0; k++) {
+		if (!s_eq(s_slice(t0, p0, s0[2 * k]), s_slice(t1, p1, s1[2 * k]))) return 0;
+		if (k + 1 < n0 && !s_eq(s_slice(t0, s0[2 * k], s0[2 * k + 1]), s_slice(t1, s1[2 * k], s1[2 * k + 1]))) return 0;
+		p0 = s0[2 * k + 1]; p1 = s1[2 * k + 1];
+	}
+	if (!s_eq(s_slice(t0, p0, w->end), s_slice(t1, p1, u->end))) return 0;
+	ShclStr value = s_slice(t1, s1[2 * (n1 - 1)], s1[2 * (n1 - 1) + 1]);
+	ShclSrcLine sl = src_line(line);
+	if (sl.rest.n && (sl.rest.p[0] == '#' || sl.rest.p[0] == '*')) return 0;
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	tokenize(a, sl.rest, ':', 0, SHCL_RULES_CURRENT, &tok);
+	if (!tok.has_sep || tok.has_fault) return 0;
+	size_t colon = tok.sep, vs = tok.value_start, ve = tok.value_end;
+	if (fence_open(s_slice(sl.rest, vs, ve)).ok || bracket_text(&tok, sl.rest)) return 0;
+	size_t from = vs == ve ? colon + 1 : ve;
+	ShclSB b = {0, 0, 0};
+	sb_putS(a, &b, s_slice(sl.t, 0, sl.head + colon + 1));
+	sb_putS(a, &b, value);
+	sb_putS(a, &b, s_slice(sl.rest, from, sl.rest.n));
+	sb_putS(a, &b, sl.tail);
+	*out = sb_S(&b);
+	return 1;
+}
+
+/* What a keep-lines save holds past its own frame: the reparsed source and
+   the reload of the result. Off the frame, so a longjmping SHCL_OOM can give
+   them back. */
+typedef struct { shcl_doc *loaded, *back; } ShclKeepOwn;
+
+static int kl_blank(ShclStr l) {
+	while (l.n && l.p[l.n - 1] == '\n') l.n--;
+	return s_trim_wsp(l).n == 0;
+}
+
+/* The save that keeps lines, on the loaded text: the loaded document's
+   canonical runs line up with the text by the source line each came from,
+   and the edited document's runs that match one exactly take that line's
+   text. 0 when the result would not reload as d. *out lives in d's scratch,
+   or is the source itself. */
+static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *out) {
+	const size_t TWICE = NIL - 1;
+	/* A text that was canonical keeps its lines as the canonical form. */
+	if (d->source.n == 0) { *out = emit_canonical(d); return 1; }
+	ShclArena *a = &d->scratch;
+	ShclEmit now; emit_marked(d, &now);
+	shcl_doc *ld = own->loaded = do_parse(d->source.p, d->source.n, d->strictness, 0, 0, 0);
+	if (!ld) arena_panic(panic);
+	doc_guard(ld, panic);
+	ShclEmit was; emit_marked(ld, &was);
+	ShclStr nowS = sb_S(&now.out), wasS = sb_S(&was.out);
+	if (s_eq(nowS, wasS)) { *out = d->source; return 1; }
+	ShclStr src = d->source, body = src;
+	size_t bom = 0;
+	if (src.n >= 3 && (unsigned char)src.p[0] == 0xEF && (unsigned char)src.p[1] == 0xBB && (unsigned char)src.p[2] == 0xBF) { bom = 3; body = s_slice(src, 3, src.n); }
+	ShclVecS lines = {0};
+	for (size_t pos = 0; pos < body.n;) {
+		size_t next = line_end(body, pos);
+		ShclVecS_push(a, &lines, s_slice(body, pos, next));
+		pos = next;
+	}
+	size_t n = lines.len;
+	#define KL_LINE(l) (lines.data[(l) - 1])
+	ShclVecUnit wasU = units_of(a, &was), isU = units_of(a, &now);
+	/* Each source line's run in the loaded text, and the lines it stands for:
+	   its own, through the end of a raw block or a stacked list. */
+	size_t *at = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	for (size_t k = 0; k < n + 2; k++) at[k] = NIL;
+	for (size_t i = 0; i < wasU.len; i++) {
+		size_t l = wasU.data[i].line;
+		if (l != 0 && l <= n) at[l] = at[l] == NIL ? i : TWICE;
+	}
+	ShclVecSize claimed = {0};
+	for (size_t l = 1; l <= n; l++) if (at[l] != NIL) ShclVecSize_push(a, &claimed, l);
+	size_t *end = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	for (size_t k = 0; k < n + 2; k++) end[k] = k;
+	for (size_t k = 0; k + 1 < ld->ends.len; k += 2) {
+		size_t l = ld->ends.data[k], e = ld->ends.data[k + 1];
+		if (l <= n && at[l] != NIL) {
+			if (e > n) e = n;
+			if (e > end[l]) end[l] = e;
+		}
+	}
+	/* The first run after each one's lines, for telling two runs that sat
+	   next to each other. */
+	size_t *next = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	memset(next, 0, (n + 2) * sizeof(size_t));
+	for (size_t k = 0; k < claimed.len; k++) {
+		size_t l = claimed.data[k], lo = 0, hi = claimed.len;
+		while (lo < hi) { size_t mid = (lo + hi) / 2; if (claimed.data[mid] <= end[l]) lo = mid + 1; else hi = mid; }
+		next[l] = lo < claimed.len ? claimed.data[lo] : n + 1;
+	}
+	unsigned char *seen = (unsigned char *)arena_alloc(a, n + 2);
+	memset(seen, 0, n + 2);
+	for (size_t i = 0; i < isU.len; i++) {
+		size_t l = isU.data[i].line;
+		if (l != 0 && l <= n && seen[l] < 255) seen[l]++;
+	}
+	const char *eol = "\n";
+	if (n > 0) { ShclStr l1 = KL_LINE(1); if (l1.n >= 2 && l1.p[l1.n - 2] == '\r' && l1.p[l1.n - 1] == '\n') eol = "\r\n"; }
+	size_t eol_n = strlen(eol);
+	/* One level of the source's indent: a line one level in, or failing that
+	   the first indented line, a list element or a fence. */
+	ShclStr step = s_lit("\t");
+	int found = 0;
+	for (size_t i = 0; i < wasU.len && !found; i++) {
+		const ShclUnit *u = &wasU.data[i];
+		if (u->line == 0 || u->line > n || tabs_of(s_slice(wasS, u->start, wasS.n)) != 1) continue;
+		ShclStr ind = leading_ws(KL_LINE(u->line));
+		if (ind.n) { step = ind; found = 1; }
+	}
+	for (size_t l = 1; l <= n && !found; l++) {
+		if (kl_blank(KL_LINE(l))) continue;
+		ShclStr ind = leading_ws(KL_LINE(l));
+		if (ind.n) { step = ind; found = 1; }
+	}
+	ShclSB ob = {0, 0, 0};
+	sb_reserve(a, &ob, src.n + nowS.n / 8 + 1);
+	sb_putS(a, &ob, s_slice(src, 0, bom));
+	ShclVecIndent indents = {0};
+	{ ShclIndent top; top.has = 1; top.s = s_empty(); ShclVecIndent_push(a, &indents, top); }
+	/* The end of the last source run written, and its line while the run just
+	   written is one. */
+	size_t last = 0, prev = 0;
+	for (size_t i = 0; i < isU.len; i++) {
+		const ShclUnit *u = &isU.data[i];
+		size_t l = u->line;
+		int known = l != 0 && l <= n && seen[l] == 1 && at[l] < TWICE;
+		const ShclUnit *from = known && l > last ? &wasU.data[at[l]] : NULL;
+		int same = from && s_eq(s_slice(wasS, from->start, from->end), s_slice(nowS, u->start, u->end));
+		ShclStr spliced = s_empty();
+		int has_splice = from && !same && splice_value(a, KL_LINE(l), &was, from, &now, u, &spliced);
+		int kept = same || has_splice;
+		/* Between two runs that stay next to each other, the source's own
+		   lines: a repeat the load folded away stays, and so do the blank
+		   lines, unless the edits took the blank out. The same before the
+		   first run. Before any other run from the source, its own blank
+		   lines. */
+		if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
+		if (i == 0) {
+			if (kept && claimed.len && claimed.data[0] == l)
+				for (size_t k = 1; k < l; k++) sb_putS(a, &ob, KL_LINE(k));
+		} else if (kept && prev != 0 && next[prev] == l) {
+			int blanks = 0;
+			for (size_t k = end[prev] + 1; k < l; k++) if (kl_blank(KL_LINE(k))) blanks = 1;
+			for (size_t k = end[prev] + 1; k < l; k++)
+				if (u->blanks > 0 || !kl_blank(KL_LINE(k))) sb_putS(a, &ob, KL_LINE(k));
+			if (!blanks) for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
+		} else if (known && u->blanks > 0 && l > 1 && kl_blank(KL_LINE(l - 1))) {
+			size_t k = l - 1;
+			while (k > 1 && kl_blank(KL_LINE(k - 1))) k--;
+			for (; k < l; k++) sb_putS(a, &ob, KL_LINE(k));
+		} else {
+			for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
+		}
+		size_t depth = tabs_of(s_slice(nowS, u->start, u->end));
+		if (same) {
+			for (size_t k = l; k <= end[l]; k++) sb_putS(a, &ob, KL_LINE(k));
+		} else if (has_splice) {
+			sb_putS(a, &ob, spliced);
+		} else {
+			/* A binding the edits rewrote keeps its line's indent and name. */
+			size_t start = u->start;
+			if (known) {
+				size_t first = line_end(nowS, u->start);
+				ShclStr head;
+				if (authored_head(a, KL_LINE(l), s_slice(nowS, u->start, first - 1), &head)) {
+					sb_putS(a, &ob, head);
+					sb_puts(a, &ob, eol);
+					note_indent(a, &indents, depth, leading_ws(KL_LINE(l)));
+					start = first;
+				}
+			}
+			write_run(a, &ob, &now, start, u->end, &indents, step, eol);
+		}
+		if (kept) {
+			/* A line kept as written holds no level's indent. */
+			if (!(u->start + depth < nowS.n && nowS.p[u->start + depth] == ' ')) note_indent(a, &indents, depth, leading_ws(KL_LINE(l)));
+			last = end[l]; prev = l;
+		} else prev = 0;
+	}
+	/* The blank lines the source ends with stay at the end. */
+	if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
+	size_t tail = n + 1;
+	for (size_t k = 0; k < claimed.len; k++) {
+		size_t t = end[claimed.data[k]] + 1;
+		if (k == 0 || t > tail) tail = t;
+	}
+	int all_blank = 1;
+	for (size_t k = tail; k <= n; k++) if (!kl_blank(KL_LINE(k))) all_blank = 0;
+	if (ob.len > bom && all_blank) for (size_t k = tail; k <= n; k++) sb_putS(a, &ob, KL_LINE(k));
+	/* So does a last line with no newline. */
+	if (body.n && body.p[body.n - 1] != '\n' && ob.len >= eol_n && memcmp(ob.data + ob.len - eol_n, eol, eol_n) == 0) ob.len -= eol_n;
+	#undef KL_LINE
+	ShclStr text = sb_S(&ob);
+	shcl_doc *back = own->back = do_parse(text.p, text.n, d->strictness, 0, 0, 0);
+	if (!back) arena_panic(panic);
+	doc_guard(back, panic);
+	if (back->lost != 0 || !s_eq(emit_canonical(back), nowS)) return 0;
+	*out = text;
+	return 1;
+}
+
+/* The text a keep-lines save writes, and whether it kept the lines: the
+   canonical form when there is no source or the lines would not reload the
+   same. *out lives in d's scratch or arena, until the next call on d. */
+static int keep_text(shcl_doc *d, ShclStr *out) {
+	if (!d->has_source) { *out = emit_canonical(d); return 0; }
+	ShclKeepOwn *volatile own = (ShclKeepOwn *)calloc(1, sizeof *own);
+	if (!own) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		ShclKeepOwn *bad = own;
+		shcl_free(bad->loaded); shcl_free(bad->back); free(bad);
+		doc_guard(d, NULL);
+		SHCL_OOM();
+		abort();
+	}
+	doc_guard(d, &panic);
+	int kept = keep_lines(d, own, &panic, out);
+	doc_guard(d, NULL);
+	ShclKeepOwn *done = own;
+	shcl_free(done->loaded); shcl_free(done->back); free(done);
+	if (!kept) *out = emit_canonical(d);
+	return kept;
+}
+
+shcl_str shcl_to_text_keep_lines(shcl_doc *d, int *kept) {
+	ShclStr t;
+	int k = keep_text(d, &t);
+	if (kept) *kept = k;
+	return s_dup(&d->reads, t);
+}
+
+/* Keep a copy of the loaded text on the document, or nothing when the text is
+   already its canonical form. A failed copy frees it and answers NULL, the way
+   a failed parse does. */
+static void keep_source_in(shcl_doc *k, ShclStr t) {
+	k->source = s_eq(emit_canonical(k), t) ? s_empty() : s_dup(&k->arena, t);
+	k->has_source = 1;
+}
+/* The recovery path reads only the volatile carrier, so -Wclobbered's guess
+   about the arguments is wrong here the way it is for do_parse. */
+#if defined(__GNUC__) && !defined(__clang__)
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
+static shcl_doc *keep_source(shcl_doc *parsed, const char *text, size_t len) {
+	shcl_doc *volatile d = parsed;
+	if (!d) return NULL;
+	ShclStr t; t.p = text ? text : ""; t.n = len;
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		shcl_doc *bad = d;
+		shcl_free(bad);
+		return NULL;
+	}
+	doc_guard(d, &panic);
+	shcl_doc *k = d;
+	keep_source_in(k, t);
+	doc_guard(k, NULL);
+	return k;
+}
+#if defined(__GNUC__) && !defined(__clang__)
+	#pragma GCC diagnostic pop
+#endif
+
+shcl_doc *shcl_parse_keep_lines(const char *text, size_t len, shcl_strictness s) {
+	return keep_source(shcl_parse_with(text, len, s), text, len);
 }
 
 // --- format helpers + remaining public API ----------------------------------
@@ -6492,7 +7006,10 @@ void shcl_compact(shcl_doc *d) {
 		ShclVecSize_push(a, &NODE(n, ROOT).children, c);
 	}
 	for (size_t i = 0; i < d->diags.len; i++) push_diag(n, d->diags.data[i].line, d->diags.data[i].sev, d->diags.data[i].code, s_dup(a, d->diags.data[i].message));
-	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before, d->orphans.data[i].depth));
+	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_copy(a, &d->orphans.data[i]));
+	for (size_t i = 0; i < d->ends.len; i++) ShclVecSize_push(a, &n->ends, d->ends.data[i]);
+	n->has_source = d->has_source;
+	if (d->has_source) n->source = s_dup(a, d->source);
 	n->strictness = d->strictness;
 	n->lost = d->lost;
 	n->kept = d->kept;
@@ -8576,6 +9093,26 @@ shcl_doc *shcl_load_file(const char *path, shcl_file_status *status) {
 	return shcl_load_file_with(path, SHCL_STANDARD, status);
 }
 
+// shcl_load_file_with, keeping the text for shcl_to_text_keep_lines.
+shcl_doc *shcl_load_file_keep_lines(const char *path, shcl_strictness s, shcl_file_status *status) {
+	size_t len = 0;
+	shcl_file_status st = SHCL_FILE_UNREADABLE;
+	char *buf = shcl_read_file(path, 0, &len, &st);
+	if (!buf) {
+		if (status) *status = st;
+		return shcl_parse_with("", 0, s);
+	}
+	shcl_doc *d = shcl_parse_keep_lines(buf, len, s);
+	free(buf);
+	if (!d) { if (status) *status = st; return NULL; }
+	if (status) {
+		*status = SHCL_FILE_CLEAN;
+		for (size_t i = 0; i < d->diags.len; i++)
+			if (d->diags.data[i].sev == SHCL_SEV_ERROR) { *status = SHCL_FILE_HAD_ERRORS; break; }
+	}
+	return d;
+}
+
 // File tier, save half: write the document's canonical text to PATH through
 // shcl_write_file_atomic. SHCL_SAVE_OK on success. Refuses when parsing lost
 // content that a save would silently delete (shcl_lost_count) - that is
@@ -8593,6 +9130,18 @@ shcl_save_result shcl_save_file(shcl_doc *d, const char *path) {
 shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path) {
 	ShclStr c = emit_canonical(d);
 	return shcl_write_file_atomic(path, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
+}
+
+// shcl_save_file with shcl_to_text_keep_lines: *kept (when not NULL) is 1 when
+// it kept the lines, 0 when it wrote the canonical form instead. Refuses the
+// same way shcl_save_file does.
+shcl_save_result shcl_save_file_keep_lines(shcl_doc *d, const char *path, int *kept) {
+	if (kept) *kept = 0;
+	if (d->lost > 0) return SHCL_SAVE_REFUSED;
+	ShclStr t;
+	int k = keep_text(d, &t);
+	if (kept) *kept = k;
+	return shcl_write_file_atomic(path, t.p, t.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }
 #endif /* SHCL_NO_FILE_IO */
 

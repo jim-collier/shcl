@@ -348,6 +348,9 @@ struct Lead {
 	// the one before it keeps that nesting, so a commented-out block comes
 	// back in its shape.
 	depth: usize,
+	// The source line it was read from, for the save that keeps lines; 0 for
+	// one a write made or moved.
+	line: usize,
 }
 
 impl Lead {
@@ -356,6 +359,7 @@ impl Lead {
 			text,
 			blank_before: false,
 			depth: 0,
+			line: 0,
 		}
 	}
 }
@@ -405,6 +409,7 @@ struct Pend<'a> {
 	indent: &'a str,
 	blank_before: bool,
 	ceiling: usize,
+	line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -594,6 +599,13 @@ pub struct Document {
 	// such line left: the next check costs the same, and nothing is wrong.
 	kept_near: Vec<(usize, usize)>,
 	kept_sum: u64,
+	// The parse's multi-line bindings, from the binding line to the last
+	// line each took. Edits leave it alone; only a reparse reads it.
+	ends: Vec<(usize, usize)>,
+	// The text a load kept for to_text_keep_lines(), and empty when that text
+	// was already canonical, since the canonical form is then the one that
+	// keeps its lines. A merge drops it: the layer's lines are not this text's.
+	source: Option<String>,
 }
 
 /// The first child of each (parent, name), chained on to the next same-named
@@ -794,6 +806,7 @@ fn trailing_to_leading(nd: &mut NodeData) {
 		depth: 0,
 		text,
 		blank_before,
+		line: 0,
 	});
 }
 
@@ -2256,6 +2269,9 @@ struct Parser<'a> {
 	max_elements: usize,
 	max_diags: usize,
 	unlisted: (usize, usize),
+	// A raw block's or a stacked list's binding line and the last line it
+	// took, for the save that keeps lines.
+	ends: Vec<(usize, usize)>,
 }
 
 /// resolve_parent() on a level stack, without moving anything: the parent it
@@ -2359,6 +2375,7 @@ impl<'a> Parser<'a> {
 			max_elements: 0,
 			max_diags: 0,
 			unlisted: (0, 0),
+			ends: Vec::new(),
 		}
 	}
 
@@ -2427,6 +2444,7 @@ impl<'a> Parser<'a> {
 				indent,
 				blank_before,
 				ceiling,
+				line,
 			});
 		}
 		// A refused line owns its indent, so what is written deeper is skipped
@@ -2624,6 +2642,7 @@ impl<'a> Parser<'a> {
 					depth: comment_depth(&mut chain, indent, &p.text, p.indent),
 					text: p.text,
 					blank_before: p.blank_before,
+					line: p.line,
 				});
 			}
 			self.pend_marks.clear();
@@ -2718,6 +2737,7 @@ impl<'a> Parser<'a> {
 						depth: comment_depth(&mut chain, base, &p.text, p.indent),
 						text: std::mem::take(&mut p.text),
 						blank_before: p.blank_before,
+						line: p.line,
 					};
 					if at.2 {
 						self.arena[at.1].triv_mut().after.push(lead);
@@ -3257,6 +3277,7 @@ impl<'a> Parser<'a> {
 						text: p.text,
 						blank_before: p.blank_before,
 						depth: 0,
+						line: 0,
 					},
 				));
 			}
@@ -3390,6 +3411,7 @@ impl<'a> Parser<'a> {
 					indent,
 					blank_before: std::mem::take(&mut self.saw_blank),
 					ceiling: indent.len(),
+					line: lineno,
 				});
 				i += 1;
 				continue;
@@ -3459,6 +3481,7 @@ impl<'a> Parser<'a> {
 						indent,
 					);
 				} else if let Some(node) = self.bind_block(parent, value, lineno, indent) {
+					self.ends.push((self.arena[node].line, next));
 					self.attach_trivia(node, indent, comment);
 				}
 				i = next;
@@ -3495,6 +3518,11 @@ impl<'a> Parser<'a> {
 						if self.add_star_element(parent, &tok, rest, lineno, indent) {
 							self.keep_among(parent);
 						}
+						let head = self.arena[parent].line;
+						match self.ends.last_mut() {
+							Some(e) if e.0 == head => e.1 = lineno,
+							_ => self.ends.push((head, lineno)),
+						}
 						self.attach_trivia(parent, indent, comment);
 					} else {
 						if let Some(c) = comment {
@@ -3503,6 +3531,7 @@ impl<'a> Parser<'a> {
 								indent,
 								blank_before: had_blank,
 								ceiling: indent.len(),
+								line: 0,
 							});
 						}
 						self.add_star_element(parent, &tok, rest, lineno, indent);
@@ -3672,6 +3701,9 @@ impl<'a> Parser<'a> {
 				if had_blank {
 					self.arena[node].blank_before = true;
 				}
+				if next > i + 1 {
+					self.ends.push((lineno, next));
+				}
 				self.attach_trivia(node, indent, comment);
 				self.stack.push((indent, node));
 			}
@@ -3706,6 +3738,7 @@ impl<'a> Parser<'a> {
 				depth: comment_depth(&mut chain, "", &p.text, p.indent),
 				text: p.text,
 				blank_before: p.blank_before,
+				line: p.line,
 			})
 			.collect();
 		settle_first_blank(&mut self.arena, &mut orphans);
@@ -3742,6 +3775,8 @@ impl<'a> Parser<'a> {
 			kept: self.kept_any,
 			kept_near: Vec::new(),
 			kept_sum: 0,
+			ends: self.ends,
+			source: None,
 		};
 		doc.settle_kept();
 		doc
@@ -3933,6 +3968,84 @@ impl Document {
 		e.out
 	}
 
+	/// parse_with, keeping the text for to_text_keep_lines(). The document is
+	/// the same one parse_with gives; only the save differs.
+	#[allow(clippy::result_large_err)]
+	pub fn parse_keep_lines(text: &str, strictness: Strictness) -> Result<Document, LoadError> {
+		match Document::parse_with(text, strictness) {
+			Ok(mut d) => {
+				d.keep_source(text);
+				Ok(d)
+			}
+			Err(mut e) => {
+				e.document.keep_source(text);
+				Err(e)
+			}
+		}
+	}
+
+	fn keep_source(&mut self, text: &str) {
+		self.source = Some(if self.to_canonical() == text {
+			String::new()
+		} else {
+			text.to_string()
+		});
+	}
+
+	/// load_file_with, keeping the text for to_text_keep_lines().
+	pub fn load_file_keep_lines(path: &str, level: Strictness) -> (Document, FileStatus) {
+		let text = match read_file(path, 0) {
+			Ok(t) => t,
+			Err(st) => return (Parser::new().parse("", level), st),
+		};
+		let mut doc = Parser::new().parse(&text, level);
+		let st = if doc.diags.iter().any(|d| d.severity == Severity::Error) {
+			FileStatus::HadErrors
+		} else {
+			FileStatus::Clean
+		};
+		doc.keep_source(&text);
+		(doc, st)
+	}
+
+	/// The text a save that keeps lines writes, and whether it kept them.
+	/// Each line the edits did not touch is the loaded text's own line, byte
+	/// for byte; a changed value is written into its line; new lines are
+	/// indented the way the lines around them are. The result has to reload
+	/// as this document. When it does not, or the document was not loaded
+	/// with parse_keep_lines or load_file_keep_lines, or it took a merge, this
+	/// is to_canonical() and false.
+	pub fn to_text_keep_lines(&self) -> (String, bool) {
+		if let Some(src) = &self.source
+			&& let Some(t) = keep_lines(src, self)
+		{
+			return (t, true);
+		}
+		(self.to_canonical(), false)
+	}
+
+	/// save_file with to_text_keep_lines(): Ok(true) when it kept the lines,
+	/// Ok(false) when it wrote the canonical form instead. Refuses the same
+	/// way save_file does.
+	pub fn save_file_keep_lines(&self, path: &str) -> Result<bool, SaveError> {
+		if self.lost > 0 {
+			return Err(SaveError::Refused {
+				path: path.to_string(),
+				lost: self.lost,
+			});
+		}
+		let (text, kept) = self.to_text_keep_lines();
+		write_file_atomic(path, &text).map_err(SaveError::Io)?;
+		Ok(kept)
+	}
+
+	fn emit_marked(&self) -> Emit {
+		let mut e = Emit::new(self.arena.len() * 24, false);
+		e.lines = true;
+		self.emit_all(&mut e);
+		e
+	}
+
 	fn emit_all(&self, e: &mut Emit) {
 		self.emit_children(&self.arena[ROOT].children, 0, e);
 		// Comments that never found a following line re-emit at the end.
@@ -4063,6 +4176,7 @@ impl Document {
 			for mut l in moved.drain(..).rev() {
 				l.text = commented(&l.text);
 				l.depth = depth;
+				l.line = 0;
 				t.leading.push(l);
 			}
 		}
@@ -4094,10 +4208,11 @@ impl Document {
 		// the parent's walk. Each blank rides its own comment (or the binding
 		// line), never as the first output line.
 		push_leads(e, node.leading(), depth, (idx, Site::Leading, 0));
-		let out = &mut e.out;
-		if node.blank_before && !out.is_empty() {
-			out.push('\n');
+		if node.blank_before && !e.out.is_empty() {
+			e.out.push('\n');
 		}
+		e.mark(node.line);
+		let out = &mut e.out;
 		if would_merge && !node.trailing().is_empty() {
 			out.push_str(&pad);
 			out.push_str(node.trailing());
@@ -4110,6 +4225,7 @@ impl Document {
 		e.near(idx, pos);
 		match &node.value {
 			Value::Empty => {
+				e.span(e.out.len());
 				push_trailing(&mut e.out, node.trailing());
 				e.out.push('\n');
 			}
@@ -4149,8 +4265,10 @@ impl Document {
 				}
 			}
 			Value::Cell(els) => {
+				let at = e.out.len();
 				e.out.push(' ');
 				emit_cell_into(&mut e.out, els);
+				e.span(at);
 				push_trailing(&mut e.out, node.trailing());
 				e.out.push('\n');
 			}
@@ -4175,6 +4293,7 @@ impl Document {
 				}
 				out.push_str(&emit_fence_line(r));
 				out.push('\n');
+				let body = out.len();
 				if !content.is_empty() {
 					for l in content.split('\n') {
 						if !l.is_empty() {
@@ -4184,9 +4303,13 @@ impl Document {
 						out.push('\n');
 					}
 				}
+				let end = out.len();
 				out.push_str(&pad);
 				out.push_str(&fence);
 				out.push('\n');
+				if e.lines {
+					e.bodies.push((body, end, depth + 1));
+				}
 			}
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, e);
@@ -4223,6 +4346,13 @@ struct Emit {
 	near: Vec<(usize, usize)>,
 	flushed: usize,
 	kept_near: Vec<(usize, usize)>,
+	// to_text_keep_lines() only: where the lines from each source line start
+	// (0 for none), each raw body with the tabs its lines are padded with,
+	// and where each value is spelled on its binding line.
+	lines: bool,
+	marks: Vec<(usize, usize)>,
+	bodies: Vec<(usize, usize, usize)>,
+	spans: Vec<(usize, usize)>,
 }
 
 impl Emit {
@@ -4238,6 +4368,23 @@ impl Emit {
 			near: Vec::new(),
 			flushed: 0,
 			kept_near: Vec::new(),
+			lines: false,
+			marks: Vec::new(),
+			bodies: Vec::new(),
+			spans: Vec::new(),
+		}
+	}
+
+	fn mark(&mut self, line: usize) {
+		if self.lines {
+			self.marks.push((self.out.len(), line));
+		}
+	}
+
+	/// A value written from `at` to here, the space before it included.
+	fn span(&mut self, at: usize) {
+		if self.lines {
+			self.spans.push((at, self.out.len()));
 		}
 	}
 
@@ -4332,6 +4479,10 @@ fn push_leads(e: &mut Emit, leads: &[Lead], base: usize, at: (usize, Site, usize
 		if c.blank_before && !e.out.is_empty() {
 			e.out.push('\n');
 		}
+		// A kept line among list elements is part of the list's run.
+		if at.1 != Site::Among {
+			e.mark(c.line);
+		}
 		if c.text.starts_with([' ', '\t']) {
 			let indent = leading_ws(&c.text);
 			let (parent, open, tail) = e.resolve(indent);
@@ -4382,6 +4533,388 @@ fn push_leads(e: &mut Emit, leads: &[Lead], base: usize, at: (usize, Site, usize
 		e.out.push_str(&c.text);
 		e.out.push('\n');
 	}
+}
+
+/// A run of canonical lines from one source line on (0: from none), with
+/// the blank lines written before it and the spans of its values.
+struct Unit {
+	line: usize,
+	start: usize,
+	end: usize,
+	blanks: usize,
+	spans: std::ops::Range<usize>,
+}
+
+fn units_of(e: &Emit) -> Vec<Unit> {
+	let text = e.out.as_bytes();
+	let mut units: Vec<Unit> = Vec::new();
+	let (mut mi, mut bi, mut tag, mut blanks, mut open) = (0, 0, 0, 0, false);
+	let mut pos = 0;
+	while pos < text.len() {
+		let next = line_end(text, pos);
+		while mi < e.marks.len() && e.marks[mi].0 <= pos {
+			tag = e.marks[mi].1;
+			mi += 1;
+		}
+		while bi < e.bodies.len() && e.bodies[bi].1 <= pos {
+			bi += 1;
+		}
+		let in_body = bi < e.bodies.len() && e.bodies[bi].0 <= pos;
+		match units.last_mut() {
+			_ if text[pos] == b'\n' && !in_body => {
+				blanks += 1;
+				open = false;
+			}
+			Some(u) if open && u.line == tag => u.end = next,
+			_ => {
+				units.push(Unit {
+					line: tag,
+					start: pos,
+					end: next,
+					blanks,
+					spans: 0..0,
+				});
+				blanks = 0;
+				open = true;
+			}
+		}
+		pos = next;
+	}
+	let mut si = 0;
+	for u in &mut units {
+		while si < e.spans.len() && e.spans[si].0 < u.start {
+			si += 1;
+		}
+		let from = si;
+		while si < e.spans.len() && e.spans[si].0 < u.end {
+			si += 1;
+		}
+		u.spans = from..si;
+	}
+	units
+}
+
+/// Where the line starting at `pos` ends, past its newline.
+fn line_end(text: &[u8], pos: usize) -> usize {
+	text[pos..]
+		.iter()
+		.position(|&b| b == b'\n')
+		.map_or(text.len(), |i| pos + i + 1)
+}
+
+fn tabs(s: &str) -> usize {
+	s.bytes().take_while(|&b| b == b'\t').count()
+}
+
+/// The indent a new line `depth` levels down gets: the last one written
+/// there, or the nearest shallower one plus a level.
+fn indent_for(indents: &[Option<String>], depth: usize, step: &str) -> String {
+	let mut j = depth;
+	while j > 0 && indents.get(j).is_none_or(|i| i.is_none()) {
+		j -= 1;
+	}
+	let base = indents.get(j).and_then(|i| i.as_deref()).unwrap_or("");
+	format!("{}{}", base, step.repeat(depth - j))
+}
+
+/// A source line written at `depth`. One whose indent does not nest under
+/// the level above it, a dotted path for one, says nothing about the
+/// levels after it.
+fn note_indent(indents: &mut Vec<Option<String>>, depth: usize, indent: &str) {
+	let fits = if depth == 0 {
+		indent.is_empty()
+	} else {
+		!indent.is_empty()
+			&& indents
+				.get(depth - 1)
+				.and_then(|i| i.as_deref())
+				.is_none_or(|up| indent.len() > up.len() && indent.starts_with(up))
+	};
+	if fits {
+		indents.resize(depth + 1, None);
+		indents[depth] = Some(indent.to_string());
+	} else {
+		indents.truncate(1);
+	}
+}
+
+/// A run the edits wrote, indented the way the lines around it are. A raw
+/// body keeps its own tabs past the pad, and a kept line its indent.
+fn write_run(
+	out: &mut String,
+	e: &Emit,
+	(mut pos, end): (usize, usize),
+	indents: &mut Vec<Option<String>>,
+	step: &str,
+	eol: &str,
+) {
+	let text = e.out.as_str();
+	while pos < end {
+		let next = line_end(text.as_bytes(), pos);
+		let line = &text[pos..next - 1];
+		let b = e.bodies.partition_point(|b| b.0 <= pos);
+		match e.bodies[..b].last() {
+			Some(&(_, end, pad)) if pos < end => {
+				if !line.is_empty() {
+					out.push_str(&indent_for(indents, pad, step));
+					out.push_str(&line[pad..]);
+				}
+			}
+			_ => {
+				let depth = tabs(line);
+				if line[depth..].starts_with(' ') {
+					out.push_str(line);
+				} else {
+					let indent = indent_for(indents, depth, step);
+					out.push_str(&indent);
+					out.push_str(&line[depth..]);
+					indents.resize(depth + 1, None);
+					indents[depth] = Some(indent);
+				}
+			}
+		}
+		out.push_str(eol);
+		pos = next;
+	}
+}
+
+/// A binding line the edits rewrote, with the name spelled the way the
+/// source line spelled it. None unless both lines bind one plain name.
+fn authored_head(src: &str, canon: &str) -> Option<String> {
+	let t = trim_wsp_end(src.strip_suffix('\n').unwrap_or(src));
+	let ilen = t.bytes().take_while(|&b| b == b' ' || b == b'\t').count();
+	let rest = t[ilen..].trim_start_matches(is_wsp);
+	let head = t.len() - rest.len();
+	let c = &canon[tabs(canon)..];
+	let mut tok = Tokens::default();
+	let mut sep = [0; 2];
+	for (k, text) in [rest, c].into_iter().enumerate() {
+		if text.starts_with(['#', '*']) {
+			return None;
+		}
+		tokenize(text, b':', false, Rules::Current, &mut tok);
+		if tok.segments.len() != 1 || tok.segments[0].selector.is_some() || tok.fault.is_some() {
+			return None;
+		}
+		sep[k] = tok.sep?;
+	}
+	Some(format!("{}{}", &t[..head + sep[0] + 1], &c[sep[1] + 1..]))
+}
+
+/// A run whose only change is its last value, written into the source line
+/// in place of the old one, so the name, spacing and comment stay as they
+/// were. None when anything else changed or the line is not a plain field.
+fn splice_value(line: &str, was: &Emit, w: &Unit, now: &Emit, u: &Unit) -> Option<String> {
+	let (s0, s1) = (&was.spans[w.spans.clone()], &now.spans[u.spans.clone()]);
+	if s0.is_empty() || s0.len() != s1.len() {
+		return None;
+	}
+	let (t0, t1) = (&was.out, &now.out);
+	let (mut p0, mut p1) = (w.start, u.start);
+	for (k, (a, b)) in s0.iter().zip(s1).enumerate() {
+		if t0[p0..a.0] != t1[p1..b.0] || (k + 1 < s0.len() && t0[a.0..a.1] != t1[b.0..b.1]) {
+			return None;
+		}
+		(p0, p1) = (a.1, b.1);
+	}
+	if t0[p0..w.end] != t1[p1..u.end] {
+		return None;
+	}
+	let last = s1[s1.len() - 1];
+	let value = &t1[last.0..last.1];
+	let t = trim_wsp_end(line.strip_suffix('\n').unwrap_or(line));
+	let tail = &line[t.len()..];
+	let ilen = t.bytes().take_while(|&b| b == b' ' || b == b'\t').count();
+	let rest = t[ilen..].trim_start_matches(is_wsp);
+	let head = t.len() - rest.len();
+	if rest.starts_with(['#', '*']) {
+		return None;
+	}
+	let mut tok = Tokens::default();
+	tokenize(rest, b':', false, Rules::Current, &mut tok);
+	let colon = tok.sep?;
+	let (a, b) = path_of(&tok, rest).ok()?.value?;
+	if fence_open(&rest[a..b]).is_some() || bracket_text(&tok, rest) {
+		return None;
+	}
+	let from = if a == b { colon + 1 } else { b };
+	Some(format!(
+		"{}{}{}{}",
+		&t[..head + colon + 1],
+		value,
+		&rest[from..],
+		tail
+	))
+}
+
+/// to_text_keep_lines() on a loaded text: the loaded document's canonical
+/// runs line up with the text by the source line each came from, and the
+/// edited document's runs that match one exactly take that line's text.
+/// None when the result would not reload as `doc`.
+fn keep_lines(src: &str, doc: &Document) -> Option<String> {
+	const TWICE: usize = NIL - 1;
+	// A text that was canonical keeps its lines as the canonical form.
+	if src.is_empty() {
+		return Some(doc.to_canonical());
+	}
+	let now = doc.emit_marked();
+	let loaded_doc = Parser::new().parse(src, doc.strictness);
+	let loaded = loaded_doc.emit_marked();
+	if now.out == loaded.out {
+		return Some(src.to_string());
+	}
+	let (bom, body) = match src.strip_prefix('\u{feff}') {
+		Some(b) => ("\u{feff}", b),
+		None => ("", src),
+	};
+	let mut lines: Vec<&str> = Vec::new();
+	let mut pos = 0;
+	while pos < body.len() {
+		let next = line_end(body.as_bytes(), pos);
+		lines.push(&body[pos..next]);
+		pos = next;
+	}
+	let n = lines.len();
+	let line = |l: usize| lines[l - 1];
+	let blank = |l: usize| trim_wsp(line(l).trim_end_matches('\n')).is_empty();
+	let indent = |l: usize| {
+		let t = line(l);
+		&t[..t.bytes().take_while(|&b| b == b' ' || b == b'\t').count()]
+	};
+	let (was, is) = (units_of(&loaded), units_of(&now));
+	// Each source line's run in the loaded text, and the lines it stands for:
+	// its own, through the end of a raw block or a stacked list.
+	let mut at = vec![NIL; n + 2];
+	for (i, u) in was.iter().enumerate() {
+		if u.line != 0 && u.line <= n {
+			at[u.line] = if at[u.line] == NIL { i } else { TWICE };
+		}
+	}
+	let claimed: Vec<usize> = (1..=n).filter(|&l| at[l] != NIL).collect();
+	let mut end: Vec<usize> = (0..n + 2).collect();
+	for &(l, e) in &loaded_doc.ends {
+		if l <= n && at[l] != NIL {
+			end[l] = end[l].max(e.min(n));
+		}
+	}
+	// The first run after each one's lines, for telling two runs that sat
+	// next to each other.
+	let mut next = vec![0; n + 2];
+	for &l in &claimed {
+		next[l] = claimed.partition_point(|&c| c <= end[l]);
+		next[l] = claimed.get(next[l]).copied().unwrap_or(n + 1);
+	}
+	let mut seen = vec![0u8; n + 2];
+	for u in &is {
+		if u.line != 0 && u.line <= n {
+			seen[u.line] = seen[u.line].saturating_add(1);
+		}
+	}
+	let eol = if n > 0 && line(1).ends_with("\r\n") {
+		"\r\n"
+	} else {
+		"\n"
+	};
+	// One level of the source's indent: a line one level in, or failing that
+	// the first indented line, a list element or a fence.
+	let step = was
+		.iter()
+		.filter(|u| u.line != 0 && tabs(&loaded.out[u.start..]) == 1)
+		.map(|u| indent(u.line))
+		.chain((1..=n).filter(|&l| !blank(l)).map(indent))
+		.find(|i| !i.is_empty())
+		.unwrap_or("\t");
+	let mut out = String::with_capacity(src.len() + now.out.len() / 8);
+	out.push_str(bom);
+	let break_line = |out: &mut String| {
+		if out.len() > bom.len() && !out.ends_with('\n') {
+			out.push_str(eol);
+		}
+	};
+	let mut indents: Vec<Option<String>> = vec![Some(String::new())];
+	// The end of the last source run written, and its line while the run just
+	// written is one.
+	let (mut last, mut prev) = (0, 0);
+	for (i, u) in is.iter().enumerate() {
+		let l = u.line;
+		let known = l != 0 && l <= n && seen[l] == 1 && at[l] < TWICE;
+		let from = (known && l > last).then(|| &was[at[l]]);
+		let same = from.is_some_and(|w| loaded.out[w.start..w.end] == now.out[u.start..u.end]);
+		let spliced = match from {
+			Some(w) if !same => splice_value(line(l), &loaded, w, &now, u),
+			_ => None,
+		};
+		let kept = same || spliced.is_some();
+		// Between two runs that stay next to each other, the source's own
+		// lines: a repeat the load folded away stays, and so do the blank
+		// lines, unless the edits took the blank out. The same before the
+		// first run. Before any other run from the source, its own blank lines.
+		break_line(&mut out);
+		if i == 0 {
+			if kept && claimed.first() == Some(&l) {
+				(1..l).for_each(|k| out.push_str(line(k)));
+			}
+		} else if kept && prev != 0 && next[prev] == l {
+			let gap = end[prev] + 1..l;
+			let blanks = gap.clone().any(blank);
+			for k in gap {
+				if u.blanks > 0 || !blank(k) {
+					out.push_str(line(k));
+				}
+			}
+			if !blanks {
+				(0..u.blanks).for_each(|_| out.push_str(eol));
+			}
+		} else if known && u.blanks > 0 && l > 1 && blank(l - 1) {
+			let mut k = l - 1;
+			while k > 1 && blank(k - 1) {
+				k -= 1;
+			}
+			(k..l).for_each(|k| out.push_str(line(k)));
+		} else {
+			(0..u.blanks).for_each(|_| out.push_str(eol));
+		}
+		let depth = tabs(&now.out[u.start..u.end]);
+		if same {
+			(l..=end[l]).for_each(|k| out.push_str(line(k)));
+		} else if let Some(t) = &spliced {
+			out.push_str(t);
+		} else {
+			// A binding the edits rewrote keeps its line's indent and name.
+			let mut from = u.start;
+			if known {
+				let first = line_end(now.out.as_bytes(), u.start);
+				if let Some(t) = authored_head(line(l), &now.out[u.start..first - 1]) {
+					out.push_str(&t);
+					out.push_str(eol);
+					note_indent(&mut indents, depth, indent(l));
+					from = first;
+				}
+			}
+			write_run(&mut out, &now, (from, u.end), &mut indents, step, eol);
+		}
+		if kept {
+			// A line kept as written holds no level's indent.
+			if !now.out[u.start + depth..].starts_with(' ') {
+				note_indent(&mut indents, depth, indent(l));
+			}
+			(last, prev) = (end[l], l);
+		} else {
+			prev = 0;
+		}
+	}
+	// The blank lines the source ends with stay at the end.
+	break_line(&mut out);
+	let tail = claimed.iter().map(|&l| end[l] + 1).max().unwrap_or(n + 1);
+	if out.len() > bom.len() && (tail..=n).all(blank) {
+		(tail..=n).for_each(|k| out.push_str(line(k)));
+	}
+	// So does a last line with no newline.
+	if !body.is_empty() && !body.ends_with('\n') && out.ends_with(eol) {
+		out.truncate(out.len() - eol.len());
+	}
+	let back = Parser::new().parse(&out, doc.strictness);
+	(back.lost == 0 && back.to_canonical() == now.out).then_some(out)
 }
 
 /// Inline comment, canonically two spaces before the `#`.
@@ -6546,6 +7079,7 @@ impl Document {
 	/// that call impossible here; the other bindings check for it.
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
+		self.source = None;
 		self.lost += over.lost;
 		// The layer's own kept lines were modeled against its own tree.
 		let fresh = over.kept;

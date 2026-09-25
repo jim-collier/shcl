@@ -49,6 +49,12 @@ awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) printf "k%d: %d\n", i, i }' >
 : > "${tmpDir}/base.ops"
 ## Every existing key rewritten: the writer's own path, nothing else.
 awk -v n="${keys}" 'BEGIN{ for (i = 0; i < n; i++) printf "int\tk%d\t%d\n", i, i + 1 }' > "${tmpDir}/writes.ops"
+## The save that keeps lines, on a file that is not canonical, so it lines the
+## edited text up against the source: two parses and several passes over the
+## text, which is why it gets half the keys. Every key is rewritten.
+keepDoc="${tmpDir}/keep.shcl"
+awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "k%d:  %d\n", i, i }' > "${keepDoc}"
+awk -v n="$((keys / 2))" 'BEGIN{ for (i = 0; i < n; i++) printf "int\tk%d\t%d\n", i, i + 1 }' > "${tmpDir}/keeps.ops"
 ## Paths that do not resolve: the set-if-absent half, which is where the
 ## whole-index rebuild hid.
 awk 'BEGIN{ for (i = 0; i < 1000; i++) printf "int-default\tnew%d\t%d\n", i, i }' > "${tmpDir}/defaults.ops"
@@ -187,6 +193,8 @@ fTimeMs(){
 			fRun "${cli}" fmt --layer "${mergeBase}" "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		elif [[ "${mode}" == removes ]]; then
 			fRun "${cli}" set "${input}" < "${tmpDir}/removes.ops" > "${tmpDir}/out" 2>/dev/null || rc=$?
+		elif [[ "${mode}" == keeps ]]; then
+			fRun "${cli}" set "${input}" < "${tmpDir}/keeps.ops" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		else
 			fRun "${cli}" set "${doc}" < "${input}" > "${tmpDir}/out" 2>/dev/null || rc=$?
 		fi
@@ -255,8 +263,10 @@ for b in "${bindings[@]}"; do
 	budget=$(( baseMs * factor ))
 	floor=$(( baseMs + 250 ))
 	if ((budget < floor)); then budget="${floor}"; fi
-	for w in writes defaults reads badlines suggest recurse frags stars mounts selectors unknowns merge removes; do
-		if [[ "${w}" == badlines ]]; then
+	for w in writes keeps defaults reads badlines suggest recurse frags stars mounts selectors unknowns merge removes; do
+		if [[ "${w}" == keeps ]]; then
+			ms="$(fTimeMs "${cli}" "${keepDoc}" keeps "$((keys / 2))")"
+		elif [[ "${w}" == badlines ]]; then
 			ms="$(fTimeMs "${cli}" "${badDoc}" check 2)"
 		elif [[ "${w}" == suggest ]]; then
 			ms="$(fTimeMs "${cli}" "${sugDoc}" suggest 2)"

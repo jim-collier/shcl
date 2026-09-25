@@ -106,7 +106,7 @@ in a path segment fans the read across every instance of that segment.
 .B set
 Apply edits to
 .IR FILE ,
-the base document, and print the canonical result \- or rewrite
+the base document, and print the result \- or rewrite
 .I FILE
 in place with
 .BR \-\-write ,
@@ -116,6 +116,12 @@ when nothing is there yet, giving it the same info block
 .B init
 writes unless
 .BR \-\-no\-banner .
+Lines the edits leave alone come back as they were written. With
+.BR \-\-layer ,
+or where the edited text would not load back the same, the whole document
+comes out in canonical form, the way
+.B fmt
+writes it.
 Edits go in as the repeatable
 .BR \-\-set ,
 .BR \-\-set\-literal ,

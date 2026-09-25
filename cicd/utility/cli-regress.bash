@@ -213,6 +213,9 @@ printf 'k: 1\n' > "${tmpDir}/${wideName}"
 ## Loads without a diagnostic, so a --check row's stderr holds only --check's own
 ## line. The extra spaces are all that is wrong with it.
 printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
+## A file kept by hand, for the save that keeps lines: spacing, a quoted
+## value, a capital and a four-space indent that the canonical form rewrites.
+printf '# note\nName:   "x"   # c\nblock:\n    a: 1\n' > "${tmpDir}/keepsrc.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
 ##	The last field is optional: when given, %C% must hold exactly that text
@@ -232,6 +235,7 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 ##	%BA% a bracket array, %SQ% a selector whose discriminator needs quotes,
 ##	%SV% a schema naming a path the two-error file does not have,
 ##	%NV% two instance values holding a line break beside one plain value,
+##	%K% a fresh copy of a file kept by hand, at the path %C% names,
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
@@ -407,13 +411,18 @@ rows=(
 	'set-diags-without-write|set --set=a=2 %B%|-|0|-|E015 missing colon'
 	## 20260829 item 6: --set split PATH from VALUE at the first '=' anywhere, so
 	## a selector holding one could not be addressed at all.
-	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x: a=b\n\tc: 1\n|-'
+	'set-eq-in-selector|set --set=x[a=b].c=1 %X%|-|0|x[a=b]:\n\tc: 1\n|-'
 	## 20260905 item 3: a quote anywhere in the path was read as opening a quoted
 	## piece, so an apostrophe in a bare selector left every later '=' looking
 	## quoted and the option was refused while get on the same path worked.
-	"set-quote-in-selector|set --set=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 9\n|-"
-	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv: \"O'Brien\"\n\tport: 0\n|-"
-	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x: a=b\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
+	"set-quote-in-selector|set --set=srv[O'Brien].port=9 %Q%|-|0|srv[O'Brien]:\n\tport: 9\n|-"
+	"set-default-quote-in-selector|set --set-default=srv[O'Brien].port=9 %Q%|-|0|srv[O'Brien]:\n\tport: 0\n|-"
+	"set-quoted-selector-eq|set --set=x[\"k]=v\"].d=2 %X%|-|0|x[a=b]:\n\tc: 0\n\nx: \"k]=v\"\n\td: 2\n|-"
+	## set writes back the lines its edits leave alone, printing or in place,
+	## where fmt writes the canonical form.
+	'set-keeps-lines|set %K% --set=block.a=2|-|0|# note\nName:   "x"   # c\nblock:\n    a: 2\n|-'
+	'set-write-keeps-lines|set --write %K% --set=block.b=3|-|0|-|-|# note\nName:   "x"   # c\nblock:\n    a: 1\n    b: 3\n'
+	'fmt-write-rewrites-all|fmt --write %K%|-|0|-|-|# note\nname: "x"  # c\nblock:\n\ta: 1\n'
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
 	## 20260909 item 13: a value built by a setter or a selector read as
 	## unquoted, so quoted thousands were BadType until a save and reload.
@@ -766,6 +775,11 @@ for row in "${rows[@]}"; do
 		freshBw=1
 		argv="${argv//%BW%/${tmpDir}/bw.shcl}"
 	fi
+	freshKeep=0
+	if [[ "${argv}" == *%K%* ]]; then
+		freshKeep=1
+		argv="${argv//%K%/${tmpDir}/created.shcl}"
+	fi
 	freshCreate=0
 	if [[ "${argv}" == *%C%* ]]; then
 		freshCreate=1
@@ -821,6 +835,7 @@ for row in "${rows[@]}"; do
 		((freshLong)) && printf 'k: 1\n' > "${tmpDir}/${longName}"
 		((freshWide)) && printf 'k: 1\n' > "${tmpDir}/${wideName}"
 		((freshCreate)) && rm -f "${tmpDir}/created.shcl"
+		((freshKeep)) && cp "${tmpDir}/keepsrc.shcl" "${tmpDir}/created.shcl"
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;

@@ -175,20 +175,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- 🔘 A save that edits only the lines that changed, and writes every other line back byte for byte.
-	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
-	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
-	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
-	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
-	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
-	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
-	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
-	- Decided: 20260925, after the `v3.0.0-beta1` cut. Changed the same day, it goes in before the cut, along with the nemo-anywhere items below.
-	- Decided: 20260925, it's a new call the program opts into. A load keeps the source text only when asked for. The old save and `fmt` stay canonical.
-	- Decided: 20260925, `set` switches to line edits at 3.0, stdout and `--write` both. That way the output change comes with the major version, not in a 3.1.
-	- Decided: 20260925, if the edited text doesn't reload to the same document, it writes the canonical form instead, same as every save does today, and tells the caller which one it did.
-	- Opened: 20260925-095454
-
 - 🔘 Cut `v3.0.0-beta1`, after everything above.
 	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
 	- Opened: 20260925-115006
@@ -4705,6 +4691,26 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- ✅ A save that edits only the lines that changed, and writes every other line back byte for byte.
+	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
+	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
+	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
+	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
+	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
+	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
+	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
+	- Decided: 20260925, after the `v3.0.0-beta1` cut. Changed the same day, it goes in before the cut, along with the nemo-anywhere items below.
+	- Decided: 20260925, it's a new call the program opts into. A load keeps the source text only when asked for. The old save and `fmt` stay canonical.
+	- Decided: 20260925, `set` switches to line edits at 3.0, stdout and `--write` both. That way the output change comes with the major version, not in a 3.1.
+	- Decided: 20260925, if the edited text doesn't reload to the same document, it writes the canonical form instead, same as every save does today, and tells the caller which one it did.
+	- Done: `parse_keep_lines`, `load_file_keep_lines`, `to_text_keep_lines` and `save_file_keep_lines` in all four and the veneer. Lines no edit touched come back byte for byte, a changed value goes into its own line, new lines copy the indent around them. `set` uses it.
+	- Done: it lines up the loaded and edited canonical text by source line, so none of the write calls changed. A file that was already canonical keeps no copy and just saves canonical.
+	- Note: it still falls back to canonical for a child under flat dotted lines, a value a selector elsewhere names, folded blocks and merges.
+	- Verified: corpus 150 to 152 plus an `expected-keep.shcl` beside every write case, and every input saves back unchanged with no edits. Crosscheck runs three `set` edits per input too, 24609 agree. New fuzz property, clean at 2M. A save forced to canonical fails crosscheck, cli-regress and the corpus.
+	- Swept: help text, man page, spec, design.md, README, changelog. perf-gate got a `keeps` workload.
+	- Opened: 20260925-095454
+	- Closed: 20260925-142720
 
 - From nemo-anywhere:
 

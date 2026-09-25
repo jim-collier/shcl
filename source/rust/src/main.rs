@@ -67,9 +67,10 @@ shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
-                                         print canonical (or rewrite FILE in
-                                         place with --write, which creates
-                                         FILE when it is not there yet)
+                                         print FILE with the edited lines
+                                         changed (or rewrite FILE in place
+                                         with --write, which creates FILE
+                                         when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -108,8 +109,11 @@ persist with --write; given any of them, no ops are read from stdin. Raw blocks
 go in only as a write-ops script on stdin, which can make the other edits too,
 one op per line, tab-separated. FILE '-' follows stdin: the document when an
 option holds the edits, an empty base when the ops script has stdin instead.
-With --write, a FILE that does not exist yet is created. PATH ends at the first
-'=' outside quotes and brackets, so a selector may hold one. Ops:
+With --write, a FILE that does not exist yet is created. Lines the edits leave
+alone come back as they were written; with --layer, or where the edited text
+would not load back the same, the whole document comes out canonical, the way
+fmt writes it. PATH ends at the first '=' outside quotes and brackets, so a
+selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -1252,13 +1256,18 @@ fn say_diagnostics_from(file: &str, diags: &[Diagnostic]) {
 /// reading them off it drops the diagnostics for FILE itself, which is the one
 /// the caller named.
 fn load_layered(o: &Opts, file: &str) -> Result<Document, u8> {
-	load_layered_from(o, file, None).map(|(doc, _)| doc)
+	load_layered_from(o, file, None, false).map(|(doc, _)| doc)
 }
 
 /// The same fold with FILE's text given rather than read, which is how `set`
 /// creates a file or takes an empty document, and FILE's text handed back.
 /// `set` kept its own copy of the fold, and twice a fix to this one missed it.
-fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Document, String), u8> {
+fn load_layered_from(
+	o: &Opts,
+	file: &str,
+	base: Option<String>,
+	keep: bool,
+) -> Result<(Document, String), u8> {
 	// Lowest -> highest file layer: the --layer files in order, then FILE.
 	let mut texts: Vec<String> = Vec::with_capacity(o.layers.len() + 1);
 	for lf in &o.layers {
@@ -1285,10 +1294,11 @@ fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Docu
 		.chain(std::iter::once(file))
 		.collect();
 	let label = |i: usize| if names.len() > 1 { names[i] } else { "" };
-	let mut doc = load_from(label(0), &texts[0], o.strictness)?;
+	// Only a document with no layers under it keeps its lines: a merge drops them.
+	let mut doc = load_from(label(0), &texts[0], o.strictness, keep && texts.len() == 1)?;
 	say_diagnostics_from(label(0), doc.diagnostics());
 	for (i, t) in texts[1..].iter().enumerate() {
-		let over = load_from(label(i + 1), t, o.strictness)?;
+		let over = load_from(label(i + 1), t, o.strictness, false)?;
 		say_diagnostics_from(label(i + 1), over.diagnostics());
 		doc.merge(&over);
 	}
@@ -1312,7 +1322,7 @@ fn load_layered_from(o: &Opts, file: &str, base: Option<String>) -> Result<(Docu
 /// command succeeded, and the save runs through the library's own gate rather
 /// than a second copy of the rule - the CLI and a consumer program cannot then
 /// disagree about which rewrites are safe.
-fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
+fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>, keep: bool) -> u8 {
 	// `read` is the bytes FILE held when the command read it, and None when
 	// this write is creating FILE.
 	if let Some(before) = read
@@ -1326,16 +1336,22 @@ fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>) -> u8 {
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
 	// dropped content refuses the write whatever the bytes say.
+	let text = if keep {
+		doc.to_text_keep_lines().0
+	} else {
+		doc.to_canonical()
+	};
 	if let Some(before) = read
 		&& (o.lossy || doc.lost_count() == 0)
-		&& doc.to_canonical() == before
+		&& text == before
 	{
 		return 0;
 	}
-	let r = if o.lossy {
-		doc.save_file_lossy(file)
-	} else {
-		doc.save_file(file)
+	let r = match (o.lossy, keep) {
+		(true, true) => write_file_atomic(file, &text).map_err(SaveError::Io),
+		(true, false) => doc.save_file_lossy(file),
+		(false, true) => doc.save_file_keep_lines(file).map(|_| ()),
+		(false, false) => doc.save_file(file),
 	};
 	match r {
 		Ok(()) => {
@@ -1502,8 +1518,13 @@ fn read_input(file: &str) -> Result<String, String> {
 
 /// A load, labelled with the file the text came from, so a strict failure in
 /// one layer of a fold says which layer.
-fn load_from(file: &str, text: &str, strictness: Strictness) -> Result<Document, u8> {
-	match Document::parse_with(text, strictness) {
+fn load_from(file: &str, text: &str, strictness: Strictness, keep: bool) -> Result<Document, u8> {
+	let loaded = if keep {
+		Document::parse_keep_lines(text, strictness)
+	} else {
+		Document::parse_with(text, strictness)
+	};
+	match loaded {
 		Ok(d) => Ok(d),
 		Err(e) => {
 			say_diagnostics_from(file, &e.diagnostics);
@@ -1732,7 +1753,7 @@ fn do_fmt(o: &Opts) -> u8 {
 	if o.write && !write_target_ok(file) {
 		return EXIT_IO;
 	}
-	let (doc, read) = match load_layered_from(o, file, None) {
+	let (doc, read) = match load_layered_from(o, file, None, false) {
 		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
@@ -1757,7 +1778,7 @@ fn do_fmt(o: &Opts) -> u8 {
 		return 6;
 	}
 	if o.write {
-		return write_back(&doc, file, o, Some(&read));
+		return write_back(&doc, file, o, Some(&read), false);
 	}
 	out!("{}", doc.to_canonical());
 	0
@@ -1803,7 +1824,7 @@ fn do_migrate(o: &Opts) -> u8 {
 		}
 	};
 	let m = migrate(&text, o.from_2x);
-	let doc = match load_from("", &m.text, o.strictness) {
+	let doc = match load_from("", &m.text, o.strictness, false) {
 		Ok(d) => d,
 		Err(code) => return code,
 	};
@@ -2292,7 +2313,9 @@ fn do_set(o: &Opts) -> u8 {
 	} else {
 		None
 	};
-	let (mut doc, read) = match load_layered_from(o, file, base) {
+	// Lines the edits leave alone are written back as they were, so a
+	// hand-kept file stays the way it was kept. A created file has none.
+	let (mut doc, read) = match load_layered_from(o, file, base, !creating) {
 		Ok(loaded) => loaded,
 		Err(code) => return code,
 	};
@@ -2348,9 +2371,15 @@ fn do_set(o: &Opts) -> u8 {
 			}
 		}
 		// A file that was there is read again first, for the same wait.
-		return write_back(&doc, file, o, (!creating).then_some(read.as_str()));
+		return write_back(
+			&doc,
+			file,
+			o,
+			(!creating).then_some(read.as_str()),
+			!creating,
+		);
 	}
-	out!("{}", doc.to_canonical());
+	out!("{}", doc.to_text_keep_lines().0);
 	0
 }
 

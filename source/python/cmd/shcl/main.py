@@ -70,9 +70,10 @@ HELP = """shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
-                                         print canonical (or rewrite FILE in
-                                         place with --write, which creates
-                                         FILE when it is not there yet)
+                                         print FILE with the edited lines
+                                         changed (or rewrite FILE in place
+                                         with --write, which creates FILE
+                                         when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -111,8 +112,11 @@ persist with --write; given any of them, no ops are read from stdin. Raw blocks
 go in only as a write-ops script on stdin, which can make the other edits too,
 one op per line, tab-separated. FILE '-' follows stdin: the document when an
 option holds the edits, an empty base when the ops script has stdin instead.
-With --write, a FILE that does not exist yet is created. PATH ends at the first
-'=' outside quotes and brackets, so a selector may hold one. Ops:
+With --write, a FILE that does not exist yet is created. Lines the edits leave
+alone come back as they were written; with --layer, or where the edited text
+would not load back the same, the whole document comes out canonical, the way
+fmt writes it. PATH ends at the first '=' outside quotes and brackets, so a
+selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -779,11 +783,13 @@ def read_input(file):
 		raise ValueError(f"{file}: stream did not contain valid UTF-8") from e
 
 
-def load_doc_from(file, text, strictness):
+def load_doc_from(file, text, strictness, keep=False):
 	# Returns (doc, None) or (None, code). On strict load failure, prints the
 	# diagnostic lines to stderr, labelled with the file the text came from so
 	# a strict failure in one layer of a fold says which layer, and reports 6.
 	try:
+		if keep:
+			return shcl.Document.parse_keep_lines(text, strictness), None
 		return shcl.Document.parse_with(text, strictness), None
 	except shcl.LoadError as le:
 		say_diagnostics_from(file, le.diagnostics)
@@ -806,7 +812,7 @@ def unchanged_since_read(file, before):
 	return False
 
 
-def write_back(doc, file, o, read=None):
+def write_back(doc, file, o, read=None, keep=False):
 	# The in-place half of fmt/set. Overwriting the source is the one place a
 	# recovered load turns destructive, so the save runs through the library's
 	# own gate rather than a second copy of the rule - the CLI and a consumer
@@ -821,11 +827,18 @@ def write_back(doc, file, o, read=None):
 	# every run, watchers fired, other hard links broke, and a canonical file
 	# in a read-only directory failed. The refusal comes first: a load that
 	# dropped content refuses the write whatever the bytes say.
-	if read is not None and (o.lossy or doc.lost_count() == 0) and doc.to_canonical() == read:
+	text = doc.to_text_keep_lines()[0] if keep else doc.to_canonical()
+	if read is not None and (o.lossy or doc.lost_count() == 0) and text == read:
 		return 0
 	try:
-		if o.lossy:
+		if o.lossy and keep:
+			err = shcl.write_file_atomic(file, text)
+			if err is not None:
+				raise shcl.SaveFailed(err)
+		elif o.lossy:
 			doc.save_file_lossy(file)
+		elif keep:
+			doc.save_file_keep_lines(file)
 		else:
 			doc.save_file(file)
 		# A created file is the one write with nothing to compare against
@@ -854,11 +867,11 @@ def load_layered(o, file):
 	# with nothing said about them. A merge does not carry diagnostics over, so
 	# reading them off the merged document drops the ones for FILE itself, which
 	# is the one the caller named.
-	doc, _, code = load_layered_from(o, file, None)
+	doc, _, code = load_layered_from(o, file, None, False)
 	return doc, code
 
 
-def load_layered_from(o, file, given):
+def load_layered_from(o, file, given, keep):
 	# The same fold with FILE's text given rather than read, which is how `set`
 	# creates a file or takes an empty document, and FILE's text handed back.
 	# `set` kept its own copy of the fold, and twice a fix to this one missed
@@ -871,7 +884,8 @@ def load_layered_from(o, file, given):
 	names = list(o.layers) + [file]
 	def label(i):
 		return names[i] if len(names) > 1 else ""
-	doc, code = load_doc_from(label(0), texts[0], o.strictness)
+	# Only a document with no layers under it keeps its lines: a merge drops them.
+	doc, code = load_doc_from(label(0), texts[0], o.strictness, keep and len(texts) == 1)
 	if doc is None:
 		return None, "", code
 	say_diagnostics_from(label(0), doc.diagnostics())
@@ -1268,7 +1282,7 @@ def do_fmt(o):
 	if o.write and not write_target_ok(file):
 		return EXIT_IO
 	try:
-		doc, read, code = load_layered_from(o, file, None)
+		doc, read, code = load_layered_from(o, file, None, False)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
@@ -1750,7 +1764,9 @@ def do_set(o):
 	elif file == "-" and not o.sets:
 		given = ""
 	try:
-		doc, read, code = load_layered_from(o, file, given)
+		# Lines the edits leave alone are written back as they were, so a
+		# hand-kept file stays the way it was kept. A created file has none.
+		doc, read, code = load_layered_from(o, file, given, not creating)
 	except (OSError, ValueError) as e:
 		sys.stderr.write(str(e) + "\n")
 		return EXIT_IO
@@ -1803,8 +1819,8 @@ def do_set(o):
 				if head and not head.endswith("\n\n"):
 					doc = shcl.Document.parse(head + "\n" + shcl.GEN_BANNER)
 		# A file that was there is read again first, for the same wait.
-		return write_back(doc, file, o, None if creating else read)
-	sys.stdout.write(doc.to_canonical())
+		return write_back(doc, file, o, None if creating else read, not creating)
+	sys.stdout.write(doc.to_text_keep_lines()[0])
 	return 0
 
 
