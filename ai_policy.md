@@ -430,13 +430,41 @@ The second list is closer than it looks. That is most of why this document exist
 
 ## About the author
 
-I have decades of programming experience. Hobby, then professional, then a decades-long side-quest into management and executive leadership (almost always with programmers in the chain of my accountability) - all the while still an enthusiastic hobby programmer myself.
+This author has been programming since childhood. Hobby, then professional, then a decades-long side quest into management and executive leadership (almost always with programmers in the chain of my accountability) - all the while still being an enthusiastic hobby programmer.
 
-When AI started becoming a "thing" in programming, I was against it. Which was convenient, because it sucked at it.
+I started with BASIC, then Pascal, then C. (Pretty standard progression then.) Then the OO indoctrination began - first with Visual Basic, some Java, then proper early C#. (And of course JavaScript.) I've struggled since then to shake the reflexive OO urge.
 
-That view has softened with the emergence of the latest frontier models. (Again convenient now that it's pretty capable.) For a few years I've been running large AI-led experiments under an alt GitHub account, mostly to find where these tools break and where they hold up. I've kept at it because I've watched them improve so quickly.
+Go was my first "real" modern non-OO language, and I still have to stop myself from forcing OO onto it. Ditto with Rust.
 
-One outcome is that this nearly decade-old main account no longer has a blanket "no-AI" policy, but allows it only under strict, human-driven constraints.
+Along the way, I became ~~the world's leading authority~~ some guy who got good at Bash. (Mostly by horribly misusing it for 20 years and wondering why it performed so poorly.)
+
+When AI started becoming a "thing" in programming, I was against it. Which was convenient, because it sucked.
+
+That view has softened with the emergence of the late-2026 frontier models. (Again, convenient, now that it's pretty capable.) For a few years I've been running large AI-led experiments under an alt GitHub account, mostly toy projects to see where the models fall apart, and where they help. I've kept at it because I've watched them improve so quickly.
+
+One outcome is that this nearly decade-old main account no longer has a blanket "no-AI" policy. It now allows AI only under strict, human-driven constraints. (As documented here.)
+
+Personally, I use AI to help me:
+
+- Overcome my bad OO habits, by explicitly asking it to suggest non-OO alternative approaches.
+
+- Break my bad habit (again from OO days) of trying to make anything and everything generic, reusable, and inheritable - and just get the thing done.
+
+- Deal with Rust's confusingly myriad ways of doing everything, by suggesting the one idiomatic style I've chosen and documented.
+
+	- AI also helps me with the parts of Rust's syntax I'm having trouble hard-wiring. Which probably helps perpetuate that problem - but "master Rust syntax" is just not on my bucket list. Go, maybe.
+
+- Port code to multiple languages with bit-for-bit fidelity on input and output against a given reference implementation. (E.g., SHCL.)
+
+- Make the subtle refactors required for a codebase to be 100% cross-platform capable.
+
+- Build OS-specific packaging.
+
+- Handle most of the devops pipeline, given explicit instructions and references from previous work.
+
+- Do dull, tedious work like generating benchmark and demo video/GIF harnesses.
+
+- Do adversarial code reviews. Agents are *so* good at this, in fact, they're *too* good - and struggle to ever find a bug-free candidate. (I wrote an AI assistant to help with that.)
 
 ### The use of AI in writing this document
 
