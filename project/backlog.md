@@ -188,6 +188,15 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
+- 🔘 A save that edits only the lines that changed, and writes every other line back byte for byte.
+	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
+	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
+	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
+	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
+	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
+	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
+	- Opened: 20260925-095454
+
 - Code review 20260924d:
 
 	- 🔘 Idea 1: stage 7's fallback destination `~/.local/bin` is now also the dogfood runner's link and the installer's user link.
