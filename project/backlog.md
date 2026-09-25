@@ -98,6 +98,33 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260925b:
+
+	- 🔘 Item 1: a save that keeps lines can write a file that loads with a new error. A field set under a stacked list keeps the elements and writes the field after them, which is `E001`.
+		- Reproduced, all four: `a:` with `\t* x` and `\t* y`, then `set --write --strictness=strict --set a.b=2` exits 0, and the next strict load of the file exits 6. The canonical form, `a: x, y` with the child under it, loads clean. Eight hits over 2322 corpus edits, all this one.
+		- Rests on: the spec says the kept text has to load back as the edited document. The reload check compares the canonical text and the lost count, not the errors.
+		- Note: at the release bar, since a strict reader of the file breaks after an edit that reported success.
+		- Origin: `d426c74`, ports `03e4bf0`. New code, not seen before. Confirmed.
+		- Opened: 20260925-144920
+
+	- 🔘 Item 2: a comment above a flat dotted line moves on any edit anywhere in the file, and the dotted line comes out as a block.
+		- Reproduced, all four: `# db settings`, `db.host: localhost`, `port: 1`, then `set --set port=2` gives `db:`, the comment at column 0, then `\thost: localhost`. That is neither the source nor the canonical form.
+		- Same for a selector line under a comment. In corpus 127 an edit to `env.url` rewrites `repo["org/name#123"].branch` further down. Corpus 001's blocks folded from two places come out partly moved rather than falling back.
+		- Rests on: the spec says each line no edit touched comes back byte for byte. design.md lists what falls back, and this does neither.
+		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
+		- Opened: 20260925-144920
+
+	- 🔘 Item 3: a changed value loses the spacing between the colon and the value.
+		- Reproduced, all four: `a:  1   # c` with `--set a=2` gives `a: 2   # c`.
+		- Rests on: the spec says a changed value goes into its own line with the spacing left alone.
+		- Origin: `d426c74`, ports `03e4bf0`. Confirmed.
+		- Opened: 20260925-144920
+
+	- 🔘 Item 4: the British "labelled" is in twelve comments across the four CLIs.
+		- Note: the sibling of 20260925 item 1, whose sweep looked for "modelled" only.
+		- Origin: `3f3e506` and `be2c3ea`, older than 3.0 work. Confirmed.
+		- Opened: 20260925-144920
+
 - Code review 20260924d:
 
 	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.
@@ -178,6 +205,12 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - 🔘 Cut `v3.0.0-beta1`, after everything above.
 	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
 	- Opened: 20260925-115006
+
+- Code review 20260925b:
+
+	- 🔘 Idea 1: `oom_recover.c` does not run `shcl_parse_keep_lines` or `shcl_load_file_keep_lines`, which arm a recovery point of their own.
+		- Note: a scratch copy of the test over every budget up to a finished parse came back NULL each time, clean under ASan. The header says a parse never reaches `SHCL_OOM()`, and nothing checks that for these two.
+		- Opened: 20260925-144920
 
 - Code review 20260924d:
 
