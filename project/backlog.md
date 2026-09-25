@@ -98,6 +98,24 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- Code review 20260925c:
+
+	- 🔘 Item 1: a save that keeps lines drops a line the load folded into an earlier one, when an edit writes a line next to it or when it comes after the last line kept.
+		- Reproduced, all four: in corpus 084, `set --set a.p.zq=1` drops the repeated `a: 'q"uote'` header, so `q: 2` now sits under the first `a`. In 133, `--set srv.port.zq=1` drops the second `srv:`. In 150, `--set zz=1` drops the repeated `Retries: 3`. In 141 it drops the twelve lines of the later `x:` blocks and moves their comments.
+		- Note: the text reloads as the edited document, so nothing is lost and the reload check passes. The result is neither the source nor the canonical form.
+		- Note: the same rule decides what `--lossy` does with a lost line. Next to an edit it goes alone. Anywhere else the whole file comes out canonical.
+		- Rests on: the spec says each line no edit touched comes back byte for byte. design.md lists folded blocks among what falls back.
+		- Probable fix: fall back when a source line that is not blank would not be written. Pin it with the Rust fuzz property for a new top-level field, run over every input whose save keeps lines and not only the tidy configs, and the same check in the shared sequence fixture.
+		- Origin: `d426c74`, ports `03e4bf0`. A folded line is written back only between two kept groups that sit next to each other. The 20260925b fixes left that as it was, and that round did not see it. Confirmed.
+		- Opened: 20260925-162755
+
+	- 🔘 Item 2: nothing checks for British spelling, and it came back two rounds running.
+		- Note: 20260925 item 1 ("modelled") and 20260925b item 4 ("labelled") were each closed by a sweep, with no check left behind. A closure without a test reopens.
+		- Probable fix: the 20260925b sweep's word list as a `check-docs.bash` check over source, cicd and the public docs, watched to fail.
+		- Keep: `code_of_conduct.md` keeps its British spelling.
+		- Origin: the closure of 20260925b item 4, `56a935b`. Confirmed.
+		- Opened: 20260925-162755
+
 - Code review 20260924d:
 
 	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.
