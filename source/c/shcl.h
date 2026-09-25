@@ -1111,6 +1111,13 @@ struct shcl_doc {
 	int probe;
 	/* Holds a misplaced line kept as written, so edits have to settle it. */
 	int kept;
+	/* What the last settle's kept lines were modelled through, as node and
+	   place-in-parent pairs, and a sum of it, so an edit that changes none of
+	   it skips the settle. Removing a block above all of it goes unseen, which
+	   leaves kept set with no such line left: the next check costs the same,
+	   and nothing is wrong. malloc'd; shcl_free and shcl_compact give it back. */
+	size_t *kept_near; size_t kept_near_len, kept_near_cap;
+	uint64_t kept_sum;
 };
 
 /* Point every allocation a document can make at one recovery point, or back at
@@ -2935,6 +2942,7 @@ static void settle_block(shcl_doc *d, size_t n, size_t from) {
    a new first line - where it is no longer first - would place a blank nobody
    wrote. Clear it wherever output starts. */
 static void settle_kept(shcl_doc *d); /* with the emitter, which it runs */
+static void resettle_kept(shcl_doc *d);
 static void settle_first_blank(shcl_doc *d) {
 	ShclVecSize kids = NODE(d, ROOT).children;
 	if (kids.len) {
@@ -4734,7 +4742,7 @@ static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	w_collapse_dup(d, idx);
 	if (fence_side) w_settle_fence_name(d, parent, name);
 	settle_first_blank(d);
-	settle_kept(d);
+	resettle_kept(d);
 	return 1;
 }
 
@@ -4788,7 +4796,7 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 		kids->len = w;
 	}
 	settle_first_blank(d);
-	settle_kept(d);
+	resettle_kept(d);
 	return targets.len;
 }
 
@@ -4828,7 +4836,7 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	}
 	ShclVecLead_push(a, &t->leading, lead);
 	settle_first_blank(d);
-	settle_kept(d);
+	resettle_kept(d);
 	return 1;
 }
 
@@ -5243,6 +5251,8 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	if (over == d) return;
 	index_drop(d);
 	d->lost += over->lost;
+	/* The layer's own kept lines were modelled against its own tree. */
+	int fresh = over->kept;
 	d->kept |= over->kept;
 	ShclArena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
@@ -5272,7 +5282,8 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 		ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, depth));
 	}
 	settle_first_blank(d);
-	settle_kept(d);
+	if (fresh) settle_kept(d);
+	else resettle_kept(d);
 }
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
@@ -5705,8 +5716,12 @@ typedef struct {
 	int has_hold; ShclStr hold;
 	const char *tabs; size_t ntabs;
 	/* settle_kept only: the lines written as comments, where they sit and at
-	   what depth, and how many went out as written. */
+	   what depth, and how many went out as written. Then the nodes the lines
+	   since the last binding line came from, each with its place in its
+	   parent's list, and those a kept line was modelled through, both as
+	   pairs. */
 	int record; ShclVecFell fell; size_t verbatim;
+	ShclVecSize near; size_t flushed; ShclVecSize kept_near;
 } ShclEmit;
 
 static void emit_init(ShclEmit *e, ShclArena *a, size_t cap, int record) {
@@ -5735,6 +5750,14 @@ static void emit_bound(ShclEmit *e, size_t depth) {
 	e->open = (ptrdiff_t)depth;
 	e->tail.len = 0;
 	e->has_hold = 0;
+	e->near.len = 0;
+	e->flushed = 0;
+}
+
+static void emit_near(ShclEmit *e, size_t idx, size_t pos) {
+	if (!e->record) return;
+	ShclVecSize_push(e->a, &e->near, idx);
+	ShclVecSize_push(e->a, &e->near, pos);
 }
 
 /* A line at this indent through the reload's resolve_parent(): the parent it
@@ -5814,6 +5837,10 @@ static void push_leads(ShclEmit *e, const ShclLead *leads, size_t n, size_t base
 				if (!t.found) { e->has_hold = 1; e->hold = indent; }
 				emit_refused(e, indent, &t);
 				e->verbatim++;
+				if (e->record) {
+					for (size_t k = e->flushed; k < e->near.len; k++) ShclVecSize_push(a, &e->kept_near, e->near.data[k]);
+					e->flushed = e->near.len;
+				}
 				sb_putS(a, &e->out, c->text); sb_putc(a, &e->out, '\n');
 			} else {
 				/* Level with the comment before it, so the run's nesting reads
@@ -5841,7 +5868,7 @@ static void push_leads(ShclEmit *e, const ShclLead *leads, size_t n, size_t base
 // Emit a sibling run. The parent walk already knows whether an earlier
 // same-name sibling is empty (the raw same-line-fence hazard), so one
 // seen-empties set here replaces a per-child rescan of the whole run.
-static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclEmit *e);
+static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int would_merge, ShclEmit *e);
 static void emit_children(shcl_doc *d, const ShclVecSize *kids, size_t depth, ShclEmit *e) {
 	ShclCMap empties; memset(&empties, 0, sizeof empties);
 	for (size_t i = 0; i < kids->len; i++) {
@@ -5854,11 +5881,11 @@ static void emit_children(shcl_doc *d, const ShclVecSize *kids, size_t depth, Sh
 		int wm = n->value.kind == V_RAW && seen;
 		if (v_is_empty(&n->value) && !seen)
 			cmap_put(&d->scratch, &empties, h, c);
-		emit_node(d, c, depth, wm, e);
+		emit_node(d, c, i, depth, wm, e);
 	}
 }
 
-static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclEmit *e) {
+static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int would_merge, ShclEmit *e) {
 	/* The whole emit - the output buffer and the quoted/escaped spellings both -
 	   is built in scratch; shcl_to_canonical copies the finished bytes into the
 	   document arena once. Building it there instead retained several times the
@@ -5874,6 +5901,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	   comment joins the leading lines instead; the flag comes from the
 	   parent's walk. Each blank rides its own comment (or the binding line),
 	   never as the first output line. */
+	emit_near(e, idx, pos);
 	push_leads(e, lead.data, lead.len, depth, idx, SITE_LEADING, 0);
 	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	if (would_merge && trailing.n) {
@@ -5884,6 +5912,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	sb_putS(a, out, emit_name(a, node->name));
 	sb_putc(a, out, ':');
 	emit_bound(e, depth);
+	emit_near(e, idx, pos);
 	if (v->kind == V_EMPTY) { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
 	else if (v->kind == V_CELL && stacks(node)) {
 		/* Stacked, with the kept lines where they sat. */
@@ -5931,6 +5960,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	}
 	ShclVecSize ch = NODE(d, idx).children;
 	emit_children(d, &ch, depth + 1, e);
+	emit_near(e, idx, pos);
 	/* Comments this block owns with no child to carry them, one deeper. */
 	ShclVecLead ins = triv_inside(&NODE(d, idx));
 	push_leads(e, ins.data, ins.len, depth + 1, idx, SITE_INSIDE, 0);
@@ -5943,6 +5973,7 @@ static void emit_all(shcl_doc *d, ShclEmit *e) {
 	ShclVecSize rc = NODE(d, ROOT).children;
 	emit_children(d, &rc, 0, e);
 	/* Comments that never found a following line re-emit at the end. */
+	emit_near(e, ROOT, 0);
 	push_leads(e, d->orphans.data, d->orphans.len, 0, ROOT, SITE_ORPHANS, 0);
 }
 
@@ -5963,6 +5994,13 @@ static int settle_kept_once(shcl_doc *d) {
 	ShclEmit e; emit_init(&e, &d->scratch, 0, 1);
 	emit_all(d, &e);
 	d->kept = e.verbatim > 0;
+	if (e.kept_near.len > d->kept_near_cap) {
+		size_t *grown = (size_t *)realloc(d->kept_near, e.kept_near.len * sizeof(size_t));
+		if (!grown) arena_panic(d->panic);
+		d->kept_near = grown; d->kept_near_cap = e.kept_near.len;
+	}
+	if (e.kept_near.len) memcpy(d->kept_near, e.kept_near.data, e.kept_near.len * sizeof(size_t));
+	d->kept_near_len = e.kept_near.len;
 	ShclArena *a = &d->arena;
 	size_t among = 0;
 	for (size_t k = 0; k < e.fell.len; k++) {
@@ -6012,8 +6050,59 @@ static int settle_kept_once(shcl_doc *d) {
    the lines after it sit under, so it goes again until nothing moves. Runs
    after a load and after each edit, and only while the document holds such a
    line. */
+static uint64_t lead_sum(uint64_t h, const ShclLead *l) {
+	h = fnv_dec(h, l->depth);
+	h = fnv_dec(h, l->text.n);
+	return fnv_str(h, l->text);
+}
+
+/* Everything the emit model reads from the nodes in kept_near: each one still
+   at its place in its parent's list, its child count, its value's form and its
+   comment lines. A kept line's parent chain needs no entry, since a binding
+   line resets the model to its own depth. */
+static uint64_t near_sum(const shcl_doc *d) {
+	uint64_t h = 1469598103934665603ull;
+	for (size_t k = 0; k + 1 < d->kept_near_len; k += 2) {
+		size_t n = d->kept_near[k], pos = d->kept_near[k + 1];
+		const ShclNode *nd = &NODE(d, n);
+		h = fnv_dec(h, n);
+		h = fnv_dec(h, nd->children.len);
+		if (n == ROOT) {
+			h = fnv_dec(h, d->orphans.len);
+			for (size_t i = 0; i < d->orphans.len; i++) h = lead_sum(h, &d->orphans.data[i]);
+			continue;
+		}
+		int linked = nd->parent < d->nodes.len && pos < NODE(d, nd->parent).children.len && NODE(d, nd->parent).children.data[pos] == n;
+		h = fnv_byte(h, (unsigned char)linked);
+		h = fnv_byte(h, (unsigned char)stacks(nd));
+		h = fnv_byte(h, nd->value.kind == V_EMPTY ? 0u : nd->value.kind == V_CELL ? 1u : 2u);
+		if (nd->value.kind == V_CELL) h = fnv_dec(h, nd->value.nels);
+		if (!nd->trivia) { h = fnv_byte(h, 0u); continue; }
+		const ShclVecLead *lists[3] = { &nd->trivia->leading, &nd->trivia->inside, &nd->trivia->after };
+		for (size_t j = 0; j < 3; j++) {
+			h = fnv_dec(h, lists[j]->len);
+			for (size_t i = 0; i < lists[j]->len; i++) h = lead_sum(h, &lists[j]->data[i]);
+		}
+		h = fnv_dec(h, nd->trivia->among.len);
+		for (size_t i = 0; i < nd->trivia->among.len; i++) {
+			h = fnv_dec(h, nd->trivia->among.data[i].before);
+			h = lead_sum(h, &nd->trivia->among.data[i].lead);
+		}
+	}
+	return h;
+}
+
 static void settle_kept(shcl_doc *d) {
 	while (d->kept && settle_kept_once(d)) {}
+	if (d->kept) d->kept_sum = near_sum(d);
+}
+
+/* After an edit. A kept line binds or not by the lines between it and the
+   binding line above, so an edit that changed none of the nodes those came
+   from cannot move it, and the whole-document emit is skipped (20260924d
+   item 2). */
+static void resettle_kept(shcl_doc *d) {
+	if (d->kept && near_sum(d) != d->kept_sum) settle_kept(d);
 }
 
 shcl_str shcl_to_canonical(shcl_doc *d) {
@@ -6224,7 +6313,7 @@ shcl_doc *shcl_parse_with(const char *text, size_t len, shcl_strictness s) { ret
    arithmetic. A cap diagnostic is an error, so shcl_error_count answers
    whether a Strict load would have failed; the parsed part stays readable. */
 shcl_doc *shcl_parse_limited(const char *text, size_t len, shcl_strictness s, size_t max_nodes, size_t max_elements, size_t max_diags) { return do_parse(text, len, s, max_nodes, max_elements, max_diags); }
-void shcl_free(shcl_doc *d) { if (!d) return; shcl_free(d->probe_doc); free(d->nodes.data); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
+void shcl_free(shcl_doc *d) { if (!d) return; shcl_free(d->probe_doc); free(d->nodes.data); free(d->kept_near); arena_free(&d->arena); arena_free(&d->scratch); arena_free(&d->reads); arena_free(&d->index_arena); free(d); }
 void shcl_reads_release(shcl_doc *d) { if (d) arena_reset(&d->reads); }
 void shcl_compact(shcl_doc *d) {
 	if (!d) return;
@@ -6266,7 +6355,10 @@ void shcl_compact(shcl_doc *d) {
 	shcl_doc old = *d;
 	*d = *n;
 	free(n);
-	free(old.nodes.data); arena_free(&old.arena); arena_free(&old.scratch); arena_free(&old.reads); arena_free(&old.index_arena);
+	free(old.nodes.data); free(old.kept_near); arena_free(&old.arena); arena_free(&old.scratch); arena_free(&old.reads); arena_free(&old.index_arena);
+	/* Every node has a new number, so what the last settle recorded names
+	   the wrong ones. The copy already cost the document. */
+	settle_kept(d);
 }
 int shcl_strict_failed(const shcl_doc *d) {
 	if (d->strictness != SHCL_STRICT) return 0;

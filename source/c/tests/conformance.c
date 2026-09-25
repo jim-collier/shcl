@@ -493,8 +493,9 @@ static void seq_num(SeqBuf *b, size_t n) { char t[24]; snprintf(t, sizeof t, "%z
 static const char *const seq_names[] = {"a", "b", "m"};
 
 /* Lines that carry comments and blanks somewhere a later step can move them:
-   comments at every depth, empty and reopened blocks, and a same-line fence
-   with a comment after an empty binding. */
+   comments at every depth, empty and reopened blocks, a same-line fence with a
+   comment after an empty binding, and misplaced lines kept as written, one of
+   them among a list's elements. */
 static void seq_doc(SeqBuf *b) {
 	b->n = 0; seq_put(b, "", 0);
 	size_t depth = 0;
@@ -506,7 +507,7 @@ static void seq_doc(SeqBuf *b) {
 		char ind[4];
 		memset(ind, '\t', depth); ind[depth] = 0;
 		const char *name = seq_names[seq_below(3)];
-		switch (seq_below(8)) {
+		switch (seq_below(10)) {
 		case 0: seq_puts(b, ind); seq_puts(b, "# c"); seq_num(b, seq_below(3)); break;
 		case 1: break;
 		case 2: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ":"); break;
@@ -517,6 +518,12 @@ static void seq_doc(SeqBuf *b) {
 			break;
 		case 5: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ": "); seq_num(b, seq_below(3)); seq_puts(b, "  # t"); break;
 		case 6: seq_puts(b, ind); seq_puts(b, name); seq_puts(b, "."); seq_puts(b, name); seq_puts(b, ": 1"); break;
+		case 7: seq_puts(b, ind); seq_puts(b, " "); seq_puts(b, name); seq_puts(b, ": "); seq_num(b, seq_below(3)); break;
+		case 8:
+			seq_puts(b, ind); seq_puts(b, name); seq_puts(b, ":\n");
+			seq_puts(b, ind); seq_puts(b, "\t* 1\n"); seq_puts(b, ind); seq_puts(b, " x: 1\n");
+			seq_puts(b, ind); seq_puts(b, "\t* 2");
+			break;
 		default: seq_puts(b, ind); seq_puts(b, "\t# deep"); break;
 		}
 		seq_puts(b, "\n");

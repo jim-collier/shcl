@@ -610,6 +610,12 @@ type Document struct {
 	probeDoc *Document
 	// kept: holds a misplaced line kept as written, so edits have to settle it.
 	kept bool
+	// What the last settle's kept lines were modelled through, and a sum of
+	// it, so an edit that changes none of it skips the settle. Removing a
+	// block above all of it goes unseen, which leaves kept set with no such
+	// line left: the next check costs the same, and nothing is wrong.
+	keptNear []nearNode
+	keptSum  uint64
 }
 
 // nameIndex is the first child of each (parent, name), chained on to the next
@@ -3834,6 +3840,7 @@ func (d *Document) ToCanonical() string {
 func (d *Document) emitAll(e *emit) {
 	d.emitChildren(d.arena[root].children, 0, e)
 	// Comments that never found a following line re-emit at the end.
+	e.near(root, 0)
 	pushLeads(e, d.orphans, 0, root, siteOrphans, 0)
 }
 
@@ -3848,12 +3855,90 @@ func (d *Document) settleKept() {
 	// what the lines after it sit under, so go again until nothing moves.
 	for d.kept && d.settleKeptOnce() {
 	}
+	if d.kept {
+		d.keptSum = d.nearSum()
+	}
+}
+
+// resettleKept runs after an edit. A kept line binds or not by the lines
+// between it and the binding line above, so an edit that changed none of the
+// nodes those came from cannot move it, and the whole-document emit is
+// skipped (20260924d item 2).
+func (d *Document) resettleKept() {
+	if d.kept && d.nearSum() != d.keptSum {
+		d.settleKept()
+	}
+}
+
+// nearSum is everything the emit model reads from the nodes in keptNear: each
+// one still at its place in its parent's list, its child count, its value's
+// form and its comment lines. A kept line's parent chain needs no entry, since
+// a binding line resets the model to its own depth.
+func (d *Document) nearSum() uint64 {
+	h := newFnv()
+	addLead := func(l lead) {
+		h.dec(l.depth)
+		h.dec(len(l.text))
+		h.bytes(l.text)
+	}
+	for _, at := range d.keptNear {
+		n := at.node
+		nd := &d.arena[n]
+		h.dec(n)
+		h.dec(len(nd.children))
+		if n == root {
+			h.dec(len(d.orphans))
+			for _, l := range d.orphans {
+				addLead(l)
+			}
+			continue
+		}
+		linked := byte(0)
+		if nd.parent >= 0 && nd.parent < len(d.arena) {
+			if kids := d.arena[nd.parent].children; at.pos < len(kids) && kids[at.pos] == n {
+				linked = 1
+			}
+		}
+		h.byte(linked)
+		if stacks(nd) {
+			h.byte(1)
+		} else {
+			h.byte(0)
+		}
+		switch nd.value.kind {
+		case vEmpty:
+			h.byte(0)
+		case vCell:
+			h.byte(1)
+			h.dec(len(nd.value.els))
+		default:
+			h.byte(2)
+		}
+		t := nd.trivia
+		if t == nil {
+			h.byte(0)
+			continue
+		}
+		for _, list := range [][]lead{t.leading, t.inside, t.after} {
+			h.dec(len(list))
+			for _, l := range list {
+				addLead(l)
+			}
+		}
+		h.dec(len(t.among))
+		for _, a := range t.among {
+			h.dec(a.before)
+			addLead(a.lead)
+		}
+	}
+	return h.h
 }
 
 func (d *Document) settleKeptOnce() bool {
 	e := newEmit(0, true)
 	d.emitAll(e)
 	d.kept = e.verbatim > 0
+	d.keptNear = e.keptNear
 	var among []fell
 	for _, f := range e.fell {
 		var list []lead
@@ -3916,10 +4001,22 @@ type emit struct {
 	hold string
 	held bool
 	// settleKept() only: the lines written as comments, where they sit and at
-	// what depth, and how many went out as written.
+	// what depth, and how many went out as written. Then the nodes the lines
+	// since the last binding line came from, each with its place in its
+	// parent's list, and those a kept line was modelled through.
 	record   bool
 	fell     []fell
 	verbatim int
+	nearBy   []nearNode
+	flushed  int
+	keptNear []nearNode
+}
+
+// nearNode is a node an emit passed through and its index in its parent's
+// children.
+type nearNode struct {
+	node int
+	pos  int
 }
 
 // fell is a kept line written as a comment: its list, its index there and
@@ -3954,6 +4051,14 @@ func (e *emit) bound(depth int) {
 	e.open = depth
 	e.tail = e.tail[:0]
 	e.held = false
+	e.nearBy = e.nearBy[:0]
+	e.flushed = 0
+}
+
+func (e *emit) near(idx, pos int) {
+	if e.record {
+		e.nearBy = append(e.nearBy, nearNode{node: idx, pos: pos})
+	}
 }
 
 // resolve runs a line at this indent through the reload's resolveParent():
@@ -4038,6 +4143,10 @@ func pushLeads(e *emit, leads []lead, base, node int, at site, from int) {
 				}
 				e.refused(indent, open, tail)
 				e.verbatim++
+				if e.record {
+					e.keptNear = append(e.keptNear, e.nearBy[e.flushed:]...)
+					e.flushed = len(e.nearBy)
+				}
 				e.out.WriteString(c.text)
 				e.out.WriteByte('\n')
 			} else {
@@ -4081,18 +4190,19 @@ func writeTrailing(out *strings.Builder, trailing string) {
 // seen-empties set here replaces a per-child rescan of the whole run.
 func (d *Document) emitChildren(kids []int, depth int, e *emit) {
 	empties := map[string]bool{}
-	for _, c := range kids {
+	for pos, c := range kids {
 		n := &d.arena[c]
 		wm := n.value.kind == vRaw && empties[n.name]
 		if n.value.isEmpty() {
 			empties[n.name] = true
 		}
-		d.emitNode(c, depth, wm, e)
+		d.emitNode(c, pos, depth, wm, e)
 	}
 }
 
-func (d *Document) emitNode(idx, depth int, wouldMerge bool, e *emit) {
+func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 	node := &d.arena[idx]
+	e.near(idx, pos)
 	pad := strings.Repeat("\t", depth)
 	out := &e.out
 	// Same-line fence spelling can't carry an inline comment (an unbalanced
@@ -4113,6 +4223,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, e *emit) {
 	out.WriteString(emitName(node.name))
 	out.WriteByte(':')
 	e.bound(depth)
+	e.near(idx, pos)
 	switch {
 	case node.value.kind == vEmpty:
 		writeTrailing(out, node.trailing())
@@ -4180,6 +4291,7 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, e *emit) {
 		out.WriteByte('\n')
 	}
 	d.emitChildren(d.arena[idx].children, depth+1, e)
+	e.near(idx, pos)
 	// Comments this block owns with no child to carry them, one deeper.
 	pushLeads(e, d.arena[idx].inside(), depth+1, idx, siteInside, 0)
 	// Comments that hung on this block after its last child.
@@ -5807,7 +5919,7 @@ func (d *Document) setValue(path string, v value) bool {
 		d.settleFenceName(parent, name)
 	}
 	settleFirstBlank(d.arena, d.orphans)
-	d.settleKept()
+	d.resettleKept()
 	return true
 }
 
@@ -5992,7 +6104,7 @@ func (d *Document) Remove(path string) int {
 		d.arena[pr.parent].children = kids
 	}
 	settleFirstBlank(d.arena, d.orphans)
-	d.settleKept()
+	d.resettleKept()
 	return len(targets)
 }
 
@@ -6027,7 +6139,7 @@ func (d *Document) SetComment(path, text string) bool {
 	}
 	t.leading = append(t.leading, l)
 	settleFirstBlank(d.arena, d.orphans)
-	d.settleKept()
+	d.resettleKept()
 	return true
 }
 
@@ -6266,6 +6378,8 @@ func (d *Document) Merge(over *Document) {
 	}
 	d.index.Store(nil)
 	d.lost += over.lost
+	// The layer's own kept lines were modelled against its own tree.
+	fresh := over.kept
 	d.kept = d.kept || over.kept
 	// Only a block the overlay visited can have a changed child list or
 	// comments; the rest was settled when it was built. Settling the whole
@@ -6309,7 +6423,11 @@ func (d *Document) Merge(over *Document) {
 		}
 	}
 	settleFirstBlank(d.arena, d.orphans)
-	d.settleKept()
+	if fresh {
+		d.settleKept()
+	} else {
+		d.resettleKept()
+	}
 }
 
 // One grouping pass over each side, then a single children rebuild: the old

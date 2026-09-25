@@ -588,6 +588,12 @@ pub struct Document {
 	probe_doc: Option<Box<Document>>,
 	// Holds a misplaced line kept as written, so edits have to settle it.
 	kept: bool,
+	// What the last settle's kept lines were modelled through, and a sum of
+	// it, so an edit that changes none of it skips the settle. Removing a
+	// block above all of it goes unseen, which leaves `kept` set with no
+	// such line left: the next check costs the same, and nothing is wrong.
+	kept_near: Vec<(usize, usize)>,
+	kept_sum: u64,
 }
 
 /// The first child of each (parent, name), chained on to the next same-named
@@ -3734,6 +3740,8 @@ impl<'a> Parser<'a> {
 			probe: false,
 			probe_doc: None,
 			kept: self.kept_any,
+			kept_near: Vec::new(),
+			kept_sum: 0,
 		};
 		doc.settle_kept();
 		doc
@@ -3928,6 +3936,7 @@ impl Document {
 	fn emit_all(&self, e: &mut Emit) {
 		self.emit_children(&self.arena[ROOT].children, 0, e);
 		// Comments that never found a following line re-emit at the end.
+		e.near(ROOT, 0);
 		push_leads(e, &self.orphans, 0, (ROOT, Site::Orphans, 0));
 	}
 
@@ -3942,12 +3951,78 @@ impl Document {
 		// changes what the lines after it sit under, so go again until
 		// nothing moves.
 		while self.kept && self.settle_kept_once() {}
+		if self.kept {
+			self.kept_sum = self.near_sum();
+		}
+	}
+
+	/// After an edit. A kept line binds or not by the lines between it and
+	/// the binding line above, so an edit that changed none of the nodes
+	/// those came from cannot move it, and the whole-document emit is
+	/// skipped (20260924d item 2).
+	fn resettle_kept(&mut self) {
+		if self.kept && self.near_sum() != self.kept_sum {
+			self.settle_kept();
+		}
+	}
+
+	/// Everything the emit model reads from the nodes in `kept_near`: each
+	/// one still at its place in its parent's list, its child count, its
+	/// value's form and its comment lines. A kept line's parent chain needs
+	/// no entry, since a binding line resets the model to its own depth.
+	fn near_sum(&self) -> u64 {
+		let mut h = Fnv::new();
+		let lead = |h: &mut Fnv, l: &Lead| {
+			h.dec(l.depth);
+			h.dec(l.text.len());
+			h.bytes(l.text.as_bytes());
+		};
+		for &(n, pos) in &self.kept_near {
+			let nd = &self.arena[n];
+			h.dec(n);
+			h.dec(nd.children.len());
+			if n == ROOT {
+				h.dec(self.orphans.len());
+				for l in &self.orphans {
+					lead(&mut h, l);
+				}
+				continue;
+			}
+			let linked = self.arena.get(nd.parent).and_then(|p| p.children.get(pos)) == Some(&n);
+			h.byte(u8::from(linked));
+			h.byte(u8::from(stacks(nd)));
+			match &nd.value {
+				Value::Empty => h.byte(0),
+				Value::Cell(els) => {
+					h.byte(1);
+					h.dec(els.len());
+				}
+				Value::Raw(_) => h.byte(2),
+			}
+			let Some(t) = nd.trivia.as_deref() else {
+				h.byte(0);
+				continue;
+			};
+			for list in [&t.leading, &t.inside, &t.after] {
+				h.dec(list.len());
+				for l in list {
+					lead(&mut h, l);
+				}
+			}
+			h.dec(t.among.len());
+			for (i, l) in &t.among {
+				h.dec(*i);
+				lead(&mut h, l);
+			}
+		}
+		h.0
 	}
 
 	fn settle_kept_once(&mut self) -> bool {
 		let mut e = Emit::new(0, true);
 		self.emit_all(&mut e);
 		self.kept = e.verbatim > 0;
+		self.kept_near = std::mem::take(&mut e.kept_near);
 		let mut among: Vec<(usize, usize)> = Vec::new();
 		for &(node, site, i, depth) in &e.fell {
 			let list = match site {
@@ -3999,18 +4074,19 @@ impl Document {
 	/// seen-empties set here replaces a per-child rescan of the whole run.
 	fn emit_children(&self, kids: &[usize], depth: usize, e: &mut Emit) {
 		let mut empties: std::collections::HashSet<&str> = std::collections::HashSet::new();
-		for &c in kids {
+		for (pos, &c) in kids.iter().enumerate() {
 			let n = &self.arena[c];
 			let wm = matches!(n.value, Value::Raw { .. }) && empties.contains(n.name.as_str());
 			if n.value.is_empty() {
 				empties.insert(n.name.as_str());
 			}
-			self.emit_node(c, depth, wm, e);
+			self.emit_node(c, pos, depth, wm, e);
 		}
 	}
 
-	fn emit_node(&self, idx: usize, depth: usize, would_merge: bool, e: &mut Emit) {
+	fn emit_node(&self, idx: usize, pos: usize, depth: usize, would_merge: bool, e: &mut Emit) {
 		let node = &self.arena[idx];
+		e.near(idx, pos);
 		let pad: String = "\t".repeat(depth);
 		// Same-line fence spelling can't carry an inline comment (an unbalanced
 		// quote in the info-string could hide the `#` on reparse), so its
@@ -4031,6 +4107,7 @@ impl Document {
 		out.push_str(&emit_name(&node.name));
 		out.push(':');
 		e.bound(depth);
+		e.near(idx, pos);
 		match &node.value {
 			Value::Empty => {
 				push_trailing(&mut e.out, node.trailing());
@@ -4113,6 +4190,7 @@ impl Document {
 			}
 		}
 		self.emit_children(&self.arena[idx].children, depth + 1, e);
+		e.near(idx, pos);
 		// Comments this block owns with no child to carry them, one deeper.
 		push_leads(
 			e,
@@ -4136,10 +4214,15 @@ struct Emit {
 	tail: Vec<(String, usize)>,
 	hold: Option<String>,
 	// settle_kept() only: the lines written as comments, where they sit and
-	// at what depth, and how many went out as written.
+	// at what depth, and how many went out as written. Then the nodes the
+	// lines since the last binding line came from, each with its place in
+	// its parent's list, and those a kept line was modelled through.
 	record: bool,
 	fell: Vec<(usize, Site, usize, usize)>,
 	verbatim: usize,
+	near: Vec<(usize, usize)>,
+	flushed: usize,
+	kept_near: Vec<(usize, usize)>,
 }
 
 impl Emit {
@@ -4152,6 +4235,9 @@ impl Emit {
 			record,
 			fell: Vec::new(),
 			verbatim: 0,
+			near: Vec::new(),
+			flushed: 0,
+			kept_near: Vec::new(),
 		}
 	}
 
@@ -4160,6 +4246,14 @@ impl Emit {
 		self.open = depth as isize;
 		self.tail.clear();
 		self.hold = None;
+		self.near.clear();
+		self.flushed = 0;
+	}
+
+	fn near(&mut self, idx: usize, pos: usize) {
+		if self.record {
+			self.near.push((idx, pos));
+		}
 	}
 
 	/// A line at this indent through the reload's resolve_parent(): the
@@ -4256,6 +4350,10 @@ fn push_leads(e: &mut Emit, leads: &[Lead], base: usize, at: (usize, Site, usize
 				}
 				e.refused(indent, open, tail);
 				e.verbatim += 1;
+				if e.record {
+					e.kept_near.extend_from_slice(&e.near[e.flushed..]);
+					e.flushed = e.near.len();
+				}
 				e.out.push_str(&c.text);
 				e.out.push('\n');
 			} else {
@@ -5914,7 +6012,7 @@ impl Document {
 					self.settle_fence_name(parent, &self.arena[node].name.clone());
 				}
 				settle_first_blank(&mut self.arena, &mut self.orphans);
-				self.settle_kept();
+				self.resettle_kept();
 				true
 			}
 			None => false,
@@ -6088,7 +6186,7 @@ impl Document {
 			self.arena[p].children = keep;
 		}
 		settle_first_blank(&mut self.arena, &mut self.orphans);
-		self.settle_kept();
+		self.resettle_kept();
 		targets.len()
 	}
 
@@ -6119,7 +6217,7 @@ impl Document {
 				}
 				nd.triv_mut().leading.push(lead);
 				settle_first_blank(&mut self.arena, &mut self.orphans);
-				self.settle_kept();
+				self.resettle_kept();
 				true
 			}
 			None => false,
@@ -6352,6 +6450,8 @@ impl Document {
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;
+		// The layer's own kept lines were modelled against its own tree.
+		let fresh = over.kept;
 		self.kept |= over.kept;
 		// Only a block the overlay visited can have a changed child list or
 		// comments; the rest was settled when it was built. Settling the whole
@@ -6389,7 +6489,11 @@ impl Document {
 			}
 		}
 		settle_first_blank(&mut self.arena, &mut self.orphans);
-		self.settle_kept();
+		if fresh {
+			self.settle_kept();
+		} else {
+			self.resettle_kept();
+		}
 	}
 
 	// One grouping pass over each side, then a single children rebuild: the

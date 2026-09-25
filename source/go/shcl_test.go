@@ -1614,6 +1614,50 @@ func TestMergeSettlesOnlyWhatItTouched(t *testing.T) {
 	}
 }
 
+// A misplaced line kept as written made every edit and merge re-emit the whole
+// document to settle it, even one far from the line. Timed against the same
+// steps on the same document without the line. Same fixture in every runner.
+func TestAFarKeptLineCostsAnEditNothing(t *testing.T) {
+	var ms [2]float64
+	for kept := 0; kept < 2; kept++ {
+		var text strings.Builder
+		text.WriteString("g:\n\tk: 1\nbig:\n")
+		for i := 0; i < 100000; i++ {
+			fmt.Fprintf(&text, "\tc%d: %d\n", i, i)
+		}
+		if kept == 1 {
+			text.WriteString(" x: y\n")
+		}
+		d := Parse(text.String())
+		other := Parse("g:\n\tj: 1\n")
+		t0 := time.Now()
+		// Edits first: a merge drops the name index, and the edit after it
+		// would rebuild it over the whole document either way.
+		for i := 0; i < 500; i++ {
+			if !d.SetInt("g.k", int64(i)) {
+				t.Fatalf("SetInt refused")
+			}
+		}
+		for i := 0; i < 500; i++ {
+			d.Merge(other)
+		}
+		ms[kept] = float64(time.Since(t0).Microseconds()) / 1000.0
+		if got := d.GetIntOr("g.k", -1); got != 499 {
+			t.Fatalf("edited read: got %d", got)
+		}
+		if strings.HasSuffix(d.ToCanonical(), "\n x: y\n") != (kept == 1) {
+			t.Fatalf("the kept line is not where the fixture put it")
+		}
+	}
+	bound := ms[0]*25 + 1000
+	if ms[0] <= 0 {
+		bound = 3000
+	}
+	if ms[1] > bound {
+		t.Errorf("500 edits and merges beside a kept line %.1f ms against %.1f ms without it (bound %.1f ms) - each one settles the whole document", ms[1], ms[0], bound)
+	}
+}
+
 func TestLostAndSaveGate(t *testing.T) {
 	// Content-malformed lines are retained as trivia (LostCount 0, the line
 	// survives a save); position-dependent drops count as lost and make
@@ -2510,7 +2554,8 @@ var seqNames = []string{"a", "b", "m"}
 
 // doc builds a small document out of the lines that carry comments and blanks
 // somewhere a later step can move them: comments at every depth, empty and
-// reopened blocks, and a same-line fence with a comment after an empty binding.
+// reopened blocks, a same-line fence with a comment after an empty binding, and
+// misplaced lines kept as written, one of them among a list's elements.
 func (g *seqGen) doc() string {
 	var out strings.Builder
 	depth := 0
@@ -2529,7 +2574,7 @@ func (g *seqGen) doc() string {
 		}
 		ind := strings.Repeat("\t", depth)
 		name := seqNames[g.below(3)]
-		switch g.below(8) {
+		switch g.below(10) {
 		case 0:
 			out.WriteString(ind + "# c" + strconv.Itoa(g.below(3)))
 		case 1:
@@ -2543,6 +2588,10 @@ func (g *seqGen) doc() string {
 			out.WriteString(ind + name + ": " + strconv.Itoa(g.below(3)) + "  # t")
 		case 6:
 			out.WriteString(ind + name + "." + name + ": 1")
+		case 7:
+			out.WriteString(ind + " " + name + ": " + strconv.Itoa(g.below(3)))
+		case 8:
+			out.WriteString(ind + name + ":\n" + ind + "\t* 1\n" + ind + " x: 1\n" + ind + "\t* 2")
 		default:
 			out.WriteString(ind + "\t# deep")
 		}

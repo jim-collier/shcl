@@ -3046,7 +3046,7 @@ class _Emit:
 	`open`, which the last binding line leaves, then what the lines refused
 	since then pushed, and the indent of a kept misplaced line that the lines
 	under it are kept with."""
-	__slots__ = ("out", "open", "tail", "hold", "record", "fell", "verbatim")
+	__slots__ = ("out", "open", "tail", "hold", "record", "fell", "verbatim", "near", "flushed", "kept_near")
 
 	def __init__(self, record):
 		self.out: list[str] = []
@@ -3054,10 +3054,15 @@ class _Emit:
 		self.tail: list[tuple[str, int]] = []
 		self.hold = None
 		# _settle_kept() only: the lines written as comments, where they sit
-		# and at what depth, and how many went out as written.
+		# and at what depth, and how many went out as written. Then the nodes
+		# the lines since the last binding line came from, each with its place
+		# in its parent's list, and those a kept line was modelled through.
 		self.record = record
 		self.fell: list[tuple[int, str, int, int]] = []
 		self.verbatim = 0
+		self.near: list[tuple[int, int]] = []
+		self.flushed = 0
+		self.kept_near: list[tuple[int, int]] = []
 
 	def resolve(self, indent):
 		"""A line at this indent through the reload's _resolve_parent(): the
@@ -3126,6 +3131,9 @@ def _push_leads(e, leads, base, at):
 					e.hold = indent
 				e.refused(indent, open_, tail)
 				e.verbatim += 1
+				if e.record:
+					e.kept_near.extend(e.near[e.flushed:])
+					e.flushed = len(e.near)
 				out.append(text)
 				out.append("\n")
 			else:
@@ -3153,7 +3161,7 @@ def _push_leads(e, leads, base, at):
 
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc", "_kept")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc", "_kept", "_kept_near", "_kept_sum")
 
 	def __init__(
 		self,
@@ -3185,6 +3193,12 @@ class Document:
 		self._probe_doc: Document | None = None
 		# Holds a misplaced line kept as written, so edits have to settle it.
 		self._kept = False
+		# What the last settle's kept lines were modelled through, and a sum of
+		# it, so an edit that changes none of it skips the settle. Removing a
+		# block above all of it goes unseen, which leaves _kept set with no
+		# such line left: the next check costs the same, and nothing is wrong.
+		self._kept_near: list[tuple[int, int]] = []
+		self._kept_sum: tuple = ()
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -3341,21 +3355,25 @@ class Document:
 		stack: list = []
 		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
-			idx, depth, would_merge = stack.pop()
+			idx, depth, would_merge, pos = stack.pop()
 			if would_merge is None:
 				# Post-children marker. Comments this block owns with no child
 				# to carry them re-emit one deeper, then the ones that hung on
 				# this block after its last child at the block's own depth.
 				nd = self.arena[idx]
+				if e.record:
+					e.near.append((idx, pos))
 				_push_leads(e, nd.inside(), depth + 1, (idx, "inside", 0))
 				_push_leads(e, nd.after(), depth, (idx, "after", 0))
 				continue
-			self._emit_node(idx, depth, would_merge, e)
-			if self.arena[idx].after() or self.arena[idx].inside():
+			self._emit_node(idx, pos, depth, would_merge, e)
+			if e.record or self.arena[idx].after() or self.arena[idx].inside():
 				# The marker sits under the children, so it pops after them.
-				stack.append((idx, depth, None))
+				stack.append((idx, depth, None, pos))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
 		# Comments that never found a following line re-emit at the end.
+		if e.record:
+			e.near.append((ROOT, 0))
 		_push_leads(e, self.orphans, 0, (ROOT, "orphans", 0))
 
 	def _settle_kept(self):
@@ -3369,11 +3387,48 @@ class Document:
 		# what the lines after it sit under, so go again until nothing moves.
 		while self._kept and self._settle_kept_once():
 			pass
+		if self._kept:
+			self._kept_sum = self._near_sum()
+
+	def _resettle_kept(self):
+		"""After an edit. A kept line binds or not by the lines between it and
+		the binding line above, so an edit that changed none of the nodes those
+		came from cannot move it, and the whole-document emit is skipped
+		(20260924d item 2)."""
+		if self._kept and self._near_sum() != self._kept_sum:
+			self._settle_kept()
+
+	def _near_sum(self):
+		"""Everything the emit model reads from the nodes in `_kept_near`: each
+		one still at its place in its parent's list, its child count, its
+		value's form and its comment lines. A kept line's parent chain needs no
+		entry, since a binding line resets the model to its own depth. An exact
+		tuple where the reference streams an FNV hash."""
+		arena = self.arena
+		parts: list[tuple] = []
+		for n, pos in self._kept_near:
+			nd = arena[n]
+			if n == ROOT:
+				parts.append((n, len(nd.children), tuple((c.depth, c.text) for c in self.orphans)))
+				continue
+			kids = arena[nd.parent].children if 0 <= nd.parent < len(arena) else ()
+			v = nd.value
+			t = nd.trivia
+			parts.append((
+				n, len(nd.children), pos < len(kids) and kids[pos] == n, _stacks(nd),
+				v.kind, len(v.els) if v.kind == "cell" else 0,
+				None if t is None else (
+					tuple((c.depth, c.text) for c in t.leading),
+					tuple((c.depth, c.text) for c in t.inside),
+					tuple((c.depth, c.text) for c in t.after),
+					tuple((b, c.depth, c.text) for b, c in t.among))))
+		return tuple(parts)
 
 	def _settle_kept_once(self):
 		e = _Emit(True)
 		self._emit_all(e)
 		self._kept = e.verbatim > 0
+		self._kept_near = e.kept_near
 		among = []
 		for node, site, i, depth in e.fell:
 			if site == "among":
@@ -3412,16 +3467,18 @@ class Document:
 		Iterative shape: the flags are computed per run and ride the stack."""
 		entries = []
 		empties = set()
-		for c in kids:
+		for pos, c in enumerate(kids):
 			n = self.arena[c]
 			wm = n.value.kind == "raw" and n.name in empties
 			if n.value.is_empty():
 				empties.add(n.name)
-			entries.append((c, depth, wm))
+			entries.append((c, depth, wm, pos))
 		stack.extend(reversed(entries))
 
-	def _emit_node(self, idx, depth, would_merge, e):
+	def _emit_node(self, idx, pos, depth, would_merge, e):
 		node = self.arena[idx]
+		if e.record:
+			e.near.append((idx, pos))
 		pad = "\t" * depth
 		v = node.value
 		# Same-line fence spelling can't carry an inline comment (an unbalanced
@@ -3448,6 +3505,9 @@ class Document:
 		if e.tail:
 			e.tail = []
 		e.hold = None
+		if e.record:
+			e.near = [(idx, pos)]
+			e.flushed = 0
 		if v.kind == "empty":
 			if trailing:
 				out.append("  ")
@@ -3938,7 +3998,7 @@ class Document:
 		if fence_side:
 			self._settle_fence_name(parent, name)
 		_settle_first_blank(self.arena, self.orphans)
-		self._settle_kept()
+		self._resettle_kept()
 		return True
 
 	def _collapse_dup(self, node):
@@ -4074,7 +4134,7 @@ class Document:
 					keep.append(c)
 			self.arena[p].children = keep
 		_settle_first_blank(self.arena, self.orphans)
-		self._settle_kept()
+		self._resettle_kept()
 		return len(targets)
 
 	def set_comment(self, path: str, text: str) -> bool:
@@ -4104,7 +4164,7 @@ class Document:
 				lead.blank_before = True
 		t.leading.append(lead)
 		_settle_first_blank(self.arena, self.orphans)
-		self._settle_kept()
+		self._resettle_kept()
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -4297,6 +4357,8 @@ class Document:
 			return
 		self._index = None
 		self._lost += over._lost
+		# The layer's own kept lines were modelled against its own tree.
+		fresh = over._kept
 		self._kept = self._kept or over._kept
 		# Only a block the overlay visited can have a changed child list or
 		# comments; the rest was settled when it was built. Settling the whole
@@ -4320,7 +4382,10 @@ class Document:
 					room = depth + 1
 				self.orphans.append(_Lead(o.text, o.blank_before, depth))
 		_settle_first_blank(self.arena, self.orphans)
-		self._settle_kept()
+		if fresh:
+			self._settle_kept()
+		else:
+			self._resettle_kept()
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
