@@ -1011,7 +1011,7 @@ def check_opts(cmd, o):
 				sys.stderr.write(
 					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n"
 				)
-			elif cmd == "check" and s in ("--layer", "--set", "--set-literal"):
+			elif cmd == "check" and s in ("--layer", "--set", "--set-literal", "--set-default", "--set-literal-default", "--remove"):
 				# The one refusal a user is likely to want anyway: check reports
 				# line numbers, and a merged document has no single file to
 				# number against. Naming the pipeline turns a dead end into a

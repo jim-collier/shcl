@@ -1852,15 +1852,16 @@ static int check_opts(const char *cmd, const Opts *o) {
 		for (int k = 0; allowed[k]; k++) if (!strcmp(o->seen[i], allowed[k])) { ok = 1; break; }
 		if (!ok) {
 			if (!strcmp(o->seen[i], "--<type>")) fprintf(stderr, "type options are not valid for %s (see --help)\n", cmd);
-			// The one refusal a user is likely to want anyway: check reports
-			// line numbers, and a merged document has no single file to number
-			// against. Naming the pipeline turns a dead end into a one-liner.
 			// Deliberate, not an oversight: the schema is a program artifact, so
 			// it always loads at Standard - the same rule `check --schema`
 			// follows for the schema half.
 			else if (!strcmp(cmd, "init") && !strcmp(o->seen[i], "--strictness"))
 				fprintf(stderr, "option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)\n");
-			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")))
+			// The one refusal a user is likely to want anyway: check reports
+			// line numbers, and a merged document has no single file to number
+			// against. Naming the pipeline turns a dead end into a one-liner.
+			else if (!strcmp(cmd, "check") && (!strcmp(o->seen[i], "--layer") || !strcmp(o->seen[i], "--set") || !strcmp(o->seen[i], "--set-literal")
+				|| !strcmp(o->seen[i], "--set-default") || !strcmp(o->seen[i], "--set-literal-default") || !strcmp(o->seen[i], "--remove")))
 				fprintf(stderr, "option %s not valid for check: diagnostics cite line numbers, which a merged document has none of. Pipe instead: shcl fmt %s ... FILE | shcl check --schema=SCHEMA -\n", o->seen[i], o->seen[i]);
 			else fprintf(stderr, "option %s not valid for %s (see --help)\n", o->seen[i], cmd);
 			return 1;

@@ -1077,7 +1077,14 @@ fn check_opts(cmd: &str, o: &Opts) -> Result<(), u8> {
 				errln!(
 					"option --strictness not valid for init: a schema always loads at standard strictness, being a program artifact rather than user data (see --help)"
 				);
-			} else if cmd == "check" && matches!(*s, "--layer" | "--set" | "--set-literal") {
+			} else if cmd == "check"
+				&& matches!(
+					*s,
+					"--layer"
+						| "--set" | "--set-literal"
+						| "--set-default" | "--set-literal-default"
+						| "--remove"
+				) {
 				// The one refusal a user is likely to want anyway: check reports
 				// line numbers, and a merged document has no single file to
 				// number against. Naming the pipeline turns a dead end into a

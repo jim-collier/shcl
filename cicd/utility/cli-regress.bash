@@ -614,6 +614,14 @@ rows=(
 	'type-clash-first-pair-named|get --float --float --bool %F% a|-|1|-|^--float cannot be combined with --bool \(see --help\)$'
 	'type-repeat-ok|get --int --int %F% a|-|0|1\n|-'
 	'type-clash-after-cmd-refusal|check --int --raw %F%|-|1|-|^type options are not valid for check \(see --help\)$'
+	##	20260923 idea 1: every edit option that shares --set's list gets the
+	##	pipeline hint on check, not only the first three.
+	'check-layer-hint|check --layer %F% %F%|-|1|-|^option --layer not valid for check: .*Pipe instead: shcl fmt --layer \.\.\. FILE '
+	'check-set-hint|check --set a=1 %F%|-|1|-|^option --set not valid for check: .*Pipe instead: shcl fmt --set '
+	'check-set-literal-hint|check --set-literal a=1 %F%|-|1|-|^option --set-literal not valid for check: .*Pipe instead: shcl fmt --set-literal '
+	'check-set-default-hint|check --set-default a=1 %F%|-|1|-|^option --set-default not valid for check: .*Pipe instead: shcl fmt --set-default '
+	'check-set-literal-default-hint|check --set-literal-default a=1 %F%|-|1|-|^option --set-literal-default not valid for check: .*Pipe instead: shcl fmt --set-literal-default '
+	'check-remove-hint|check --remove a %F%|-|1|-|^option --remove not valid for check: .*Pipe instead: shcl fmt --remove '
 	'strictness-clash|get --int --strictness=1 --strictness=3 %F% a|-|1|-|^--strictness=1 cannot be combined with --strictness=3 \(see --help\)$'
 	'strictness-same-level-ok|get --int --strictness=1 --strictness=loose %F% a|-|0|1\n|-'
 	'onbad-clash|get --int --on-bad=error --on-bad=flag %F% nope|-|1|-|^--on-bad=error cannot be combined with --on-bad=flag \(see --help\)$'

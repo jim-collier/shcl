@@ -1132,7 +1132,8 @@ func checkOpts(cmd string, o *opts) int {
 				// follows for the schema half.
 				fmt.Fprintln(os.Stderr, "option --strictness not valid for init: a schema always loads at "+
 					"standard strictness, being a program artifact rather than user data (see --help)")
-			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal") {
+			} else if cmd == "check" && (s == "--layer" || s == "--set" || s == "--set-literal" ||
+				s == "--set-default" || s == "--set-literal-default" || s == "--remove") {
 				// The one refusal a user is likely to want anyway: check reports
 				// line numbers, and a merged document has no single file to
 				// number against. Naming the pipeline turns a dead end into a
