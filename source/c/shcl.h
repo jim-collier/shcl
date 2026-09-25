@@ -4590,6 +4590,9 @@ static ShclValue w_array(ShclArena *a, const ShclStr *texts, size_t n) {
 }
 
 static size_t w_new_child(shcl_doc *d, size_t parent, ShclStr name, ShclStr name_src, ShclValue value) {
+	/* A list written stacked would get the child after its elements, which
+	   reloads as E001, so it goes inline. */
+	if (stacks(&NODE(d, parent))) unstack(d, &NODE(d, parent));
 	ShclArena *a = &d->arena;
 	size_t idx = d->nodes.len;
 	ShclNode n; memset(&n, 0, sizeof n);
@@ -6341,8 +6344,9 @@ static void emit_marked(shcl_doc *d, ShclEmit *e) {
 
 /* A run of canonical lines from one source line on (0: from none), with the
    blank lines written before it and the spans of its values, as a range of
-   the emit's flat span pairs. */
-typedef struct { size_t line, start, end, blanks, span_from, span_to; } ShclUnit;
+   the emit's flat span pairs. As a group, line is the first source line of
+   its runs and part_from..part_to the runs. */
+typedef struct { size_t line, start, end, blanks, span_from, span_to, part_from, part_to; } ShclUnit;
 DEFINE_VEC(ShclVecUnit, ShclUnit)
 
 /* Where the line starting at pos ends, past its newline. */
@@ -6371,6 +6375,7 @@ static ShclVecUnit units_of(ShclArena *a, ShclEmit *e) {
 		else if (open && units.len && units.data[units.len - 1].line == tag) units.data[units.len - 1].end = next;
 		else {
 			ShclUnit u; u.line = tag; u.start = pos; u.end = next; u.blanks = blanks; u.span_from = 0; u.span_to = 0;
+			u.part_from = units.len; u.part_to = units.len + 1;
 			ShclVecUnit_push(a, &units, u);
 			blanks = 0;
 			open = 1;
@@ -6386,6 +6391,38 @@ static ShclVecUnit units_of(ShclArena *a, ShclEmit *e) {
 		u->span_to = si;
 	}
 	return units;
+}
+
+/* The runs one source line wrote, and every run between them, as one group,
+   with a line inside a raw block or a stacked list counted as the binding
+   line's. A comment the canonical form writes between a dotted line's block
+   and its child sits inside such a group, and the group is kept or rewritten
+   whole (20260925b item 2). */
+static ShclVecUnit group_units(ShclArena *a, const ShclVecUnit *units, const size_t *owner, size_t n_owner) {
+	size_t size = n_owner;
+	for (size_t i = 0; i < units->len; i++) if (units->data[i].line + 1 > size) size = units->data[i].line + 1;
+	size_t *last = (size_t *)arena_alloc(a, size * sizeof(size_t));
+	memset(last, 0, size * sizeof(size_t));
+	#define KL_OF(u) ((u).line < n_owner ? owner[(u).line] : (u).line)
+	for (size_t i = 0; i < units->len; i++) last[KL_OF(units->data[i])] = i;
+	ShclVecUnit groups = {0};
+	for (size_t i = 0; i < units->len;) {
+		size_t j = i, line = 0;
+		for (size_t k = i; k <= j; k++) {
+			size_t o = KL_OF(units->data[k]);
+			if (o == 0) continue;
+			if (last[o] > j) j = last[o];
+			if (line == 0 || o < line) line = o;
+		}
+		#undef KL_OF
+		ShclUnit g;
+		g.line = line; g.start = units->data[i].start; g.end = units->data[j].end; g.blanks = units->data[i].blanks;
+		g.span_from = units->data[i].span_from; g.span_to = units->data[j].span_to;
+		g.part_from = i; g.part_to = j + 1;
+		ShclVecUnit_push(a, &groups, g);
+		i = j + 1;
+	}
+	return groups;
 }
 
 /* One level's indent as the source spells it, when known. */
@@ -6518,13 +6555,42 @@ static int splice_value(ShclArena *a, ShclStr line, ShclEmit *was, const ShclUni
 	if (!tok.has_sep || tok.has_fault) return 0;
 	size_t colon = tok.sep, vs = tok.value_start, ve = tok.value_end;
 	if (fence_open(s_slice(sl.rest, vs, ve)).ok || bracket_text(&tok, sl.rest)) return 0;
+	/* The blanks after the colon stay as they were when there was a value and
+	   still is one; the canonical value comes with one space. */
 	size_t from = vs == ve ? colon + 1 : ve;
+	int gap = vs != ve && value.n && value.p[0] == ' ';
 	ShclSB b = {0, 0, 0};
 	sb_putS(a, &b, s_slice(sl.t, 0, sl.head + colon + 1));
-	sb_putS(a, &b, value);
+	if (gap) sb_putS(a, &b, s_slice(sl.rest, colon + 1, vs));
+	sb_putS(a, &b, gap ? s_slice(value, 1, value.n) : value);
 	sb_putS(a, &b, s_slice(sl.rest, from, sl.rest.n));
 	sb_putS(a, &b, sl.tail);
 	*out = sb_S(&b);
+	return 1;
+}
+
+/* splice_value for a group: the runs line up one for one and differ in one,
+   the last its source line wrote, so the line's last value is its value.
+   *at is the line and *out its new text. */
+static int splice_group(ShclArena *a, const ShclVecS *lines, ShclEmit *was, const ShclVecUnit *wr, const ShclUnit *w, ShclEmit *now, const ShclVecUnit *ur, const ShclUnit *u, size_t *at, ShclStr *out) {
+	size_t len = w->part_to - w->part_from;
+	if (len != u->part_to - u->part_from) return 0;
+	ShclStr t0 = sb_S(&was->out), t1 = sb_S(&now->out);
+	const ShclUnit *x = wr->data + w->part_from, *y = ur->data + u->part_from;
+	size_t hit = NIL;
+	for (size_t k = 0; k < len; k++) {
+		if (x[k].line != y[k].line || x[k].blanks != y[k].blanks) return 0;
+		if (!s_eq(s_slice(t0, x[k].start, x[k].end), s_slice(t1, y[k].start, y[k].end))) {
+			if (hit != NIL) return 0;
+			hit = k;
+		}
+	}
+	if (hit == NIL) return 0;
+	for (size_t k = hit + 1; k < len; k++) if (x[k].line == x[hit].line) return 0;
+	size_t l = x[hit].line;
+	if (l < 1 || l > lines->len) return 0;
+	if (!splice_value(a, lines->data[l - 1], was, &x[hit], now, &y[hit], out)) return 0;
+	*at = l;
 	return 1;
 }
 
@@ -6538,13 +6604,36 @@ static int kl_blank(ShclStr l) {
 	return s_trim_wsp(l).n == 0;
 }
 
+static int code_cmp(const void *x, const void *y) {
+	return strcmp(*(const char *const *)x, *(const char *const *)y);
+}
+
+/* Each error code d loads with, of loaded with at least as often. */
+static int errors_within(ShclArena *a, const shcl_doc *d, const shcl_doc *of) {
+	const shcl_doc *docs[2]; docs[0] = d; docs[1] = of;
+	const char **codes[2]; size_t count[2];
+	for (size_t k = 0; k < 2; k++) {
+		codes[k] = (const char **)arena_alloc(a, (docs[k]->diags.len + 1) * sizeof(char *));
+		count[k] = 0;
+		for (size_t i = 0; i < docs[k]->diags.len; i++)
+			if (docs[k]->diags.data[i].sev == SHCL_SEV_ERROR) codes[k][count[k]++] = docs[k]->diags.data[i].code;
+		qsort(codes[k], count[k], sizeof(char *), code_cmp);
+	}
+	size_t j = 0;
+	for (size_t i = 0; i < count[0]; i++) {
+		while (j < count[1] && strcmp(codes[1][j], codes[0][i]) < 0) j++;
+		if (j == count[1] || strcmp(codes[1][j], codes[0][i]) != 0) return 0;
+		j++;
+	}
+	return 1;
+}
+
 /* The save that keeps lines, on the loaded text: the loaded document's
    canonical runs line up with the text by the source line each came from,
    and the edited document's runs that match one exactly take that line's
    text. 0 when the result would not reload as d. *out lives in d's scratch,
    or is the source itself. */
 static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *out) {
-	const size_t TWICE = NIL - 1;
 	/* A text that was canonical keeps its lines as the canonical form. */
 	if (d->source.n == 0) { *out = emit_canonical(d); return 1; }
 	ShclArena *a = &d->scratch;
@@ -6566,40 +6655,53 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	}
 	size_t n = lines.len;
 	#define KL_LINE(l) (lines.data[(l) - 1])
-	ShclVecUnit wasU = units_of(a, &was), isU = units_of(a, &now);
-	/* Each source line's run in the loaded text, and the lines it stands for:
-	   its own, through the end of a raw block or a stacked list. */
+	/* The lines each source line stands for: its own, through the end of a raw
+	   block or a stacked list. Ranges that overlap, as a list taken up again
+	   further down, run together, and each line in a run counts as the run's
+	   first line, which stands for the whole run. */
+	size_t *owns = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	size_t *owner = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	for (size_t k = 0; k < n + 2; k++) owns[k] = owner[k] = k;
+	for (size_t k = 0; k + 1 < ld->ends.len; k += 2) {
+		size_t l = ld->ends.data[k], e = ld->ends.data[k + 1];
+		if (l > n) continue;
+		if (e > n) e = n;
+		if (e > owns[l]) owns[l] = e;
+	}
+	size_t *end = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
+	memcpy(end, owns, (n + 2) * sizeof(size_t));
+	size_t run = 0, run_end = 0;
+	for (size_t k = 1; k <= n; k++) {
+		if (k <= run_end) owner[k] = run;
+		else run = k;
+		if (owns[k] > run_end) run_end = owns[k];
+		end[run] = run_end;
+	}
+	ShclVecUnit wasR = units_of(a, &was), isR = units_of(a, &now);
+	ShclVecUnit wasU = group_units(a, &wasR, owner, n + 2), isU = group_units(a, &isR, owner, n + 2);
+	/* Each source line's group in the loaded text, and the lines it stands
+	   for, through its last run's. */
 	size_t *at = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
 	for (size_t k = 0; k < n + 2; k++) at[k] = NIL;
 	for (size_t i = 0; i < wasU.len; i++) {
-		size_t l = wasU.data[i].line;
-		if (l != 0 && l <= n) at[l] = at[l] == NIL ? i : TWICE;
+		const ShclUnit *g = &wasU.data[i];
+		if (g->line == 0 || g->line > n) continue;
+		at[g->line] = i;
+		for (size_t r = g->part_from; r < g->part_to; r++) {
+			size_t rl = wasR.data[r].line;
+			if (rl != 0 && rl <= n && end[owner[rl]] > end[g->line]) end[g->line] = end[owner[rl]];
+		}
 	}
 	ShclVecSize claimed = {0};
 	for (size_t l = 1; l <= n; l++) if (at[l] != NIL) ShclVecSize_push(a, &claimed, l);
-	size_t *end = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
-	for (size_t k = 0; k < n + 2; k++) end[k] = k;
-	for (size_t k = 0; k + 1 < ld->ends.len; k += 2) {
-		size_t l = ld->ends.data[k], e = ld->ends.data[k + 1];
-		if (l <= n && at[l] != NIL) {
-			if (e > n) e = n;
-			if (e > end[l]) end[l] = e;
-		}
-	}
-	/* The first run after each one's lines, for telling two runs that sat
-	   next to each other. */
+	/* The first group after each one's lines, for telling two that sat next to
+	   each other. */
 	size_t *next = (size_t *)arena_alloc(a, (n + 2) * sizeof(size_t));
 	memset(next, 0, (n + 2) * sizeof(size_t));
 	for (size_t k = 0; k < claimed.len; k++) {
 		size_t l = claimed.data[k], lo = 0, hi = claimed.len;
 		while (lo < hi) { size_t mid = (lo + hi) / 2; if (claimed.data[mid] <= end[l]) lo = mid + 1; else hi = mid; }
 		next[l] = lo < claimed.len ? claimed.data[lo] : n + 1;
-	}
-	unsigned char *seen = (unsigned char *)arena_alloc(a, n + 2);
-	memset(seen, 0, n + 2);
-	for (size_t i = 0; i < isU.len; i++) {
-		size_t l = isU.data[i].line;
-		if (l != 0 && l <= n && seen[l] < 255) seen[l]++;
 	}
 	const char *eol = "\n";
 	if (n > 0) { ShclStr l1 = KL_LINE(1); if (l1.n >= 2 && l1.p[l1.n - 2] == '\r' && l1.p[l1.n - 1] == '\n') eol = "\r\n"; }
@@ -6608,8 +6710,8 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	   the first indented line, a list element or a fence. */
 	ShclStr step = s_lit("\t");
 	int found = 0;
-	for (size_t i = 0; i < wasU.len && !found; i++) {
-		const ShclUnit *u = &wasU.data[i];
+	for (size_t i = 0; i < wasR.len && !found; i++) {
+		const ShclUnit *u = &wasR.data[i];
 		if (u->line == 0 || u->line > n || tabs_of(s_slice(wasS, u->start, wasS.n)) != 1) continue;
 		ShclStr ind = leading_ws(KL_LINE(u->line));
 		if (ind.n) { step = ind; found = 1; }
@@ -6624,23 +6726,36 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	sb_putS(a, &ob, s_slice(src, 0, bom));
 	ShclVecIndent indents = {0};
 	{ ShclIndent top; top.has = 1; top.s = s_empty(); ShclVecIndent_push(a, &indents, top); }
-	/* The end of the last source run written, and its line while the run just
-	   written is one. */
-	size_t last = 0, prev = 0;
+	/* The line of the group just written while it is a source one, and the
+	   end of the last source group met, kept or not. */
+	size_t prev = 0, reach = 0;
 	for (size_t i = 0; i < isU.len; i++) {
 		const ShclUnit *u = &isU.data[i];
 		size_t l = u->line;
-		int known = l != 0 && l <= n && seen[l] == 1 && at[l] < TWICE;
-		const ShclUnit *from = known && l > last ? &wasU.data[at[l]] : NULL;
+		int known = l != 0 && l <= n && at[l] != NIL;
+		if (known) {
+			/* The canonical form writes this above a source line that sat above
+			   it: blocks folded together from two places, or a selector's child
+			   under an earlier block. Keeping some of the lines would move the
+			   others, so the save falls back. */
+			if (l <= reach) return 0;
+			reach = end[l];
+		}
+		const ShclUnit *from = known ? &wasU.data[at[l]] : NULL;
 		int same = from && s_eq(s_slice(wasS, from->start, from->end), s_slice(nowS, u->start, u->end));
 		ShclStr spliced = s_empty();
-		int has_splice = from && !same && splice_value(a, KL_LINE(l), &was, from, &now, u, &spliced);
+		size_t splice_at = 0;
+		int has_splice = from && !same && splice_group(a, &lines, &was, &wasR, from, &now, &isR, u, &splice_at, &spliced);
 		int kept = same || has_splice;
-		/* Between two runs that stay next to each other, the source's own
+		/* The blank lines above a group stay while it has a blank before it.
+		   The canonical form can write that blank inside a kept group, as a
+		   dotted line's child's, while the source has it above. */
+		int blanks_stay = u->blanks > 0;
+		for (size_t r = u->part_from + 1; kept && r < u->part_to; r++) if (isR.data[r].blanks > 0) blanks_stay = 1;
+		/* Between two groups that stay next to each other, the source's own
 		   lines: a repeat the load folded away stays, and so do the blank
-		   lines, unless the edits took the blank out. The same before the
-		   first run. Before any other run from the source, its own blank
-		   lines. */
+		   lines. The same before the first group. Before any other group from
+		   the source, its own blank lines. */
 		if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
 		if (i == 0) {
 			if (kept && claimed.len && claimed.data[0] == l)
@@ -6649,9 +6764,9 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 			int blanks = 0;
 			for (size_t k = end[prev] + 1; k < l; k++) if (kl_blank(KL_LINE(k))) blanks = 1;
 			for (size_t k = end[prev] + 1; k < l; k++)
-				if (u->blanks > 0 || !kl_blank(KL_LINE(k))) sb_putS(a, &ob, KL_LINE(k));
+				if (blanks_stay || !kl_blank(KL_LINE(k))) sb_putS(a, &ob, KL_LINE(k));
 			if (!blanks) for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
-		} else if (known && u->blanks > 0 && l > 1 && kl_blank(KL_LINE(l - 1))) {
+		} else if (known && blanks_stay && l > 1 && kl_blank(KL_LINE(l - 1))) {
 			size_t k = l - 1;
 			while (k > 1 && kl_blank(KL_LINE(k - 1))) k--;
 			for (; k < l; k++) sb_putS(a, &ob, KL_LINE(k));
@@ -6659,14 +6774,21 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 			for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
 		}
 		size_t depth = tabs_of(s_slice(nowS, u->start, u->end));
-		if (same) {
-			for (size_t k = l; k <= end[l]; k++) sb_putS(a, &ob, KL_LINE(k));
-		} else if (has_splice) {
-			sb_putS(a, &ob, spliced);
+		if (kept) {
+			/* A spliced line's value replaces the lines it took, as a stacked
+			   list's elements. */
+			for (size_t k = l; k <= end[l]; k++) {
+				if (has_splice && k == splice_at) { sb_putS(a, &ob, spliced); k = owns[k]; }
+				else sb_putS(a, &ob, KL_LINE(k));
+			}
+			/* A line kept as written holds no level's indent. */
+			if (!(u->start + depth < nowS.n && nowS.p[u->start + depth] == ' '))
+				note_indent(a, &indents, depth, leading_ws(KL_LINE(wasR.data[from->part_from].line)));
+			prev = l;
 		} else {
 			/* A binding the edits rewrote keeps its line's indent and name. */
 			size_t start = u->start;
-			if (known) {
+			if (known && u->part_to - u->part_from == 1) {
 				size_t first = line_end(nowS, u->start);
 				ShclStr head;
 				if (authored_head(a, KL_LINE(l), s_slice(nowS, u->start, first - 1), &head)) {
@@ -6677,19 +6799,15 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 				}
 			}
 			write_run(a, &ob, &now, start, u->end, &indents, step, eol);
+			prev = 0;
 		}
-		if (kept) {
-			/* A line kept as written holds no level's indent. */
-			if (!(u->start + depth < nowS.n && nowS.p[u->start + depth] == ' ')) note_indent(a, &indents, depth, leading_ws(KL_LINE(l)));
-			last = end[l]; prev = l;
-		} else prev = 0;
 	}
 	/* The blank lines the source ends with stay at the end. */
 	if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
-	size_t tail = n + 1;
+	size_t tail = 1;
 	for (size_t k = 0; k < claimed.len; k++) {
 		size_t t = end[claimed.data[k]] + 1;
-		if (k == 0 || t > tail) tail = t;
+		if (t > tail) tail = t;
 	}
 	int all_blank = 1;
 	for (size_t k = tail; k <= n; k++) if (!kl_blank(KL_LINE(k))) all_blank = 0;
@@ -6698,10 +6816,13 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	if (body.n && body.p[body.n - 1] != '\n' && ob.len >= eol_n && memcmp(ob.data + ob.len - eol_n, eol, eol_n) == 0) ob.len -= eol_n;
 	#undef KL_LINE
 	ShclStr text = sb_S(&ob);
+	/* The reload has to be the document, and it may not load with an error
+	   the source did not have: a child the edits gave an element list that
+	   stayed stacked reads back the same and is E001 (20260925b item 1). */
 	shcl_doc *back = own->back = do_parse(text.p, text.n, d->strictness, 0, 0, 0);
 	if (!back) arena_panic(panic);
 	doc_guard(back, panic);
-	if (back->lost != 0 || !s_eq(emit_canonical(back), nowS)) return 0;
+	if (back->lost != 0 || !s_eq(emit_canonical(back), nowS) || !errors_within(a, back, ld)) return 0;
 	*out = text;
 	return 1;
 }

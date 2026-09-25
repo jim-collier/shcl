@@ -4296,7 +4296,9 @@ func pushLeads(e *emit, leads []lead, base, node int, at site, from int) {
 }
 
 // unit is a run of canonical lines from one source line on (0: from none),
-// with the blank lines written before it and the spans of its values.
+// with the blank lines written before it and the spans of its values. As a
+// group, line is the first source line of its runs and partFrom..partTo the
+// runs.
 type unit struct {
 	line     int
 	start    int
@@ -4304,6 +4306,8 @@ type unit struct {
 	blanks   int
 	spanFrom int
 	spanTo   int
+	partFrom int
+	partTo   int
 }
 
 func unitsOf(e *emit, text string) []unit {
@@ -4344,8 +4348,51 @@ func unitsOf(e *emit, text string) []unit {
 			si++
 		}
 		u.spanFrom, u.spanTo = from, si
+		u.partFrom, u.partTo = k, k+1
 	}
 	return units
+}
+
+// groupUnits: the runs one source line wrote, and every run between them, as
+// one group, with a line inside a raw block or a stacked list counted as the
+// binding line's. A comment the canonical form writes between a dotted line's
+// block and its child sits inside such a group, and the group is kept or
+// rewritten whole (20260925b item 2).
+func groupUnits(units []unit, owner []int) []unit {
+	of := func(u unit) int {
+		if u.line < len(owner) {
+			return owner[u.line]
+		}
+		return u.line
+	}
+	size := len(owner)
+	for _, u := range units {
+		if u.line+1 > size {
+			size = u.line + 1
+		}
+	}
+	last := make([]int, size)
+	for i, u := range units {
+		last[of(u)] = i
+	}
+	var groups []unit
+	for i := 0; i < len(units); {
+		j, line := i, 0
+		for k := i; k <= j; k++ {
+			if o := of(units[k]); o != 0 {
+				j = maxInt(j, last[o])
+				if line == 0 || o < line {
+					line = o
+				}
+			}
+		}
+		groups = append(groups, unit{
+			line: line, start: units[i].start, end: units[j].end, blanks: units[i].blanks,
+			spanFrom: units[i].spanFrom, spanTo: units[j].spanTo, partFrom: i, partTo: j + 1,
+		})
+		i = j + 1
+	}
+	return groups
 }
 
 // lineEnd is where the line starting at pos ends, past its newline.
@@ -4505,11 +4552,52 @@ func spliceValue(line string, was *emit, t0 string, w unit, now *emit, t1 string
 	if _, _, _, ok := fenceOpen(rest[a:b]); ok || bracketText(&tok, rest) {
 		return "", false
 	}
-	from := b
+	// The blanks after the colon stay as they were when there was a value and
+	// still is one; the canonical value comes with one space.
+	gap, from := "", b
 	if a == b {
 		from = colon + 1
+	} else if v, ok := strings.CutPrefix(value, " "); ok {
+		gap, value = rest[colon+1:a], v
 	}
-	return t[:head+colon+1] + value + rest[from:] + tail, true
+	return t[:head+colon+1] + gap + value + rest[from:] + tail, true
+}
+
+// spliceGroup is spliceValue for a group: the runs line up one for one and
+// differ in one, the last its source line wrote, so the line's last value is
+// its value. The line and its new text.
+func spliceGroup(lines []string, was *emit, t0 string, wr []unit, w unit, now *emit, t1 string, ur []unit, u unit) (int, string, bool) {
+	a, b := wr[w.partFrom:w.partTo], ur[u.partFrom:u.partTo]
+	if len(a) != len(b) {
+		return 0, "", false
+	}
+	hit := -1
+	for k := range a {
+		x, y := a[k], b[k]
+		if x.line != y.line || x.blanks != y.blanks {
+			return 0, "", false
+		}
+		if t0[x.start:x.end] != t1[y.start:y.end] {
+			if hit >= 0 {
+				return 0, "", false
+			}
+			hit = k
+		}
+	}
+	if hit < 0 {
+		return 0, "", false
+	}
+	for _, x := range a[hit+1:] {
+		if x.line == a[hit].line {
+			return 0, "", false
+		}
+	}
+	l := a[hit].line
+	if l < 1 || l > len(lines) {
+		return 0, "", false
+	}
+	t, ok := spliceValue(lines[l-1], was, t0, a[hit], now, t1, b[hit])
+	return l, t, ok
 }
 
 // keepLines is ToTextKeepLines() on a loaded text: the loaded document's
@@ -4517,7 +4605,7 @@ func spliceValue(line string, was *emit, t0 string, w unit, now *emit, t1 string
 // the edited document's runs that match one exactly take that line's text.
 // False when the result would not reload as doc.
 func keepLines(src string, doc *Document) (string, bool) {
-	const none, twice = -1, -2
+	const none = -1
 	// A text that was canonical keeps its lines as the canonical form.
 	if src == "" {
 		return doc.ToCanonical(), true
@@ -4544,19 +4632,46 @@ func keepLines(src string, doc *Document) (string, bool) {
 	line := func(l int) string { return lines[l-1] }
 	blank := func(l int) bool { return trimWsp(strings.TrimRight(line(l), "\n")) == "" }
 	indent := func(l int) string { return leadingWS(line(l)) }
-	was, is := unitsOf(loaded, loadedText), unitsOf(now, nowText)
-	// Each source line's run in the loaded text, and the lines it stands for:
-	// its own, through the end of a raw block or a stacked list.
+	// The lines each source line stands for: its own, through the end of a raw
+	// block or a stacked list. Ranges that overlap, as a list taken up again
+	// further down, run together, and each line in a run counts as the run's
+	// first line, which stands for the whole run.
+	own := make([]int, n+2)
+	owner := make([]int, n+2)
+	for k := range own {
+		own[k], owner[k] = k, k
+	}
+	for _, e := range loadedDoc.ends {
+		if l := e[0]; l <= n {
+			own[l] = maxInt(own[l], minInt(e[1], n))
+		}
+	}
+	end := append([]int(nil), own...)
+	first, reach := 0, 0
+	for k := 1; k <= n; k++ {
+		if k <= reach {
+			owner[k] = first
+		} else {
+			first = k
+		}
+		reach = maxInt(reach, own[k])
+		end[first] = reach
+	}
+	wasRuns, isRuns := unitsOf(loaded, loadedText), unitsOf(now, nowText)
+	was, is := groupUnits(wasRuns, owner), groupUnits(isRuns, owner)
+	// Each source line's group in the loaded text, and the lines it stands for,
+	// through its last run's.
 	at := make([]int, n+2)
 	for k := range at {
 		at[k] = none
 	}
-	for i, u := range was {
-		if u.line != 0 && u.line <= n {
-			if at[u.line] == none {
-				at[u.line] = i
-			} else {
-				at[u.line] = twice
+	for i, g := range was {
+		if g.line != 0 && g.line <= n {
+			at[g.line] = i
+			for _, r := range wasRuns[g.partFrom:g.partTo] {
+				if r.line != 0 && r.line <= n {
+					end[g.line] = maxInt(end[g.line], end[owner[r.line]])
+				}
 			}
 		}
 	}
@@ -4566,32 +4681,14 @@ func keepLines(src string, doc *Document) (string, bool) {
 			claimed = append(claimed, l)
 		}
 	}
-	end := make([]int, n+2)
-	for k := range end {
-		end[k] = k
-	}
-	for _, e := range loadedDoc.ends {
-		if l := e[0]; l <= n && at[l] != none && e[1] > end[l] {
-			end[l] = e[1]
-			if end[l] > n {
-				end[l] = n
-			}
-		}
-	}
-	// The first run after each one's lines, for telling two runs that sat
-	// next to each other.
+	// The first group after each one's lines, for telling two that sat next to
+	// each other.
 	next := make([]int, n+2)
 	for _, l := range claimed {
 		k := sort.Search(len(claimed), func(c int) bool { return claimed[c] > end[l] })
 		next[l] = n + 1
 		if k < len(claimed) {
 			next[l] = claimed[k]
-		}
-	}
-	seen := make([]uint8, n+2)
-	for _, u := range is {
-		if u.line != 0 && u.line <= n && seen[u.line] < 255 {
-			seen[u.line]++
 		}
 	}
 	eol := "\n"
@@ -4601,8 +4698,8 @@ func keepLines(src string, doc *Document) (string, bool) {
 	// One level of the source's indent: a line one level in, or failing that
 	// the first indented line, a list element or a fence.
 	step := ""
-	for _, u := range was {
-		if u.line != 0 && tabs(loadedText[u.start:]) == 1 && indent(u.line) != "" {
+	for _, u := range wasRuns {
+		if u.line != 0 && u.line <= n && tabs(loadedText[u.start:]) == 1 && indent(u.line) != "" {
 			step = indent(u.line)
 			break
 		}
@@ -4624,23 +4721,39 @@ func keepLines(src string, doc *Document) (string, bool) {
 		}
 	}
 	indents := []*string{new(string)}
-	// The end of the last source run written, and its line while the run just
-	// written is one.
-	last, prev := 0, 0
+	// The line of the group just written while it is a source one, and the end
+	// of the last source group met, kept or not.
+	prev, reach := 0, 0
 	for i, u := range is {
 		l := u.line
-		known := l != 0 && l <= n && seen[l] == 1 && at[l] >= 0
-		fromSrc := known && l > last
-		same := fromSrc && loadedText[was[at[l]].start:was[at[l]].end] == nowText[u.start:u.end]
-		spliced, didSplice := "", false
-		if fromSrc && !same {
-			spliced, didSplice = spliceValue(line(l), loaded, loadedText, was[at[l]], now, nowText, u)
+		known := l != 0 && l <= n && at[l] != none
+		if known {
+			// The canonical form writes this above a source line that sat above
+			// it: blocks folded together from two places, or a selector's child
+			// under an earlier block. Keeping some of the lines would move the
+			// others, so the save falls back.
+			if l <= reach {
+				return "", false
+			}
+			reach = end[l]
+		}
+		same := known && loadedText[was[at[l]].start:was[at[l]].end] == nowText[u.start:u.end]
+		splicedAt, spliced, didSplice := 0, "", false
+		if known && !same {
+			splicedAt, spliced, didSplice = spliceGroup(lines, loaded, loadedText, wasRuns, was[at[l]], now, nowText, isRuns, u)
 		}
 		kept := same || didSplice
-		// Between two runs that stay next to each other, the source's own
-		// lines: a repeat the load folded away stays, and so do the blank
-		// lines, unless the edits took the blank out. The same before the
-		// first run. Before any other run from the source, its own blank lines.
+		// The blank lines above a group stay while it has a blank before it.
+		// The canonical form can write that blank inside a kept group, as a
+		// dotted line's child's, while the source has it above.
+		blanksStay := u.blanks > 0
+		for _, r := range isRuns[u.partFrom+1 : u.partTo] {
+			blanksStay = blanksStay || (kept && r.blanks > 0)
+		}
+		// Between two groups that stay next to each other, the source's own
+		// lines: a repeat the load folded away stays, and so do the blank lines.
+		// The same before the first group. Before any other group from the
+		// source, its own blank lines.
 		breakLine()
 		switch {
 		case i == 0:
@@ -4655,7 +4768,7 @@ func keepLines(src string, doc *Document) (string, bool) {
 				blanks = blanks || blank(k)
 			}
 			for k := end[prev] + 1; k < l; k++ {
-				if u.blanks > 0 || !blank(k) {
+				if blanksStay || !blank(k) {
 					out.WriteString(line(k))
 				}
 			}
@@ -4664,7 +4777,7 @@ func keepLines(src string, doc *Document) (string, bool) {
 					out.WriteString(eol)
 				}
 			}
-		case known && u.blanks > 0 && l > 1 && blank(l-1):
+		case known && blanksStay && l > 1 && blank(l-1):
 			k := l - 1
 			for k > 1 && blank(k-1) {
 				k--
@@ -4678,17 +4791,26 @@ func keepLines(src string, doc *Document) (string, bool) {
 			}
 		}
 		depth := tabs(nowText[u.start:u.end])
-		switch {
-		case same:
+		if kept {
+			// A spliced line's value replaces the lines it took, as a stacked
+			// list's elements.
 			for k := l; k <= end[l]; k++ {
-				out.WriteString(line(k))
+				if didSplice && k == splicedAt {
+					out.WriteString(spliced)
+					k = own[k]
+				} else {
+					out.WriteString(line(k))
+				}
 			}
-		case didSplice:
-			out.WriteString(spliced)
-		default:
+			// A line kept as written holds no level's indent.
+			if !strings.HasPrefix(nowText[u.start+depth:], " ") {
+				indents = noteIndent(indents, depth, indent(wasRuns[was[at[l]].partFrom].line))
+			}
+			prev = l
+		} else {
 			// A binding the edits rewrote keeps its line's indent and name.
 			from := u.start
-			if known {
+			if known && u.partTo-u.partFrom == 1 {
 				first := lineEnd(nowText, u.start)
 				if t, ok := authoredHead(line(l), nowText[u.start:first-1]); ok {
 					out.WriteString(t)
@@ -4698,27 +4820,14 @@ func keepLines(src string, doc *Document) (string, bool) {
 				}
 			}
 			indents = writeRun(&out, now, nowText, from, u.end, indents, step, eol)
-		}
-		if kept {
-			// A line kept as written holds no level's indent.
-			if !strings.HasPrefix(nowText[u.start+depth:], " ") {
-				indents = noteIndent(indents, depth, indent(l))
-			}
-			last, prev = end[l], l
-		} else {
 			prev = 0
 		}
 	}
 	// The blank lines the source ends with stay at the end.
 	breakLine()
-	tail := n + 1
-	if len(claimed) > 0 {
-		tail = 0
-		for _, l := range claimed {
-			if end[l]+1 > tail {
-				tail = end[l] + 1
-			}
-		}
+	tail := 1
+	for _, l := range claimed {
+		tail = maxInt(tail, end[l]+1)
 	}
 	allBlank := true
 	for k := tail; k <= n; k++ {
@@ -4734,11 +4843,41 @@ func keepLines(src string, doc *Document) (string, bool) {
 	if body != "" && !strings.HasSuffix(body, "\n") && strings.HasSuffix(text, eol) {
 		text = text[:len(text)-len(eol)]
 	}
+	// The reload has to be the document, and it may not load with an error the
+	// source did not have: a child the edits gave an element list that stayed
+	// stacked reads back the same and is E001 (20260925b item 1).
 	back := newParser().parse(text, doc.strictness)
-	if back.lost == 0 && back.ToCanonical() == nowText {
+	if back.lost == 0 && back.ToCanonical() == nowText && errorsWithin(back, loadedDoc) {
 		return text, true
 	}
 	return "", false
+}
+
+// errorsWithin: each error code d loads with, of loaded with at least as
+// often.
+func errorsWithin(d, of *Document) bool {
+	codes := func(d *Document) []string {
+		var c []string
+		for _, x := range d.diags {
+			if x.Severity == SeverityError {
+				c = append(c, x.Code)
+			}
+		}
+		sort.Strings(c)
+		return c
+	}
+	mine, theirs := codes(d), codes(of)
+	j := 0
+	for _, c := range mine {
+		for j < len(theirs) && theirs[j] < c {
+			j++
+		}
+		if j == len(theirs) || theirs[j] != c {
+			return false
+		}
+		j++
+	}
+	return true
 }
 
 // writeTrailing writes an inline comment, canonically two spaces before the `#`.
@@ -6319,6 +6458,11 @@ func New() *Document {
 }
 
 func (d *Document) newChild(parent int, name, nameSrc string, v value) int {
+	// A list written stacked would get the child after its elements, which
+	// reloads as E001, so it goes inline.
+	if stacks(&d.arena[parent]) {
+		unstack(&d.arena[parent])
+	}
 	idx := len(d.arena)
 	// Hand-written files separate top-level sections with a blank line;
 	// writer-built ones do the same (the emitter never blanks line 1).
