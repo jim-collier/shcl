@@ -4917,6 +4917,16 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		next[l] = claimed.partition_point(|&c| c <= end[l]);
 		next[l] = claimed.get(next[l]).copied().unwrap_or(n + 1);
 	}
+	// A line no group stands for, as a repeat the load folded away, goes out
+	// only as it was written, between two kept groups or at either end. One
+	// that is not blank and is left out makes the save fall back, since
+	// every line no edit touched has to come back (20260925c item 1).
+	let mut left: Vec<bool> = (0..n + 2)
+		.map(|l| (1..=n).contains(&l) && !blank(l))
+		.collect();
+	for &l in &claimed {
+		left[l..=end[l].min(n)].fill(false);
+	}
 	let eol = if n > 0 && line(1).ends_with("\r\n") {
 		"\r\n"
 	} else {
@@ -4977,7 +4987,10 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		break_line(&mut out);
 		if i == 0 {
 			if kept && claimed.first() == Some(&l) {
-				(1..l).for_each(|k| out.push_str(line(k)));
+				(1..l).for_each(|k| {
+					out.push_str(line(k));
+					left[k] = false;
+				});
 			}
 		} else if kept && prev != 0 && next[prev] == l {
 			let gap = end[prev] + 1..l;
@@ -4985,6 +4998,7 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			for k in gap {
 				if blanks_stay || !blank(k) {
 					out.push_str(line(k));
+					left[k] = false;
 				}
 			}
 			if !blanks {
@@ -5041,6 +5055,9 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 	let tail = claimed.iter().map(|&l| end[l] + 1).max().unwrap_or(1);
 	if out.len() > bom.len() && (tail..=n).all(blank) {
 		(tail..=n).for_each(|k| out.push_str(line(k)));
+	}
+	if left.contains(&true) {
+		return None;
 	}
 	// So does a last line with no newline.
 	if !body.is_empty() && !body.ends_with('\n') && out.ends_with(eol) {

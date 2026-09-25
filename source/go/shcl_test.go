@@ -2661,6 +2661,41 @@ func noNewErrors(text, base string) bool {
 	return true
 }
 
+// keepsEveryLine: on a base that loads clean, a new field saved with the lines
+// kept writes every line of the base that is not blank, in order. A repeat the
+// load folded away comes back too (20260925c item 1). A kept misplaced line is
+// left out, since it turns into a comment once a new field above it would take
+// it as a child.
+func keepsEveryLine(base string) bool {
+	doc, _ := ParseKeepLines(base, Standard)
+	for _, d := range doc.Diagnostics() {
+		if d.Severity == SeverityError {
+			return true
+		}
+	}
+	if !doc.SetInt("zz_new", 1) {
+		return true
+	}
+	text, kept := doc.ToTextKeepLines()
+	if !kept {
+		return true
+	}
+	rest := strings.Split(text, "\n")
+	for _, l := range strings.Split(base, "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		for len(rest) > 0 && rest[0] != l {
+			rest = rest[1:]
+		}
+		if len(rest) == 0 {
+			return false
+		}
+		rest = rest[1:]
+	}
+	return true
+}
+
 // TestEditsAndMergesMatchAReload: a merge or an edit leaves the document its own
 // saved text reloads as, comments included, so the next step lands the same
 // whether or not the file was saved in between. Comments were filed one way by
@@ -2673,6 +2708,9 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 		base := g.doc()
 		live, _ := ParseKeepLines(base, Standard)
 		log := "base:\n" + base
+		if !keepsEveryLine(base) {
+			t.Fatalf("a new field moved or dropped a line at iteration %d:\n%s", i, log)
+		}
 		for steps := 2 + g.below(3); steps > 0; steps-- {
 			back := Parse(live.ToCanonical())
 			paths := live.Paths()

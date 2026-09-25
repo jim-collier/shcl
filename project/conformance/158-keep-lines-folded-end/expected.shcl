@@ -1,0 +1,6 @@
+# A field given twice at the end loads as one. A new field goes after it,
+# above the closing comment, and the repeat would be left out, so the save
+# gives the canonical form.
+name: svc
+retries: 3
+# end of settings
