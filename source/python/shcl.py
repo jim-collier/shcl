@@ -3056,7 +3056,7 @@ class _Emit:
 		# _settle_kept() only: the lines written as comments, where they sit
 		# and at what depth, and how many went out as written. Then the nodes
 		# the lines since the last binding line came from, each with its place
-		# in its parent's list, and those a kept line was modelled through.
+		# in its parent's list, and those a kept line was modeled through.
 		self.record = record
 		self.fell: list[tuple[int, str, int, int]] = []
 		self.verbatim = 0
@@ -3193,7 +3193,7 @@ class Document:
 		self._probe_doc: Document | None = None
 		# Holds a misplaced line kept as written, so edits have to settle it.
 		self._kept = False
-		# What the last settle's kept lines were modelled through, and a sum of
+		# What the last settle's kept lines were modeled through, and a sum of
 		# it, so an edit that changes none of it skips the settle. Removing a
 		# block above all of it goes unseen, which leaves _kept set with no
 		# such line left: the next check costs the same, and nothing is wrong.
@@ -4357,7 +4357,7 @@ class Document:
 			return
 		self._index = None
 		self._lost += over._lost
-		# The layer's own kept lines were modelled against its own tree.
+		# The layer's own kept lines were modeled against its own tree.
 		fresh = over._kept
 		self._kept = self._kept or over._kept
 		# Only a block the overlay visited can have a changed child list or

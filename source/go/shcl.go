@@ -610,7 +610,7 @@ type Document struct {
 	probeDoc *Document
 	// kept: holds a misplaced line kept as written, so edits have to settle it.
 	kept bool
-	// What the last settle's kept lines were modelled through, and a sum of
+	// What the last settle's kept lines were modeled through, and a sum of
 	// it, so an edit that changes none of it skips the settle. Removing a
 	// block above all of it goes unseen, which leaves kept set with no such
 	// line left: the next check costs the same, and nothing is wrong.
@@ -4003,7 +4003,7 @@ type emit struct {
 	// settleKept() only: the lines written as comments, where they sit and at
 	// what depth, and how many went out as written. Then the nodes the lines
 	// since the last binding line came from, each with its place in its
-	// parent's list, and those a kept line was modelled through.
+	// parent's list, and those a kept line was modeled through.
 	record   bool
 	fell     []fell
 	verbatim int
@@ -6378,7 +6378,7 @@ func (d *Document) Merge(over *Document) {
 	}
 	d.index.Store(nil)
 	d.lost += over.lost
-	// The layer's own kept lines were modelled against its own tree.
+	// The layer's own kept lines were modeled against its own tree.
 	fresh := over.kept
 	d.kept = d.kept || over.kept
 	// Only a block the overlay visited can have a changed child list or

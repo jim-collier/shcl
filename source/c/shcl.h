@@ -1111,7 +1111,7 @@ struct shcl_doc {
 	int probe;
 	/* Holds a misplaced line kept as written, so edits have to settle it. */
 	int kept;
-	/* What the last settle's kept lines were modelled through, as node and
+	/* What the last settle's kept lines were modeled through, as node and
 	   place-in-parent pairs, and a sum of it, so an edit that changes none of
 	   it skips the settle. Removing a block above all of it goes unseen, which
 	   leaves kept set with no such line left: the next check costs the same,
@@ -5251,7 +5251,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	if (over == d) return;
 	index_drop(d);
 	d->lost += over->lost;
-	/* The layer's own kept lines were modelled against its own tree. */
+	/* The layer's own kept lines were modeled against its own tree. */
 	int fresh = over->kept;
 	d->kept |= over->kept;
 	ShclArena *a = &d->arena;
@@ -5718,7 +5718,7 @@ typedef struct {
 	/* settle_kept only: the lines written as comments, where they sit and at
 	   what depth, and how many went out as written. Then the nodes the lines
 	   since the last binding line came from, each with its place in its
-	   parent's list, and those a kept line was modelled through, both as
+	   parent's list, and those a kept line was modeled through, both as
 	   pairs. */
 	int record; ShclVecFell fell; size_t verbatim;
 	ShclVecSize near; size_t flushed; ShclVecSize kept_near;

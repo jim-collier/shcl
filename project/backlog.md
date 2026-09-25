@@ -98,12 +98,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
-- Code review 20260925:
-
-	- 🔘 Item 1: the kept-line settle comments spell "modelled", a British spelling, in all four bindings.
-		- Origin: `51197bc`, the fix for 20260924d item 2. Twelve comments, three per binding. Confirmed.
-		- Opened: 20260925-063407
-
 - Code review 20260924d:
 
 	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.

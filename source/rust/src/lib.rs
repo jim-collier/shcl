@@ -588,7 +588,7 @@ pub struct Document {
 	probe_doc: Option<Box<Document>>,
 	// Holds a misplaced line kept as written, so edits have to settle it.
 	kept: bool,
-	// What the last settle's kept lines were modelled through, and a sum of
+	// What the last settle's kept lines were modeled through, and a sum of
 	// it, so an edit that changes none of it skips the settle. Removing a
 	// block above all of it goes unseen, which leaves `kept` set with no
 	// such line left: the next check costs the same, and nothing is wrong.
@@ -4216,7 +4216,7 @@ struct Emit {
 	// settle_kept() only: the lines written as comments, where they sit and
 	// at what depth, and how many went out as written. Then the nodes the
 	// lines since the last binding line came from, each with its place in
-	// its parent's list, and those a kept line was modelled through.
+	// its parent's list, and those a kept line was modeled through.
 	record: bool,
 	fell: Vec<(usize, Site, usize, usize)>,
 	verbatim: usize,
@@ -6450,7 +6450,7 @@ impl Document {
 	pub fn merge(&mut self, over: &Document) {
 		self.index.take();
 		self.lost += over.lost;
-		// The layer's own kept lines were modelled against its own tree.
+		// The layer's own kept lines were modeled against its own tree.
 		let fresh = over.kept;
 		self.kept |= over.kept;
 		// Only a block the overlay visited can have a changed child list or
