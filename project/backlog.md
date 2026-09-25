@@ -175,6 +175,42 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
+- 🔘 A save that edits only the lines that changed, and writes every other line back byte for byte.
+	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
+	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
+	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
+	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
+	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
+	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
+	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
+	- Decided: 20260925, after the `v3.0.0-beta1` cut. Changed the same day, it goes in before the cut, along with the nemo-anywhere items below.
+	- Decided: 20260925, it's a new call the program opts into. A load keeps the source text only when asked for. The old save and `fmt` stay canonical.
+	- Decided: 20260925, `set` switches to line edits at 3.0, stdout and `--write` both. That way the output change comes with the major version, not in a 3.1.
+	- Decided: 20260925, if the edited text doesn't reload to the same document, it writes the canonical form instead, same as every save does today, and tells the caller which one it did.
+	- Opened: 20260925-095454
+
+- From nemo-anywhere:
+
+	- 🔘 No way to replace a node's comment.
+		- Reproduced: `comment g.k summary` twice in one `set` gives `# summary` twice above `k`, exit 0. `set_comment` only ever adds a line, it says so, so not a bug.
+		- Note: they asked for a replace, or a call that clears first. Their workaround only comments a key when it's first made.
+		- Note: "the node's comments" is whatever the parser put above it, which can be a header meant for several keys. Doc that, don't try to guess.
+		- Opened: 20260925-115006
+
+	- 🔘 Nothing helps a program that writes `GEN_BANNER` itself take the old one off.
+		- Reproduced: a file ending in the info block, loaded and saved with a new block, has two. On reload the old one is just footer comments.
+		- Note: they match its lines by text, which breaks when the Legal year changes. Find it by the `This config file format is SHCL.` and `Format` lines, never the links or Legal text.
+		- Keep: the library save still never adds the block by itself. Only a program asking for it gets it.
+		- Opened: 20260925-115006
+
+	- 🔘 C string and list reads grow the read arena until `shcl_reads_release`, about 19 MB per 200,000 reads.
+		- Note: documented, and the release call is cheap. A read that copies into the caller's buffer means nobody has to remember it. Lower priority. Rust, Go and Python return owned strings already.
+		- Opened: 20260925-115006
+
+- 🔘 Cut `v3.0.0-beta1`, after everything above.
+	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
+	- Opened: 20260925-115006
+
 - Code review 20260924d:
 
 	- 🔘 Idea 1: stage 7's fallback destination `~/.local/bin` is now also the dogfood runner's link and the installer's user link.
@@ -8404,17 +8440,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
-
-- ✋ A save that edits only the lines that changed, and writes every other line back byte for byte.
-	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
-	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
-	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
-	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
-	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
-	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
-	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
-	- Decided: 20260925, after the `v3.0.0-beta1` cut.
-	- Opened: 20260925-095454
 
 - ✋ Code review 20260924c idea 17: `install.ps1` runs on Windows only.
 	- Note: `install.bash` covers Linux, and there are no macOS binaries. Porting the Linux layout would also mean changing the `shell-regress.bash` row that removes the Windows check by its text.
