@@ -45,6 +45,26 @@ static char *sample(size_t *len) {
 	return t;
 }
 
+// The same document indented with four spaces, which is not its canonical
+// form, so a load that keeps the text keeps a copy of it.
+static char *spaced(const char *text, size_t len, size_t *out) {
+	char *t = (char *)malloc(len * 4 + 1);
+	size_t n = 0;
+	for (size_t i = 0; i < len; i++) {
+		if (text[i] == '\t') { memcpy(t + n, "    ", 4); n += 4; }
+		else t[n++] = text[i];
+	}
+	*out = n;
+	return t;
+}
+
+// A finished keep-lines load gives its own text back on a save with no edit.
+static void check_kept(shcl_doc *d, const char *text, size_t len, const char *what) {
+	int kept = 0;
+	shcl_str t = shcl_to_text_keep_lines(d, &kept);
+	if (!kept || t.n != len || memcmp(t.p, text, len) != 0) fail(what);
+}
+
 // A schema for half of it, with a constraint on every field it names. Half so
 // the unknown-key sweep at the end of a validate has work to do as well. The
 // one-field schema this replaced took eight allocations end to end, so the
@@ -108,6 +128,51 @@ int main(void) {
 			if (!sawNullL) fail("no budget was tight enough to fail a load");
 			remove(path);
 		}
+	}
+
+	// The loads that keep the text copy it and parse it once more to see
+	// whether it is canonical, all behind a recovery point of their own.
+	{
+		size_t klen; char *ktext = spaced(text, len, &klen);
+		int sawNullK = 0, sawDocK = 0;
+		for (long b = 0; b < 400; b++) {
+			budget = b;
+			shcl_doc *d = shcl_parse_keep_lines(ktext, klen, SHCL_STANDARD);
+			budget = 1L << 30;
+			if (!d) { sawNullK = 1; continue; }
+			sawDocK = 1;
+			check_kept(d, ktext, klen, "a keep-lines parse that finished did not keep its text");
+			shcl_free(d);
+		}
+		if (!sawNullK) fail("no budget was tight enough to fail a keep-lines parse");
+		if (!sawDocK) fail("no budget was loose enough to finish a keep-lines parse");
+
+		const char *dir = getenv("TMPDIR");
+		if (!dir) dir = getenv("TMP");
+		if (!dir) dir = getenv("TEMP");
+		if (!dir) dir = "/tmp";
+		char path[512];
+		snprintf(path, sizeof path, "%s/shcl-oom-recover-keep.shcl", dir);
+		FILE *f = fopen(path, "wb");
+		if (!f) fail("could not write the keep-lines fixture");
+		else {
+			fwrite(ktext, 1, klen, f); fclose(f);
+			int sawNullL = 0, sawDocL = 0;
+			for (long b = 0; b < 400; b++) {
+				budget = b;
+				shcl_file_status st = SHCL_FILE_CLEAN;
+				shcl_doc *d = shcl_load_file_keep_lines(path, SHCL_STANDARD, &st);
+				budget = 1L << 30;
+				if (!d) { sawNullL = 1; continue; }
+				sawDocL = 1;
+				check_kept(d, ktext, klen, "a keep-lines load that finished did not keep its text");
+				shcl_free(d);
+			}
+			if (!sawNullL) fail("no budget was tight enough to fail a keep-lines load");
+			if (!sawDocL) fail("no budget was loose enough to finish a keep-lines load");
+			remove(path);
+		}
+		free(ktext);
 	}
 
 	// Validation reports the same way its parse does.
