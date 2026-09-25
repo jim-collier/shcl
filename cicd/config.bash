@@ -273,6 +273,8 @@ XCHECK_GEN='env SHCL_FUZZ_DUMP="${XCHECK_DUMP_DIR}" SHCL_FUZZ_ITERS=2000 SHCL_FU
 ##
 ## 100 MiB is the floor worth testing: the memory multiplier is 40-70x input, so
 ## this is also the only place the pipeline notices a document costing gigabytes.
+## Python is the exception, at 16 MiB, since at 100 it was the gate's critical
+## path. That cap is in largedoc.bash's limits table.
 LARGEDOC_MIB=100
 
 ## Stage 5: profiler. Optimized-with-symbols build (cargo profile "profiling",

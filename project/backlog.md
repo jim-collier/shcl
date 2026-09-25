@@ -4695,6 +4695,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
+- ✅ The large-document gate waits on Python, which takes two minutes or more at 100 MiB.
+	- Decided: 20260925, a smaller document for Python, even though the gate then covers less.
+	- Done: Python formats a 16 MiB copy and has to match the reference's output for it. The cap is a fifth field in `largedoc.bash`'s limits table.
+	- Measured: the whole gate went to 23 s here, with Python at 20 s.
+	- Verified: a Python that adds one line fails as `DIFFERS from rust at 16 MiB`, and a reference that writes nothing for the small copy fails too. `--mib 1` still passes.
+	- Opened: n/a
+	- Closed: 20260925-110645
+
 - ✅ Keep a line at a bad indent (E012), and the lines under it (E018), on save, the way an E019 line is kept.
 	- Reproduced: `window:` / `opacity: 1.0` at one tab / `margin: 4` at four spaces / `columns: 160` at one tab, through `fmt`. The `margin` line is gone and counts as lost, so `save_file` refuses.
 	- Note: a missing capability. One stray space in a hand-edited config stops every save, including ones nobody asked for, like a program saving its window size. Wanted: the line written as it was, and a lost count of 0.

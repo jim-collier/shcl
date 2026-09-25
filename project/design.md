@@ -595,6 +595,8 @@ Both of those run on small inputs, which leaves a whole class of defect unwatche
 
 - At that size the reference also has to prove formatting is a fixpoint and that a long array reads back whole, both of which are cheap to state and impossible for a small case to check.
 
+- Python formats a 16 MiB copy instead, and has to match the reference's output for that copy. At 100 MiB it took two minutes and more and was the whole gate's critical path. At 16 MiB a quadratic parse or a bad buffer still shows, and the run takes about 20 seconds.
+
 The size is deliberately a floor rather than a target. It was chosen because it is roughly where memory stops being free: every binding holds tens of times the input size in memory while parsing, so a document this big is the first one whose cost is worth a decision.
 
 All of that runs on Linux, which was enough while every binding did the same thing everywhere. The file tier ended that: publishing a written file is a different code path on Windows in all four bindings, so the platform-specific half was covered only where it never executes. A second CI job runs the runners and the veneer smoke on Windows.
