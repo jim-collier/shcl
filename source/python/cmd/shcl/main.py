@@ -193,7 +193,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          defaults half of the writer
   --remove=PATH                          (same) delete what is at the path,
                                          with its subtree. Removing nothing is
-                                         not an error
+                                         not an error, but a PATH that cannot
+                                         parse is
 The five above share one ordered list, so two of them touching the same path
 resolve in the order given. Raw blocks still go in through the ops script.
 
@@ -524,6 +525,8 @@ def _set_value_opt(o, name, v):
 	elif name == "--remove":
 		if v == "":
 			raise ValueError("bad --remove value (want PATH) (see --help)")
+		if unusable_path(shcl.Document.parse(""), v):
+			raise ValueError(f"bad --remove value (not a usable path): {v} (see --help)")
 		o.sets.append(_SetOpt(v, "", "--remove"))
 		o.seen.append("--remove")
 	elif name in ("--set", "--set-literal", "--set-default", "--set-literal-default"):
@@ -532,6 +535,13 @@ def _set_value_opt(o, name, v):
 			raise ValueError(f"bad {name} value (want PATH=VALUE, quotes and brackets balanced): {v} (see --help)")
 		o.sets.append(_SetOpt(ps[0], ps[1], name))
 		o.seen.append(name)
+
+
+def unusable_path(doc, path):
+	# A path no document can hold, which a remove would take as a miss and
+	# exit 0: one the scanner rejects, or one with a value part. A missing
+	# path or a wildcard is still fine.
+	return doc.write_reason(path) in (shcl.WriteReason.BadPath, shcl.WriteReason.ValueInPath)
 
 
 def split_set(arg):
@@ -1691,6 +1701,8 @@ def apply_op(doc, line):
 		wrote = doc.set_empty(path)
 	elif op == "comment":
 		wrote = doc.set_comment(path, _unescape_ops(v))
+	elif op in ("remove", "clear-comments") and unusable_path(doc, path):
+		raise ValueError(f"cannot {op} {path}: not a usable path")
 	elif op == "remove":
 		doc.remove(path)
 		wrote = True

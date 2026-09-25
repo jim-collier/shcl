@@ -206,7 +206,8 @@ Options (the subcommands each belongs to are in parentheses):
                                          defaults half of the writer
   --remove=PATH                          (same) delete what is at the path,
                                          with its subtree. Removing nothing is
-                                         not an error
+                                         not an error, but a PATH that cannot
+                                         parse is
 The five above share one ordered list, so two of them touching the same path
 resolve in the order given. Raw blocks still go in through the ops script.
 
@@ -624,6 +625,14 @@ func askedFor(argv []string) string {
 	return ""
 }
 
+// unusablePath: a path no document can hold, which a remove would take as a
+// miss and exit 0: one the scanner rejects, or one with a value part. A
+// missing path or a wildcard is still fine.
+func unusablePath(doc *shcl.Document, path string) bool {
+	r := doc.WriteReason(path)
+	return r == shcl.BadPath || r == shcl.ValueInPath
+}
+
 // splitSet: PATH=VALUE at the first `=` outside quotes and brackets, so a
 // selector holding one (`x[a=b].c=1`) still addresses its instance. The
 // tokenizer reads the path half with `=` as its separator, so quotes and
@@ -731,6 +740,9 @@ func setValueOpt(o *opts, name, v string) error {
 	case "--remove":
 		if v == "" {
 			return fmt.Errorf("bad --remove value (want PATH) (see --help)")
+		}
+		if unusablePath(shcl.New(), v) {
+			return fmt.Errorf("bad --remove value (not a usable path): %s (see --help)", v)
 		}
 		o.sets = append(o.sets, setOpt{path: v, kind: setRemove})
 		o.seen = append(o.seen, "--remove")
@@ -2405,11 +2417,15 @@ func applyOp(doc *shcl.Document, line string) error {
 		wrote = doc.SetEmpty(path)
 	case "comment":
 		wrote = doc.SetComment(path, unescapeOps(v))
-	case "remove":
-		doc.Remove(path)
-		wrote = true
-	case "clear-comments":
-		doc.ClearComments(path)
+	case "remove", "clear-comments":
+		if unusablePath(doc, path) {
+			return fmt.Errorf("cannot %s %s: not a usable path", f[0], path)
+		}
+		if f[0] == "remove" {
+			doc.Remove(path)
+		} else {
+			doc.ClearComments(path)
+		}
 		wrote = true
 	case "banner":
 		// The second field is on or off, not a path.
