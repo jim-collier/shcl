@@ -299,6 +299,13 @@ int main() {
 		CHECK(w.clear_comments("port") == 1 && w.to_canonical().find("# the port") == std::string::npos);
 		CHECK(w.set_banner(true) == 0 && w.to_canonical().find("## This config file format is SHCL.\n") != std::string::npos);
 		CHECK(w.set_banner(false) == 1 && w.to_canonical().find("##") == std::string::npos);
+		// The save that keeps lines: an edit touches its own line only, a
+		// document not loaded for it writes the canonical form.
+		auto kept = shcl::Document::parse_keep_lines("Name:   \"x\"   # c\nblock:\n    a: 1\n", shcl::Strictness::Standard);
+		CHECK(kept.to_text_keep_lines() == std::make_pair(std::string("Name:   \"x\"   # c\nblock:\n    a: 1\n"), true));
+		CHECK(kept.set_int("block.a", 2) && kept.set_int("block.b", 3));
+		CHECK(kept.to_text_keep_lines() == std::make_pair(std::string("Name:   \"x\"   # c\nblock:\n    a: 2\n    b: 3\n"), true));
+		CHECK(w.to_text_keep_lines() == std::make_pair(w.to_canonical(), false));
 		CHECK(!w.set_int("a[*]", 1) && w.write_reason("a[*]") == shcl::WriteReason::Wildcard);
 		CHECK(w.remove("blank") == 1 && !w.exists("blank") && w.remove("blank") == 0);
 
@@ -396,6 +403,12 @@ int main() {
 		CHECK(!shcl::Document::read_file(f, 8, &st) && st == shcl::Document::FileStatus::Unreadable);
 		CHECK(strict.lost_count() == 0);
 		CHECK(strict.save_file(f) == shcl::Document::SaveResult::Ok);
+		{ FILE *fh = std::fopen(f.c_str(), "wb"); CHECK(fh && std::fputs("a:   1\n", fh) != EOF && std::fclose(fh) == 0); }
+		auto keeping = shcl::Document::load_file_keep_lines(f, shcl::Strictness::Standard, &st);
+		bool keptLines = false;
+		CHECK(st == shcl::Document::FileStatus::Clean && keeping.set_int("b", 2));
+		CHECK(keeping.save_file_keep_lines(f, &keptLines) == shcl::Document::SaveResult::Ok && keptLines);
+		CHECK(shcl::Document::read_file(f) == std::string("a:   1\n\nb: 2\n"));
 		// An indent matching no level is lost when it is tabs; one holding a
 		// space is kept as written.
 		CHECK(shcl::Document::parse("a:\n\tb: 1\n  c: 2\n").lost_count() == 0);

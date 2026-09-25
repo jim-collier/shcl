@@ -311,6 +311,7 @@ fCase(){
 	# Write dimension: apply the case's ops script and compare canonical output.
 	ops="${caseDir}write.ops"
 	[[ -f "$ops" ]] && fCompareStdin "set ${caseName}" "$ops" set "$input"
+	fKeepEdits "$input" "$caseName" 3
 	# Bad-op dimension: each write-bad.ops line, applied alone, must produce the
 	# same (empty) stdout and same nonzero exit in every binding.
 	badops="${caseDir}write-bad.ops"
@@ -361,6 +362,21 @@ fCase(){
 	fi
 }
 
+##	The save that keeps lines over one input: a changed value, a new child and
+##	a removal on the first few paths the reference reports, each compared as
+##	set's output. The corpus goldens hold only the shapes somebody wrote down.
+fKeepEdits(){
+	local f="$1" label="$2" max="$3" p k=0
+	while IFS= read -r p; do
+		[[ -z "$p" ]] && continue
+		k=$((k+1))
+		if ((k > max)); then break; fi
+		fCompare "set keep ${label} ${p}" set "--set=${p}=new text" "$f"
+		fCompare "set keep-add ${label} ${p}" set "--set=${p}.kid=1" "$f"
+		fCompare "set keep-remove ${label} ${p}" set "--remove=${p}" "$f"
+	done < <("$refCli" paths "$f" 2>/dev/null || true)
+}
+
 ##	One fuzz-dumped input.
 fExtraFile(){
 	local f="$1" reads
@@ -372,6 +388,7 @@ fExtraFile(){
 	# lost is the one parse result no read can show, and the corpus alone
 	# holds only the shapes somebody thought to pin.
 	caseSrc="$f"; fCompareWrite "fmt --write ${f##*/}" fFixCase fmt --write
+	fKeepEdits "$f" "${f##*/}" 1
 	# Derived reads.tsv (the reference dumps one per input, paths it knows exist):
 	# replay the accessor rows too, so the fuzz set covers reads, not just fmt.
 	reads="${f%.shcl}.reads.tsv"

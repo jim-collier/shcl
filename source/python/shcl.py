@@ -23,6 +23,7 @@ project/style-guide_code.md).
 
 from __future__ import annotations
 
+import bisect
 import math
 import os
 import re
@@ -343,15 +344,18 @@ class _Lead:
 	"""One whole-line comment held as trivia, plus whether a blank line preceded
 	it - so a blank between comment-only regions survives the round-trip
 	(blank runs collapse to one, same as nodes)."""
-	__slots__ = ("text", "blank_before", "depth")
+	__slots__ = ("text", "blank_before", "depth", "line")
 
-	def __init__(self, text, blank_before, depth=0):
+	def __init__(self, text, blank_before, depth=0, line=0):
 		self.text = text
 		self.blank_before = blank_before
 		# Levels deeper than the place it is emitted at. A comment written
 		# under the one before it keeps that nesting, so a commented-out block
 		# comes back in its shape.
 		self.depth = depth
+		# The source line it was read from, for the save that keeps lines; 0
+		# for one a write made or moved.
+		self.line = line
 
 
 def _comment_depth(chain, base, text, indent):
@@ -386,13 +390,14 @@ class _Pend:
 	to decide whether it hangs on a deeper block), and the blank it consumed.
 	`ceiling` is the shortest incoming indent already checked against it: a
 	later check can only hang it from a shorter one, so a longer one skips it."""
-	__slots__ = ("text", "indent", "blank_before", "ceiling")
+	__slots__ = ("text", "indent", "blank_before", "ceiling", "line")
 
-	def __init__(self, text, indent, blank_before):
+	def __init__(self, text, indent, blank_before, line):
 		self.text = text
 		self.indent = indent
 		self.blank_before = blank_before
 		self.ceiling = len(indent)
+		self.line = line
 
 
 # Shared empty element list for the kinds that have none: only "cell" ever
@@ -2145,6 +2150,9 @@ class _Parser:
 		self.max_diags = 0
 		self.unlisted_errors = 0
 		self.unlisted_hints = 0
+		# A raw block's or a stacked list's binding line and the last line it
+		# took, for the save that keeps lines.
+		self.ends: list[tuple[int, int]] = []
 
 	def _err(self, line, code, msg):
 		self._diag(Diagnostic(line, Severity.Error, msg, code))
@@ -2263,7 +2271,7 @@ class _Parser:
 			t = self.arena[node]._triv()
 			chain: list[tuple[str, int]] = []
 			for p in self.pending:
-				t.leading.append(_Lead(p.text, p.blank_before, _comment_depth(chain, indent, p.text, p.indent)))
+				t.leading.append(_Lead(p.text, p.blank_before, _comment_depth(chain, indent, p.text, p.indent), p.line))
 			self.pending = []
 			self.pend_marks = []
 		if trailing:
@@ -2329,7 +2337,7 @@ class _Parser:
 					if at != last:
 						chain.clear()
 					last = at
-					lead = _Lead(p.text, p.blank_before, _comment_depth(chain, self.stack[at[0]][0], p.text, p.indent))
+					lead = _Lead(p.text, p.blank_before, _comment_depth(chain, self.stack[at[0]][0], p.text, p.indent), p.line)
 					if at[2]:
 						self.arena[at[1]]._triv().after.append(lead)
 					else:
@@ -2371,7 +2379,7 @@ class _Parser:
 			n = 0
 		self.lost += n
 		if outcome.kind == "retained":
-			p = _Pend(outcome.text, indent, outcome.blank_before)
+			p = _Pend(outcome.text, indent, outcome.blank_before, line)
 			# A line kept as written never hangs on a block: its indent is not
 			# one the output's levels are spelled with, so the block it would
 			# match here is not the one it matches on a reload. It waits for
@@ -2755,7 +2763,7 @@ class _Parser:
 			# It consumes a pending blank into its own flag, so a blank between
 			# comment-only regions survives the round-trip.
 			if rest.startswith("#"):
-				self.pending.append(_Pend(rest, indent, self.saw_blank))
+				self.pending.append(_Pend(rest, indent, self.saw_blank, lineno))
 				self.saw_blank = False
 				i += 1
 				continue
@@ -2802,6 +2810,7 @@ class _Parser:
 				else:
 					node = self._bind_block(parent, value, lineno, indent)
 					if node is not None:
+						self.ends.append((self.arena[node].line, nxt))
 						self._attach_trivia(node, indent, comment)
 				i = nxt
 				continue
@@ -2833,10 +2842,15 @@ class _Parser:
 					if parent != ROOT:
 						if self._add_star_element(parent, tok, tok.src, lineno, indent):
 							self._keep_among(parent)
+						head = self.arena[parent].line
+						if self.ends and self.ends[-1][0] == head:
+							self.ends[-1] = (head, lineno)
+						else:
+							self.ends.append((head, lineno))
 						self._attach_trivia(parent, indent, comment)
 					else:
 						if comment:
-							self.pending.append(_Pend(comment, indent, had_blank))
+							self.pending.append(_Pend(comment, indent, had_blank, 0))
 						self._add_star_element(parent, tok, tok.src, lineno, indent)
 					i += 1
 					continue
@@ -2945,6 +2959,8 @@ class _Parser:
 						self.arena[node].src = src_text
 				if had_blank:
 					self.arena[node].blank_before = True
+				if nxt > i + 1:
+					self.ends.append((lineno, nxt))
 				self._attach_trivia(node, indent, comment)
 				self.stack.append((indent, node))
 			i = nxt
@@ -2962,7 +2978,7 @@ class _Parser:
 			_settle_block(self.arena, n, 1)
 		self._emit_repeated_leaf_hints()
 		chain: list[tuple[str, int]] = []
-		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent)) for p in self.pending]
+		orphans = [_Lead(p.text, p.blank_before, _comment_depth(chain, "", p.text, p.indent), p.line) for p in self.pending]
 		self.pending = []
 		_settle_first_blank(self.arena, orphans)
 		# The one entry past the cap: what was not listed, and whether any of
@@ -2976,6 +2992,7 @@ class _Parser:
 				f"diagnostic cap of {self.max_diags} reached; {more} more not listed, {self.unlisted_errors} of them errors",
 				"E022"))
 		doc = Document(self.arena, self.diags, strictness, orphans, self.lost)
+		doc._ends = self.ends
 		doc._kept = self.kept_any
 		doc._settle_kept()
 		return doc
@@ -3046,7 +3063,7 @@ class _Emit:
 	`open`, which the last binding line leaves, then what the lines refused
 	since then pushed, and the indent of a kept misplaced line that the lines
 	under it are kept with."""
-	__slots__ = ("out", "open", "tail", "hold", "record", "fell", "verbatim", "near", "flushed", "kept_near")
+	__slots__ = ("out", "open", "tail", "hold", "record", "fell", "verbatim", "near", "flushed", "kept_near", "lines", "marks", "bodies", "spans")
 
 	def __init__(self, record):
 		self.out: list[str] = []
@@ -3063,6 +3080,23 @@ class _Emit:
 		self.near: list[tuple[int, int]] = []
 		self.flushed = 0
 		self.kept_near: list[tuple[int, int]] = []
+		# to_text_keep_lines() only: where the lines from each source line
+		# start (0 for none), each raw body with the tabs its lines are padded
+		# with, and where each value is spelled on its binding line. Positions
+		# are indexes into `out`; _emit_marked() makes them offsets.
+		self.lines = False
+		self.marks: list[tuple[int, int]] = []
+		self.bodies: list[tuple[int, int, int]] = []
+		self.spans: list[tuple[int, int]] = []
+
+	def mark(self, line):
+		if self.lines:
+			self.marks.append((len(self.out), line))
+
+	def span(self, at):
+		"""A value written from `at` to here, the space before it included."""
+		if self.lines:
+			self.spans.append((at, len(self.out)))
 
 	def resolve(self, indent):
 		"""A line at this indent through the reload's _resolve_parent(): the
@@ -3114,6 +3148,9 @@ def _push_leads(e, leads, base, at):
 	for i, c in enumerate(leads):
 		if c.blank_before and out:
 			out.append("\n")
+		# A kept line among list elements is part of the list's run.
+		if at[1] != "among":
+			e.mark(c.line)
 		text = c.text
 		if text.startswith((" ", "\t")):
 			indent = _leading_ws(text)
@@ -3159,9 +3196,356 @@ def _push_leads(e, leads, base, at):
 		out.append("\n")
 
 
+class _Marked:
+	"""Canonical text with what the save that keeps lines needs to line it up
+	against the source: _Emit's marks, bodies and spans as offsets."""
+	__slots__ = ("text", "marks", "bodies", "starts", "spans")
+
+	def __init__(self, text, marks, bodies, spans):
+		self.text = text
+		self.marks = marks
+		self.bodies = bodies
+		self.starts = [b[0] for b in bodies]
+		self.spans = spans
+
+
+class _Unit:
+	"""A run of canonical lines from one source line on (0: from none), with
+	the blank lines written before it and the spans of its values."""
+	__slots__ = ("line", "start", "end", "blanks", "spans")
+
+	def __init__(self, line, start, end, blanks):
+		self.line = line
+		self.start = start
+		self.end = end
+		self.blanks = blanks
+		self.spans = (0, 0)
+
+
+def _units_of(m):
+	text = m.text
+	marks, bodies = m.marks, m.bodies
+	units: list[_Unit] = []
+	mi = bi = tag = blanks = 0
+	open_ = False
+	pos = 0
+	n = len(text)
+	while pos < n:
+		nxt = _line_end(text, pos)
+		while mi < len(marks) and marks[mi][0] <= pos:
+			tag = marks[mi][1]
+			mi += 1
+		while bi < len(bodies) and bodies[bi][1] <= pos:
+			bi += 1
+		in_body = bi < len(bodies) and bodies[bi][0] <= pos
+		if text[pos] == "\n" and not in_body:
+			blanks += 1
+			open_ = False
+		elif open_ and units and units[-1].line == tag:
+			units[-1].end = nxt
+		else:
+			units.append(_Unit(tag, pos, nxt, blanks))
+			blanks = 0
+			open_ = True
+		pos = nxt
+	spans = m.spans
+	si = 0
+	for u in units:
+		while si < len(spans) and spans[si][0] < u.start:
+			si += 1
+		frm = si
+		while si < len(spans) and spans[si][0] < u.end:
+			si += 1
+		u.spans = (frm, si)
+	return units
+
+
+def _line_end(text, pos):
+	"""Where the line starting at `pos` ends, past its newline."""
+	i = text.find("\n", pos)
+	return len(text) if i < 0 else i + 1
+
+
+def _tabs(s, pos=0):
+	k = pos
+	while k < len(s) and s[k] == "\t":
+		k += 1
+	return k - pos
+
+
+def _indent_for(indents, depth, step):
+	"""The indent a new line `depth` levels down gets: the last one written
+	there, or the nearest shallower one plus a level."""
+	j = depth
+	while j > 0 and (j >= len(indents) or indents[j] is None):
+		j -= 1
+	base = indents[j] if j < len(indents) and indents[j] is not None else ""
+	return base + step * (depth - j)
+
+
+def _resize(indents, n):
+	if len(indents) > n:
+		del indents[n:]
+	else:
+		indents.extend([None] * (n - len(indents)))
+
+
+def _note_indent(indents, depth, indent):
+	"""A source line written at `depth`. One whose indent does not nest under
+	the level above it, a dotted path for one, says nothing about the levels
+	after it."""
+	if depth == 0:
+		fits = indent == ""
+	else:
+		up = indents[depth - 1] if depth - 1 < len(indents) else None
+		fits = indent != "" and (up is None or (len(indent) > len(up) and indent.startswith(up)))
+	if fits:
+		_resize(indents, depth + 1)
+		indents[depth] = indent
+	else:
+		del indents[1:]
+
+
+def _last_piece(out):
+	return next((p for p in reversed(out) if p), "")
+
+
+def _write_run(out, m, pos, end, indents, step, eol):
+	"""A run the edits wrote, indented the way the lines around it are. A raw
+	body keeps its own tabs past the pad, and a kept line its indent."""
+	text = m.text
+	while pos < end:
+		nxt = _line_end(text, pos)
+		line = text[pos:nxt - 1]
+		b = bisect.bisect_right(m.starts, pos)
+		if b > 0 and pos < m.bodies[b - 1][1]:
+			pad = m.bodies[b - 1][2]
+			if line:
+				out.append(_indent_for(indents, pad, step))
+				out.append(line[pad:])
+		else:
+			depth = _tabs(line)
+			if line[depth:].startswith(" "):
+				out.append(line)
+			else:
+				indent = _indent_for(indents, depth, step)
+				out.append(indent)
+				out.append(line[depth:])
+				_resize(indents, depth + 1)
+				indents[depth] = indent
+		out.append(eol)
+		pos = nxt
+
+
+def _authored_head(src, canon):
+	"""A binding line the edits rewrote, with the name spelled the way the
+	source line spelled it. None unless both lines bind one plain name."""
+	t = _trim_wsp_end(src[:-1] if src.endswith("\n") else src)
+	ilen = len(t) - len(t.lstrip(" \t"))
+	rest = t[ilen:].lstrip(_WSP)
+	head = len(t) - len(rest)
+	c = canon[_tabs(canon):]
+	tok = Tokens()
+	cut = []
+	for text in (rest, c):
+		if text.startswith(("#", "*")):
+			return None
+		tokenize(text, ":", False, Rules.CURRENT, tok)
+		if len(tok.segments) != 1 or tok.segments[0].selector is not None or tok.fault is not None:
+			return None
+		if tok.sep is None:
+			return None
+		cut.append((tok.src, tok.sep))
+	(sb, s0), (cb, s1) = cut
+	return t[:head] + sb[:s0 + 1].decode("utf-8", "surrogatepass") + cb[s1 + 1:].decode("utf-8", "surrogatepass")
+
+
+def _splice_value(line, was, w, now, u):
+	"""A run whose only change is its last value, written into the source
+	line in place of the old one, so the name, spacing and comment stay as
+	they were. None when anything else changed or the line is not a plain
+	field."""
+	s0 = was.spans[w.spans[0]:w.spans[1]]
+	s1 = now.spans[u.spans[0]:u.spans[1]]
+	if not s0 or len(s0) != len(s1):
+		return None
+	t0, t1 = was.text, now.text
+	p0, p1 = w.start, u.start
+	for k, (a, b) in enumerate(zip(s0, s1)):
+		if t0[p0:a[0]] != t1[p1:b[0]] or (k + 1 < len(s0) and t0[a[0]:a[1]] != t1[b[0]:b[1]]):
+			return None
+		p0, p1 = a[1], b[1]
+	if t0[p0:w.end] != t1[p1:u.end]:
+		return None
+	last = s1[-1]
+	value = t1[last[0]:last[1]]
+	t = _trim_wsp_end(line[:-1] if line.endswith("\n") else line)
+	tail = line[len(t):]
+	ilen = len(t) - len(t.lstrip(" \t"))
+	rest = t[ilen:].lstrip(_WSP)
+	head = len(t) - len(rest)
+	if rest.startswith(("#", "*")):
+		return None
+	tok = Tokens()
+	tokenize(rest, ":", False, Rules.CURRENT, tok)
+	colon = tok.sep
+	if colon is None or tok.fault is not None:
+		return None
+	a, b = tok.value
+	sb = tok.src
+	if _fence_open(sb[a:b].decode("utf-8", "surrogatepass")) is not None or _bracket_text(tok):
+		return None
+	frm = colon + 1 if a == b else b
+	return (t[:head] + sb[:colon + 1].decode("utf-8", "surrogatepass") + value
+		+ sb[frm:].decode("utf-8", "surrogatepass") + tail)
+
+
+def _keep_lines(src, doc):
+	"""to_text_keep_lines() on a loaded text: the loaded document's canonical
+	runs line up with the text by the source line each came from, and the
+	edited document's runs that match one exactly take that line's text.
+	None when the result would not reload as `doc`."""
+	no, twice = -1, -2
+	# A text that was canonical keeps its lines as the canonical form.
+	if not src:
+		return doc.to_canonical()
+	now = doc._emit_marked()
+	loaded_doc = _Parser().parse(src, doc._strictness)
+	loaded = loaded_doc._emit_marked()
+	if now.text == loaded.text:
+		return src
+	if src.startswith("﻿"):
+		bom, body = "﻿", src[1:]
+	else:
+		bom, body = "", src
+	parts = body.split("\n")
+	lines = [p + "\n" for p in parts[:-1]]
+	if parts[-1]:
+		lines.append(parts[-1])
+	n = len(lines)
+
+	def line(k):
+		return lines[k - 1]
+
+	def blank(k):
+		return not _trim_wsp(lines[k - 1].rstrip("\n"))
+
+	def indent(k):
+		t = lines[k - 1]
+		return t[:len(t) - len(t.lstrip(" \t"))]
+
+	was, is_ = _units_of(loaded), _units_of(now)
+	# Each source line's run in the loaded text, and the lines it stands for:
+	# its own, through the end of a raw block or a stacked list.
+	at = [no] * (n + 2)
+	for i, u in enumerate(was):
+		if u.line != 0 and u.line <= n:
+			at[u.line] = i if at[u.line] == no else twice
+	claimed = [k for k in range(1, n + 1) if at[k] != no]
+	end = list(range(n + 2))
+	for k, e in loaded_doc._ends:
+		if k <= n and at[k] != no:
+			end[k] = max(end[k], min(e, n))
+	# The first run after each one's lines, for telling two runs that sat
+	# next to each other.
+	nxt = [0] * (n + 2)
+	for k in claimed:
+		j = bisect.bisect_right(claimed, end[k])
+		nxt[k] = claimed[j] if j < len(claimed) else n + 1
+	seen = [0] * (n + 2)
+	for u in is_:
+		if u.line != 0 and u.line <= n:
+			seen[u.line] += 1
+	eol = "\r\n" if n > 0 and line(1).endswith("\r\n") else "\n"
+	# One level of the source's indent: a line one level in, or failing that
+	# the first indented line, a list element or a fence.
+	step = next((indent(u.line) for u in was if u.line != 0 and _tabs(loaded.text, u.start) == 1 and indent(u.line)), "")
+	if not step:
+		step = next((indent(k) for k in range(1, n + 1) if not blank(k) and indent(k)), "\t")
+	out: list[str] = []
+
+	def break_line():
+		last_piece = _last_piece(out)
+		if last_piece and not last_piece.endswith("\n"):
+			out.append(eol)
+
+	indents: list[str | None] = [""]
+	# The end of the last source run written, and its line while the run just
+	# written is one.
+	last = prev = 0
+	for i, u in enumerate(is_):
+		k = u.line
+		known = k != 0 and k <= n and seen[k] == 1 and at[k] >= 0
+		w = was[at[k]] if known and k > last else None
+		same = w is not None and loaded.text[w.start:w.end] == now.text[u.start:u.end]
+		spliced = _splice_value(line(k), loaded, w, now, u) if w is not None and not same else None
+		kept = same or spliced is not None
+		# Between two runs that stay next to each other, the source's own
+		# lines: a repeat the load folded away stays, and so do the blank
+		# lines, unless the edits took the blank out. The same before the
+		# first run. Before any other run from the source, its own blank lines.
+		break_line()
+		if i == 0:
+			if kept and claimed and claimed[0] == k:
+				out.extend(lines[:k - 1])
+		elif kept and prev != 0 and nxt[prev] == k:
+			gap = range(end[prev] + 1, k)
+			blanks = any(blank(g) for g in gap)
+			for g in gap:
+				if u.blanks > 0 or not blank(g):
+					out.append(line(g))
+			if not blanks:
+				out.extend([eol] * u.blanks)
+		elif known and u.blanks > 0 and k > 1 and blank(k - 1):
+			g = k - 1
+			while g > 1 and blank(g - 1):
+				g -= 1
+			out.extend(lines[g - 1:k - 1])
+		else:
+			out.extend([eol] * u.blanks)
+		depth = _tabs(now.text, u.start)
+		if same:
+			out.extend(lines[k - 1:end[k]])
+		elif spliced is not None:
+			out.append(spliced)
+		else:
+			# A binding the edits rewrote keeps its line's indent and name.
+			frm = u.start
+			if known:
+				first = _line_end(now.text, u.start)
+				t = _authored_head(line(k), now.text[u.start:first - 1])
+				if t is not None:
+					out.append(t)
+					out.append(eol)
+					_note_indent(indents, depth, indent(k))
+					frm = first
+			_write_run(out, now, frm, u.end, indents, step, eol)
+		if kept:
+			# A line kept as written holds no level's indent.
+			if not now.text.startswith(" ", u.start + depth):
+				_note_indent(indents, depth, indent(k))
+			last, prev = end[k], k
+		else:
+			prev = 0
+	# The blank lines the source ends with stay at the end.
+	break_line()
+	tail = max((end[k] + 1 for k in claimed), default=n + 1)
+	if _last_piece(out) and all(blank(g) for g in range(tail, n + 1)):
+		out.extend(lines[tail - 1:])
+	text = "".join(out)
+	# So does a last line with no newline.
+	if body and not body.endswith("\n") and text.endswith(eol):
+		text = text[:-len(eol)]
+	text = bom + text
+	back = _Parser().parse(text, doc._strictness)
+	if back._lost == 0 and back.to_canonical() == now.text:
+		return text
+	return None
+
+
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc", "_kept", "_kept_near", "_kept_sum")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc", "_kept", "_kept_near", "_kept_sum", "_ends", "_source")
 
 	def __init__(
 		self,
@@ -3199,6 +3583,14 @@ class Document:
 		# such line left: the next check costs the same, and nothing is wrong.
 		self._kept_near: list[tuple[int, int]] = []
 		self._kept_sum: tuple = ()
+		# The parse's multi-line bindings, from the binding line to the last
+		# line each took. Edits leave it alone; only a reparse reads it.
+		self._ends: list[tuple[int, int]] = []
+		# The text a load kept for to_text_keep_lines(), and empty when that
+		# text was already canonical, since the canonical form is then the one
+		# that keeps its lines. A merge drops it: the layer's lines are not
+		# this text's.
+		self._source: str | None = None
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -3349,6 +3741,72 @@ class Document:
 		self._emit_all(e)
 		return "".join(e.out)
 
+	@staticmethod
+	def parse_keep_lines(text: str, strictness: Strictness) -> Document:
+		"""parse_with, keeping the text for to_text_keep_lines(). The document
+		is the same one parse_with gives; only the save differs."""
+		doc = _Parser().parse(text, strictness)
+		doc._keep_source(text)
+		if strictness == Strictness.Strict and any(d.severity == Severity.Error for d in doc.diags):
+			raise LoadError(list(doc.diags), doc)
+		return doc
+
+	@staticmethod
+	def load_file_keep_lines(path: str | os.PathLike[str], strictness: Strictness) -> tuple[Document, FileStatus]:
+		"""load_file_with, keeping the text for to_text_keep_lines()."""
+		text, st = read_file(path, 0)
+		if text is None:
+			return _Parser().parse("", strictness), st
+		doc = _Parser().parse(text, strictness)
+		doc._keep_source(text)
+		if any(d.severity == Severity.Error for d in doc.diags):
+			return doc, FileStatus.HadErrors
+		return doc, FileStatus.Clean
+
+	def _keep_source(self, text):
+		self._source = "" if self.to_canonical() == text else text
+
+	def to_text_keep_lines(self) -> tuple[str, bool]:
+		"""The text a save that keeps lines writes, and whether it kept them.
+		Each line the edits did not touch is the loaded text's own line, byte
+		for byte; a changed value is written into its line; new lines are
+		indented the way the lines around them are. The result has to reload
+		as this document. When it does not, or the document was not loaded
+		with parse_keep_lines or load_file_keep_lines, or it took a merge,
+		this is to_canonical() and False."""
+		if self._source is not None:
+			t = _keep_lines(self._source, self)
+			if t is not None:
+				return t, True
+		return self.to_canonical(), False
+
+	def save_file_keep_lines(self, path: str | os.PathLike[str]) -> bool:
+		"""save_file with to_text_keep_lines(): True when it kept the lines,
+		False when it wrote the canonical form instead. Refuses the same way
+		save_file does."""
+		if self._lost > 0:
+			raise SaveRefused(path, self._lost)
+		text, kept = self.to_text_keep_lines()
+		err = write_file_atomic(path, text)
+		if err is not None:
+			raise SaveFailed(err)
+		return kept
+
+	def _emit_marked(self):
+		e = _Emit(False)
+		e.lines = True
+		self._emit_all(e)
+		# Piece indexes to offsets in the joined text.
+		offs = [0]
+		for piece in e.out:
+			offs.append(offs[-1] + len(piece))
+		return _Marked(
+			"".join(e.out),
+			[(offs[at], line) for at, line in e.marks],
+			[(offs[a], offs[b], pad) for a, b, pad in e.bodies],
+			[(offs[a], offs[b]) for a, b in e.spans],
+		)
+
 	def _emit_all(self, e):
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
@@ -3456,6 +3914,7 @@ class Document:
 			for lead in reversed(moved):
 				lead.text = _commented(lead.text)
 				lead.depth = depth
+				lead.line = 0
 				t.leading.append(lead)
 			moved = []
 		return moved_any
@@ -3493,6 +3952,7 @@ class Document:
 		out = e.out
 		if node.blank_before and out:
 			out.append("\n")
+		e.mark(node.line)
 		if would_merge and trailing:
 			out.append(pad)
 			out.append(trailing)
@@ -3509,6 +3969,7 @@ class Document:
 			e.near = [(idx, pos)]
 			e.flushed = 0
 		if v.kind == "empty":
+			e.span(len(out))
 			if trailing:
 				out.append("  ")
 				out.append(trailing)
@@ -3535,8 +3996,10 @@ class Document:
 				_push_leads(e, (among[nxt][1],), depth + 1, (idx, "among", nxt))
 				nxt += 1
 		elif v.kind == "cell":
+			at = len(out)
 			out.append(" ")
 			out.append(_emit_cell(v.els))
+			e.span(at)
 			if trailing:
 				out.append("  ")
 				out.append(trailing)
@@ -3560,12 +4023,15 @@ class Document:
 				out.append(body_pad)
 			out.append(_emit_fence_line(v))
 			out.append("\n")
+			body = len(out)
 			if v.content:
 				for ln in v.content.split("\n"):
 					if ln:
 						out.append(body_pad)
 					out.append(ln)
 					out.append("\n")
+			if e.lines:
+				e.bodies.append((body, len(out), depth + 1))
 			out.append(body_pad)
 			out.append(fence)
 			out.append("\n")
@@ -4441,6 +4907,7 @@ class Document:
 		if over is self:
 			return
 		self._index = None
+		self._source = None
 		self._lost += over._lost
 		# The layer's own kept lines were modeled against its own tree.
 		fresh = over._kept

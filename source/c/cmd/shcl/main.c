@@ -56,9 +56,10 @@ static const char *HELP =
 	"Usage:\n"
 	"  shcl get [type] [options] FILE PATH    read one value (or array) at a path\n"
 	"  shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);\n"
-	"                                         print canonical (or rewrite FILE in\n"
-	"                                         place with --write, which creates\n"
-	"                                         FILE when it is not there yet)\n"
+	"                                         print FILE with the edited lines\n"
+	"                                         changed (or rewrite FILE in place\n"
+	"                                         with --write, which creates FILE\n"
+	"                                         when it is not there yet)\n"
 	"  shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite\n"
 	"                                         FILE in place with --write)\n"
 	"  shcl check [options] FILE              load and print diagnostics\n"
@@ -97,8 +98,11 @@ static const char *HELP =
 	"go in only as a write-ops script on stdin, which can make the other edits too,\n"
 	"one op per line, tab-separated. FILE '-' follows stdin: the document when an\n"
 	"option holds the edits, an empty base when the ops script has stdin instead.\n"
-	"With --write, a FILE that does not exist yet is created. PATH ends at the first\n"
-	"'=' outside quotes and brackets, so a selector may hold one. Ops:\n"
+	"With --write, a FILE that does not exist yet is created. Lines the edits leave\n"
+	"alone come back as they were written; with --layer, or where the edited text\n"
+	"would not load back the same, the whole document comes out canonical, the way\n"
+	"fmt writes it. PATH ends at the first '=' outside quotes and brackets, so a\n"
+	"selector may hold one. Ops:\n"
 	"  int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar\n"
 	"  <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array\n"
 	"  <type>[-array]-default<TAB>...                          set only if absent\n"
@@ -697,16 +701,16 @@ static int set_apply(shcl_doc *d, const SetOpt *s) {
 	return ok;
 }
 
-static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out);
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, int keep, LayeredDoc *out);
 static int load_layered(Opts *o, const char *file, LayeredDoc *out) {
-	return load_layered_from(o, file, NULL, 0, out);
+	return load_layered_from(o, file, NULL, 0, 0, out);
 }
 
 // The same fold with FILE's text given rather than read (a malloc'd buffer the
 // fold then owns), which is how `set` creates a file or takes an empty
 // document. FILE's text is the last of out->texts, base_len bytes. `set` kept
 // its own copy of the fold, and twice a fix to this one missed it.
-static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, LayeredDoc *out) {
+static int load_layered_from(Opts *o, const char *file, char *given, size_t given_len, int keep, LayeredDoc *out) {
 	out->doc = NULL; out->overs = NULL; out->novers = 0; out->texts = NULL; out->ntexts = 0;
 	out->names = (const char **)xrealloc(NULL, (size_t)(o->nlayers + 1) * sizeof *out->names);
 	out->nnames = 0; out->base_len = 0;
@@ -720,7 +724,8 @@ static int load_layered_from(Opts *o, const char *file, char *given, size_t give
 		if (!t) { free(given); layered_free(out); return EXIT_IO; }
 		layered_push_text(out, t);
 		if (i == o->nlayers) out->base_len = len;
-		shcl_doc *dd = xdoc(shcl_parse_with(t, len, o->strictness));
+		// Only a document with no layers under it keeps its lines: a merge drops them.
+		shcl_doc *dd = xdoc(keep && o->nlayers == 0 ? shcl_parse_keep_lines(t, len, o->strictness) : shcl_parse_with(t, len, o->strictness));
 		int g = strict_gate_from(o->nlayers ? fname : "", dd);
 		if (g) { shcl_free(dd); layered_free(out); return g; }
 		layered_push_doc(out, dd);
@@ -918,7 +923,7 @@ static int unchanged_since_read(const char *file, const char *before, size_t n) 
 
 // read is the bytes FILE held when the command read it, and NULL when this
 // write is creating FILE.
-static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, size_t read_len) {
+static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, size_t read_len, int keep) {
 	if (read && !unchanged_since_read(file, read, read_len)) return EXIT_IO;
 	// Nothing to write: what the save would publish is already on disk. A
 	// rewrite would give the file a new inode and mtime for nothing, so an
@@ -926,11 +931,14 @@ static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, 
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
 	// dropped content refuses the write whatever the bytes say.
-	if (read && (o->lossy || shcl_lost_count(d) == 0)) {
-		shcl_str c = shcl_to_canonical(d);
-		if (c.n == read_len && (c.n == 0 || memcmp(c.p, read, c.n) == 0)) return 0;
-	}
-	shcl_save_result r = o->lossy ? shcl_save_file_lossy(d, file) : shcl_save_file(d, file);
+	shcl_str c = keep ? shcl_to_text_keep_lines(d, NULL) : shcl_to_canonical(d);
+	if (read && (o->lossy || shcl_lost_count(d) == 0)
+		&& c.n == read_len && (c.n == 0 || memcmp(c.p, read, c.n) == 0)) return 0;
+	shcl_save_result r;
+	if (o->lossy && keep) r = shcl_write_file_atomic(file, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
+	else if (o->lossy) r = shcl_save_file_lossy(d, file);
+	else if (keep) r = shcl_save_file_keep_lines(d, file, NULL);
+	else r = shcl_save_file(d, file);
 	if (r == SHCL_SAVE_OK) {
 		// A created file is the one write with nothing to compare against
 		// afterwards, and a typo in the name used to end at exit 0 with an
@@ -983,7 +991,7 @@ static int do_fmt(Opts *o) {
 			}
 		}
 	} else if (o->write) {
-		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len);
+		rc = write_back(L.doc, file, o, L.texts[L.ntexts - 1], L.base_len, 0);
 	} else {
 		shcl_str c = shcl_to_canonical(L.doc);
 		fwrite(c.p, 1, c.n, stdout);
@@ -1404,7 +1412,9 @@ static int do_set(Opts *o) {
 		memcpy(given, SHCL_GEN_BANNER, given_len + 1);
 	}
 	else if (creating || (!strcmp(file, "-") && o->nsets == 0)) { given = (char *)xrealloc(NULL, 1); given[0] = '\0'; }
-	LayeredDoc L; int lgate = load_layered_from(o, file, given, given_len, &L);
+	// Lines the edits leave alone are written back as they were, so a
+	// hand-kept file stays the way it was kept. A created file has none.
+	LayeredDoc L; int lgate = load_layered_from(o, file, given, given_len, !creating, &L);
 	if (lgate) return lgate;
 	shcl_doc *d = L.doc;
 	// --set carries the edits, so stdin is left alone: reading it here would
@@ -1460,9 +1470,9 @@ static int do_set(Opts *o) {
 				}
 			}
 			// A file that was there is read again first, for the same wait.
-			rc = write_back(nd ? nd : d, file, o, creating ? NULL : L.texts[L.ntexts - 1], L.base_len);
+			rc = write_back(nd ? nd : d, file, o, creating ? NULL : L.texts[L.ntexts - 1], L.base_len, !creating);
 		}
-		else { shcl_str c = shcl_to_canonical(d); fwrite(c.p, 1, c.n, stdout); }
+		else { shcl_str c = shcl_to_text_keep_lines(d, NULL); fwrite(c.p, 1, c.n, stdout); }
 	}
 	if (nd) shcl_free(nd);
 	free(nt); free(ops); layered_free(&L); return rc;

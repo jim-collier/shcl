@@ -602,8 +602,9 @@ pub struct Document {
 	// The parse's multi-line bindings, from the binding line to the last
 	// line each took. Edits leave it alone; only a reparse reads it.
 	ends: Vec<(usize, usize)>,
-	// The text a load kept for to_text_keep_lines(). A merge drops it, since
-	// the layer's lines are not this text's.
+	// The text a load kept for to_text_keep_lines(), and empty when that text
+	// was already canonical, since the canonical form is then the one that
+	// keeps its lines. A merge drops it: the layer's lines are not this text's.
 	source: Option<String>,
 }
 
@@ -3973,14 +3974,22 @@ impl Document {
 	pub fn parse_keep_lines(text: &str, strictness: Strictness) -> Result<Document, LoadError> {
 		match Document::parse_with(text, strictness) {
 			Ok(mut d) => {
-				d.source = Some(text.to_string());
+				d.keep_source(text);
 				Ok(d)
 			}
 			Err(mut e) => {
-				e.document.source = Some(text.to_string());
+				e.document.keep_source(text);
 				Err(e)
 			}
 		}
+	}
+
+	fn keep_source(&mut self, text: &str) {
+		self.source = Some(if self.to_canonical() == text {
+			String::new()
+		} else {
+			text.to_string()
+		});
 	}
 
 	/// load_file_with, keeping the text for to_text_keep_lines().
@@ -3995,7 +4004,7 @@ impl Document {
 		} else {
 			FileStatus::Clean
 		};
-		doc.source = Some(text);
+		doc.keep_source(&text);
 		(doc, st)
 	}
 
@@ -4744,6 +4753,10 @@ fn splice_value(line: &str, was: &Emit, w: &Unit, now: &Emit, u: &Unit) -> Optio
 /// None when the result would not reload as `doc`.
 fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 	const TWICE: usize = NIL - 1;
+	// A text that was canonical keeps its lines as the canonical form.
+	if src.is_empty() {
+		return Some(doc.to_canonical());
+	}
 	let now = doc.emit_marked();
 	let loaded_doc = Parser::new().parse(src, doc.strictness);
 	let loaded = loaded_doc.emit_marked();
@@ -4881,7 +4894,10 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			write_run(&mut out, &now, (from, u.end), &mut indents, step, eol);
 		}
 		if kept {
-			note_indent(&mut indents, depth, indent(l));
+			// A line kept as written holds no level's indent.
+			if !now.out[u.start + depth..].starts_with(' ') {
+				note_indent(&mut indents, depth, indent(l));
+			}
 			(last, prev) = (end[l], l);
 		} else {
 			prev = 0;

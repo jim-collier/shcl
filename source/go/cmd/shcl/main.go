@@ -83,9 +83,10 @@ const help = `shcl - Simple Hierarchical Config Language (reference CLI)
 Usage:
   shcl get [type] [options] FILE PATH    read one value (or array) at a path
   shcl set [--write|-w] [options] FILE   apply edits (--set, or ops on stdin);
-                                         print canonical (or rewrite FILE in
-                                         place with --write, which creates
-                                         FILE when it is not there yet)
+                                         print FILE with the edited lines
+                                         changed (or rewrite FILE in place
+                                         with --write, which creates FILE
+                                         when it is not there yet)
   shcl fmt [--write|-w] [options] FILE   print the canonical form (or rewrite
                                          FILE in place with --write)
   shcl check [options] FILE              load and print diagnostics
@@ -124,8 +125,11 @@ persist with --write; given any of them, no ops are read from stdin. Raw blocks
 go in only as a write-ops script on stdin, which can make the other edits too,
 one op per line, tab-separated. FILE '-' follows stdin: the document when an
 option holds the edits, an empty base when the ops script has stdin instead.
-With --write, a FILE that does not exist yet is created. PATH ends at the first
-'=' outside quotes and brackets, so a selector may hold one. Ops:
+With --write, a FILE that does not exist yet is created. Lines the edits leave
+alone come back as they were written; with --layer, or where the edited text
+would not load back the same, the whole document comes out canonical, the way
+fmt writes it. PATH ends at the first '=' outside quotes and brackets, so a
+selector may hold one. Ops:
   int|float|bool|string|datetime<TAB>PATH<TAB>VALUE       set a scalar
   <type>-array<TAB>PATH<TAB>V1<TAB>V2...                  set an inline array
   <type>[-array]-default<TAB>...                          set only if absent
@@ -1361,8 +1365,12 @@ func readInput(file string) (string, error) {
 
 // loadDocFrom is a load labelled with the file the text came from, so a strict
 // failure in one layer of a fold says which layer.
-func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document, int) {
-	doc, err := shcl.ParseWith(text, strictness)
+func loadDocFrom(file, text string, strictness shcl.Strictness, keep bool) (*shcl.Document, int) {
+	load := shcl.ParseWith
+	if keep {
+		load = shcl.ParseKeepLines
+	}
+	doc, err := load(text, strictness)
 	if err != nil {
 		// Checked form: this is the top-level error path, so a future error type
 		// here has to report rather than panic.
@@ -1390,7 +1398,7 @@ func loadDocFrom(file, text string, strictness shcl.Strictness) (*shcl.Document,
 // cannot then disagree about which rewrites are safe.
 // read is the bytes FILE held when the command read it, and nil when this
 // write is creating FILE.
-func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
+func writeBack(doc *shcl.Document, file string, o *opts, read *string, keep bool) int {
 	if read != nil && !unchangedSinceRead(file, *read) {
 		return exitIO
 	}
@@ -1400,13 +1408,24 @@ func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
 	// dropped content refuses the write whatever the bytes say.
-	if read != nil && (o.lossy || doc.LostCount() == 0) && doc.ToCanonical() == *read {
+	var text string
+	if keep {
+		text, _ = doc.ToTextKeepLines()
+	} else {
+		text = doc.ToCanonical()
+	}
+	if read != nil && (o.lossy || doc.LostCount() == 0) && text == *read {
 		return 0
 	}
 	var werr error
-	if o.lossy {
+	switch {
+	case o.lossy && keep:
+		werr = shcl.WriteFileAtomic(file, text)
+	case o.lossy:
 		werr = doc.SaveFileLossy(file)
-	} else {
+	case keep:
+		_, werr = doc.SaveFileKeepLines(file)
+	default:
 		werr = doc.SaveFile(file)
 	}
 	if werr == nil {
@@ -1441,7 +1460,7 @@ func writeBack(doc *shcl.Document, file string, o *opts, read *string) int {
 // reading them off the merged document drops the ones for FILE itself, which
 // is the one the caller named.
 func loadLayered(o *opts, file string) (*shcl.Document, int) {
-	doc, _, code := loadLayeredFrom(o, file, nil)
+	doc, _, code := loadLayeredFrom(o, file, nil, false)
 	return doc, code
 }
 
@@ -1449,7 +1468,7 @@ func loadLayered(o *opts, file string) (*shcl.Document, int) {
 // which is how `set` creates a file or takes an empty document, and FILE's
 // text handed back. `set` kept its own copy of the fold, and twice a fix to
 // this one missed it.
-func loadLayeredFrom(o *opts, file string, given *string) (*shcl.Document, string, int) {
+func loadLayeredFrom(o *opts, file string, given *string, keep bool) (*shcl.Document, string, int) {
 	texts := make([]string, 0, len(o.layers)+1)
 	for _, lf := range o.layers {
 		t, err := readInput(lf)
@@ -1481,13 +1500,14 @@ func loadLayeredFrom(o *opts, file string, given *string) (*shcl.Document, strin
 		}
 		return ""
 	}
-	doc, code := loadDocFrom(label(0), texts[0], o.strictness)
+	// Only a document with no layers under it keeps its lines: a merge drops them.
+	doc, code := loadDocFrom(label(0), texts[0], o.strictness, keep && len(texts) == 1)
 	if code != 0 {
 		return nil, "", code
 	}
 	sayDiagnosticsFrom(label(0), doc.Diagnostics())
 	for i, t := range texts[1:] {
-		over, c := loadDocFrom(label(i+1), t, o.strictness)
+		over, c := loadDocFrom(label(i+1), t, o.strictness, false)
 		if c != 0 {
 			return nil, "", c
 		}
@@ -1715,7 +1735,7 @@ func doFmt(o *opts) int {
 	if o.write && !writeTargetOK(file) {
 		return exitIO
 	}
-	doc, read, code := loadLayeredFrom(o, file, nil)
+	doc, read, code := loadLayeredFrom(o, file, nil, false)
 	if doc == nil {
 		return code
 	}
@@ -1737,7 +1757,7 @@ func doFmt(o *opts) int {
 		return 6
 	}
 	if o.write {
-		return writeBack(doc, file, o, &read)
+		return writeBack(doc, file, o, &read, false)
 	}
 	outs(doc.ToCanonical())
 	return 0
@@ -1783,7 +1803,7 @@ func doMigrate(o *opts) int {
 		return exitIO
 	}
 	m := shcl.Migrate(text, o.from2x)
-	doc, code := loadDocFrom("", m.Text, o.strictness)
+	doc, code := loadDocFrom("", m.Text, o.strictness, false)
 	if doc == nil {
 		return code
 	}
@@ -2474,7 +2494,9 @@ func doSet(o *opts) int {
 		empty := ""
 		given = &empty
 	}
-	doc, read, code := loadLayeredFrom(o, file, given)
+	// Lines the edits leave alone are written back as they were, so a
+	// hand-kept file stays the way it was kept. A created file has none.
+	doc, read, code := loadLayeredFrom(o, file, given, !creating)
 	if doc == nil {
 		return code
 	}
@@ -2529,11 +2551,12 @@ func doSet(o *opts) int {
 		}
 		// A file that was there is read again first, for the same wait.
 		if creating {
-			return writeBack(doc, file, o, nil)
+			return writeBack(doc, file, o, nil, false)
 		}
-		return writeBack(doc, file, o, &read)
+		return writeBack(doc, file, o, &read, true)
 	}
-	outs(doc.ToCanonical())
+	text, _ := doc.ToTextKeepLines()
+	outs(text)
 	return 0
 }
 

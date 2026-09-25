@@ -203,6 +203,8 @@ public:
 	// diagnosed.
 	static Document parse(std::string_view t) { return Document(shcl_parse(t.data(), t.size())); }
 	static Document parse_with(std::string_view t, Strictness s) { return Document(shcl_parse_with(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
+	// parse_with, keeping a copy of the text for to_text_keep_lines().
+	static Document parse_keep_lines(std::string_view t, Strictness s) { return Document(shcl_parse_keep_lines(t.data(), t.size(), static_cast<shcl_strictness>(s))); }
 	// Parse with resource caps (E020 stops the parse past max_nodes, E021
 	// refuses a line whose array would exceed max_elements, E022 ends a
 	// diagnostics list cut at max_diags with a count of the rest; 0 = no cap).
@@ -266,6 +268,13 @@ public:
 		if (status) *status = static_cast<FileStatus>(cs);
 		return d;
 	}
+	// load_file_with, keeping the text for to_text_keep_lines().
+	static Document load_file_keep_lines(const std::string &path, Strictness s, FileStatus *status = nullptr) {
+		shcl_file_status cs = SHCL_FILE_UNREADABLE;
+		Document d(shcl_load_file_keep_lines(path.c_str(), static_cast<shcl_strictness>(s), &cs));
+		if (status) *status = static_cast<FileStatus>(cs);
+		return d;
+	}
 	// The read half on its own: the file's text, or nullopt with the status
 	// saying why (a file past max_bytes is Unreadable; 0 is no cap). load_file
 	// is this plus a parse.
@@ -284,6 +293,14 @@ public:
 	// override they cannot tell they need.
 	SaveResult save_file(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file(d_.get(), path.c_str())); }
 	SaveResult save_file_lossy(const std::string &path) const { return static_cast<SaveResult>(shcl_save_file_lossy(d_.get(), path.c_str())); }
+	// save_file with to_text_keep_lines(): *kept says whether it kept the
+	// lines or wrote the canonical form instead. Refuses the way save_file does.
+	SaveResult save_file_keep_lines(const std::string &path, bool *kept = nullptr) const {
+		int k = 0;
+		SaveResult r = static_cast<SaveResult>(shcl_save_file_keep_lines(d_.get(), path.c_str(), &k));
+		if (kept) *kept = k != 0;
+		return r;
+	}
 	// The temp-file-and-rename write the saves go through, for bytes that are
 	// not a document. False when it failed, with errno saying why.
 	static bool write_file_atomic(const std::string &path, std::string_view data) { return shcl_write_file_atomic(path.c_str(), data.data(), data.size()) != 0; }
@@ -313,6 +330,16 @@ public:
 	// it is released first the way the reads below are: a save loop otherwise
 	// holds every copy until the Document goes.
 	std::string to_canonical() const { shcl_reads_release(d_.get()); return to_str(shcl_to_canonical(d_.get())); }
+	// The text a save that keeps lines writes, and whether it kept them: each
+	// line the edits did not touch comes back byte for byte, and the canonical
+	// form stands in when the result would not reload as this document, or
+	// the document was not loaded to keep its lines, or it took a merge.
+	std::pair<std::string, bool> to_text_keep_lines() const {
+		shcl_reads_release(d_.get());
+		int k = 0;
+		std::string t = to_str(shcl_to_text_keep_lines(d_.get(), &k));
+		return {std::move(t), k != 0};
+	}
 
 	// Diagnostics in emission order: parse-time ones, then repeated-leaf hints.
 	std::vector<Diagnostic> diagnostics() const {

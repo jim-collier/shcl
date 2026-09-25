@@ -59,12 +59,17 @@ def load_cases():
 			"expected_diags": _read(os.path.join(d, "expected-diags.txt")),
 			"write_ops": None,
 			"expected_write": None,
+			"expected_keep": None,
 			"write_bad_ops": None,
 		}
+		# write.ops, expected-write.shcl and expected-keep.shcl come together.
 		ops = os.path.join(d, "write.ops")
 		if os.path.exists(ops):
 			case["write_ops"] = _read(ops)
 			case["expected_write"] = _read(os.path.join(d, "expected-write.shcl"))
+			case["expected_keep"] = _read(os.path.join(d, "expected-keep.shcl"))
+		elif os.path.exists(os.path.join(d, "expected-keep.shcl")):
+			raise SystemExit(f"{name}: expected-keep.shcl without write.ops")
 		bad = os.path.join(d, "write-bad.ops")
 		if os.path.exists(bad):
 			case["write_bad_ops"] = _read(bad)
@@ -641,7 +646,9 @@ def edits_and_merges_match_a_reload():
 	g = SeqGen(0x5EED0923C0DE0003)
 	for i in range(3000):
 		base = g.doc()
-		live = shcl.Document.parse(base)
+		# Loaded to keep its lines, which is the same tree: each step's save
+		# that keeps them reloads as the document, or is the canonical form.
+		live = shcl.Document.parse_keep_lines(base, shcl.Strictness.Standard)
 		log = "base:\n" + base
 		for _ in range(2 + g.below(3)):
 			back = shcl.Document.parse(live.to_canonical())
@@ -678,6 +685,11 @@ def edits_and_merges_match_a_reload():
 			a, b = live.to_canonical(), back.to_canonical()
 			if a != b:
 				raise SystemExit(f"a step on the document and on its reload differ at iteration {i}:\n{log}--- live\n{a}--- reload\n{b}")
+			t, kept = live.to_text_keep_lines()
+			if kept and shcl.Document.parse(t).to_canonical() != a:
+				raise SystemExit(f"kept lines reload as another document at iteration {i}:\n{log}--- wrote\n{t}")
+			if not kept and t != a:
+				raise SystemExit(f"a save that kept no lines is not canonical at iteration {i}:\n{log}")
 
 
 def main():
@@ -726,20 +738,39 @@ def main():
 
 	# Write dimension: the library Writer must reproduce expected-write.shcl and
 	# the result must be a formatter fixpoint.
+	# The one loaded to keep its lines is the same document, and its save must
+	# reproduce expected-keep.shcl.
 	for case in cases:
 		if case["write_ops"] is None:
 			continue
 		doc = shcl.Document.parse(case["input"])
+		keep = shcl.Document.parse_keep_lines(case["input"], shcl.Strictness.Standard)
 		for n, line in enumerate(case["write_ops"].split("\n")):
 			line = line[:-1] if line.endswith("\r") else line
 			if line == "" or line.startswith("#"):
 				continue
-			apply_op(doc, line, f"{case['name']}: write.ops line {n + 1}")
+			at = f"{case['name']}: write.ops line {n + 1}"
+			apply_op(doc, line, at)
+			apply_op(keep, line, at)
 		got = doc.to_canonical()
 		if got != case["expected_write"]:
 			fails.append(f"{case['name']}: writer output differs from expected-write.shcl")
 		if shcl.Document.parse(got).to_canonical() != got:
 			fails.append(f"{case['name']}: written output is not a fmt fixpoint")
+		text, lines_kept = keep.to_text_keep_lines()
+		if text != case["expected_keep"]:
+			fails.append(f"{case['name']}: output differs from expected-keep.shcl")
+		if not lines_kept and text != got:
+			fails.append(f"{case['name']}: a save that kept no lines is not canonical")
+		if shcl.Document.parse(text).to_canonical() != got:
+			fails.append(f"{case['name']}: expected-keep.shcl reloads as another document")
+
+	# Loaded to keep its lines and saved with no edits, every input is its own
+	# text again, byte for byte.
+	for case in cases:
+		kdoc = shcl.Document.parse_keep_lines(case["input"], shcl.Strictness.Standard)
+		if kdoc.to_text_keep_lines() != (case["input"], True):
+			fails.append(f"{case['name']}: an unedited save changed the text")
 
 	# Bad-op dimension: each write-bad.ops line, applied alone to the case
 	# input, must be rejected (bad value, bad datetime, or unusable path) and

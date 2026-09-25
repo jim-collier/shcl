@@ -337,6 +337,9 @@ type lead struct {
 	// the one before it keeps that nesting, so a commented-out block comes
 	// back in its shape.
 	depth int
+	// The source line it was read from, for the save that keeps lines; 0 for
+	// one a write made or moved.
+	line int
 }
 
 func plainLead(text string) lead {
@@ -393,6 +396,7 @@ type pend struct {
 	indent      string
 	blankBefore bool
 	ceiling     int
+	line        int
 }
 
 // pendMark: every pending entry before end has a ceiling at or under indentLen.
@@ -616,6 +620,14 @@ type Document struct {
 	// line left: the next check costs the same, and nothing is wrong.
 	keptNear []nearNode
 	keptSum  uint64
+	// The parse's multi-line bindings, from the binding line to the last line
+	// each took. Edits leave it alone; only a reparse reads it.
+	ends [][2]int
+	// The text a load kept for ToTextKeepLines(), and empty when that text was
+	// already canonical, since the canonical form is then the one that keeps
+	// its lines. A merge drops it: the layer's lines are not this text's. Nil
+	// when none was kept.
+	source *string
 }
 
 // nameIndex is the first child of each (parent, name), chained on to the next
@@ -2447,6 +2459,9 @@ type parser struct {
 	maxDiags       int
 	unlistedErrors int
 	unlistedHints  int
+	// A raw block's or a stacked list's binding line and the last line it
+	// took, for the save that keeps lines.
+	ends [][2]int
 }
 
 func newParser() *parser {
@@ -2623,7 +2638,7 @@ func (p *parser) attachTrivia(node int, indent, trailing string) {
 		t := p.arena[node].trivMut()
 		var chain []depthEnt
 		for _, pn := range p.pending {
-			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, indent, pn.text, pn.indent)})
+			t.leading = append(t.leading, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, indent, pn.text, pn.indent), line: pn.line})
 		}
 		p.pending = p.pending[:0]
 		p.pendMarks = p.pendMarks[:0]
@@ -2708,7 +2723,7 @@ func (p *parser) hangDeeperPending(newIndent string) {
 					chain = chain[:0]
 				}
 				lastSi, lastNode, lastOwn = si, target, atOwnLevel
-				l := lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, p.stack[si].indent, pn.text, pn.indent)}
+				l := lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, p.stack[si].indent, pn.text, pn.indent), line: pn.line}
 				t := p.arena[target].trivMut()
 				if atOwnLevel {
 					t.after = append(t.after, l)
@@ -2884,7 +2899,7 @@ func (p *parser) refuse(line int, code, msg string, out outcome, indent string) 
 		if strings.HasPrefix(out.text, " ") || strings.HasPrefix(out.text, "\t") {
 			ceiling = 0
 		}
-		p.pending = append(p.pending, pend{text: out.text, indent: indent, blankBefore: out.blankBefore, ceiling: ceiling})
+		p.pending = append(p.pending, pend{text: out.text, indent: indent, blankBefore: out.blankBefore, ceiling: ceiling, line: line})
 	}
 	// A refused line owns its indent, so what is written deeper is skipped
 	// with it (E018). An indent that matched no level already holds an
@@ -3415,7 +3430,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		// It consumes a pending blank into its own flag, so a blank between
 		// comment-only regions survives the round-trip.
 		if strings.HasPrefix(rest, "#") {
-			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank, ceiling: len(indent)})
+			p.pending = append(p.pending, pend{text: rest, indent: indent, blankBefore: p.sawBlank, ceiling: len(indent), line: lineno})
 			p.sawBlank = false
 			i++
 			continue
@@ -3468,6 +3483,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 					// lines.
 					p.refuse(lineno, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
 				} else if node := p.bindBlock(parent, v, lineno, indent); node >= 0 {
+					p.ends = append(p.ends, [2]int{p.arena[node].line, next})
 					p.attachTrivia(node, indent, comment)
 				}
 				i = next
@@ -3507,6 +3523,12 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				if parent != root {
 					if p.addStarElement(parent, &tok, rest, lineno, indent) {
 						p.keepAmong(parent)
+					}
+					head := p.arena[parent].line
+					if n := len(p.ends); n > 0 && p.ends[n-1][0] == head {
+						p.ends[n-1][1] = lineno
+					} else {
+						p.ends = append(p.ends, [2]int{head, lineno})
 					}
 					p.attachTrivia(parent, indent, comment)
 				} else {
@@ -3643,6 +3665,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			if hadBlank {
 				p.arena[node].blankBefore = true
 			}
+			if next > i+1 {
+				p.ends = append(p.ends, [2]int{lineno, next})
+			}
 			p.attachTrivia(node, indent, comment)
 			p.stack = append(p.stack, stackEnt{indent: indent, node: node})
 		}
@@ -3666,7 +3691,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	orphans := make([]lead, 0, len(p.pending))
 	var chain []depthEnt
 	for _, pn := range p.pending {
-		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, "", pn.text, pn.indent)})
+		orphans = append(orphans, lead{text: pn.text, blankBefore: pn.blankBefore, depth: commentDepth(&chain, "", pn.text, pn.indent), line: pn.line})
 	}
 	p.pending = p.pending[:0]
 	settleFirstBlank(p.arena, orphans)
@@ -3691,7 +3716,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	if 2*len(p.arena) < cap(p.arena) {
 		p.arena = append([]nodeData(nil), p.arena...)
 	}
-	doc := &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost, kept: p.keptAny}
+	doc := &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost, kept: p.keptAny, ends: p.ends}
 	doc.settleKept()
 	return doc
 }
@@ -3835,6 +3860,74 @@ func (d *Document) ToCanonical() string {
 	e := newEmit(len(d.arena)*24, false)
 	d.emitAll(e)
 	return e.out.String()
+}
+
+// ParseKeepLines is ParseWith, keeping the text for ToTextKeepLines(). The
+// document is the same one ParseWith gives; only the save differs.
+func ParseKeepLines(text string, strictness Strictness) (*Document, error) {
+	doc, err := ParseWith(text, strictness)
+	doc.keepSource(text)
+	return doc, err
+}
+
+func (d *Document) keepSource(text string) {
+	if d.ToCanonical() == text {
+		text = ""
+	}
+	d.source = &text
+}
+
+// LoadFileKeepLines is LoadFileWith, keeping the text for ToTextKeepLines().
+func LoadFileKeepLines(path string, level Strictness) (*Document, FileStatus) {
+	text, st := ReadFile(path, 0)
+	if st != FileClean {
+		return newParser().parse("", level), st
+	}
+	doc := newParser().parse(text, level)
+	doc.keepSource(text)
+	for _, d := range doc.diags {
+		if d.Severity == SeverityError {
+			return doc, FileHadErrors
+		}
+	}
+	return doc, FileClean
+}
+
+// ToTextKeepLines returns the text a save that keeps lines writes, and whether
+// it kept them. Each line the edits did not touch is the loaded text's own
+// line, byte for byte; a changed value is written into its line; new lines are
+// indented the way the lines around them are. The result has to reload as this
+// document. When it does not, or the document was not loaded with
+// ParseKeepLines or LoadFileKeepLines, or it took a merge, this is
+// ToCanonical() and false.
+func (d *Document) ToTextKeepLines() (string, bool) {
+	if d.source != nil {
+		if t, ok := keepLines(*d.source, d); ok {
+			return t, true
+		}
+	}
+	return d.ToCanonical(), false
+}
+
+// SaveFileKeepLines is SaveFile with ToTextKeepLines(): true when it kept the
+// lines, false when it wrote the canonical form instead. Refuses the same way
+// SaveFile does.
+func (d *Document) SaveFileKeepLines(path string) (bool, error) {
+	if d.lost > 0 {
+		return false, &SaveRefused{Path: path, Lost: d.lost}
+	}
+	text, kept := d.ToTextKeepLines()
+	if err := WriteFileAtomic(path, text); err != nil {
+		return false, err
+	}
+	return kept, nil
+}
+
+func (d *Document) emitMarked() *emit {
+	e := newEmit(len(d.arena)*24, false)
+	e.lines = true
+	d.emitAll(e)
+	return e
 }
 
 func (d *Document) emitAll(e *emit) {
@@ -3982,6 +4075,7 @@ func (d *Document) settleKeptOnce() bool {
 			l := moved[j]
 			l.text = commented(l.text)
 			l.depth = depth
+			l.line = 0
 			t.leading = append(t.leading, l)
 		}
 		moved = moved[:0]
@@ -4010,6 +4104,13 @@ type emit struct {
 	nearBy   []nearNode
 	flushed  int
 	keptNear []nearNode
+	// ToTextKeepLines() only: where the lines from each source line start
+	// (0 for none), each raw body with the tabs its lines are padded with,
+	// and where each value is spelled on its binding line.
+	lines  bool
+	marks  [][2]int
+	bodies [][3]int
+	spans  [][2]int
 }
 
 // nearNode is a node an emit passed through and its index in its parent's
@@ -4043,6 +4144,19 @@ func newEmit(capacity int, record bool) *emit {
 	e := &emit{open: -1, record: record}
 	e.out.Grow(capacity)
 	return e
+}
+
+func (e *emit) mark(line int) {
+	if e.lines {
+		e.marks = append(e.marks, [2]int{e.out.Len(), line})
+	}
+}
+
+// span records a value written from at to here, the space before it included.
+func (e *emit) span(at int) {
+	if e.lines {
+		e.spans = append(e.spans, [2]int{at, e.out.Len()})
+	}
 }
 
 // bound: a binding line at this depth, so the stack is its levels and
@@ -4126,6 +4240,10 @@ func pushLeads(e *emit, leads []lead, base, node int, at site, from int) {
 		if c.blankBefore && e.out.Len() > 0 {
 			e.out.WriteByte('\n')
 		}
+		// A kept line among list elements is part of the list's run.
+		if at != siteAmong {
+			e.mark(c.line)
+		}
 		if strings.HasPrefix(c.text, " ") || strings.HasPrefix(c.text, "\t") {
 			indent := leadingWS(c.text)
 			found, open, tail := e.resolve(indent)
@@ -4177,6 +4295,452 @@ func pushLeads(e *emit, leads []lead, base, node int, at site, from int) {
 	}
 }
 
+// unit is a run of canonical lines from one source line on (0: from none),
+// with the blank lines written before it and the spans of its values.
+type unit struct {
+	line     int
+	start    int
+	end      int
+	blanks   int
+	spanFrom int
+	spanTo   int
+}
+
+func unitsOf(e *emit, text string) []unit {
+	var units []unit
+	mi, bi, tag, blanks, open := 0, 0, 0, 0, false
+	pos := 0
+	for pos < len(text) {
+		next := lineEnd(text, pos)
+		for mi < len(e.marks) && e.marks[mi][0] <= pos {
+			tag = e.marks[mi][1]
+			mi++
+		}
+		for bi < len(e.bodies) && e.bodies[bi][1] <= pos {
+			bi++
+		}
+		inBody := bi < len(e.bodies) && e.bodies[bi][0] <= pos
+		switch {
+		case text[pos] == '\n' && !inBody:
+			blanks++
+			open = false
+		case open && len(units) > 0 && units[len(units)-1].line == tag:
+			units[len(units)-1].end = next
+		default:
+			units = append(units, unit{line: tag, start: pos, end: next, blanks: blanks})
+			blanks = 0
+			open = true
+		}
+		pos = next
+	}
+	si := 0
+	for k := range units {
+		u := &units[k]
+		for si < len(e.spans) && e.spans[si][0] < u.start {
+			si++
+		}
+		from := si
+		for si < len(e.spans) && e.spans[si][0] < u.end {
+			si++
+		}
+		u.spanFrom, u.spanTo = from, si
+	}
+	return units
+}
+
+// lineEnd is where the line starting at pos ends, past its newline.
+func lineEnd(text string, pos int) int {
+	if i := strings.IndexByte(text[pos:], '\n'); i >= 0 {
+		return pos + i + 1
+	}
+	return len(text)
+}
+
+func tabs(s string) int {
+	n := 0
+	for n < len(s) && s[n] == '\t' {
+		n++
+	}
+	return n
+}
+
+// indentFor is the indent a new line depth levels down gets: the last one
+// written there, or the nearest shallower one plus a level.
+func indentFor(indents []*string, depth int, step string) string {
+	j := depth
+	for j > 0 && (j >= len(indents) || indents[j] == nil) {
+		j--
+	}
+	base := ""
+	if j < len(indents) && indents[j] != nil {
+		base = *indents[j]
+	}
+	return base + strings.Repeat(step, depth-j)
+}
+
+// setIndent records indent at depth, dropping what was known deeper.
+func setIndent(indents []*string, depth int, indent string) []*string {
+	for len(indents) < depth+1 {
+		indents = append(indents, nil)
+	}
+	indents = indents[:depth+1]
+	indents[depth] = &indent
+	return indents
+}
+
+// noteIndent: a source line written at depth. One whose indent does not nest
+// under the level above it, a dotted path for one, says nothing about the
+// levels after it.
+func noteIndent(indents []*string, depth int, indent string) []*string {
+	fits := false
+	if depth == 0 {
+		fits = indent == ""
+	} else if indent != "" {
+		fits = true
+		if depth-1 < len(indents) && indents[depth-1] != nil {
+			up := *indents[depth-1]
+			fits = len(indent) > len(up) && strings.HasPrefix(indent, up)
+		}
+	}
+	if fits {
+		return setIndent(indents, depth, indent)
+	}
+	return indents[:1]
+}
+
+// writeRun writes a run the edits wrote, indented the way the lines around it
+// are. A raw body keeps its own tabs past the pad, and a kept line its indent.
+func writeRun(out *strings.Builder, e *emit, text string, pos, end int, indents []*string, step, eol string) []*string {
+	for pos < end {
+		next := lineEnd(text, pos)
+		line := text[pos : next-1]
+		b := sort.Search(len(e.bodies), func(k int) bool { return e.bodies[k][0] > pos })
+		if b > 0 && pos < e.bodies[b-1][1] {
+			pad := e.bodies[b-1][2]
+			if line != "" {
+				out.WriteString(indentFor(indents, pad, step))
+				out.WriteString(line[pad:])
+			}
+		} else {
+			depth := tabs(line)
+			if strings.HasPrefix(line[depth:], " ") {
+				out.WriteString(line)
+			} else {
+				indent := indentFor(indents, depth, step)
+				out.WriteString(indent)
+				out.WriteString(line[depth:])
+				indents = setIndent(indents, depth, indent)
+			}
+		}
+		out.WriteString(eol)
+		pos = next
+	}
+	return indents
+}
+
+// authoredHead is a binding line the edits rewrote, with the name spelled the
+// way the source line spelled it. False unless both lines bind one plain name.
+func authoredHead(src, canon string) (string, bool) {
+	t := trimEndWS(strings.TrimSuffix(src, "\n"))
+	ilen := len(leadingWS(t))
+	rest := strings.TrimLeftFunc(t[ilen:], isWsp)
+	head := len(t) - len(rest)
+	c := canon[tabs(canon):]
+	var tok Tokens
+	var sep [2]int
+	for k, text := range []string{rest, c} {
+		if strings.HasPrefix(text, "#") || strings.HasPrefix(text, "*") {
+			return "", false
+		}
+		Tokenize(text, ':', false, RulesCurrent, &tok)
+		if len(tok.Segments) != 1 || tok.Segments[0].Selector != nil || tok.Fault >= 0 || tok.Sep < 0 {
+			return "", false
+		}
+		sep[k] = tok.Sep
+	}
+	return t[:head+sep[0]+1] + c[sep[1]+1:], true
+}
+
+// spliceValue: a run whose only change is its last value, written into the
+// source line in place of the old one, so the name, spacing and comment stay
+// as they were. False when anything else changed or the line is not a plain
+// field.
+func spliceValue(line string, was *emit, t0 string, w unit, now *emit, t1 string, u unit) (string, bool) {
+	s0, s1 := was.spans[w.spanFrom:w.spanTo], now.spans[u.spanFrom:u.spanTo]
+	if len(s0) == 0 || len(s0) != len(s1) {
+		return "", false
+	}
+	p0, p1 := w.start, u.start
+	for k := range s0 {
+		a, b := s0[k], s1[k]
+		if t0[p0:a[0]] != t1[p1:b[0]] || (k+1 < len(s0) && t0[a[0]:a[1]] != t1[b[0]:b[1]]) {
+			return "", false
+		}
+		p0, p1 = a[1], b[1]
+	}
+	if t0[p0:w.end] != t1[p1:u.end] {
+		return "", false
+	}
+	last := s1[len(s1)-1]
+	value := t1[last[0]:last[1]]
+	t := trimEndWS(strings.TrimSuffix(line, "\n"))
+	tail := line[len(t):]
+	ilen := len(leadingWS(t))
+	rest := strings.TrimLeftFunc(t[ilen:], isWsp)
+	head := len(t) - len(rest)
+	if strings.HasPrefix(rest, "#") || strings.HasPrefix(rest, "*") {
+		return "", false
+	}
+	var tok Tokens
+	Tokenize(rest, ':', false, RulesCurrent, &tok)
+	colon := tok.Sep
+	if colon < 0 {
+		return "", false
+	}
+	scan, err := pathOf(&tok, rest)
+	if err != nil || !scan.hasValue {
+		return "", false
+	}
+	a, b := tok.Value[0], tok.Value[1]
+	if _, _, _, ok := fenceOpen(rest[a:b]); ok || bracketText(&tok, rest) {
+		return "", false
+	}
+	from := b
+	if a == b {
+		from = colon + 1
+	}
+	return t[:head+colon+1] + value + rest[from:] + tail, true
+}
+
+// keepLines is ToTextKeepLines() on a loaded text: the loaded document's
+// canonical runs line up with the text by the source line each came from, and
+// the edited document's runs that match one exactly take that line's text.
+// False when the result would not reload as doc.
+func keepLines(src string, doc *Document) (string, bool) {
+	const none, twice = -1, -2
+	// A text that was canonical keeps its lines as the canonical form.
+	if src == "" {
+		return doc.ToCanonical(), true
+	}
+	now := doc.emitMarked()
+	nowText := now.out.String()
+	loadedDoc := newParser().parse(src, doc.strictness)
+	loaded := loadedDoc.emitMarked()
+	loadedText := loaded.out.String()
+	if nowText == loadedText {
+		return src, true
+	}
+	bom, body := "", src
+	if strings.HasPrefix(src, "\ufeff") {
+		bom, body = "\ufeff", src[len("\ufeff"):]
+	}
+	var lines []string
+	for pos := 0; pos < len(body); {
+		next := lineEnd(body, pos)
+		lines = append(lines, body[pos:next])
+		pos = next
+	}
+	n := len(lines)
+	line := func(l int) string { return lines[l-1] }
+	blank := func(l int) bool { return trimWsp(strings.TrimRight(line(l), "\n")) == "" }
+	indent := func(l int) string { return leadingWS(line(l)) }
+	was, is := unitsOf(loaded, loadedText), unitsOf(now, nowText)
+	// Each source line's run in the loaded text, and the lines it stands for:
+	// its own, through the end of a raw block or a stacked list.
+	at := make([]int, n+2)
+	for k := range at {
+		at[k] = none
+	}
+	for i, u := range was {
+		if u.line != 0 && u.line <= n {
+			if at[u.line] == none {
+				at[u.line] = i
+			} else {
+				at[u.line] = twice
+			}
+		}
+	}
+	var claimed []int
+	for l := 1; l <= n; l++ {
+		if at[l] != none {
+			claimed = append(claimed, l)
+		}
+	}
+	end := make([]int, n+2)
+	for k := range end {
+		end[k] = k
+	}
+	for _, e := range loadedDoc.ends {
+		if l := e[0]; l <= n && at[l] != none && e[1] > end[l] {
+			end[l] = e[1]
+			if end[l] > n {
+				end[l] = n
+			}
+		}
+	}
+	// The first run after each one's lines, for telling two runs that sat
+	// next to each other.
+	next := make([]int, n+2)
+	for _, l := range claimed {
+		k := sort.Search(len(claimed), func(c int) bool { return claimed[c] > end[l] })
+		next[l] = n + 1
+		if k < len(claimed) {
+			next[l] = claimed[k]
+		}
+	}
+	seen := make([]uint8, n+2)
+	for _, u := range is {
+		if u.line != 0 && u.line <= n && seen[u.line] < 255 {
+			seen[u.line]++
+		}
+	}
+	eol := "\n"
+	if n > 0 && strings.HasSuffix(line(1), "\r\n") {
+		eol = "\r\n"
+	}
+	// One level of the source's indent: a line one level in, or failing that
+	// the first indented line, a list element or a fence.
+	step := ""
+	for _, u := range was {
+		if u.line != 0 && tabs(loadedText[u.start:]) == 1 && indent(u.line) != "" {
+			step = indent(u.line)
+			break
+		}
+	}
+	for l := 1; step == "" && l <= n; l++ {
+		if !blank(l) {
+			step = indent(l)
+		}
+	}
+	if step == "" {
+		step = "\t"
+	}
+	var out strings.Builder
+	out.Grow(len(src) + len(nowText)/8)
+	out.WriteString(bom)
+	breakLine := func() {
+		if out.Len() > len(bom) && !strings.HasSuffix(out.String(), "\n") {
+			out.WriteString(eol)
+		}
+	}
+	indents := []*string{new(string)}
+	// The end of the last source run written, and its line while the run just
+	// written is one.
+	last, prev := 0, 0
+	for i, u := range is {
+		l := u.line
+		known := l != 0 && l <= n && seen[l] == 1 && at[l] >= 0
+		fromSrc := known && l > last
+		same := fromSrc && loadedText[was[at[l]].start:was[at[l]].end] == nowText[u.start:u.end]
+		spliced, didSplice := "", false
+		if fromSrc && !same {
+			spliced, didSplice = spliceValue(line(l), loaded, loadedText, was[at[l]], now, nowText, u)
+		}
+		kept := same || didSplice
+		// Between two runs that stay next to each other, the source's own
+		// lines: a repeat the load folded away stays, and so do the blank
+		// lines, unless the edits took the blank out. The same before the
+		// first run. Before any other run from the source, its own blank lines.
+		breakLine()
+		switch {
+		case i == 0:
+			if kept && len(claimed) > 0 && claimed[0] == l {
+				for k := 1; k < l; k++ {
+					out.WriteString(line(k))
+				}
+			}
+		case kept && prev != 0 && next[prev] == l:
+			blanks := false
+			for k := end[prev] + 1; k < l; k++ {
+				blanks = blanks || blank(k)
+			}
+			for k := end[prev] + 1; k < l; k++ {
+				if u.blanks > 0 || !blank(k) {
+					out.WriteString(line(k))
+				}
+			}
+			if !blanks {
+				for k := 0; k < u.blanks; k++ {
+					out.WriteString(eol)
+				}
+			}
+		case known && u.blanks > 0 && l > 1 && blank(l-1):
+			k := l - 1
+			for k > 1 && blank(k-1) {
+				k--
+			}
+			for ; k < l; k++ {
+				out.WriteString(line(k))
+			}
+		default:
+			for k := 0; k < u.blanks; k++ {
+				out.WriteString(eol)
+			}
+		}
+		depth := tabs(nowText[u.start:u.end])
+		switch {
+		case same:
+			for k := l; k <= end[l]; k++ {
+				out.WriteString(line(k))
+			}
+		case didSplice:
+			out.WriteString(spliced)
+		default:
+			// A binding the edits rewrote keeps its line's indent and name.
+			from := u.start
+			if known {
+				first := lineEnd(nowText, u.start)
+				if t, ok := authoredHead(line(l), nowText[u.start:first-1]); ok {
+					out.WriteString(t)
+					out.WriteString(eol)
+					indents = noteIndent(indents, depth, indent(l))
+					from = first
+				}
+			}
+			indents = writeRun(&out, now, nowText, from, u.end, indents, step, eol)
+		}
+		if kept {
+			// A line kept as written holds no level's indent.
+			if !strings.HasPrefix(nowText[u.start+depth:], " ") {
+				indents = noteIndent(indents, depth, indent(l))
+			}
+			last, prev = end[l], l
+		} else {
+			prev = 0
+		}
+	}
+	// The blank lines the source ends with stay at the end.
+	breakLine()
+	tail := n + 1
+	if len(claimed) > 0 {
+		tail = 0
+		for _, l := range claimed {
+			if end[l]+1 > tail {
+				tail = end[l] + 1
+			}
+		}
+	}
+	allBlank := true
+	for k := tail; k <= n; k++ {
+		allBlank = allBlank && blank(k)
+	}
+	if out.Len() > len(bom) && allBlank {
+		for k := tail; k <= n; k++ {
+			out.WriteString(line(k))
+		}
+	}
+	text := out.String()
+	// So does a last line with no newline.
+	if body != "" && !strings.HasSuffix(body, "\n") && strings.HasSuffix(text, eol) {
+		text = text[:len(text)-len(eol)]
+	}
+	back := newParser().parse(text, doc.strictness)
+	if back.lost == 0 && back.ToCanonical() == nowText {
+		return text, true
+	}
+	return "", false
+}
+
 // writeTrailing writes an inline comment, canonically two spaces before the `#`.
 func writeTrailing(out *strings.Builder, trailing string) {
 	if trailing != "" {
@@ -4214,6 +4778,7 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 	if node.blankBefore && out.Len() > 0 {
 		out.WriteByte('\n')
 	}
+	e.mark(node.line)
 	if wouldMerge && node.trailing() != "" {
 		out.WriteString(pad)
 		out.WriteString(node.trailing())
@@ -4226,6 +4791,7 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 	e.near(idx, pos)
 	switch {
 	case node.value.kind == vEmpty:
+		e.span(out.Len())
 		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	case node.value.kind == vCell && stacks(node):
@@ -4253,8 +4819,10 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 			pushLeads(e, []lead{among[j].lead}, depth+1, idx, siteAmong, j)
 		}
 	case node.value.kind == vCell:
+		at := out.Len()
 		out.WriteByte(' ')
 		out.WriteString(emitCell(node.value.els))
+		e.span(at)
 		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
 	default:
@@ -4277,6 +4845,7 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 		}
 		out.WriteString(emitFenceLine(r))
 		out.WriteByte('\n')
+		body := out.Len()
 		if r.content != "" {
 			for _, l := range strings.Split(r.content, "\n") {
 				if l != "" {
@@ -4286,9 +4855,13 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 				out.WriteByte('\n')
 			}
 		}
+		end := out.Len()
 		out.WriteString(bodyPad)
 		out.WriteString(fence)
 		out.WriteByte('\n')
+		if e.lines {
+			e.bodies = append(e.bodies, [3]int{body, end, depth + 1})
+		}
 	}
 	d.emitChildren(d.arena[idx].children, depth+1, e)
 	e.near(idx, pos)
@@ -6494,6 +7067,7 @@ func (d *Document) Merge(over *Document) {
 		return
 	}
 	d.index.Store(nil)
+	d.source = nil
 	d.lost += over.lost
 	// The layer's own kept lines were modeled against its own tree.
 	fresh := over.kept
