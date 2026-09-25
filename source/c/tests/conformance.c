@@ -736,6 +736,12 @@ int main(int argc, char **argv) {
 					if (strcmp(joined, exp)) fail(at, "paths mismatch");
 					free(joined); shcl_free(rd); continue;
 				}
+				if (!strcmp(kind, "instance_paths")) {
+					shcl_str *ps; size_t n = shcl_instance_paths(rd, &ps);
+					char *joined = join_pipe(ps, n);
+					if (strcmp(joined, exp)) fail(at, "instance_paths mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
 				shcl_status st; const shcl_status *slots; size_t nslots;
 				char *val = scalar_read(rd, kind, query, qn, &st, &slots, &nslots);
 				if (strcmp(shcl_status_name(st), status)) fail(at, "status mismatch");
@@ -986,6 +992,29 @@ int main(int argc, char **argv) {
 			if (tn != on || (on && memcmp(once, twice, on) != 0)) fail(names[ci], "migrate changes its own output");
 			free(twice); free(once);
 		}
+		// Over every input, not only the migrate cases: the stamp is the one
+		// difference, and a file is current exactly when its Format line says so.
+		for (int from_v2 = 1; from_v2 >= 0; from_v2--) {
+			shcl_migration full = shcl_migrate(input, ilen, from_v2);
+			shcl_migration bare = shcl_migrate_unstamped(input, ilen, from_v2);
+			if (bare.current != full.current || bare.ambiguous != full.ambiguous || bare.lost != full.lost) fail(names[ci], "counts differ without the stamp");
+			if (contains(bare.text, bare.len, SHCL_FORMAT_LINE_HEAD) && !contains(input, ilen, SHCL_FORMAT_LINE_HEAD)) fail(names[ci], "migrate_unstamped wrote a Format line");
+			size_t wcap = bare.len + sizeof(SHCL_FORMAT_LINE) + sizeof(SHCL_MIGRATED_LINE) + 4, wn = 0;
+			char *want = (char *)malloc(wcap);
+			if (!want) abort();
+			memcpy(want, bare.text, bare.len); wn = bare.len;
+			int same = full.len == bare.len && (bare.len == 0 || memcmp(full.text, bare.text, bare.len) == 0);
+			if (!full.current && !same) {
+				if (wn && want[wn - 1] != '\n') want[wn++] = '\n';
+				memcpy(want + wn, SHCL_FORMAT_LINE, sizeof(SHCL_FORMAT_LINE) - 1); wn += sizeof(SHCL_FORMAT_LINE) - 1; want[wn++] = '\n';
+				if (bare.len != ilen || (ilen && memcmp(bare.text, input, ilen) != 0)) {
+					memcpy(want + wn, SHCL_MIGRATED_LINE, sizeof(SHCL_MIGRATED_LINE) - 1); wn += sizeof(SHCL_MIGRATED_LINE) - 1; want[wn++] = '\n';
+				}
+			}
+			if (full.len != wn || (wn && memcmp(full.text, want, wn) != 0)) fail(names[ci], "the stamp is not the only difference");
+			if (full.current != (shcl_format_version(input, ilen) >= SHCL_FORMAT_MAJOR)) fail(names[ci], "current disagrees with format_version");
+			free(want); free(full.text); free(bare.text);
+		}
 		free(input); free(expected); free(reads);
 	}
 	for (size_t i = 0; i < nn; i++) free(names[i]);
@@ -1061,6 +1090,23 @@ int main(int argc, char **argv) {
 		else for (size_t i = 0; i < 3; i++) if (cv[i].n != strlen(rw[i]) || memcmp(cv[i].p, rw[i], cv[i].n) != 0) { fail("children", "root names mismatch"); break; }
 		if (shcl_children(ld, "missing", 7, &cv) != 0) fail("children", "missing path not empty");
 		shcl_free(ld);
+	}
+	// gitsby's report: children on a repeated key answered nothing, and a walk
+	// had to know to index each instance. Same fixture in every runner.
+	{
+		const char *gt = "account: w\n\temail: e@x\n\t\tsshkey: k1\n\temail: f@x\n\t\tsshkey: k2\n";
+		shcl_doc *gd = shcl_parse(gt, strlen(gt));
+		shcl_str *gv; size_t gn = shcl_children(gd, "account[#0].email", 17, &gv);
+		if (gn != 2 || gv[0].n != 6 || memcmp(gv[0].p, "sshkey", 6) || gv[1].n != 6 || memcmp(gv[1].p, "sshkey", 6)) fail("children", "every instance's children not listed");
+		gn = shcl_children(gd, "account.email[#1]", 17, &gv);
+		if (gn != 1) fail("children", "one instance's children not listed");
+		const char *iw[] = { "account", "account.email[#0]", "account.email[#0].sshkey", "account.email[#1]", "account.email[#1].sshkey" };
+		gn = shcl_instance_paths(gd, &gv);
+		if (gn != 5) fail("instance_paths", "count mismatch");
+		else for (size_t i = 0; i < 5; i++) if (gv[i].n != strlen(iw[i]) || memcmp(gv[i].p, iw[i], gv[i].n) != 0) { fail("instance_paths", "fixture mismatch"); break; }
+		shcl_read_str gr = shcl_read_string(gd, "account.email[#1].sshkey", 24);
+		if (gr.status != SHCL_GOOD || gr.value.n != 2 || memcmp(gr.value.p, "k2", 2)) fail("instance_paths", "indexed path does not read");
+		shcl_free(gd);
 	}
 	// authored_name: the author's spelling, unfolded; merged instances keep the
 	// first binding's; unresolved or Multiple is empty; writer-built keeps the
@@ -1456,7 +1502,15 @@ int main(int argc, char **argv) {
 		if (shcl_lost_count(kd) != 0) fail("lost", "kept lost_count not 0");
 		shcl_str kc = shcl_to_canonical(kd);
 		if (!contains(kc.p, kc.n, "square-miles 300\n")) fail("lost", "retained line missing");
-		const char *lt2 = "a:\n\tb: 1\n  c: 2\n"; // indent matches no level
+		// An indent matching no level is kept as written when it holds a space,
+		// which no level the emitter writes can equal, and lost when it is tabs.
+		const char *sp = "a:\n\tb: 1\n  c: 2\n\td: 3\n";
+		shcl_doc *spd = shcl_parse(sp, strlen(sp));
+		if (shcl_lost_count(spd) != 0) fail("lost", "spaced lost_count not 0");
+		shcl_str spc = shcl_to_canonical(spd);
+		if (spc.n != strlen(sp) || memcmp(spc.p, sp, spc.n) != 0) fail("lost", "spaced line not kept as written");
+		shcl_free(spd);
+		const char *lt2 = "a:\n\t\tb: 1\n\tc: 2\n";
 		shcl_doc *lo = shcl_parse(lt2, strlen(lt2));
 		if (shcl_lost_count(lo) != 1) fail("lost", "lost_count not 1");
 		if (shcl_save_file(kd, tfile) != SHCL_SAVE_OK) fail("lost", "kept save failed");

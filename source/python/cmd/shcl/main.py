@@ -285,7 +285,9 @@ E011|error|stacked '*' element for a field that already has a value
   one way or the other, not both.
 E012|error|indentation matches no open level
   The line is skipped, and anything written deeper is skipped with it
-  (E018). Indent to a column some open parent already uses.
+  (E018). A save writes them back as they were when the indent holds a
+  space. One indented with tabs alone would bind there, so it is lost.
+  Indent to a column some open parent already uses.
 E013|error|malformed '*' line ('*' not followed by a space)
   The line is skipped, and what is written under it goes with it.
 E014|error|malformed line skipped (the message names the reason)
@@ -1338,6 +1340,11 @@ def do_migrate(o):
 		if not o.lossy:
 			rc = 7
 	rewritten = rewritten_lines(text, m.text)
+	# A save keeps a line at an indent no level matches, but 2.x placed some
+	# such lines by a looser rule and read them, so a migration that leaves
+	# one has not carried the file across. With nothing lost, every one of
+	# them is kept.
+	misplaced = sum(1 for d in doc.diagnostics() if d.code in ("E012", "E018"))
 	if o.check:
 		for n in rewritten:
 			sys.stderr.write(f"{file}:{n}: migrate would rewrite this line\n")
@@ -1345,6 +1352,9 @@ def do_migrate(o):
 		# before 6, so 6 never promises a rewrite that would be refused.
 		if rc == 0 and not o.lossy and doc.lost_count() != 0:
 			sys.stderr.write(f"{file}: migrate --write would refuse: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
+			rc = 7
+		elif rc == 0 and not o.lossy and misplaced != 0:
+			sys.stderr.write(f"{file}: migrate --write would refuse: the migrated text leaves {misplaced} line(s) unread at an indent no open level matches (--lossy overrides)\n")
 			rc = 7
 		if rc == 0 and rewritten:
 			rc = 6
@@ -1355,6 +1365,9 @@ def do_migrate(o):
 			return rc
 		if doc.lost_count() != 0 and not o.lossy:
 			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text drops {doc.lost_count()} line(s)/value(s) on load (--lossy overrides)\n")
+			return 7
+		if misplaced != 0 and not o.lossy:
+			sys.stderr.write(f"{file}: refusing to rewrite: the migrated text leaves {misplaced} line(s) unread at an indent no open level matches (--lossy overrides)\n")
 			return 7
 		if not unchanged_since_read(file, text):
 			return EXIT_IO

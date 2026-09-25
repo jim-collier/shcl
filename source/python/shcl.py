@@ -67,8 +67,10 @@ __all__ = [
 	"Tokens",
 	"WriteReason",
 	"format_float",
+	"format_version",
 	"generate",
 	"migrate",
+	"migrate_unstamped",
 	"parse_datetime",
 	"quote_segment",
 	"read_file",
@@ -563,7 +565,7 @@ class _Trivia:
 	of line. Never part of identity or reads; merged instances concatenate
 	leading, first trailing wins (later ones demote to leading - a canonical
 	line has room for one)."""
-	__slots__ = ("leading", "trailing", "after", "inside")
+	__slots__ = ("leading", "trailing", "after", "inside", "among")
 
 	def __init__(self):
 		self.leading = []
@@ -578,6 +580,10 @@ class _Trivia:
 		# still owns those lines. Emitted after the subtree one level deeper
 		# than this node.
 		self.inside = []
+		# Kept lines that sat among this node's stacked list elements, each
+		# with the number of elements before it. They keep the list stacked on
+		# output, so a line fixed by hand is still inside the list.
+		self.among = []
 
 
 class _Node:
@@ -636,6 +642,10 @@ class _Node:
 		t = self.trivia
 		return t.inside if t is not None else ()
 
+	def among(self):
+		t = self.trivia
+		return t.among if t is not None else ()
+
 	def _triv(self):
 		t = self.trivia
 		if t is None:
@@ -681,6 +691,8 @@ def _fold_node_into(arena, survivor, loser):
 				st.leading.append(_Lead(lt.trailing, False))
 		st.after.extend(lt.after)
 		st.inside.extend(lt.inside)
+		st.among.extend(lt.among)
+		st.among.sort(key=lambda a: a[0])
 
 
 def _settle_block(arena, n, start):
@@ -722,7 +734,8 @@ def _settle_fence_trailing(arena, n):
 	its trailing comment on a line of its own above, after the node's blank. A
 	reload files that line as a leading comment, so file it there now."""
 	kids = arena[n].children
-	if not any(arena[c].value.kind == "raw" and arena[c].trivia is not None and arena[c].trivia.trailing for c in kids):
+	if not any((arena[c].value.kind == "raw" and arena[c].trivia is not None and arena[c].trivia.trailing)
+			or _stacks(arena[c]) for c in kids):
 		return
 	empties = set()
 	for c in kids:
@@ -730,8 +743,30 @@ def _settle_fence_trailing(arena, n):
 		t = nd.trivia
 		if nd.value.kind == "raw" and t is not None and t.trailing and nd.name in empties:
 			_trailing_to_leading(nd)
+		elif _stacks(nd) and nd.name in empties:
+			_unstack(nd)
 		elif nd.value.is_empty():
 			empties.add(nd.name)
+
+
+def _stacks(nd):
+	"""Written stacked: a list holding a kept line among its elements or after
+	its last one."""
+	t = nd.trivia
+	return (t is not None and nd.value.kind == "cell"
+		and (bool(t.among) or (nd.star_list and any(not c.text.startswith("#") for c in t.inside))))
+
+
+def _unstack(nd):
+	"""A list after an empty binding of its name cannot be written stacked: its
+	bare header would merge into that binding on a reload. It goes inline, and
+	the lines among its elements go above it, where a reload files what sits
+	there."""
+	nd.star_list = False
+	t = nd.trivia
+	if t is not None and t.among:
+		t.leading.extend(a[1] for a in t.among)
+		t.among = []
 
 
 def _trailing_to_leading(nd):
@@ -1474,6 +1509,18 @@ def _fence_open(rest):
 	return (first, run, _trim_wsp(rest[run:]))
 
 
+def _line_fence(tok):
+	"""The fence a field line's value opens, if it opens one. A line that did
+	not tokenize has no value to read."""
+	if tok.fault is not None or tok.sep is None:
+		return None
+	# A capped scan zeroed the value, and a fence is told by its leading run
+	# alone.
+	if tok.capped:
+		return _fence_open(_trim_wsp(tok.src[tok.value[0]:].decode("utf-8", "surrogatepass")))
+	return _fence_open(tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"))
+
+
 def _is_fence_close(line, ch, min_len):
 	# min_len is the opening fence's length, which the grammar puts at three or
 	# more, so the length test already rules out the empty line all() would
@@ -1532,9 +1579,17 @@ class _Migrating:
 		self.lost = 0
 
 
-def _format_version(text):
-	"""The major a `##    Format   N` line names, if the document carries one.
-	Only migrate reads this line.
+def format_version(text: str) -> int | None:
+	"""The format major a document's `##    Format   N` line names, read the way
+	migrate reads it. None when no line names one, which is every 2.x file and
+	a current one written without the info block. migrate hands a file back
+	untouched exactly when this is FORMAT_MAJOR or more, so a program can ask
+	before it rewrites anything."""
+	return _format_line_version(text[1:] if text.startswith("\ufeff") else text)
+
+
+def _format_line_version(text):
+	"""format_version() on text with the BOM already off.
 
 	Raw bodies are skipped exactly where the rewrite skips them, by walking the
 	lines through the same _migrate_line. A Format line pasted into a block is
@@ -1596,12 +1651,23 @@ def migrate(text: str, from_v2: bool) -> Migration:
 	rewrite and leaves those pieces alone, counted in ambiguous for the caller
 	to refuse over. A rewritten file is stamped with the version line, so the
 	second run has an answer the first one did not."""
+	return _migrate_text(text, from_v2, True)
+
+
+def migrate_unstamped(text: str, from_v2: bool) -> Migration:
+	"""migrate() without the version line or the migrated note, for a program
+	that writes GEN_BANNER itself, which carries the version line. The next run
+	can tell the result is current only once that is written."""
+	return _migrate_text(text, from_v2, False)
+
+
+def _migrate_text(text, from_v2, stamp):
 	whole = text
 	bom = ""
 	if text.startswith("\ufeff"):
 		bom = "\ufeff"
 		text = text[1:]
-	version = _format_version(text)
+	version = _format_line_version(text)
 	if version is not None and version >= FORMAT_MAJOR:
 		return Migration(whole, current=True)
 	st = _Migrating(from_v2 or version is not None)
@@ -1633,7 +1699,7 @@ def migrate(text: str, from_v2: bool) -> Migration:
 	# migration that did not finish, and the next run would then skip it. A
 	# document that never closes its raw block has nowhere to put the line
 	# either: appended, it would be another line of the block's content.
-	if st.ambiguous == 0 and fence is None:
+	if stamp and st.ambiguous == 0 and fence is None:
 		s = "".join(out)
 		if s and not s.endswith("\n"):
 			out.append("\n")
@@ -1960,6 +2026,39 @@ def _scan_lookup(inp):
 # ---------------------------------------------------------------------------
 
 
+def _locate_in(stack, indent):
+	"""_resolve_parent() on a level stack, without moving anything: the parent
+	it hands back (None for a line matching no level), the length it cuts the
+	stack to, and whether it then pushes this line's column as a skipped
+	line's. The emitter runs it on its model of the stack a reload will have."""
+	hold = None
+	for i in range(len(stack) - 1, -1, -1):
+		ind, node = stack[i]
+		if ind == indent:
+			if node == UNOPENED:
+				# Back at a skipped line's column: refused the same way.
+				return (None, i + 1, False)
+			# Sibling of stack[i]: its parent is the entry below it.
+			parent = ROOT if i == 0 else stack[i - 1][1]
+			# Keep the sentinel; a top-level line resolves to ROOT.
+			return (DEAD if parent == UNOPENED else parent, max(i, 1), False)
+		if len(indent) > len(ind) and indent.startswith(ind):
+			# A skipped line's unopened level sits on top without opening
+			# anything, so it does not count as a level in between.
+			if i + 1 < len(stack) and stack[i + 1][1] != UNOPENED:
+				break
+			return (DEAD if node == UNOPENED else node, i + 1, False)
+		if node == UNOPENED:
+			hold = i
+	# Skipped, but it holds its own column: whatever is written deeper is
+	# skipped with it, and a line back at it is refused the same way instead of
+	# binding one level up. It closes nothing, so a later line that matches a
+	# level open before it still binds there, as in 2.0.0. The hold ends at the
+	# first line neither under it nor at it, this one included, which keeps one
+	# on the stack at most.
+	return (None, len(stack) if hold is None else hold, True)
+
+
 class _Outcome:
 	"""What became of a line the parser did not bind whole. Only the funnel
 	(`_Parser._refuse`) reads it; the count and the level follow from it."""
@@ -2033,6 +2132,10 @@ class _Parser:
 		self.reentered = {}
 		# Dropped lines/values canonical output cannot re-emit.
 		self.lost = 0
+		# Indent of the last E012 line kept as written, while the lines after
+		# it sit under it; those are E018 and are kept as written too.
+		self.kept_hold = None
+		self.kept_any = False
 		# parse_limited's caps, 0 = uncapped: nodes counted against the arena
 		# (root excluded), elements against a single value's cell, diagnostics
 		# against the list. Past the diagnostic cap nothing is listed, only
@@ -2205,7 +2308,11 @@ class _Parser:
 				for si in range(len(self.stack) - 1, -1, -1):
 					ind, node = self.stack[si]
 					if node != ROOT and node != DEAD and node != UNOPENED and len(ind) >= len(new_indent) and p.indent.startswith(ind):
-						at = (si, node, len(ind) == len(p.indent))
+						# A list element's column is an entry with the list's
+						# node on the list's own entry. It is inside the list,
+						# not its level.
+						column = si > 0 and self.stack[si - 1][1] == node
+						at = (si, node, len(ind) == len(p.indent) and not column)
 						break
 				# A root node's trailing comment emits at column zero, which is
 				# exactly how the document's own trailing comment is spelled, so
@@ -2236,43 +2343,18 @@ class _Parser:
 		else:
 			self.pend_marks.append((len(self.pending), new_len))
 
-	def _resolve_parent(self, indent):
+	def _resolve_parent(self, indent, found):
 		"""Resolve which open level this indent belongs to, walking down from
 		the top. Equal to a level is its sibling. Deeper than a level is its
 		child, unless a level opened under that one is still open, in which case
-		the line falls between the two. Anything else is a recoverable error."""
-		hold = None
-		for i in range(len(self.stack) - 1, -1, -1):
-			ind, node = self.stack[i]
-			if ind == indent:
-				if node == UNOPENED:
-					# Back at a skipped line's column: refused the same way.
-					del self.stack[i + 1:]
-					return None
-				# Sibling of stack[i]: its parent is the entry below it.
-				parent = ROOT if i == 0 else self.stack[i - 1][1]
-				# Keep the sentinel; a top-level line resolves to ROOT.
-				del self.stack[max(i, 1):]
-				return DEAD if parent == UNOPENED else parent
-			if len(indent) > len(ind) and indent.startswith(ind):
-				# A skipped line's unopened level sits on top without opening
-				# anything, so it does not count as a level in between.
-				if i + 1 < len(self.stack) and self.stack[i + 1][1] != UNOPENED:
-					break
-				del self.stack[i + 1:]
-				return DEAD if node == UNOPENED else node
-			if node == UNOPENED:
-				hold = i
-		# Skipped, but it holds its own column: whatever is written deeper is
-		# skipped with it, and a line back at it is refused the same way
-		# instead of binding one level up. It closes nothing, so a later line
-		# that matches a level open before it still binds there, as in 2.0.0.
-		# The hold ends at the first line neither under it nor at it, this one
-		# included, which keeps one on the stack at most.
-		if hold is not None:
-			del self.stack[hold:]
-		self.stack.append((indent, UNOPENED))
-		return None
+		the line falls between the two. Anything else is a recoverable error.
+		`found` is _locate_in() on the same indent, which the line loop has
+		already asked."""
+		parent, cut, push = found
+		del self.stack[cut:]
+		if push:
+			self.stack.append((indent, UNOPENED))
+		return parent
 
 	def _refuse(self, line, code, msg, outcome, indent):
 		"""The one exit for a line the parser does not bind whole. An arm says
@@ -2289,12 +2371,42 @@ class _Parser:
 			n = 0
 		self.lost += n
 		if outcome.kind == "retained":
-			self.pending.append(_Pend(outcome.text, indent, outcome.blank_before))
+			p = _Pend(outcome.text, indent, outcome.blank_before)
+			# A line kept as written never hangs on a block: its indent is not
+			# one the output's levels are spelled with, so the block it would
+			# match here is not the one it matches on a reload. It waits for
+			# the next binding line, as do the pending lines after it.
+			if outcome.text.startswith((" ", "\t")):
+				p.ceiling = 0
+			self.pending.append(p)
 		# A refused line owns its indent, so what is written deeper is skipped
 		# with it (E018). An indent that matched no level already holds an
 		# unopened one, which refuses a sibling the same way; that one stays.
 		if holds and not (self.stack and self.stack[-1] == (indent, UNOPENED)):
 			self.stack.append((indent, DEAD))
+
+	def _misplaced(self, line, code, indent, rest, had_blank, raw):
+		"""A line refused for where it sits rather than for what it says: E012,
+		or E018 under one. Written back exactly as it was, it sits the same way
+		on a reload, as long as its indent holds a space, since no level the
+		emitter opens is spelled with one. A tab-only indent would bind there,
+		and a line opening a raw block would take its body along, so those are
+		dropped. An E018 line is kept only under a kept E012 one."""
+		if raw:
+			keep = False
+		elif code == "E012":
+			keep = " " in indent
+		else:
+			h = self.kept_hold
+			keep = h is not None and len(indent) > len(h) and indent.startswith(h)
+		if keep:
+			self.kept_any = True
+		if code == "E012":
+			self.kept_hold = indent if keep else None
+			msg = "indentation matches no open level"
+		else:
+			msg = "parent line was skipped; line skipped"
+		self._refuse(line, code, msg, _out_retained(indent + _trim_wsp_end(rest), had_blank) if keep else OUT_DROPPED, indent)
 
 	def _skip_under_dead(self, line, indent):
 		"""Diagnose a line written under a skipped line, and skip it too. Its own
@@ -2308,15 +2420,7 @@ class _Parser:
 		refused line by line, and its closing fence would open a block that runs
 		to the end of the file. A line whose path did not parse has no value to
 		read, so it goes alone."""
-		if tok.fault is not None or tok.sep is None:
-			return i + 1
-		# A capped scan zeroed the value, and a fence is told by its leading run
-		# alone.
-		if tok.capped:
-			v = _trim_wsp(tok.src[tok.value[0]:].decode("utf-8", "surrogatepass"))
-		else:
-			v = tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass")
-		fence = _fence_open(v)
+		fence = _line_fence(tok)
 		if fence is None:
 			return i + 1
 		return self._consume_raw(lines, i + 1, i + 1, indent, fence)[1]
@@ -2480,23 +2584,24 @@ class _Parser:
 		return self._select_or_create(grandparent, name, name_src, value, line)
 
 	def _add_star_element(self, parent, tok, s, line, indent):
-		"""One stacked-list element (`* scalar`) appends to the parent's array."""
+		"""One stacked-list element (`* scalar`) appends to the parent's array.
+		True when it joined the list."""
 		if parent == ROOT:
 			self._refuse(line, "E007", "list element with no parent field", OUT_DROPPED, indent)
-			return
+			return False
 		# Uniform-or-nothing (spec): a mix with field children is not a block array.
 		if self.arena[parent].children:
 			self._refuse(line, "E008", "list element mixed with field children; ignored", OUT_DROPPED, indent)
-			return
+			return False
 		# One scalar per line; a bare comma is an error, not a second element.
 		if len(tok.elements) > 1:
 			self._refuse(line, "E010", "bare comma in list element (one element per line)", OUT_DROPPED, indent)
-			return
+			return False
 		piece = tok.elements[0]
 		el = _element_of(piece, s)
 		if el is None:
 			self._refuse(line, "E009", "empty list element", OUT_DROPPED, indent)
-			return
+			return False
 		if piece.quote is Quote.OPEN:
 			self._err(line, "E017", "unterminated quote in value")
 		binding_like = not el.quoted and _looks_like_binding(el.text)
@@ -2510,7 +2615,7 @@ class _Parser:
 			and len(self.arena[parent].value.els) >= self.max_elements
 		):
 			self._refuse(line, "E021", f"array longer than {self.max_elements} elements; line skipped", OUT_DROPPED, indent)
-			return
+			return False
 		node = self.arena[parent]
 		if node.value.kind == "empty":
 			old_key = _merge_key(node.name, node.value)
@@ -2534,7 +2639,7 @@ class _Parser:
 			node.value.els.append(el)
 		else:
 			self._refuse(line, "E011", "field already has a value; list element ignored", OUT_DROPPED, indent)
-			return
+			return False
 		if binding_like:
 			self._diag(Diagnostic(line, Severity.Hint, "list element looks like a field binding; it is read as a string (quote it to say so)", "H003"))
 		# A kept element holds its column as a dropped one does, with the field
@@ -2543,6 +2648,27 @@ class _Parser:
 		# had been opened there and every later sibling was E012 (20260918b
 		# item 28).
 		self.stack.append((indent, parent))
+		return True
+
+	def _keep_among(self, parent):
+		"""Kept lines waiting for the list element that just joined sat among
+		the list's elements, so they stay there; comments still ride the
+		field."""
+		if not any(not p.text.startswith("#") for p in self.pending):
+			return
+		node = self.arena[parent]
+		if node.value.kind != "cell":
+			return
+		before = len(node.value.els) - 1
+		rest = []
+		among = node._triv().among
+		for p in self.pending:
+			if p.text.startswith("#"):
+				rest.append(p)
+			else:
+				among.append((before, _Lead(p.text, p.blank_before)))
+		self.pending = rest
+		self.pend_marks = []
 
 	def _emit_repeated_leaf_hints(self):
 		"""Legal input that looks like a common mistake: a field repeating as a bare
@@ -2603,6 +2729,7 @@ class _Parser:
 		nlines = len(lines)
 		node_capped = False
 		tok = Tokens(self.max_elements)
+		locate = _locate_in  # a local, once per line
 		while i < nlines:
 			# Node cap: reported at the first line not parsed, so the count can
 			# overshoot by at most one line's path. The unparsed remainder
@@ -2632,13 +2759,22 @@ class _Parser:
 				self.saw_blank = False
 				i += 1
 				continue
+			# A kept misplaced line holds only the lines written under it.
+			h = self.kept_hold
+			if h is not None and not (len(indent) > len(h) and indent.startswith(h)):
+				self.kept_hold = None
 			# Any other line consumes the pending blank; only a field line that
 			# binds turns it into grouping.
 			had_blank = self.saw_blank
 			self.saw_blank = False
 			# A binding line claims the pending comments - but deeper-written
-			# ones hang on their own block first.
-			self._hang_deeper_pending(indent)
+			# ones hang on their own block first. A line refused for where it
+			# sits closes nothing, so it leaves them for the next line: kept,
+			# its indent would measure the levels differently on a reload, and
+			# dropped, a reload never sees it.
+			found = locate(self.stack, indent)
+			if found[0] is not None and found[0] != DEAD:
+				self._hang_deeper_pending(indent)
 			# Child-indent fence: a value line for its parent field. The fence
 			# and its info string are the value; a comment may follow them.
 			fence = None
@@ -2649,7 +2785,7 @@ class _Parser:
 				fence = _fence_open(rest if tok.capped else tok.src[tok.value[0]:tok.value[1]].decode("utf-8", "surrogatepass"))
 			if fence is not None:
 				comment = tok.src[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
-				parent = self._resolve_parent(indent)
+				parent = self._resolve_parent(indent, found)
 				value, nxt = self._consume_raw(lines, i + 1, lineno, indent, fence)
 				if parent is None:
 					# The body goes with its fence: parsed live, it would read as
@@ -2680,13 +2816,13 @@ class _Parser:
 					at = len(indent) + lead + 1
 					spaced = lines[i][at:at + 1] in (" ", "\t", "\r")
 				if spaced:
-					parent = self._resolve_parent(indent)
+					parent = self._resolve_parent(indent, found)
 					if parent is None:
-						self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
+						self._misplaced(lineno, "E012", indent, rest, had_blank, False)
 						i += 1
 						continue
 					if parent == DEAD:
-						self._skip_under_dead(lineno, indent)
+						self._misplaced(lineno, "E018", indent, rest, had_blank, False)
 						i += 1
 						continue
 					tokenize_value(rest, 1, Rules.CURRENT, tok)
@@ -2695,19 +2831,22 @@ class _Parser:
 					# root there is no field (E007), so the comment rides the document
 					# like any other pending one.
 					if parent != ROOT:
+						if self._add_star_element(parent, tok, tok.src, lineno, indent):
+							self._keep_among(parent)
 						self._attach_trivia(parent, indent, comment)
-					elif comment:
-						self.pending.append(_Pend(comment, indent, had_blank))
-					self._add_star_element(parent, tok, tok.src, lineno, indent)
+					else:
+						if comment:
+							self.pending.append(_Pend(comment, indent, had_blank))
+						self._add_star_element(parent, tok, tok.src, lineno, indent)
 					i += 1
 					continue
-				parent = self._resolve_parent(indent)
+				parent = self._resolve_parent(indent, found)
 				if parent is None:
-					self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
+					self._misplaced(lineno, "E012", indent, rest, had_blank, False)
 					i += 1
 					continue
 				if parent == DEAD:
-					self._skip_under_dead(lineno, indent)
+					self._misplaced(lineno, "E018", indent, rest, had_blank, False)
 					i += 1
 					continue
 				# Content-malformed at any position, so safe to retain. The BOM
@@ -2720,13 +2859,13 @@ class _Parser:
 			tokenize(rest, ":", False, Rules.CURRENT, tok)
 			s = tok.src
 			comment = s[tok.comment:].decode("utf-8", "surrogatepass") if tok.comment is not None else ""
-			parent = self._resolve_parent(indent)
+			parent = self._resolve_parent(indent, found)
 			if parent is None:
-				self._refuse(lineno, "E012", "indentation matches no open level", OUT_DROPPED, indent)
+				self._misplaced(lineno, "E012", indent, rest, had_blank, _line_fence(tok) is not None)
 				i = self._skip_field_line(lines, i, indent, tok)
 				continue
 			if parent == DEAD:
-				self._skip_under_dead(lineno, indent)
+				self._misplaced(lineno, "E018", indent, rest, had_blank, _line_fence(tok) is not None)
 				i = self._skip_field_line(lines, i, indent, tok)
 				continue
 			try:
@@ -2836,7 +2975,10 @@ class _Parser:
 				Severity.Error if self.unlisted_errors else Severity.Hint,
 				f"diagnostic cap of {self.max_diags} reached; {more} more not listed, {self.unlisted_errors} of them errors",
 				"E022"))
-		return Document(self.arena, self.diags, strictness, orphans, self.lost)
+		doc = Document(self.arena, self.diags, strictness, orphans, self.lost)
+		doc._kept = self.kept_any
+		doc._settle_kept()
+		return doc
 
 
 # ---------------------------------------------------------------------------
@@ -2898,9 +3040,120 @@ def _name_key(parent, name):
 	return (parent, name)
 
 
+class _Emit:
+	"""Canonical text on its way out, with a model of the level stack a reload
+	of it will have at this point: the sentinel and one level per tab up to
+	`open`, which the last binding line leaves, then what the lines refused
+	since then pushed, and the indent of a kept misplaced line that the lines
+	under it are kept with."""
+	__slots__ = ("out", "open", "tail", "hold", "record", "fell", "verbatim")
+
+	def __init__(self, record):
+		self.out: list[str] = []
+		self.open = -1
+		self.tail: list[tuple[str, int]] = []
+		self.hold = None
+		# _settle_kept() only: the lines written as comments, where they sit
+		# and at what depth, and how many went out as written.
+		self.record = record
+		self.fell: list[tuple[int, str, int, int]] = []
+		self.verbatim = 0
+
+	def resolve(self, indent):
+		"""A line at this indent through the reload's _resolve_parent(): the
+		parent it finds, and the model as it leaves it, not yet taken."""
+		levels = self.open + 2
+		stack = [("", ROOT)]
+		stack.extend(("\t" * d, ROOT) for d in range(levels - 1))
+		stack.extend(self.tail)
+		parent, cut, push = _locate_in(stack, indent)
+		del stack[cut:]
+		if push:
+			stack.append((indent, UNOPENED))
+		if len(stack) <= levels:
+			return parent, len(stack) - 2, []
+		return parent, self.open, stack[levels:]
+
+	def refused(self, indent, open_, tail):
+		"""Take a resolve, then the refusal's push: a refused line holds its
+		own column unless it already sits there as a skipped line's."""
+		self.open = open_
+		self.tail = tail
+		if not (tail and tail[-1] == (indent, UNOPENED)):
+			tail.append((indent, DEAD))
+
+	def placed(self, indent):
+		"""A line a reload binds, such as a list element: it resolves, then
+		holds its column with a live node."""
+		_, self.open, self.tail = self.resolve(indent)
+		self.tail.append((indent, ROOT))
+		self.hold = None
+
+
+def _commented(text):
+	"""A misplaced line's text as the comment it falls back to."""
+	return "# " + text[len(_leading_ws(text)):]
+
+
+def _push_leads(e, leads, base, at):
+	"""Write a run of comments and kept lines, `base` levels deep. A misplaced
+	line kept as written (its text carries its own indent, a comment's never
+	does) goes back as it was only where a reload keeps it again, which the
+	model of the reload's stack answers the way the parser will: refused for
+	its indent, or under the kept line before it. A merge or an edit can leave
+	it where it would bind, and there it is written as a comment, which reads
+	the same. `at` names the list and the index of its first line, for
+	_settle_kept()."""
+	out = e.out
+	last_comment = 0
+	for i, c in enumerate(leads):
+		if c.blank_before and out:
+			out.append("\n")
+		text = c.text
+		if text.startswith((" ", "\t")):
+			indent = _leading_ws(text)
+			parent, open_, tail = e.resolve(indent)
+			h = e.hold
+			under = h is not None and len(indent) > len(h) and indent.startswith(h)
+			if parent is None:
+				keep = " " in indent
+			elif parent == DEAD:
+				keep = under
+			else:
+				keep = False
+			if keep:
+				if parent is None:
+					e.hold = indent
+				e.refused(indent, open_, tail)
+				e.verbatim += 1
+				out.append(text)
+				out.append("\n")
+			else:
+				# Level with the comment before it, so the run's nesting reads
+				# back the same.
+				if e.record:
+					e.fell.append((at[0], at[1], at[2] + i, last_comment))
+				out.append("\t" * (base + last_comment))
+				out.append(_commented(text))
+				out.append("\n")
+			continue
+		pad = base + c.depth
+		if text.startswith("#"):
+			last_comment = c.depth
+		else:
+			# A kept malformed line resolves and holds its column on a reload.
+			indent = "\t" * pad
+			_, open_, tail = e.resolve(indent)
+			e.hold = None
+			e.refused(indent, open_, tail)
+		out.append("\t" * pad)
+		out.append(text)
+		out.append("\n")
+
+
 class Document:
 	"""A parsed SHCL document: the tree, its diagnostics, and its strictness level."""
-	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc")
+	__slots__ = ("arena", "diags", "_strictness", "orphans", "_lost", "_index", "_probe", "_probe_doc", "_kept")
 
 	def __init__(
 		self,
@@ -2930,6 +3183,8 @@ class Document:
 		# path already there.
 		self._probe = False
 		self._probe_doc: Document | None = None
+		# Holds a misplaced line kept as written, so edits have to settle it.
+		self._kept = False
 
 	@staticmethod
 	def parse(text: str) -> Document:
@@ -3076,48 +3331,79 @@ class Document:
 		"""Canonical form: block layout, tabs, insertion order, minimal quoting,
 		redundancy collapsed, comments re-emitted as attached trivia. Scalar
 		text is never rewritten."""
+		e = _Emit(False)
+		self._emit_all(e)
+		return "".join(e.out)
+
+	def _emit_all(self, e):
 		# Explicit stack, children pushed in reverse: the reference handles depths
 		# far past Python's recursion limit, so emit must not recurse.
-		out: list = []
 		stack: list = []
 		self._emit_children(self.arena[ROOT].children, 0, stack)
 		while stack:
 			idx, depth, would_merge = stack.pop()
 			if would_merge is None:
 				# Post-children marker. Comments this block owns with no child
-				# to carry them re-emit one deeper.
-				ipad = "\t" * (depth + 1)
-				for c in self.arena[idx].inside():
-					if c.blank_before and out:
-						out.append("\n")
-					out.append(ipad)
-					out.append("\t" * c.depth)
-					out.append(c.text)
-					out.append("\n")
-				# Comments that hung on this block after its last child re-emit
-				# at the block's own depth.
-				pad = "\t" * depth
-				for c in self.arena[idx].after():
-					if c.blank_before and out:
-						out.append("\n")
-					out.append(pad)
-					out.append("\t" * c.depth)
-					out.append(c.text)
-					out.append("\n")
+				# to carry them re-emit one deeper, then the ones that hung on
+				# this block after its last child at the block's own depth.
+				nd = self.arena[idx]
+				_push_leads(e, nd.inside(), depth + 1, (idx, "inside", 0))
+				_push_leads(e, nd.after(), depth, (idx, "after", 0))
 				continue
-			self._emit_node(idx, depth, would_merge, out)
+			self._emit_node(idx, depth, would_merge, e)
 			if self.arena[idx].after() or self.arena[idx].inside():
 				# The marker sits under the children, so it pops after them.
 				stack.append((idx, depth, None))
 			self._emit_children(self.arena[idx].children, depth + 1, stack)
 		# Comments that never found a following line re-emit at the end.
-		for c in self.orphans:
-			if c.blank_before and out:
-				out.append("\n")
-			out.append("\t" * c.depth)
-			out.append(c.text)
-			out.append("\n")
-		return "".join(out)
+		_push_leads(e, self.orphans, 0, (ROOT, "orphans", 0))
+
+	def _settle_kept(self):
+		"""Make a misplaced line kept as written into the comment the emitter
+		writes it as, wherever it would now bind as written, so the document is
+		the one its saved text reloads as and the next edit lands the same
+		either way. One among a list's elements goes above the list, as a
+		reload files a comment there. Runs after a load and after each edit,
+		and only while the document holds such a line."""
+		# A line moved out of a list can leave it written inline, which changes
+		# what the lines after it sit under, so go again until nothing moves.
+		while self._kept and self._settle_kept_once():
+			pass
+
+	def _settle_kept_once(self):
+		e = _Emit(True)
+		self._emit_all(e)
+		self._kept = e.verbatim > 0
+		among = []
+		for node, site, i, depth in e.fell:
+			if site == "among":
+				among.append((node, i))
+				continue
+			if site == "orphans":
+				lst = self.orphans
+			else:
+				t = self.arena[node]._triv()
+				lst = t.leading if site == "leading" else t.inside if site == "inside" else t.after
+			lead = lst[i]
+			lead.text = _commented(lead.text)
+			lead.depth = depth
+		# Out of each list latest first, so a removal leaves the earlier
+		# indices alone, then onto the end of the leading lines in order.
+		moved_any = bool(among)
+		moved = []
+		while among:
+			node, i = among.pop()
+			t = self.arena[node]._triv()
+			moved.append(t.among.pop(i)[1])
+			if among and among[-1][0] == node:
+				continue
+			depth = next((c.depth for c in reversed(t.leading) if c.text.startswith("#")), 0)
+			for lead in reversed(moved):
+				lead.text = _commented(lead.text)
+				lead.depth = depth
+				t.leading.append(lead)
+			moved = []
+		return moved_any
 
 	def _emit_children(self, kids, depth, stack):
 		"""Emit a sibling run. The parent walk already knows whether an earlier
@@ -3134,7 +3420,7 @@ class Document:
 			entries.append((c, depth, wm))
 		stack.extend(reversed(entries))
 
-	def _emit_node(self, idx, depth, would_merge, out):
+	def _emit_node(self, idx, depth, would_merge, e):
 		node = self.arena[idx]
 		pad = "\t" * depth
 		v = node.value
@@ -3144,13 +3430,10 @@ class Document:
 		# the parent's walk. Each blank rides its own comment (or the binding
 		# line), never as the first output line.
 		trailing = node.trailing()
-		for c in node.leading():
-			if c.blank_before and out:
-				out.append("\n")
-			out.append(pad)
-			out.append("\t" * c.depth)
-			out.append(c.text)
-			out.append("\n")
+		leading = node.leading()
+		if leading:
+			_push_leads(e, leading, depth, (idx, "leading", 0))
+		out = e.out
 		if node.blank_before and out:
 			out.append("\n")
 		if would_merge and trailing:
@@ -3160,11 +3443,37 @@ class Document:
 		out.append(pad)
 		out.append(_emit_name(node.name))
 		out.append(":")
+		# A binding line: a reload's stack is its levels and nothing else.
+		e.open = depth
+		if e.tail:
+			e.tail = []
+		e.hold = None
 		if v.kind == "empty":
 			if trailing:
 				out.append("  ")
 				out.append(trailing)
 			out.append("\n")
+		elif v.kind == "cell" and node.trivia is not None and _stacks(node):
+			# Stacked, with the kept lines where they sat.
+			if trailing:
+				out.append("  ")
+				out.append(trailing)
+			out.append("\n")
+			among = node.trivia.among
+			column = "\t" * (depth + 1)
+			nxt = 0
+			for i, el in enumerate(v.els):
+				while nxt < len(among) and among[nxt][0] <= i:
+					_push_leads(e, (among[nxt][1],), depth + 1, (idx, "among", nxt))
+					nxt += 1
+				out.append(column)
+				out.append("* ")
+				out.append(_emit_element(el))
+				out.append("\n")
+				e.placed(column)
+			while nxt < len(among):
+				_push_leads(e, (among[nxt][1],), depth + 1, (idx, "among", nxt))
+				nxt += 1
 		elif v.kind == "cell":
 			out.append(" ")
 			out.append(_emit_cell(v.els))
@@ -3422,16 +3731,54 @@ class Document:
 	def children(self, path: str) -> list[str]:
 		"""Child field names under a path, in file order, duplicates included -
 		the "what keys are in this section?" question paths() (deduplicated,
-		path-shaped) cannot answer. "" enumerates the top level. Names come
-		back as stored; quote_segment() makes one splice-safe in a path."""
+		path-shaped) cannot answer. "" enumerates the top level. A path with
+		several instances lists the children of each in turn, the way a dotted
+		path reaches all of them. Names come back as stored; quote_segment()
+		makes one splice-safe in a path."""
 		if not _trim(path):
-			node = ROOT
+			nodes = [ROOT]
 		else:
 			r = self._resolve(path)
-			if r[0] != "one":
+			tag = r[0]
+			if tag == "one":
+				nodes = [r[1]]
+			elif tag == "many":
+				nodes = r[1]
+			elif tag == "slots":
+				nodes = [n for n in r[1] if isinstance(n, int)]
+			else:
 				return []
-			node = r[1]
-		return [self.arena[c].name for c in self.arena[node].children]
+		return [self.arena[c].name for n in nodes for c in self.arena[n].children]
+
+	def instance_paths(self) -> list[str]:
+		"""paths() one instance at a time: every binding's path in file order,
+		with `[#i]` on each segment whose name repeats under its parent, so
+		each path reads exactly one node and a repeated block is walked
+		instance by instance. Segments are spelled as paths() spells them."""
+		out: list[str] = []
+		stack = [(ROOT, "")]
+		while stack:
+			node, prefix = stack.pop()
+			if node != ROOT:
+				out.append(prefix)
+			kids = self.arena[node].children
+			total: dict[str, int] = {}
+			for c in kids:
+				name = self.arena[c].name
+				total[name] = total.get(name, 0) + 1
+			at: dict[str, int] = {}
+			paths = []
+			for c in kids:
+				name = self.arena[c].name
+				seg = _emit_name(name)
+				path = seg if not prefix else prefix + "." + seg
+				if total[name] > 1:
+					i = at.get(name, 0)
+					path += f"[#{i}]"
+					at[name] = i + 1
+				paths.append((c, path))
+			stack.extend(reversed(paths))
+		return out
 
 	def instances(self, path: str) -> list[str]:
 		"""Instance values at a path, in file order. Wildcard slots that did not
@@ -3581,6 +3928,8 @@ class Document:
 			return False
 		self.arena[idx].value = value
 		self.arena[idx].src = None   # written value has no source spelling
+		# No longer the list the lines among its elements sat in.
+		_unstack(self.arena[idx])
 		# An empty binding or a raw block can put a fence after an empty
 		# sibling of its name.
 		fence_side = value.kind == "raw" or value.is_empty()
@@ -3589,6 +3938,7 @@ class Document:
 		if fence_side:
 			self._settle_fence_name(parent, name)
 		_settle_first_blank(self.arena, self.orphans)
+		self._settle_kept()
 		return True
 
 	def _collapse_dup(self, node):
@@ -3635,6 +3985,8 @@ class Document:
 			t = nd.trivia
 			if seen_empty and nd.value.kind == "raw" and t is not None and t.trailing:
 				_trailing_to_leading(nd)
+			elif seen_empty and _stacks(nd):
+				_unstack(nd)
 			elif nd.value.is_empty():
 				seen_empty = True
 
@@ -3722,6 +4074,7 @@ class Document:
 					keep.append(c)
 			self.arena[p].children = keep
 		_settle_first_blank(self.arena, self.orphans)
+		self._settle_kept()
 		return len(targets)
 
 	def set_comment(self, path: str, text: str) -> bool:
@@ -3751,6 +4104,7 @@ class Document:
 				lead.blank_before = True
 		t.leading.append(lead)
 		_settle_first_blank(self.arena, self.orphans)
+		self._settle_kept()
 		return True
 
 	def set_int(self, path: str, v: int) -> bool:
@@ -3943,6 +4297,7 @@ class Document:
 			return
 		self._index = None
 		self._lost += over._lost
+		self._kept = self._kept or over._kept
 		# Only a block the overlay visited can have a changed child list or
 		# comments; the rest was settled when it was built. Settling the whole
 		# tree made every merge cost the document (20260924 item 6). A block's
@@ -3965,6 +4320,7 @@ class Document:
 					room = depth + 1
 				self.orphans.append(_Lead(o.text, o.blank_before, depth))
 		_settle_first_blank(self.arena, self.orphans)
+		self._settle_kept()
 
 	# One grouping pass over each side, then a single children rebuild: the
 	# old shape re-filtered the over side per distinct name and re-scanned
@@ -3988,6 +4344,8 @@ class Document:
 				bt.leading.append(_Lead(st.trailing, False))
 		bt.after.extend(_Lead(c.text, c.blank_before, c.depth) for c in st.after)
 		bt.inside.extend(_Lead(c.text, c.blank_before, c.depth) for c in st.inside)
+		bt.among.extend((pos, _Lead(c.text, c.blank_before, c.depth)) for pos, c in st.among)
+		bt.among.sort(key=lambda a: a[0])
 
 	def _overlay(self, base_parent, over, over_parent):
 		"""Explicit stack rather than recursion, for the same reason _clone_subtree
@@ -4059,7 +4417,8 @@ class Document:
 					kept: list[_Lead] = []
 					for b in by_name.get(name, ()):
 						nd = self.arena[b]
-						kept.extend(_Lead(lead.text, lead.blank_before, lead.depth) for lead in nd.leading() + nd.inside() + nd.after() if not lead.text.startswith("#"))
+						lines = [*nd.leading(), *(a[1] for a in nd.among()), *nd.inside(), *nd.after()]
+						kept.extend(_Lead(lead.text, lead.blank_before, lead.depth) for lead in lines if not lead.text.startswith("#"))
 					if kept:
 						t = self.arena[clones[0][1]]._triv()
 						t.leading = kept + t.leading
@@ -4146,6 +4505,7 @@ class Document:
 			t.trailing = st.trailing
 			t.after = [_Lead(c.text, c.blank_before, c.depth) for c in st.after]
 			t.inside = [_Lead(c.text, c.blank_before, c.depth) for c in st.inside]
+			t.among = [(pos, _Lead(c.text, c.blank_before, c.depth)) for pos, c in st.among]
 		node.blank_before = src.blank_before
 		node.src_set = src.src_set
 		node.src = src.src

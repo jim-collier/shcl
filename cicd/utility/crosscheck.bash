@@ -267,6 +267,7 @@ fReadRow(){
 		children)     fCompare "children ${query}" children "${strictArg[@]}" "$input" "$query" ;;
 		paths)        fCompare "paths" paths "${strictArg[@]}" "$input" ;;
 		lost)         : ;;   ## no CLI surface; the in-place write below is what it reaches
+		instance_paths) : ;; ## library only; the four runners pin it
 		int'[]'|float'[]'|bool'[]'|datetime'[]'|string'[]')
 		              fCompare "get ${query} ${type}" get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCompare "get ${query} ${type} slots" get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;

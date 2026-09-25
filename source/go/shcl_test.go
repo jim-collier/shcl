@@ -600,6 +600,40 @@ func TestMigrateIsAFixpoint(t *testing.T) {
 	}
 }
 
+func TestMigrateUnstampedIsMigrateWithoutTheStamp(t *testing.T) {
+	// Over every input, not only the migrate cases: the stamp is the one
+	// difference, and a file is current exactly when its Format line says so.
+	for _, c := range loadCases(t) {
+		for _, fromV2 := range []bool{true, false} {
+			full := Migrate(c.input, fromV2)
+			bare := MigrateUnstamped(c.input, fromV2)
+			if bare.Current != full.Current || bare.Ambiguous != full.Ambiguous || bare.Lost != full.Lost {
+				t.Errorf("%s: counts differ without the stamp", c.name)
+			}
+			if strings.Contains(bare.Text, FormatLineHead) && !strings.Contains(c.input, FormatLineHead) {
+				t.Errorf("%s: MigrateUnstamped wrote a Format line", c.name)
+			}
+			want := bare.Text
+			if !full.Current && full.Text != bare.Text {
+				if want != "" && !strings.HasSuffix(want, "\n") {
+					want += "\n"
+				}
+				want += FormatLine + "\n"
+				if bare.Text != c.input {
+					want += MigratedLine + "\n"
+				}
+			}
+			if full.Text != want {
+				t.Errorf("%s: the stamp is not the only difference", c.name)
+			}
+			v, ok := FormatVersion(c.input)
+			if full.Current != (ok && v >= FormatMajor) {
+				t.Errorf("%s: current disagrees with FormatVersion", c.name)
+			}
+		}
+	}
+}
+
 func TestValidationMatchesExpected(t *testing.T) {
 	// Schema dimension: golden = the exact `check --schema` stdout at Standard
 	// (doc parse diags, then validation diags, then the summary). A schema that
@@ -855,6 +889,25 @@ func TestRawBlockLineEndingsNormalizeAndRoundTrip(t *testing.T) {
 	canon := doc.ToCanonical()
 	if again := Parse(canon).ToCanonical(); again != canon {
 		t.Errorf("not a fixpoint: %q vs %q", again, canon)
+	}
+}
+
+func TestChildrenAndInstancePathsWalkARepeatedKey(t *testing.T) {
+	// gitsby's report: Children() on a repeated key answered nothing, and a
+	// walk had to know to index each instance.
+	doc := Parse("account: w\n\temail: e@x\n\t\tsshkey: k1\n\temail: f@x\n\t\tsshkey: k2\n")
+	if got := strings.Join(doc.Children("account[#0].email"), "|"); got != "sshkey|sshkey" {
+		t.Errorf("children across instances: got %q", got)
+	}
+	if got := strings.Join(doc.Children("account.email[#1]"), "|"); got != "sshkey" {
+		t.Errorf("children of one instance: got %q", got)
+	}
+	want := "account|account.email[#0]|account.email[#0].sshkey|account.email[#1]|account.email[#1].sshkey"
+	if got := strings.Join(doc.InstancePaths(), "|"); got != want {
+		t.Errorf("instance paths: got %q want %q", got, want)
+	}
+	if v, st := doc.GetString("account.email[#1].sshkey"); st != Good || v != "k2" {
+		t.Errorf("read through an instance path: %q %v", v, st)
 	}
 }
 
@@ -1573,7 +1626,16 @@ func TestLostAndSaveGate(t *testing.T) {
 	if !strings.Contains(kept.ToCanonical(), "square-miles 300\n") {
 		t.Errorf("retained line missing from canonical output")
 	}
-	lost := Parse("a:\n\tb: 1\n  c: 2\n") // indent matches no level
+	// An indent matching no level is kept as written when it holds a space,
+	// which no level the emitter writes can equal, and lost when it is tabs.
+	spaced := Parse("a:\n\tb: 1\n  c: 2\n\td: 3\n")
+	if spaced.LostCount() != 0 {
+		t.Errorf("spaced LostCount: got %d", spaced.LostCount())
+	}
+	if got := spaced.ToCanonical(); got != "a:\n\tb: 1\n  c: 2\n\td: 3\n" {
+		t.Errorf("spaced line not kept as written: %q", got)
+	}
+	lost := Parse("a:\n\t\tb: 1\n\tc: 2\n")
 	if lost.LostCount() != 1 {
 		t.Errorf("lost LostCount: got %d", lost.LostCount())
 	}
@@ -2168,6 +2230,12 @@ func TestReadsMatchExpected(t *testing.T) {
 			if kind == "paths" {
 				if got := strings.Join(doc.Paths(), "|"); got != expected {
 					t.Errorf("%s: paths: got %q want %q", at, got, expected)
+				}
+				continue
+			}
+			if kind == "instance_paths" {
+				if got := strings.Join(doc.InstancePaths(), "|"); got != expected {
+					t.Errorf("%s: instance_paths: got %q want %q", at, got, expected)
 				}
 				continue
 			}

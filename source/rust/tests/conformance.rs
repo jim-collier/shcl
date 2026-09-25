@@ -6,7 +6,7 @@
 //! meanings are documented in project/conformance/README.md.
 
 use shcl::{
-	Document, FORMAT_LINE, FORMAT_MAJOR, MIGRATED_LINE, Strictness, format_version, generate,
+	Document, FORMAT_LINE, FORMAT_LINE_HEAD, FORMAT_MAJOR, MIGRATED_LINE, Strictness, format_version, generate,
 	migrate, migrate_unstamped, parse_datetime, quote_segment,
 };
 use std::path::{Path, PathBuf};
@@ -739,6 +739,11 @@ fn migrate_unstamped_is_migrate_without_the_stamp() {
 				(bare.current, bare.ambiguous, bare.lost),
 				(full.current, full.ambiguous, full.lost),
 				"{}: counts differ without the stamp",
+				case.name
+			);
+			assert!(
+				!bare.text.contains(FORMAT_LINE_HEAD) || case.input.contains(FORMAT_LINE_HEAD),
+				"{}: migrate_unstamped wrote a Format line",
 				case.name
 			);
 			let mut want = bare.text.clone();

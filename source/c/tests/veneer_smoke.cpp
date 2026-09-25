@@ -126,6 +126,11 @@ int main() {
 	CHECK(elCapped.error_count() == 1 && !elCapped.exists("arr"));
 	auto allPaths = doc.paths();
 	CHECK(allPaths.size() == 6 && allPaths[0] == "name" && allPaths[5] == "city");
+	// A repeated key: every instance's children, and a path per instance.
+	auto acct = shcl::Document::parse("account: w\n\temail: e@x\n\t\tsshkey: k1\n\temail: f@x\n\t\tsshkey: k2\n");
+	CHECK(acct.children("account.email").size() == 2);
+	auto each = acct.instance_paths();
+	CHECK(each.size() == 5 && each[1] == "account.email[#0]" && each[4] == "account.email[#1].sshkey");
 	auto spelled = shcl::Document::parse("SYMBOLS: 3\n");
 	CHECK(spelled.authored_name("symbols") == "SYMBOLS");
 	CHECK(spelled.authored_name("missing").empty());
@@ -206,6 +211,11 @@ int main() {
 	// rule set, so it is left as written and counted rather than guessed at.
 	auto amb = shcl::Document::migrate("note: a\\tb\n", false);
 	CHECK(amb.ambiguous == 1 && amb.text == "note: a\\tb\n");
+	// Without the stamp, for a program that writes the info block itself; the
+	// Format line is what format_version reads.
+	auto unst = shcl::Document::migrate_unstamped("base:[Boston]\n\tlat: 42\nnote: a\\tb\n", true);
+	CHECK(unst.text == "base: Boston\n\tlat: 42\nnote: \"a\\tb\"\n" && !unst.current);
+	CHECK(shcl::Document::format_version(mig.text) == 3u && !shcl::Document::format_version(unst.text));
 	auto [bare, bareOk] = gschema.generate(true);
 	CHECK(bareOk && bare == "## int, required\nport: 8080\n");
 	auto [starter, starterOk] = gschema.generate();
@@ -383,7 +393,10 @@ int main() {
 		CHECK(!shcl::Document::read_file(f, 8, &st) && st == shcl::Document::FileStatus::Unreadable);
 		CHECK(strict.lost_count() == 0);
 		CHECK(strict.save_file(f) == shcl::Document::SaveResult::Ok);
-		auto lost = shcl::Document::parse("a:\n\tb: 1\n  c: 2\n"); // indent matches no level
+		// An indent matching no level is lost when it is tabs; one holding a
+		// space is kept as written.
+		CHECK(shcl::Document::parse("a:\n\tb: 1\n  c: 2\n").lost_count() == 0);
+		auto lost = shcl::Document::parse("a:\n\t\tb: 1\n\tc: 2\n");
 		CHECK(lost.lost_count() == 1);
 		CHECK(lost.save_file(f) == shcl::Document::SaveResult::Refused);
 		CHECK(lost.save_file_lossy(f) == shcl::Document::SaveResult::Ok);

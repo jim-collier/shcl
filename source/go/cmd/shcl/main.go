@@ -297,7 +297,9 @@ E011|error|stacked '*' element for a field that already has a value
   one way or the other, not both.
 E012|error|indentation matches no open level
   The line is skipped, and anything written deeper is skipped with it
-  (E018). Indent to a column some open parent already uses.
+  (E018). A save writes them back as they were when the indent holds a
+  space. One indented with tabs alone would bind there, so it is lost.
+  Indent to a column some open parent already uses.
 E013|error|malformed '*' line ('*' not followed by a space)
   The line is skipped, and what is written under it goes with it.
 E014|error|malformed line skipped (the message names the reason)
@@ -1807,6 +1809,16 @@ func doMigrate(o *opts) int {
 		}
 	}
 	rewritten := rewrittenLines(text, m.Text)
+	// A save keeps a line at an indent no level matches, but 2.x placed some
+	// such lines by a looser rule and read them, so a migration that leaves
+	// one has not carried the file across. With nothing lost, every one of
+	// them is kept.
+	misplaced := 0
+	for _, d := range doc.Diagnostics() {
+		if d.Code == "E012" || d.Code == "E018" {
+			misplaced++
+		}
+	}
 	if o.check {
 		for _, n := range rewritten {
 			fmt.Fprintf(os.Stderr, "%s:%d: migrate would rewrite this line\n", file, n)
@@ -1816,6 +1828,10 @@ func doMigrate(o *opts) int {
 		if rc == 0 && !o.lossy && doc.LostCount() != 0 {
 			fmt.Fprintf(os.Stderr, "%s: migrate --write would refuse: the migrated text drops %d line(s)/value(s) "+
 				"on load (--lossy overrides)\n", file, doc.LostCount())
+			rc = 7
+		} else if rc == 0 && !o.lossy && misplaced != 0 {
+			fmt.Fprintf(os.Stderr, "%s: migrate --write would refuse: the migrated text leaves %d line(s) unread "+
+				"at an indent no open level matches (--lossy overrides)\n", file, misplaced)
 			rc = 7
 		}
 		if rc == 0 && len(rewritten) != 0 {
@@ -1831,6 +1847,11 @@ func doMigrate(o *opts) int {
 		if doc.LostCount() != 0 && !o.lossy {
 			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the migrated text drops %d line(s)/value(s) "+
 				"on load (--lossy overrides)\n", file, doc.LostCount())
+			return 7
+		}
+		if misplaced != 0 && !o.lossy {
+			fmt.Fprintf(os.Stderr, "%s: refusing to rewrite: the migrated text leaves %d line(s) unread "+
+				"at an indent no open level matches (--lossy overrides)\n", file, misplaced)
 			return 7
 		}
 		if !unchangedSinceRead(file, text) {

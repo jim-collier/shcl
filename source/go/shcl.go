@@ -485,6 +485,16 @@ type trivia struct {
 	// could take them - a header whose children are all commented still owns
 	// those lines. Emitted after the subtree one level deeper than this node.
 	inside []lead
+	// Kept lines that sat among this node's stacked list elements, each with
+	// the number of elements before it. They keep the list stacked on output,
+	// so a line fixed by hand is still inside the list.
+	among []amongLead
+}
+
+// amongLead is a kept line among a list's elements: how many came before it.
+type amongLead struct {
+	before int
+	lead   lead
 }
 
 func (n *nodeData) leading() []lead {
@@ -513,6 +523,13 @@ func (n *nodeData) inside() []lead {
 		return nil
 	}
 	return n.trivia.inside
+}
+
+func (n *nodeData) among() []amongLead {
+	if n.trivia == nil {
+		return nil
+	}
+	return n.trivia.among
 }
 
 func (n *nodeData) trivMut() *trivia {
@@ -591,6 +608,8 @@ type Document struct {
 	// that finds its path already there.
 	probe    bool
 	probeDoc *Document
+	// kept: holds a misplaced line kept as written, so edits have to settle it.
+	kept bool
 }
 
 // nameIndex is the first child of each (parent, name), chained on to the next
@@ -694,6 +713,8 @@ func foldNodeInto(arena []nodeData, survivor, loser int) {
 		}
 		st.after = append(st.after, lt.after...)
 		st.inside = append(st.inside, lt.inside...)
+		st.among = append(st.among, lt.among...)
+		sort.SliceStable(st.among, func(i, j int) bool { return st.among[i].before < st.among[j].before })
 	}
 }
 
@@ -752,7 +773,7 @@ func settleFenceTrailing(arena []nodeData, n int) {
 	fenced := func(nd *nodeData) bool { return nd.value.kind == vRaw && nd.trailing() != "" }
 	hit := false
 	for _, c := range arena[n].children {
-		if fenced(&arena[c]) {
+		if fenced(&arena[c]) || stacks(&arena[c]) {
 			hit = true
 			break
 		}
@@ -765,9 +786,44 @@ func settleFenceTrailing(arena []nodeData, n int) {
 		nd := &arena[c]
 		if fenced(nd) && empties[nd.name] {
 			trailingToLeading(nd)
+		} else if stacks(nd) && empties[nd.name] {
+			unstack(nd)
 		} else if nd.value.isEmpty() {
 			empties[nd.name] = true
 		}
+	}
+}
+
+// stacks: written stacked, a list holding a kept line among its elements or
+// after its last one.
+func stacks(nd *nodeData) bool {
+	if nd.value.kind != vCell {
+		return false
+	}
+	if len(nd.among()) > 0 {
+		return true
+	}
+	if nd.starList {
+		for _, c := range nd.inside() {
+			if !strings.HasPrefix(c.text, "#") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unstack: a list after an empty binding of its name cannot be written
+// stacked, since its bare header would merge into that binding on a reload.
+// It goes inline, and the lines among its elements go above it, where a
+// reload files what sits there.
+func unstack(nd *nodeData) {
+	nd.starList = false
+	if t := nd.trivia; t != nil {
+		for _, a := range t.among {
+			t.leading = append(t.leading, a.lead)
+		}
+		t.among = nil
 	}
 }
 
@@ -1768,9 +1824,18 @@ type migrating struct {
 	lost      int
 }
 
-// formatVersion is the major a `##    Format   N` line names, if the document
-// carries one. More digits than fit is not a 2.x file either, so it reads as
-// this major and there is nothing to migrate. Only Migrate reads this line.
+// FormatVersion is the format major a document's `##    Format   N` line
+// names, read the way Migrate reads it. ok is false when no line names one,
+// which is every 2.x file and a current one written without the info block.
+// Migrate hands a file back untouched exactly when this is FormatMajor or
+// more, so a program can ask before it rewrites anything.
+func FormatVersion(text string) (int, bool) {
+	return formatLineVersion(strings.TrimPrefix(text, "\ufeff"))
+}
+
+// formatLineVersion is FormatVersion on text with the BOM already off. More
+// digits than fit is not a 2.x file either, so it reads as this major and
+// there is nothing to migrate.
 //
 // Raw bodies are skipped exactly where the rewrite skips them, by walking the
 // lines through the same migrateLine. A Format line pasted into a block is
@@ -1778,7 +1843,7 @@ type migrating struct {
 // file, or leave an old one alone. A file naming this format on any line has
 // nothing to migrate, so the highest line decides: the stamp Migrate adds comes
 // after an older one, and the next run has to see it.
-func formatVersion(text string) (int, bool) {
+func formatLineVersion(text string) (int, bool) {
 	var tok Tokens
 	var fence openFence
 	// Only the blocks a line opens are wanted here, not what it counts.
@@ -1841,13 +1906,24 @@ func formatVersion(text string) (int, bool) {
 // to refuse over. A rewritten file is stamped with the version line, so the
 // second run has an answer the first one did not.
 func Migrate(text string, fromV2 bool) Migration {
+	return migrateText(text, fromV2, true)
+}
+
+// MigrateUnstamped is Migrate without the version line or the migrated note,
+// for a program that writes GenBanner itself, which carries the version line.
+// The next run can tell the result is current only once that is written.
+func MigrateUnstamped(text string, fromV2 bool) Migration {
+	return migrateText(text, fromV2, false)
+}
+
+func migrateText(text string, fromV2, stamp bool) Migration {
 	whole := text
 	bom := ""
 	if strings.HasPrefix(text, "\ufeff") {
 		bom = "\ufeff"
 		text = text[len(bom):]
 	}
-	version, hasVersion := formatVersion(text)
+	version, hasVersion := formatLineVersion(text)
 	if hasVersion && version >= FormatMajor {
 		return Migration{Text: whole, Current: true}
 	}
@@ -1887,7 +1963,7 @@ func Migrate(text string, fromV2 bool) Migration {
 	// migration that did not finish, and the next run would then skip it. A
 	// document that never closes its raw block has nowhere to put the line
 	// either: appended, it would be another line of the block's content.
-	if st.ambiguous == 0 && !fence.open {
+	if stamp && st.ambiguous == 0 && !fence.open {
 		s := out.String()
 		if s != "" && !strings.HasSuffix(s, "\n") {
 			out.WriteByte('\n')
@@ -2351,6 +2427,11 @@ type parser struct {
 	// children (hint) from ones the re-opened region itself created (silent).
 	reentered map[int]int
 	lost      int // dropped lines/values canonical output cannot re-emit
+	// Indent of the last E012 line kept as written, while the lines after it
+	// sit under it; those are E018 and are kept as written too.
+	keptHold string
+	keptHeld bool
+	keptAny  bool
 	// ParseLimited's caps, 0 = uncapped: nodes counted against the arena
 	// (root excluded), elements against a single value's cell, diagnostics
 	// against the list. Past the diagnostic cap nothing is listed, only
@@ -2596,7 +2677,11 @@ func (p *parser) hangDeeperPending(newIndent string) {
 				if ent.node != root && ent.node != dead && ent.node != unopened && len(ent.indent) >= len(newIndent) &&
 					strings.HasPrefix(pn.indent, ent.indent) {
 					si, target = j, ent.node
-					atOwnLevel = len(ent.indent) == len(pn.indent)
+					// A list element's column is an entry with the list's
+					// node on the list's own entry. It is inside the list,
+					// not its level.
+					column := j > 0 && p.stack[j-1].node == ent.node
+					atOwnLevel = len(ent.indent) == len(pn.indent) && !column
 					break
 				}
 			}
@@ -2645,44 +2730,79 @@ func (p *parser) hangDeeperPending(newIndent string) {
 // resolveParent resolves which open level this indent belongs to, walking
 // down from the top. Equal to a level is its sibling. Deeper than a level is
 // its child, unless a level opened under that one is still open, in which case
-// the line falls between the two. Anything else is a recoverable error.
-func (p *parser) resolveParent(indent string) (int, bool) {
+// the line falls between the two. Anything else is a recoverable error. found
+// is locate() on the same indent, which the line loop has already asked.
+func (p *parser) resolveParent(indent string, found located) (int, bool) {
+	c := found.cut
+	if c.push {
+		if c.hold >= 0 {
+			p.stack = p.stack[:c.hold]
+		}
+		p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
+	} else {
+		p.stack = p.stack[:c.to]
+	}
+	return found.parent, found.ok
+}
+
+// locate is resolveParent() without moving anything.
+func (p *parser) locate(indent string) located {
+	return locateIn(p.stack, indent)
+}
+
+// located is what resolveParent() hands back for an indent, and how it cuts
+// the stack to get there.
+type located struct {
+	parent int
+	ok     bool
+	cut    cut
+}
+
+// cut is how resolveParent() cuts the stack: back to a length, or past a
+// skipped line's column (hold, -1 for none) to push this one's.
+type cut struct {
+	to   int
+	push bool
+	hold int
+}
+
+// locateIn is resolveParent() on a level stack, without moving anything. The
+// emitter runs it on its model of the stack a reload will have.
+func locateIn(stack []stackEnt, indent string) located {
 	hold := -1
-	for i := len(p.stack) - 1; i >= 0; i-- {
-		ent := p.stack[i]
+	for i := len(stack) - 1; i >= 0; i-- {
+		ent := stack[i]
 		if ent.indent == indent {
 			if ent.node == unopened {
 				// Back at a skipped line's column: refused the same way.
-				p.stack = p.stack[:i+1]
-				return 0, false
+				return located{cut: cut{to: i + 1}}
 			}
 			// Sibling of stack[i]: its parent is the entry below it. Keep the
 			// sentinel; a top-level line resolves to root.
 			parent := root
 			if i > 0 {
-				parent = p.stack[i-1].node
+				parent = stack[i-1].node
 			}
 			keep := i
 			if keep < 1 {
 				keep = 1
 			}
-			p.stack = p.stack[:keep]
 			if parent == unopened {
-				return dead, true
+				parent = dead
 			}
-			return parent, true
+			return located{parent: parent, ok: true, cut: cut{to: keep}}
 		}
 		if len(indent) > len(ent.indent) && strings.HasPrefix(indent, ent.indent) {
 			// A skipped line's unopened level sits on top without opening
 			// anything, so it does not count as a level in between.
-			if i+1 < len(p.stack) && p.stack[i+1].node != unopened {
+			if i+1 < len(stack) && stack[i+1].node != unopened {
 				break
 			}
-			p.stack = p.stack[:i+1]
-			if ent.node == unopened {
-				return dead, true
+			node := ent.node
+			if node == unopened {
+				node = dead
 			}
-			return ent.node, true
+			return located{parent: node, ok: true, cut: cut{to: i + 1}}
 		}
 		if ent.node == unopened {
 			hold = i
@@ -2694,11 +2814,7 @@ func (p *parser) resolveParent(indent string) (int, bool) {
 	// a level open before it still binds there, as in 2.0.0. The hold ends at
 	// the first line neither under it nor at it, this one included, which
 	// keeps one on the stack at most.
-	if hold >= 0 {
-		p.stack = p.stack[:hold]
-	}
-	p.stack = append(p.stack, stackEnt{indent: indent, node: unopened})
-	return 0, false
+	return located{cut: cut{push: true, hold: hold}}
 }
 
 // outcome: what became of a line the parser did not bind whole. Only the
@@ -2754,7 +2870,15 @@ func (p *parser) refuse(line int, code, msg string, out outcome, indent string) 
 	}
 	p.lost += n
 	if out.kind == outcomeRetained {
-		p.pending = append(p.pending, pend{text: out.text, indent: indent, blankBefore: out.blankBefore, ceiling: len(indent)})
+		// A line kept as written never hangs on a block: its indent is not
+		// one the output's levels are spelled with, so the block it would
+		// match here is not the one it matches on a reload. It waits for the
+		// next binding line, as do the pending lines after it.
+		ceiling := len(indent)
+		if strings.HasPrefix(out.text, " ") || strings.HasPrefix(out.text, "\t") {
+			ceiling = 0
+		}
+		p.pending = append(p.pending, pend{text: out.text, indent: indent, blankBefore: out.blankBefore, ceiling: ceiling})
 	}
 	// A refused line owns its indent, so what is written deeper is skipped
 	// with it (E018). An indent that matched no level already holds an
@@ -2763,6 +2887,34 @@ func (p *parser) refuse(line int, code, msg string, out outcome, indent string) 
 	if holds && !(top >= 0 && p.stack[top].indent == indent && p.stack[top].node == unopened) {
 		p.stack = append(p.stack, stackEnt{indent: indent, node: dead})
 	}
+}
+
+// misplaced refuses a line for where it sits rather than for what it says:
+// E012, or E018 under one. Written back exactly as it was, it sits the same
+// way on a reload, as long as its indent holds a space, since no level the
+// emitter opens is spelled with one. A tab-only indent would bind there, and
+// a line opening a raw block would take its body along, so those are
+// dropped. An E018 line is kept only under a kept E012 one.
+func (p *parser) misplaced(line int, code, indent, rest string, hadBlank, raw bool) {
+	keep := false
+	if !raw {
+		if code == "E012" {
+			keep = strings.Contains(indent, " ")
+		} else {
+			keep = p.keptHeld && len(indent) > len(p.keptHold) && strings.HasPrefix(indent, p.keptHold)
+		}
+	}
+	p.keptAny = p.keptAny || keep
+	msg := "parent line was skipped; line skipped"
+	if code == "E012" {
+		p.keptHeld, p.keptHold = keep, indent
+		msg = "indentation matches no open level"
+	}
+	out := outDropped
+	if keep {
+		out = outRetained(indent+trimEndWS(rest), hadBlank)
+	}
+	p.refuse(line, code, msg, out, indent)
 }
 
 // skipUnderDead diagnoses a line written under a skipped line, and skips it
@@ -2778,8 +2930,18 @@ func (p *parser) skipUnderDead(line int, indent string) {
 // the end of the file. A line whose path did not parse has no value to read,
 // so it goes alone.
 func (p *parser) skipFieldLine(lines []string, i int, indent string, tok *Tokens, rest string) int {
+	if ch, length, info, ok := lineFence(tok, rest); ok {
+		_, next := p.consumeRaw(lines, i+1, i+1, indent, ch, length, info)
+		return next
+	}
+	return i + 1
+}
+
+// lineFence is the fence a field line's value opens, if it opens one. A line
+// that did not tokenize has no value to read.
+func lineFence(tok *Tokens, rest string) (ch byte, length int, info string, ok bool) {
 	if tok.Fault >= 0 || tok.Sep < 0 {
-		return i + 1
+		return 0, 0, "", false
 	}
 	// A capped scan zeroed the value, and a fence is told by its leading run
 	// alone.
@@ -2787,11 +2949,7 @@ func (p *parser) skipFieldLine(lines []string, i int, indent string, tok *Tokens
 	if tok.Capped {
 		v = trimWsp(rest[tok.Value[0]:])
 	}
-	if ch, length, info, ok := fenceOpen(v); ok {
-		_, next := p.consumeRaw(lines, i+1, i+1, indent, ch, length, info)
-		return next
-	}
-	return i + 1
+	return fenceOpen(v)
 }
 
 // attachPath walks path segments under parent, select-or-creating; returns the
@@ -2986,26 +3144,26 @@ func (p *parser) bindBlock(parent int, v value, line int, indent string) int {
 
 // addStarElement: one stacked-list element (`* scalar`) appends to the
 // parent's array.
-func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, indent string) {
+func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, indent string) bool {
 	if parent == root {
 		p.refuse(line, "E007", "list element with no parent field", outDropped, indent)
-		return
+		return false
 	}
 	// Uniform-or-nothing (spec): a mix with field children is not a block array.
 	if len(p.arena[parent].children) != 0 {
 		p.refuse(line, "E008", "list element mixed with field children; ignored", outDropped, indent)
-		return
+		return false
 	}
 	// One scalar per line; a bare comma is an error, not a second element.
 	if len(tok.Elements) > 1 {
 		p.refuse(line, "E010", "bare comma in list element (one element per line)", outDropped, indent)
-		return
+		return false
 	}
 	piece := tok.Elements[0]
 	el, ok := elementOf(&piece, text)
 	if !ok {
 		p.refuse(line, "E009", "empty list element", outDropped, indent)
-		return
+		return false
 	}
 	if piece.Quote == QuoteOpen {
 		p.err(line, "E017", "unterminated quote in value")
@@ -3016,7 +3174,7 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 	// under a field that already has a value it is E011, cap or not.
 	if p.maxElements != 0 && p.arena[parent].starList && p.arena[parent].value.kind == vCell && len(p.arena[parent].value.els) >= p.maxElements {
 		p.refuse(line, "E021", fmt.Sprintf("array longer than %d elements; line skipped", p.maxElements), outDropped, indent)
-		return
+		return false
 	}
 	switch {
 	case p.arena[parent].value.isEmpty():
@@ -3044,7 +3202,7 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 		p.arena[parent].value.els = append(p.arena[parent].value.els, el)
 	default:
 		p.refuse(line, "E011", "field already has a value; list element ignored", outDropped, indent)
-		return
+		return false
 	}
 	if bindingLike {
 		p.diag(Diagnostic{
@@ -3059,6 +3217,35 @@ func (p *parser) addStarElement(parent int, tok *Tokens, text string, line int, 
 	// line back at the element's column is its sibling, where no level had been
 	// opened there and every later sibling was E012 (20260918b item 28).
 	p.stack = append(p.stack, stackEnt{indent: indent, node: parent})
+	return true
+}
+
+// keepAmong: kept lines waiting for the list element that just joined sat
+// among the list's elements, so they stay there; comments still ride the
+// field.
+func (p *parser) keepAmong(parent int) {
+	anyKept := false
+	for _, pn := range p.pending {
+		if !strings.HasPrefix(pn.text, "#") {
+			anyKept = true
+			break
+		}
+	}
+	if !anyKept || p.arena[parent].value.kind != vCell {
+		return
+	}
+	before := len(p.arena[parent].value.els) - 1
+	rest := make([]pend, 0, len(p.pending))
+	for _, pn := range p.pending {
+		if strings.HasPrefix(pn.text, "#") {
+			rest = append(rest, pn)
+			continue
+		}
+		t := p.arena[parent].trivMut()
+		t.among = append(t.among, amongLead{before: before, lead: lead{text: pn.text, blankBefore: pn.blankBefore}})
+	}
+	p.pending = rest
+	p.pendMarks = p.pendMarks[:0]
 }
 
 // emitRepeatedLeafHints flags legal input that looks like a common mistake: a
@@ -3227,13 +3414,23 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 			i++
 			continue
 		}
+		// A kept misplaced line holds only the lines written under it.
+		if p.keptHeld && !(len(indent) > len(p.keptHold) && strings.HasPrefix(indent, p.keptHold)) {
+			p.keptHeld = false
+		}
 		// Any other line consumes the pending blank; only a field line that
 		// binds turns it into grouping.
 		hadBlank := p.sawBlank
 		p.sawBlank = false
 		// A binding line claims the pending comments - but deeper-written
-		// ones hang on their own block first.
-		p.hangDeeperPending(indent)
+		// ones hang on their own block first. A line refused for where it
+		// sits closes nothing, so it leaves them for the next line: kept, its
+		// indent would measure the levels differently on a reload, and
+		// dropped, a reload never sees it.
+		found := p.locate(indent)
+		if found.ok && found.parent != dead {
+			p.hangDeeperPending(indent)
+		}
 		// Child-indent fence: a value line for its parent field. The fence
 		// and its info string are the value; a comment may follow them.
 		if rest[0] == '`' || rest[0] == '~' {
@@ -3249,7 +3446,7 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				if tok.Comment >= 0 {
 					comment = rest[tok.Comment:]
 				}
-				parent, okp := p.resolveParent(indent)
+				parent, okp := p.resolveParent(indent, found)
 				v, next := p.consumeRaw(lines, i+1, lineno, indent, ch, length, info)
 				if !okp {
 					// The body goes with its fence: parsed live, it would read as
@@ -3282,14 +3479,14 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				spaced = isWspByte(lines[i][len(indent)+lead+1])
 			}
 			if spaced {
-				parent, okp := p.resolveParent(indent)
+				parent, okp := p.resolveParent(indent, found)
 				if !okp {
-					p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
+					p.misplaced(lineno, "E012", indent, rest, hadBlank, false)
 					i++
 					continue
 				}
 				if parent == dead {
-					p.skipUnderDead(lineno, indent)
+					p.misplaced(lineno, "E018", indent, rest, hadBlank, false)
 					i++
 					continue
 				}
@@ -3302,22 +3499,27 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 				// root there is no field (E007), so the comment rides the document like
 				// any other pending one.
 				if parent != root {
+					if p.addStarElement(parent, &tok, rest, lineno, indent) {
+						p.keepAmong(parent)
+					}
 					p.attachTrivia(parent, indent, comment)
-				} else if comment != "" {
-					p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
+				} else {
+					if comment != "" {
+						p.pending = append(p.pending, pend{text: comment, indent: indent, blankBefore: hadBlank, ceiling: len(indent)})
+					}
+					p.addStarElement(parent, &tok, rest, lineno, indent)
 				}
-				p.addStarElement(parent, &tok, rest, lineno, indent)
 				i++
 				continue
 			}
-			parent, okp := p.resolveParent(indent)
+			parent, okp := p.resolveParent(indent, found)
 			if !okp {
-				p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
+				p.misplaced(lineno, "E012", indent, rest, hadBlank, false)
 				i++
 				continue
 			}
 			if parent == dead {
-				p.skipUnderDead(lineno, indent)
+				p.misplaced(lineno, "E018", indent, rest, hadBlank, false)
 				i++
 				continue
 			}
@@ -3334,14 +3536,16 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 		if tok.Comment >= 0 {
 			comment = rest[tok.Comment:]
 		}
-		parent, okp := p.resolveParent(indent)
+		parent, okp := p.resolveParent(indent, found)
 		if !okp {
-			p.refuse(lineno, "E012", "indentation matches no open level", outDropped, indent)
+			_, _, _, raw := lineFence(&tok, rest)
+			p.misplaced(lineno, "E012", indent, rest, hadBlank, raw)
 			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
 		if parent == dead {
-			p.skipUnderDead(lineno, indent)
+			_, _, _, raw := lineFence(&tok, rest)
+			p.misplaced(lineno, "E018", indent, rest, hadBlank, raw)
 			i = p.skipFieldLine(lines, i, indent, &tok, rest)
 			continue
 		}
@@ -3481,7 +3685,9 @@ func (p *parser) parse(text string, strictness Strictness) *Document {
 	if 2*len(p.arena) < cap(p.arena) {
 		p.arena = append([]nodeData(nil), p.arena...)
 	}
-	return &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost}
+	doc := &Document{arena: p.arena, diags: p.diags, strictness: strictness, orphans: orphans, lost: p.lost, kept: p.keptAny}
+	doc.settleKept()
+	return doc
 }
 
 // ---------------------------------------------------------------------------
@@ -3620,19 +3826,246 @@ func writeTabs(out *strings.Builder, n int) {
 // minimal quoting, redundancy collapsed, comments re-emitted as attached
 // trivia. Scalar text is never rewritten.
 func (d *Document) ToCanonical() string {
-	var out strings.Builder
-	out.Grow(len(d.arena) * 24)
-	d.emitChildren(d.arena[root].children, 0, &out)
+	e := newEmit(len(d.arena)*24, false)
+	d.emitAll(e)
+	return e.out.String()
+}
+
+func (d *Document) emitAll(e *emit) {
+	d.emitChildren(d.arena[root].children, 0, e)
 	// Comments that never found a following line re-emit at the end.
-	for _, c := range d.orphans {
-		if c.blankBefore && out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		writeTabs(&out, c.depth)
-		out.WriteString(c.text)
-		out.WriteByte('\n')
+	pushLeads(e, d.orphans, 0, root, siteOrphans, 0)
+}
+
+// settleKept makes a misplaced line kept as written into the comment the
+// emitter writes it as, wherever it would now bind as written, so the document
+// is the one its saved text reloads as and the next edit lands the same
+// either way. One among a list's elements goes above the list, as a reload
+// files a comment there. Runs after a load and after each edit, and only
+// while the document holds such a line.
+func (d *Document) settleKept() {
+	// A line moved out of a list can leave it written inline, which changes
+	// what the lines after it sit under, so go again until nothing moves.
+	for d.kept && d.settleKeptOnce() {
 	}
-	return out.String()
+}
+
+func (d *Document) settleKeptOnce() bool {
+	e := newEmit(0, true)
+	d.emitAll(e)
+	d.kept = e.verbatim > 0
+	var among []fell
+	for _, f := range e.fell {
+		var list []lead
+		switch f.site {
+		case siteOrphans:
+			list = d.orphans
+		case siteAmong:
+			among = append(among, f)
+			continue
+		case siteLeading:
+			list = d.arena[f.node].trivia.leading
+		case siteInside:
+			list = d.arena[f.node].trivia.inside
+		default:
+			list = d.arena[f.node].trivia.after
+		}
+		list[f.i].text = commented(list[f.i].text)
+		list[f.i].depth = f.depth
+	}
+	// Out of each list latest first, so a removal leaves the earlier indices
+	// alone, then onto the end of the leading lines in order.
+	movedAny := len(among) > 0
+	var moved []lead
+	for len(among) > 0 {
+		f := among[len(among)-1]
+		among = among[:len(among)-1]
+		t := d.arena[f.node].trivMut()
+		moved = append(moved, t.among[f.i].lead)
+		t.among = append(t.among[:f.i], t.among[f.i+1:]...)
+		if len(among) > 0 && among[len(among)-1].node == f.node {
+			continue
+		}
+		depth := 0
+		for j := len(t.leading) - 1; j >= 0; j-- {
+			if strings.HasPrefix(t.leading[j].text, "#") {
+				depth = t.leading[j].depth
+				break
+			}
+		}
+		for j := len(moved) - 1; j >= 0; j-- {
+			l := moved[j]
+			l.text = commented(l.text)
+			l.depth = depth
+			t.leading = append(t.leading, l)
+		}
+		moved = moved[:0]
+	}
+	return movedAny
+}
+
+// emit is canonical text on its way out, with a model of the level stack a
+// reload of it will have at this point: the sentinel and one level per tab up
+// to open, which the last binding line leaves, then what the lines refused
+// since then pushed, and the indent of a kept misplaced line that the lines
+// under it are kept with.
+type emit struct {
+	out  strings.Builder
+	open int
+	tail []stackEnt
+	hold string
+	held bool
+	// settleKept() only: the lines written as comments, where they sit and at
+	// what depth, and how many went out as written.
+	record   bool
+	fell     []fell
+	verbatim int
+}
+
+// fell is a kept line written as a comment: its list, its index there and
+// the depth it went out at.
+type fell struct {
+	node  int
+	site  site
+	i     int
+	depth int
+}
+
+// site is which trivia list a line sits in.
+type site int
+
+const (
+	siteLeading site = iota
+	siteInside
+	siteAfter
+	siteAmong
+	siteOrphans
+)
+
+func newEmit(capacity int, record bool) *emit {
+	e := &emit{open: -1, record: record}
+	e.out.Grow(capacity)
+	return e
+}
+
+// bound: a binding line at this depth, so the stack is its levels and
+// nothing else.
+func (e *emit) bound(depth int) {
+	e.open = depth
+	e.tail = e.tail[:0]
+	e.held = false
+}
+
+// resolve runs a line at this indent through the reload's resolveParent():
+// the parent it finds, and the model as it leaves it, not yet taken.
+func (e *emit) resolve(indent string) (located, int, []stackEnt) {
+	levels := e.open + 2
+	stack := make([]stackEnt, 0, levels+len(e.tail)+1)
+	stack = append(stack, stackEnt{indent: "", node: root})
+	for depth := 0; depth < levels-1; depth++ {
+		stack = append(stack, stackEnt{indent: strings.Repeat("\t", depth), node: root})
+	}
+	stack = append(stack, e.tail...)
+	found := locateIn(stack, indent)
+	c := found.cut
+	if c.push {
+		if c.hold >= 0 {
+			stack = stack[:c.hold]
+		}
+		stack = append(stack, stackEnt{indent: indent, node: unopened})
+	} else {
+		stack = stack[:c.to]
+	}
+	if len(stack) <= levels {
+		return found, len(stack) - 2, nil
+	}
+	return found, e.open, append([]stackEnt(nil), stack[levels:]...)
+}
+
+// refused takes a resolve, then the refusal's push: a refused line holds its
+// own column unless it already sits there as a skipped line's.
+func (e *emit) refused(indent string, open int, tail []stackEnt) {
+	e.open = open
+	e.tail = tail
+	n := len(e.tail)
+	if !(n > 0 && e.tail[n-1].indent == indent && e.tail[n-1].node == unopened) {
+		e.tail = append(e.tail, stackEnt{indent: indent, node: dead})
+	}
+}
+
+// placed: a line a reload binds, such as a list element, resolves, then holds
+// its column with a live node.
+func (e *emit) placed(indent string) {
+	_, open, tail := e.resolve(indent)
+	e.open = open
+	e.tail = append(tail, stackEnt{indent: indent, node: root})
+	e.held = false
+}
+
+// commented is a misplaced line's text as the comment it falls back to.
+func commented(text string) string {
+	return "# " + text[len(leadingWS(text)):]
+}
+
+// pushLeads writes a run of comments and kept lines, base levels deep. A
+// misplaced line kept as written (its text carries its own indent, a
+// comment's never does) goes back as it was only where a reload keeps it
+// again, which the model of the reload's stack answers the way the parser
+// will: refused for its indent, or under the kept line before it. A merge or
+// an edit can leave it where it would bind, and there it is written as a
+// comment, which reads the same. node, at and from name the list and the
+// index of its first line, for settleKept().
+func pushLeads(e *emit, leads []lead, base, node int, at site, from int) {
+	lastComment := 0
+	for i, c := range leads {
+		if c.blankBefore && e.out.Len() > 0 {
+			e.out.WriteByte('\n')
+		}
+		if strings.HasPrefix(c.text, " ") || strings.HasPrefix(c.text, "\t") {
+			indent := leadingWS(c.text)
+			found, open, tail := e.resolve(indent)
+			under := e.held && len(indent) > len(e.hold) && strings.HasPrefix(indent, e.hold)
+			keep := false
+			switch {
+			case !found.ok:
+				keep = strings.Contains(indent, " ")
+			case found.parent == dead:
+				keep = under
+			}
+			if keep {
+				if !found.ok {
+					e.hold, e.held = indent, true
+				}
+				e.refused(indent, open, tail)
+				e.verbatim++
+				e.out.WriteString(c.text)
+				e.out.WriteByte('\n')
+			} else {
+				// Level with the comment before it, so the run's nesting reads
+				// back the same.
+				if e.record {
+					e.fell = append(e.fell, fell{node: node, site: at, i: from + i, depth: lastComment})
+				}
+				writeTabs(&e.out, base+lastComment)
+				e.out.WriteString(commented(c.text))
+				e.out.WriteByte('\n')
+			}
+			continue
+		}
+		pad := base + c.depth
+		if strings.HasPrefix(c.text, "#") {
+			lastComment = c.depth
+		} else {
+			// A kept malformed line resolves and holds its column on a reload.
+			indent := strings.Repeat("\t", pad)
+			_, open, tail := e.resolve(indent)
+			e.held = false
+			e.refused(indent, open, tail)
+		}
+		writeTabs(&e.out, pad)
+		e.out.WriteString(c.text)
+		e.out.WriteByte('\n')
+	}
 }
 
 // writeTrailing writes an inline comment, canonically two spaces before the `#`.
@@ -3646,7 +4079,7 @@ func writeTrailing(out *strings.Builder, trailing string) {
 // emitChildren emits a sibling run. The parent walk already knows whether an
 // earlier same-name sibling is empty (the raw same-line-fence hazard), so one
 // seen-empties set here replaces a per-child rescan of the whole run.
-func (d *Document) emitChildren(kids []int, depth int, out *strings.Builder) {
+func (d *Document) emitChildren(kids []int, depth int, e *emit) {
 	empties := map[string]bool{}
 	for _, c := range kids {
 		n := &d.arena[c]
@@ -3654,27 +4087,20 @@ func (d *Document) emitChildren(kids []int, depth int, out *strings.Builder) {
 		if n.value.isEmpty() {
 			empties[n.name] = true
 		}
-		d.emitNode(c, depth, wm, out)
+		d.emitNode(c, depth, wm, e)
 	}
 }
 
-func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builder) {
+func (d *Document) emitNode(idx, depth int, wouldMerge bool, e *emit) {
 	node := &d.arena[idx]
 	pad := strings.Repeat("\t", depth)
+	out := &e.out
 	// Same-line fence spelling can't carry an inline comment (an unbalanced
 	// quote in the info-string could hide the `#` on reparse), so its trailing
 	// comment joins the leading lines instead; the flag comes from the parent's
 	// walk. Each blank rides its own comment (or the binding line), never as
 	// the first output line.
-	for _, c := range node.leading() {
-		if c.blankBefore && out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		out.WriteString(pad)
-		writeTabs(out, c.depth)
-		out.WriteString(c.text)
-		out.WriteByte('\n')
-	}
+	pushLeads(e, node.leading(), depth, idx, siteLeading, 0)
 	if node.blankBefore && out.Len() > 0 {
 		out.WriteByte('\n')
 	}
@@ -3686,11 +4112,36 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 	out.WriteString(pad)
 	out.WriteString(emitName(node.name))
 	out.WriteByte(':')
-	switch node.value.kind {
-	case vEmpty:
+	e.bound(depth)
+	switch {
+	case node.value.kind == vEmpty:
 		writeTrailing(out, node.trailing())
 		out.WriteByte('\n')
-	case vCell:
+	case node.value.kind == vCell && stacks(node):
+		// Stacked, with the kept lines where they sat.
+		writeTrailing(out, node.trailing())
+		out.WriteByte('\n')
+		among := node.among()
+		next := 0
+		for i := range node.value.els {
+			from := next
+			for next < len(among) && among[next].before <= i {
+				next++
+			}
+			for j := from; j < next; j++ {
+				pushLeads(e, []lead{among[j].lead}, depth+1, idx, siteAmong, j)
+			}
+			column := pad + "\t"
+			out.WriteString(column)
+			out.WriteString("* ")
+			out.WriteString(emitElement(&node.value.els[i]))
+			out.WriteByte('\n')
+			e.placed(column)
+		}
+		for j := next; j < len(among); j++ {
+			pushLeads(e, []lead{among[j].lead}, depth+1, idx, siteAmong, j)
+		}
+	case node.value.kind == vCell:
 		out.WriteByte(' ')
 		out.WriteString(emitCell(node.value.els))
 		writeTrailing(out, node.trailing())
@@ -3728,28 +4179,11 @@ func (d *Document) emitNode(idx, depth int, wouldMerge bool, out *strings.Builde
 		out.WriteString(fence)
 		out.WriteByte('\n')
 	}
-	d.emitChildren(d.arena[idx].children, depth+1, out)
+	d.emitChildren(d.arena[idx].children, depth+1, e)
 	// Comments this block owns with no child to carry them, one deeper.
-	ipad := pad + "\t"
-	for _, c := range d.arena[idx].inside() {
-		if c.blankBefore && out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		out.WriteString(ipad)
-		writeTabs(out, c.depth)
-		out.WriteString(c.text)
-		out.WriteByte('\n')
-	}
+	pushLeads(e, d.arena[idx].inside(), depth+1, idx, siteInside, 0)
 	// Comments that hung on this block after its last child.
-	for _, c := range d.arena[idx].after() {
-		if c.blankBefore && out.Len() > 0 {
-			out.WriteByte('\n')
-		}
-		out.WriteString(pad)
-		writeTabs(out, c.depth)
-		out.WriteString(c.text)
-		out.WriteByte('\n')
-	}
+	pushLeads(e, d.arena[idx].after(), depth, idx, siteAfter, 0)
 }
 
 // escapeName emits a stored (escape-resolved) name in a spelling that reads
@@ -5008,21 +5442,84 @@ func (d *Document) Lines(path string) []int {
 
 // Children returns the child field names under a path, in file order,
 // duplicates included - the "what keys are in this section?" question Paths()
-// (deduplicated, path-shaped) cannot answer. "" enumerates the top level.
-// Names come back as stored; QuoteSegment() makes one splice-safe in a path.
+// (deduplicated, path-shaped) cannot answer. "" enumerates the top level. A
+// path with several instances lists the children of each in turn, the way a
+// dotted path reaches all of them. Names come back as stored; QuoteSegment()
+// makes one splice-safe in a path.
 func (d *Document) Children(path string) []string {
-	node := root
+	nodes := []int{root}
 	if strings.TrimSpace(path) != "" {
 		r, ok := d.resolve(path)
-		if !ok || r.kind != resOne {
+		if !ok {
 			return nil
 		}
-		node = r.one
+		switch r.kind {
+		case resOne:
+			nodes = []int{r.one}
+		case resMany:
+			nodes = r.many
+		case resSlots:
+			nodes = nodes[:0]
+			for _, n := range r.slots {
+				if n >= 0 {
+					nodes = append(nodes, n)
+				}
+			}
+		default:
+			return nil
+		}
 	}
-	kids := d.arena[node].children
-	out := make([]string, 0, len(kids))
-	for _, c := range kids {
-		out = append(out, d.arena[c].name)
+	var out []string
+	for _, n := range nodes {
+		for _, c := range d.arena[n].children {
+			out = append(out, d.arena[c].name)
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// InstancePaths is Paths() one instance at a time: every binding's path in
+// file order, with `[#i]` on each segment whose name repeats under its
+// parent, so each path reads exactly one node and a repeated block is walked
+// instance by instance. Segments are spelled as Paths() spells them.
+func (d *Document) InstancePaths() []string {
+	var out []string
+	type ent struct {
+		node   int
+		prefix string
+	}
+	stack := []ent{{root, ""}}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if e.node != root {
+			out = append(out, e.prefix)
+		}
+		kids := d.arena[e.node].children
+		total := map[string]int{}
+		for _, c := range kids {
+			total[d.arena[c].name]++
+		}
+		at := map[string]int{}
+		paths := make([]ent, 0, len(kids))
+		for _, c := range kids {
+			name := d.arena[c].name
+			path := emitName(name)
+			if e.prefix != "" {
+				path = e.prefix + "." + path
+			}
+			if total[name] > 1 {
+				path += "[#" + strconv.Itoa(at[name]) + "]"
+				at[name]++
+			}
+			paths = append(paths, ent{c, path})
+		}
+		for i := len(paths) - 1; i >= 0; i-- {
+			stack = append(stack, paths[i])
+		}
 	}
 	return out
 }
@@ -5299,6 +5796,8 @@ func (d *Document) setValue(path string, v value) bool {
 	}
 	d.arena[idx].value = v
 	d.arena[idx].src = nil // written value has no source spelling
+	// No longer the list the lines among its elements sat in.
+	unstack(&d.arena[idx])
 	// An empty binding or a raw block can put a fence after an empty sibling
 	// of its name.
 	fenceSide := v.kind == vEmpty || v.kind == vRaw
@@ -5308,6 +5807,7 @@ func (d *Document) setValue(path string, v value) bool {
 		d.settleFenceName(parent, name)
 	}
 	settleFirstBlank(d.arena, d.orphans)
+	d.settleKept()
 	return true
 }
 
@@ -5371,6 +5871,8 @@ func (d *Document) settleFenceName(parent int, name string) {
 		nd := &d.arena[c]
 		if seenEmpty && nd.value.kind == vRaw && nd.trailing() != "" {
 			trailingToLeading(nd)
+		} else if seenEmpty && stacks(nd) {
+			unstack(nd)
 		} else if nd.value.isEmpty() {
 			seenEmpty = true
 		}
@@ -5490,6 +5992,7 @@ func (d *Document) Remove(path string) int {
 		d.arena[pr.parent].children = kids
 	}
 	settleFirstBlank(d.arena, d.orphans)
+	d.settleKept()
 	return len(targets)
 }
 
@@ -5524,6 +6027,7 @@ func (d *Document) SetComment(path, text string) bool {
 	}
 	t.leading = append(t.leading, l)
 	settleFirstBlank(d.arena, d.orphans)
+	d.settleKept()
 	return true
 }
 
@@ -5762,6 +6266,7 @@ func (d *Document) Merge(over *Document) {
 	}
 	d.index.Store(nil)
 	d.lost += over.lost
+	d.kept = d.kept || over.kept
 	// Only a block the overlay visited can have a changed child list or
 	// comments; the rest was settled when it was built. Settling the whole
 	// tree made every merge cost the document (20260924 item 6). A block's
@@ -5804,6 +6309,7 @@ func (d *Document) Merge(over *Document) {
 		}
 	}
 	settleFirstBlank(d.arena, d.orphans)
+	d.settleKept()
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
@@ -5832,6 +6338,8 @@ func (d *Document) adoptTrivia(base int, over *Document, ok int) {
 	}
 	bt.after = append(bt.after, st.after...)
 	bt.inside = append(bt.inside, st.inside...)
+	bt.among = append(bt.among, st.among...)
+	sort.SliceStable(bt.among, func(i, j int) bool { return bt.among[i].before < bt.among[j].before })
 }
 
 func (d *Document) overlay(baseParent int, over *Document, overParent int, touched *[]int) {
@@ -5909,7 +6417,11 @@ func (d *Document) overlay(baseParent int, over *Document, overParent int, touch
 				var kept []lead
 				for _, b := range byName[name] {
 					nd := &d.arena[b]
-					for _, list := range [][]lead{nd.leading(), nd.inside(), nd.after()} {
+					among := make([]lead, 0, len(nd.among()))
+					for _, a := range nd.among() {
+						among = append(among, a.lead)
+					}
+					for _, list := range [][]lead{nd.leading(), among, nd.inside(), nd.after()} {
 						for _, l := range list {
 							if !strings.HasPrefix(l.text, "#") {
 								kept = append(kept, l)
@@ -6006,6 +6518,7 @@ func cloneTrivia(t *trivia) *trivia {
 		trailing: t.trailing,
 		after:    append([]lead(nil), t.after...),
 		inside:   append([]lead(nil), t.inside...),
+		among:    append([]amongLead(nil), t.among...),
 	}
 	return &c
 }

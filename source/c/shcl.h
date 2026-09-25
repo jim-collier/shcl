@@ -357,8 +357,10 @@ size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out);
 // Child field names under a path, in file order, duplicates included - the
 // "what keys are in this section?" question shcl_paths (deduplicated,
 // path-shaped) cannot answer. An empty or whitespace-only path enumerates the
-// top level. Names come back as stored; shcl_quote_segment makes one
-// splice-safe in a path. Writes an arena-owned array to *out.
+// top level. A path with several instances lists the children of each in
+// turn, the way a dotted path reaches all of them. Names come back as stored;
+// shcl_quote_segment makes one splice-safe in a path. Writes an arena-owned
+// array to *out.
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out);
 // Every field path in the document, in file order, deduplicated - a query
 // recipe for tooling. A segment that is not bare-name-safe is emitted quoted
@@ -366,6 +368,12 @@ size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out)
 // well-formed lookup path and nothing in the document is hidden. Returns the
 // count; *out stays valid until shcl_free, or until shcl_reads_release.
 size_t shcl_paths(shcl_doc *d, shcl_str **out);
+// shcl_paths one instance at a time: every binding's path in file order, with
+// `[#i]` on each segment whose name repeats under its parent, so each path
+// reads exactly one node and a repeated block is walked instance by instance.
+// Segments are spelled as shcl_paths spells them. Returns the count; *out
+// stays valid until shcl_free, or until shcl_reads_release.
+size_t shcl_instance_paths(shcl_doc *d, shcl_str **out);
 // Quote one path segment so it can be spliced into a lookup path: a bare name
 // passes through, anything else comes back quoted and escaped in the form the
 // path scanner accepts. Splicing user-typed text into a path without this is
@@ -389,7 +397,7 @@ shcl_read_dt_arr   shcl_read_datetime_array(shcl_doc *d, const char *path, size_
 shcl_read_str_arr  shcl_read_string_array(shcl_doc *d, const char *path, size_t plen);
 
 // Give back everything the read calls have handed out. Every result from a read
-// - shcl_read_*, shcl_children, shcl_paths, shcl_instances, shcl_lines,
+// - shcl_read_*, shcl_children, shcl_paths, shcl_instance_paths, shcl_instances, shcl_lines,
 // shcl_quote_segment, shcl_to_canonical, shcl_generate - is invalid after this; the document itself is untouched
 // and stays readable, so the next read works normally. Optional: leave it alone
 // and results live until shcl_free, which is the documented contract and what a
@@ -500,6 +508,17 @@ typedef struct { char *text; size_t len; int current; size_t ambiguous; size_t l
 // An allocation failure inside it frees its own working memory before SHCL_OOM
 // runs, so a hook that longjmps out is not left holding the two arenas.
 shcl_migration shcl_migrate(const char *text, size_t len, int from_v2);
+// shcl_migrate without the version line or the migrated note, for a program
+// that writes SHCL_GEN_BANNER itself, which carries the version line. The next
+// run can tell the result is current only once that is written.
+shcl_migration shcl_migrate_unstamped(const char *text, size_t len, int from_v2);
+// The format major a document's `##    Format   N` line names, read the way
+// shcl_migrate reads it, or -1 when no line names one, which is every 2.x file
+// and a current one written without the info block. shcl_migrate hands a file
+// back untouched exactly when this is SHCL_FORMAT_MAJOR or more, so a program
+// can ask before it rewrites anything. Digits past 32 bits read as
+// SHCL_FORMAT_MAJOR, since whatever wrote them was not 2.x.
+int64_t shcl_format_version(const char *text, size_t len);
 
 // --- Writer: typed emit, defaults, comments, structural edits ---------------
 // The reverse of the reads. Each setter builds the canonical stored text for a
@@ -980,6 +999,10 @@ typedef struct { ShclStr text; int blank_before; size_t depth; } ShclLead;
 DEFINE_VEC(ShclVecLead, ShclLead)
 static ShclLead lead_make(ShclStr text, int blank_before, size_t depth) { ShclLead l; l.text = text; l.blank_before = blank_before; l.depth = depth; return l; }
 static ShclLead lead_plain(ShclStr text) { return lead_make(text, 0, 0); }
+/* A kept line among a stacked list's elements, with how many elements come
+   before it. */
+typedef struct { size_t before; ShclLead lead; } ShclAmong;
+DEFINE_VEC(ShclVecAmong, ShclAmong)
 
 /* Comment trivia, verbatim from `#` to end of line. Never part of identity
    or reads; merged instances concatenate leading, first trailing wins
@@ -996,6 +1019,10 @@ typedef struct {
 	   could take them - a header whose children are all commented still owns
 	   those lines. Emitted after the subtree one level deeper than this node. */
 	ShclVecLead inside;
+	/* Kept lines that sat among this node's stacked list elements. They keep
+	   the list stacked on output, so a line fixed by hand is still inside the
+	   list. */
+	ShclVecAmong among;
 } ShclTrivia;
 
 typedef struct {
@@ -1082,6 +1109,8 @@ struct shcl_doc {
 	   the value back, so a probe is never written. */
 	shcl_doc *probe_doc;
 	int probe;
+	/* Holds a misplaced line kept as written, so edits have to settle it. */
+	int kept;
 };
 
 /* Point every allocation a document can make at one recovery point, or back at
@@ -1127,6 +1156,7 @@ static ShclVecLead triv_leading(const ShclNode *n) { if (n->trivia) return n->tr
 static ShclStr triv_trailing(const ShclNode *n) { return n->trivia ? n->trivia->trailing : s_empty(); }
 static ShclVecLead triv_after(const ShclNode *n) { if (n->trivia) return n->trivia->after; ShclVecLead v; memset(&v, 0, sizeof v); return v; }
 static ShclVecLead triv_inside(const ShclNode *n) { if (n->trivia) return n->trivia->inside; ShclVecLead v; memset(&v, 0, sizeof v); return v; }
+static ShclVecAmong triv_among(const ShclNode *n) { if (n->trivia) return n->trivia->among; ShclVecAmong v; memset(&v, 0, sizeof v); return v; }
 static ShclTrivia *triv_mut(ShclArena *a, ShclNode *n) {
 	if (!n->trivia) { n->trivia = (ShclTrivia *)arena_alloc(a, sizeof(ShclTrivia)); memset(n->trivia, 0, sizeof(ShclTrivia)); }
 	return n->trivia;
@@ -1138,6 +1168,17 @@ static ShclStr node_authored(const ShclNode *n) { return n->name_src.n ? n->name
    folded name, so the duplicate string never gets allocated. */
 static ShclStr spelled(ShclArena *a, ShclStr name, ShclStr name_src) {
 	return s_eq(name_src, name) ? s_empty() : s_dup(a, name_src);
+}
+
+/* Stable order by position: an insertion sort, since the lists are short and
+   mostly in order already. */
+static void among_sort(ShclVecAmong *v) {
+	for (size_t i = 1; i < v->len; i++) {
+		ShclAmong x = v->data[i];
+		size_t j = i;
+		while (j > 0 && v->data[j - 1].before > x.before) { v->data[j] = v->data[j - 1]; j--; }
+		v->data[j] = x;
+	}
 }
 
 /* Merge a later instance into an earlier one under the in-file merge rule:
@@ -1166,6 +1207,9 @@ static void fold_node_into(shcl_doc *d, size_t survivor, size_t loser) {
 			ShclVecLead_push(a, &st->after, lt->after.data[k]);
 		for (size_t k = 0; k < lt->inside.len; k++)
 			ShclVecLead_push(a, &st->inside, lt->inside.data[k]);
+		for (size_t k = 0; k < lt->among.len; k++)
+			ShclVecAmong_push(a, &st->among, lt->among.data[k]);
+		among_sort(&st->among);
 	}
 }
 
@@ -1842,19 +1886,19 @@ static ShclStr migrate_line(ShclArena *ta, ShclArena *a, ShclStr rest, ShclToken
 	return s_splice(a, rest, &edits);
 }
 
-/* The major a `##    Format   N` line names, or -1 when the document carries
-   none. Once the running value is past this major it stops accumulating: the
-   comparison below only asks which side of this major it falls, and that keeps
-   a line of many digits from overflowing. Only migrate reads this line.
+/* shcl_format_version() on text with the BOM already off: the major a
+   `##    Format   N` line names, or -1 when the document carries none. Digits
+   that do not fit 32 bits read as "newer than this", since whatever wrote them
+   was not 2.x.
    Raw bodies are skipped exactly where the rewrite skips them, by walking the
    lines through the same migrate_line. A Format line pasted into a block is
    that block's content, and taking it as the file's would rewrite a current
    file, or leave an old one alone. A file naming this format on any line has
    nothing to migrate, so the highest line decides: the stamp migrate adds
    comes after an older one, and the next run has to see it. */
-static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclTokens *tok) {
+static int64_t format_line_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclTokens *tok) {
 	size_t headn = sizeof(SHCL_FORMAT_LINE_HEAD) - 1, start = 0;
-	long found = -1;
+	int64_t found = -1;
 	int fence_on = 0; unsigned char fence_ch = 0; size_t fence_len = 0;
 	/* Only the blocks a line opens are wanted here, not what it counts. */
 	ShclMigrating dry; dry.from_v2 = 1; dry.ambiguous = 0; dry.lost = 0;
@@ -1872,12 +1916,13 @@ static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclToken
 		ShclStr line = trim_wsp_end(raw);
 		if (line.n > headn && memcmp(line.p, SHCL_FORMAT_LINE_HEAD, headn) == 0) {
 			ShclStr n = s_slice(line, headn, line.n);
-			long v = 0; int ok = 1;
+			uint64_t u = 0; int ok = 1, big = 0;
 			for (size_t k = 0; k < n.n; k++) {
 				if (!is_adigit((unsigned char)n.p[k])) { ok = 0; break; }
-				if (v <= SHCL_FORMAT_MAJOR) v = v * 10 + (n.p[k] - '0');
+				if (!big) { u = u * 10 + (uint64_t)(n.p[k] - '0'); if (u > UINT32_MAX) big = 1; }
 			}
 			if (ok) {
+				int64_t v = big ? SHCL_FORMAT_MAJOR : (int64_t)u;
 				if (v >= SHCL_FORMAT_MAJOR) return v;
 				if (v > found) found = v;
 				continue;
@@ -1897,15 +1942,15 @@ static long format_version(ShclArena *ta, ShclArena *sc, ShclStr text, ShclToken
    gets the backslash re-spellings; anything else gets every other rewrite and
    leaves those pieces alone, counted in st->ambiguous for the caller to refuse
    over. A rewritten file is stamped with the version line, so the second run
-   has an answer the first one did not. */
-static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating *st, int *current) {
+   has an answer the first one did not; stamp 0 leaves it off. */
+static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating *st, int *current, int stamp) {
 	ShclStr whole = text, bom = s_empty();
 	if (text.n >= 3 && (unsigned char)text.p[0] == 0xEF && (unsigned char)text.p[1] == 0xBB && (unsigned char)text.p[2] == 0xBF) {
 		bom = s_slice(text, 0, 3);
 		text = s_slice(text, 3, text.n);
 	}
 	ShclTokens tok; memset(&tok, 0, sizeof tok);
-	long version = format_version(a, sc, text, &tok);
+	int64_t version = format_line_version(a, sc, text, &tok);
 	if (version >= SHCL_FORMAT_MAJOR) { *current = 1; return whole; }
 	if (version >= 0) st->from_v2 = 1;
 	int changed = 0;
@@ -1942,7 +1987,7 @@ static ShclStr migrate(ShclArena *a, ShclArena *sc, ShclStr text, ShclMigrating 
 	   migration that did not finish, and the next run would then skip it. A
 	   document that never closes its raw block has nowhere to put the line
 	   either: appended, it would be another line of the block's content. */
-	if (st->ambiguous == 0 && !fence_on) {
+	if (stamp && st->ambiguous == 0 && !fence_on) {
 		if (out.len && out.data[out.len - 1] != '\n') sb_putc(a, &out, '\n');
 		sb_puts(a, &out, SHCL_FORMAT_LINE); sb_putc(a, &out, '\n');
 		if (changed) { sb_puts(a, &out, SHCL_MIGRATED_LINE); sb_putc(a, &out, '\n'); }
@@ -1971,7 +2016,7 @@ typedef struct { ShclArena a, sc; } ShclMigrateOwn;
    The output and the reused tokens live in `a`; the per-line temporaries go
    to `sc`, reset per line, so a large document costs its own size and not
    every line's scratch on top. */
-shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
+static shcl_migration migrate_text(const char *text, size_t len, int from_v2, int stamp) {
 	ShclMigrateOwn *volatile own = (ShclMigrateOwn *)calloc(1, sizeof *own);
 	if (!own) { SHCL_OOM(); abort(); }
 	jmp_buf panic;
@@ -1988,7 +2033,7 @@ shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
 	ShclStr in; in.p = text ? text : ""; in.n = len;
 	ShclMigrating st; st.from_v2 = from_v2; st.ambiguous = 0; st.lost = 0;
 	shcl_migration m; m.current = 0;
-	ShclStr r = migrate(&own->a, &own->sc, in, &st, &m.current);
+	ShclStr r = migrate(&own->a, &own->sc, in, &st, &m.current, stamp);
 	m.ambiguous = st.ambiguous; m.lost = st.lost; m.len = r.n;
 	m.text = (char *)malloc(r.n + 1);
 	if (!m.text) {
@@ -2002,6 +2047,34 @@ shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
 	ShclMigrateOwn *done = own;
 	arena_free(&done->a); arena_free(&done->sc); free(done);
 	return m;
+}
+
+shcl_migration shcl_migrate(const char *text, size_t len, int from_v2) {
+	return migrate_text(text, len, from_v2, 1);
+}
+
+shcl_migration shcl_migrate_unstamped(const char *text, size_t len, int from_v2) {
+	return migrate_text(text, len, from_v2, 0);
+}
+
+int64_t shcl_format_version(const char *text, size_t len) {
+	ShclMigrateOwn *volatile own = (ShclMigrateOwn *)calloc(1, sizeof *own);
+	if (!own) { SHCL_OOM(); abort(); }
+	jmp_buf panic;
+	if (SHCL_SETJMP(panic)) {
+		ShclMigrateOwn *bad = own;
+		arena_free(&bad->a); arena_free(&bad->sc); free(bad);
+		SHCL_OOM();
+		abort();
+	}
+	arena_guard(&own->a, &panic); arena_guard(&own->sc, &panic);
+	ShclStr in; in.p = text ? text : ""; in.n = len;
+	if (in.n >= 3 && (unsigned char)in.p[0] == 0xEF && (unsigned char)in.p[1] == 0xBB && (unsigned char)in.p[2] == 0xBF) in = s_slice(in, 3, in.n);
+	ShclTokens tok; memset(&tok, 0, sizeof tok);
+	int64_t v = format_line_version(&own->a, &own->sc, in, &tok);
+	ShclMigrateOwn *done = own;
+	arena_free(&done->a); arena_free(&done->sc); free(done);
+	return v;
 }
 
 // --- Path scanner (shared by file lines and accessor queries) ----------------
@@ -2682,7 +2755,11 @@ typedef struct { shcl_doc *d; ShclArena *tmp; ShclArena *line; ShclArena *hints;
 	size_t max_nodes, max_elements;
 	/* Diagnostic cap: past it nothing is listed, only counted (errors, hints),
 	   for the one tail entry the parse ends with. */
-	size_t max_diags, unlisted_errors, unlisted_hints; } ShclParser;
+	size_t max_diags, unlisted_errors, unlisted_hints;
+	/* Indent of the last E012 line kept as written, while the lines after it
+	   sit under it; those are E018 and are kept as written too. */
+	int has_kept_hold; ShclStr kept_hold;
+	int kept_any; } ShclParser;
 
 static void push_diag(shcl_doc *d, size_t line, shcl_severity sev, const char *code, ShclStr msg) {
 	ShclDiag dg; dg.line = line; dg.sev = sev; dg.message = msg; dg.code = code; dg.generated = 0;
@@ -2765,6 +2842,29 @@ static void trailing_to_leading(shcl_doc *d, ShclNode *nd) {
 	nd->blank_before = 0;
 }
 
+/* Written stacked: a list holding a kept line among its elements or after
+   its last one. */
+static int stacks(const ShclNode *nd) {
+	if (nd->value.kind != V_CELL || !nd->trivia) return 0;
+	if (nd->trivia->among.len) return 1;
+	if (!nd->star_list) return 0;
+	for (size_t k = 0; k < nd->trivia->inside.len; k++)
+		if (!(nd->trivia->inside.data[k].text.n && nd->trivia->inside.data[k].text.p[0] == '#')) return 1;
+	return 0;
+}
+
+/* A list after an empty binding of its name cannot be written stacked: its
+   bare header would merge into that binding on a reload. It goes inline, and
+   the lines among its elements go above it, where a reload files what sits
+   there. */
+static void unstack(shcl_doc *d, ShclNode *nd) {
+	nd->star_list = 0;
+	if (!nd->trivia) return;
+	for (size_t k = 0; k < nd->trivia->among.len; k++)
+		ShclVecLead_push(&d->arena, &nd->trivia->leading, nd->trivia->among.data[k].lead);
+	nd->trivia->among.len = 0;
+}
+
 /* A raw block after an empty binding of its name is written with the fence on
    the binding's line, where no comment can follow it, so the emitter writes its
    trailing comment on a line of its own above, after the node's blank. A
@@ -2773,7 +2873,7 @@ static void trailing_to_leading(shcl_doc *d, ShclNode *nd) {
 static void settle_fence_trailing(shcl_doc *d, size_t n) {
 	ShclVecSize kids = NODE(d, n).children;
 	size_t k = 0;
-	while (k < kids.len && !(NODE(d, kids.data[k]).value.kind == V_RAW && triv_trailing(&NODE(d, kids.data[k])).n)) k++;
+	while (k < kids.len && !(NODE(d, kids.data[k]).value.kind == V_RAW && triv_trailing(&NODE(d, kids.data[k])).n) && !stacks(&NODE(d, kids.data[k]))) k++;
 	if (k == kids.len) return;
 	ShclCMap empties; memset(&empties, 0, sizeof empties);
 	for (size_t i = 0; i < kids.len; i++) {
@@ -2785,6 +2885,8 @@ static void settle_fence_trailing(shcl_doc *d, size_t n) {
 			if (s_eq(NODE(d, e->val).name, nd->name)) { seen = 1; break; }
 		if (nd->value.kind == V_RAW && seen && nd->trivia && nd->trivia->trailing.n) {
 			trailing_to_leading(d, nd);
+		} else if (seen && stacks(nd)) {
+			unstack(d, nd);
 		} else if (v_is_empty(&nd->value) && !seen) {
 			cmap_put(&d->scratch, &empties, h, c);
 		}
@@ -2832,6 +2934,7 @@ static void settle_block(shcl_doc *d, size_t n, size_t from) {
    that kept one there would not survive its own canonical form, and a merge or
    a new first line - where it is no longer first - would place a blank nobody
    wrote. Clear it wherever output starts. */
+static void settle_kept(shcl_doc *d); /* with the emitter, which it runs */
 static void settle_first_blank(shcl_doc *d) {
 	ShclVecSize kids = NODE(d, ROOT).children;
 	if (kids.len) {
@@ -2991,7 +3094,12 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 			size_t si = (size_t)-1, target = (size_t)-1; int at_own_level = 0;
 			for (size_t ii = P->stack.len; ii-- > 0;) {
 				ShclStr ind = P->stack.data[ii].indent; size_t n = P->stack.data[ii].node;
-				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) { si = ii; target = n; at_own_level = ind.n == p.indent.n; break; }
+				if (n != ROOT && n != DEAD && n != UNOPENED && ind.n >= new_indent.n && p.indent.n >= ind.n && memcmp(p.indent.p, ind.p, ind.n) == 0) {
+					/* A list element's column is an entry with the list's node on
+					   the list's own entry. It is inside the list, not its level. */
+					int column = ii > 0 && P->stack.data[ii - 1].node == n;
+					si = ii; target = n; at_own_level = ind.n == p.indent.n && !column; break;
+				}
 			}
 			/* A root node's trailing comment emits at column zero, which is
 			   exactly how the document's own trailing comment is spelled, so
@@ -3022,36 +3130,38 @@ static void hang_deeper_pending(ShclParser *P, ShclStr new_indent) {
 	else { ShclPendMark m; m.end = w; m.indent_len = new_indent.n; ShclVecPendMark_push(P->tmp, &P->pend_marks, m); }
 }
 
+/* Where a line at an indent sits, without moving anything: found says a
+   parent was found (0 is resolve_parent's refusal), and the stack is cut back
+   to `to`, or, with push, past a skipped line's column (to, when held) before
+   this one's is pushed. The emitter runs it on its model of the stack a reload
+   will have. */
+typedef struct { int found; size_t parent; int push; int held; size_t to; } ShclLocated;
+
 /* Which open level this indent belongs to, walking down from the top. Equal
    to a level is its sibling. Deeper than a level is its child, unless a level
    opened under that one is still open, in which case the line falls between
    the two. Anything else is a recoverable error. */
-static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
-	size_t hold = 0; int held = 0;
-	for (size_t ii = P->stack.len; ii-- > 0;) {
-		ShclStr ind = P->stack.data[ii].indent; size_t node = P->stack.data[ii].node;
+static ShclLocated locate_in(const ShclStackEnt *stack, size_t len, ShclStr indent) {
+	ShclLocated r; memset(&r, 0, sizeof r);
+	for (size_t ii = len; ii-- > 0;) {
+		ShclStr ind = stack[ii].indent; size_t node = stack[ii].node;
 		if (s_eq(ind, indent)) {
-			if (node == UNOPENED) {
-				/* Back at a skipped line's column: refused the same way. */
-				P->stack.len = ii + 1;
-				return 0;
-			}
+			/* Back at a skipped line's column: refused the same way. */
+			if (node == UNOPENED) { r.to = ii + 1; return r; }
 			/* Sibling of stack[ii]: its parent is the entry below it. Keep the
 			   sentinel; a top-level line resolves to ROOT. */
-			size_t parent = (ii == 0) ? ROOT : P->stack.data[ii - 1].node;
-			*out = parent == UNOPENED ? DEAD : parent;
-			P->stack.len = ii ? ii : 1;
-			return 1;
+			size_t parent = (ii == 0) ? ROOT : stack[ii - 1].node;
+			r.found = 1; r.parent = parent == UNOPENED ? DEAD : parent; r.to = ii ? ii : 1;
+			return r;
 		}
 		if (indent.n > ind.n && (ind.n == 0 || memcmp(indent.p, ind.p, ind.n) == 0)) {
 			/* A skipped line's unopened level sits on top without opening
 			   anything, so it does not count as a level in between. */
-			if (ii + 1 < P->stack.len && P->stack.data[ii + 1].node != UNOPENED) break;
-			P->stack.len = ii + 1;
-			*out = node == UNOPENED ? DEAD : node;
-			return 1;
+			if (ii + 1 < len && stack[ii + 1].node != UNOPENED) break;
+			r.found = 1; r.parent = node == UNOPENED ? DEAD : node; r.to = ii + 1;
+			return r;
 		}
-		if (node == UNOPENED) { hold = ii; held = 1; }
+		if (node == UNOPENED) { r.to = ii; r.held = 1; }
 	}
 	/* Skipped, but it holds its own column: whatever is written deeper is
 	   skipped with it, and a line back at it is refused the same way instead
@@ -3059,9 +3169,24 @@ static int resolve_parent(ShclParser *P, ShclStr indent, size_t *out) {
 	   a level open before it still binds there, as in 2.0.0. The hold ends at
 	   the first line neither under it nor at it, this one included, which
 	   keeps one on the stack at most. */
-	if (held) P->stack.len = hold;
-	{ ShclStackEnt se; se.indent = indent; se.node = UNOPENED; ShclVecStack_push(P->tmp, &P->stack, se); }
-	return 0;
+	r.push = 1;
+	return r;
+}
+
+/* resolve_parent() without moving anything. */
+static ShclLocated locate(const ShclParser *P, ShclStr indent) { return locate_in(P->stack.data, P->stack.len, indent); }
+
+/* found is locate() on the same indent, which the line loop has already
+   asked. */
+static int resolve_parent(ShclParser *P, ShclStr indent, ShclLocated found, size_t *out) {
+	if (found.push) {
+		if (found.held) P->stack.len = found.to;
+		ShclStackEnt se; se.indent = indent; se.node = UNOPENED; ShclVecStack_push(P->tmp, &P->stack, se);
+	} else {
+		P->stack.len = found.to;
+	}
+	if (found.found) *out = found.parent;
+	return found.found;
 }
 
 /* What became of a line the parser did not bind whole. Only the funnel
@@ -3092,7 +3217,12 @@ static void p_refuse(ShclParser *P, size_t line, const char *code, ShclStr msg, 
 	}
 	P->d->lost += n;
 	if (out.kind == OUT_RETAINED) {
-		ShclPend pd; pd.text = out.text; pd.indent = indent; pd.blank_before = out.blank_before; pd.ceiling = indent.n;
+		/* A line kept as written never hangs on a block: its indent is not one
+		   the output's levels are spelled with, so the block it would match
+		   here is not the one it matches on a reload. It waits for the next
+		   binding line, as do the pending lines after it. */
+		ShclPend pd; pd.text = out.text; pd.indent = indent; pd.blank_before = out.blank_before;
+		pd.ceiling = out.text.n && (out.text.p[0] == ' ' || out.text.p[0] == '\t') ? 0 : indent.n;
 		ShclVecPend_push(P->tmp, &P->pending, pd);
 	}
 	/* A refused line owns its indent, so what is written deeper is skipped
@@ -3102,6 +3232,37 @@ static void p_refuse(ShclParser *P, size_t line, const char *code, ShclStr msg, 
 	if (holds && !(s_eq(P->stack.data[top].indent, indent) && P->stack.data[top].node == UNOPENED)) {
 		ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(P->tmp, &P->stack, se);
 	}
+}
+
+/* A line refused for where it sits rather than for what it says: E012, or
+   E018 under one. Written back exactly as it was, it sits the same way on a
+   reload, as long as its indent holds a space, since no level the emitter
+   opens is spelled with one. A tab-only indent would bind there, and a line
+   opening a raw block would take its body along, so those are dropped. An
+   E018 line is kept only under a kept E012 one. rest is the trimmed line
+   after its indent and any blanks. */
+static void misplaced(ShclParser *P, size_t line, const char *code, ShclStr indent, ShclStr rest, int had_blank, int raw) {
+	int e012 = strcmp(code, "E012") == 0;
+	int keep = 0;
+	if (!raw) {
+		if (e012) keep = indent.n && memchr(indent.p, ' ', indent.n) != NULL;
+		else keep = P->has_kept_hold && indent.n > P->kept_hold.n && memcmp(indent.p, P->kept_hold.p, P->kept_hold.n) == 0;
+	}
+	if (keep) P->kept_any = 1;
+	ShclStr msg;
+	if (e012) {
+		P->has_kept_hold = keep; P->kept_hold = keep ? indent : s_empty();
+		msg = s_lit("indentation matches no open level");
+	} else {
+		msg = s_lit("parent line was skipped; line skipped");
+	}
+	if (!keep) { p_refuse(P, line, code, msg, out_kind(OUT_DROPPED), indent); return; }
+	/* Both slice the retained input copy; they sit side by side unless blanks
+	   holding a carriage return came between. */
+	ShclStr text;
+	if (indent.p + indent.n == rest.p) { text.p = indent.p; text.n = indent.n + rest.n; }
+	else { ShclSB b = {0}; sb_putS(&P->d->arena, &b, indent); sb_putS(&P->d->arena, &b, rest); text = sb_S(&b); }
+	p_refuse(P, line, code, msg, out_retained(text, had_blank), indent);
 }
 
 /* Diagnose a line written under a skipped line, and skip it too. Its own
@@ -3297,16 +3458,22 @@ static ShclValue consume_raw(ShclParser *P, const ShclStr *lines, size_t nlines,
 	return v;
 }
 
+/* The fence a field line's value opens, if it opens one. A line that did not
+   tokenize has no value to read. */
+static ShclFence line_fence(const ShclTokens *tok, ShclStr rest) {
+	if (tok->has_fault || !tok->has_sep) { ShclFence f; f.ok = 0; f.ch = 0; f.len = 0; f.info = s_empty(); return f; }
+	/* A capped scan zeroed the value, and a fence is told by its leading run
+	   alone. */
+	return fence_open(tok->capped ? s_trim_wsp(s_slice(rest, tok->value_start, rest.n)) : s_slice(rest, tok->value_start, tok->value_end));
+}
+
 /* Where the parse resumes after a refused field line. Every arm that skips one
    comes through here, so a skipped line whose value opens a raw block takes the
    body with it: read as lines, the body would bind or be refused line by line,
    and its closing fence would open a block that runs to the end of the file. A
    line whose path did not parse has no value to read, so it goes alone. */
 static size_t skip_field_line(ShclParser *P, const ShclStr *lines, size_t nlines, size_t i, ShclStr indent, const ShclTokens *tok, ShclStr rest) {
-	if (tok->has_fault || !tok->has_sep) return i + 1;
-	/* A capped scan zeroed the value, and a fence is told by its leading run
-	   alone. */
-	ShclFence f = fence_open(tok->capped ? s_trim_wsp(s_slice(rest, tok->value_start, rest.n)) : s_slice(rest, tok->value_start, tok->value_end));
+	ShclFence f = line_fence(tok, rest);
 	if (!f.ok) return i + 1;
 	size_t next;
 	(void)consume_raw(P, lines, nlines, i + 1, i + 1, indent, f, &next);
@@ -3341,16 +3508,16 @@ static int looks_like_binding(ShclStr s) {
 }
 
 /* One stacked-list element (`* scalar`) appends to the parent's array. */
-static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok, ShclStr text, size_t line, ShclStr indent) {
+static int add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok, ShclStr text, size_t line, ShclStr indent) {
 	ShclArena *a = &P->d->arena;
-	if (parent == ROOT) { p_refuse(P, line, "E007", s_lit("list element with no parent field"), out_kind(OUT_DROPPED), indent); return; }
+	if (parent == ROOT) { p_refuse(P, line, "E007", s_lit("list element with no parent field"), out_kind(OUT_DROPPED), indent); return 0; }
 	/* Uniform-or-nothing (spec): a mix with field children is not a block array. */
-	if (NODE(P->d, parent).children.len != 0) { p_refuse(P, line, "E008", s_lit("list element mixed with field children; ignored"), out_kind(OUT_DROPPED), indent); return; }
+	if (NODE(P->d, parent).children.len != 0) { p_refuse(P, line, "E008", s_lit("list element mixed with field children; ignored"), out_kind(OUT_DROPPED), indent); return 0; }
 	/* One scalar per line; a bare comma is an error, not a second element. */
-	if (tok->nelem > 1) { p_refuse(P, line, "E010", s_lit("bare comma in list element (one element per line)"), out_kind(OUT_DROPPED), indent); return; }
+	if (tok->nelem > 1) { p_refuse(P, line, "E010", s_lit("bare comma in list element (one element per line)"), out_kind(OUT_DROPPED), indent); return 0; }
 	ShclPiece piece = tok->elements[0];
 	ShclElement el;
-	if (!element_of(a, &piece, text, &el)) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return; }
+	if (!element_of(a, &piece, text, &el)) { p_refuse(P, line, "E009", s_lit("empty list element"), out_kind(OUT_DROPPED), indent); return 0; }
 	if (piece.quote == SHCL_QUOTE_OPEN) p_err(P, line, "E017", s_lit("unterminated quote in value"));
 	int binding_like = !el.quoted && looks_like_binding(el.text);
 	/* Element cap: each element line past it is refused on its own, the way
@@ -3359,7 +3526,7 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 	if (P->max_elements && NODE(P->d, parent).star_list && NODE(P->d, parent).value.kind == V_CELL && NODE(P->d, parent).value.nels >= P->max_elements) {
 		ShclSB m = {0}; sb_puts(P->line, &m, "array longer than "); sb_put_u64(P->line, &m, P->max_elements); sb_puts(P->line, &m, " elements; line skipped");
 		p_refuse(P, line, "E021", sb_S(&m), out_kind(OUT_DROPPED), indent);
-		return;
+		return 0;
 	}
 	ShclNode *node = &NODE(P->d, parent);
 	if (node->value.kind == V_EMPTY) {
@@ -3389,7 +3556,7 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 		node->value.els[node->value.nels++] = el;
 	} else {
 		p_refuse(P, line, "E011", s_lit("field already has a value; list element ignored"), out_kind(OUT_DROPPED), indent);
-		return;
+		return 0;
 	}
 	if (binding_like) p_diag(P, line, SHCL_SEV_HINT, "H003", s_lit("list element looks like a field binding; it is read as a string (quote it to say so)"));
 	/* A kept element holds its column as a dropped one does, with the field as
@@ -3397,6 +3564,27 @@ static void add_star_element(ShclParser *P, size_t parent, const ShclTokens *tok
 	   line back at the element's column is its sibling, where no level had been
 	   opened there and every later sibling was E012 (20260918b item 28). */
 	ShclStackEnt se; se.indent = indent; se.node = parent; ShclVecStack_push(P->tmp, &P->stack, se);
+	return 1;
+}
+
+/* Kept lines waiting for the list element that just joined sat among the
+   list's elements, so they stay there; comments still ride the field. */
+static void keep_among(ShclParser *P, size_t parent) {
+	size_t k = 0;
+	while (k < P->pending.len && P->pending.data[k].text.n && P->pending.data[k].text.p[0] == '#') k++;
+	if (k == P->pending.len) return;
+	if (NODE(P->d, parent).value.kind != V_CELL) return;
+	size_t before = NODE(P->d, parent).value.nels - 1;
+	ShclArena *a = &P->d->arena;
+	size_t w = 0;
+	for (size_t r = 0; r < P->pending.len; r++) {
+		ShclPend pd = P->pending.data[r];
+		if (pd.text.n && pd.text.p[0] == '#') { P->pending.data[w++] = pd; continue; }
+		ShclAmong am; am.before = before; am.lead = lead_make(pd.text, pd.blank_before, 0);
+		ShclVecAmong_push(a, &triv_mut(a, &NODE(P->d, parent))->among, am);
+	}
+	P->pending.len = w;
+	P->pend_marks.len = 0;
 }
 
 /* The single H001 wording site: the hint builder and the schema suppressor
@@ -3488,6 +3676,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 	ShclParser P; P.d = d; P.tmp = &d->scratch; P.line = &own->line; P.hints = &own->hints; P.cmaps = &own->cmaps; P.dmaps = &own->dmaps; memset(&P.stack, 0, sizeof P.stack); memset(&P.pending, 0, sizeof P.pending); memset(&P.pend_marks, 0, sizeof P.pend_marks); memset(&P.depth_chain, 0, sizeof P.depth_chain);
 	P.star_open = 0; P.star_node = 0; P.star_key = 0; P.star_disp = 0; P.saw_blank = 0;
 	P.max_nodes = max_nodes; P.max_elements = max_elements; P.max_diags = max_diags; P.unlisted_errors = 0; P.unlisted_hints = 0;
+	P.has_kept_hold = 0; P.kept_hold = s_empty(); P.kept_any = 0;
 	memset(&P.reent_node, 0, sizeof P.reent_node); memset(&P.reent_line, 0, sizeof P.reent_line); memset(&P.late_dups, 0, sizeof P.late_dups);
 	ShclStackEnt e0; e0.indent = s_empty(); e0.node = ROOT; ShclVecStack_push(P.tmp, &P.stack, e0);
 	maps_push(d->panic, P.cmaps, NULL);
@@ -3556,12 +3745,18 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			ShclVecPend_push(P.tmp, &P.pending, pd);
 			i++; continue;
 		}
+		/* A kept misplaced line holds only the lines written under it. */
+		if (P.has_kept_hold && !(indent.n > P.kept_hold.n && memcmp(indent.p, P.kept_hold.p, P.kept_hold.n) == 0)) P.has_kept_hold = 0;
 		/* Any other line consumes the pending blank; only a field line that
 		   binds turns it into grouping. */
 		int had_blank = P.saw_blank; P.saw_blank = 0;
 		/* A binding line claims the pending comments - but deeper-written ones
-		   hang on their own block first. */
-		hang_deeper_pending(&P, indent);
+		   hang on their own block first. A line refused for where it sits
+		   closes nothing, so it leaves them for the next line: kept, its indent
+		   would measure the levels differently on a reload, and dropped, a
+		   reload never sees it. */
+		ShclLocated found = locate(&P, indent);
+		if (found.found && found.parent != DEAD) hang_deeper_pending(&P, indent);
 		/* Child-indent fence: a value line for its parent field. The fence and
 		   its info string are the value; a comment may follow them. */
 		ShclFence f; f.ok = 0; f.ch = 0; f.len = 0; f.info = s_empty();
@@ -3574,7 +3769,7 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		if (f.ok) {
 			ShclStr fcomment = tok.has_comment ? s_slice(rest, tok.comment, rest.n) : s_empty();
 			size_t parent;
-			int resolved = resolve_parent(&P, indent, &parent);
+			int resolved = resolve_parent(&P, indent, found, &parent);
 			size_t next; ShclValue val = consume_raw(&P, lines.data, lines.len, i + 1, lineno, indent, f, &next);
 			/* The body goes with its fence: parsed live, it would read as root
 			   bindings and the closing fence would open a second block. */
@@ -3601,22 +3796,26 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 			if (after.n == 0 && lines.data[i].n > indent.n + lead + 1) spaced = is_wsp((unsigned char)lines.data[i].p[indent.n + lead + 1]);
 			if (spaced) {
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
-				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
+				if (!resolve_parent(&P, indent, found, &parent)) { misplaced(&P, lineno, "E012", indent, rest, had_blank, 0); i++; continue; }
+				if (parent == DEAD) { misplaced(&P, lineno, "E018", indent, rest, had_blank, 0); i++; continue; }
 				tokenize_value(P.tmp, rest, 1, SHCL_RULES_CURRENT, &tok);
 				ShclStr ecomment = tok.has_comment ? s_slice(rest, tok.comment, rest.n) : s_empty();
 				/* Elements have no node of their own; trivia rides the field. At the
 				   root there is no field (E007), so the comment rides the document
 				   like any other pending one. */
-				if (parent != ROOT) attach_trivia(&P, parent, indent, ecomment);
-				else if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
-				add_star_element(&P, parent, &tok, rest, lineno, indent);
+				if (parent != ROOT) {
+					if (add_star_element(&P, parent, &tok, rest, lineno, indent)) keep_among(&P, parent);
+					attach_trivia(&P, parent, indent, ecomment);
+				} else {
+					if (ecomment.n) { ShclPend pd; pd.text = ecomment; pd.indent = indent; pd.blank_before = had_blank; pd.ceiling = indent.n; ShclVecPend_push(P.tmp, &P.pending, pd); }
+					(void)add_star_element(&P, parent, &tok, rest, lineno, indent);
+				}
 				i++; continue;
 			}
 			{
 				size_t parent;
-				if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i++; continue; }
-				if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i++; continue; }
+				if (!resolve_parent(&P, indent, found, &parent)) { misplaced(&P, lineno, "E012", indent, rest, had_blank, 0); i++; continue; }
+				if (parent == DEAD) { misplaced(&P, lineno, "E018", indent, rest, had_blank, 0); i++; continue; }
 			}
 			/* Content-malformed at any position, so safe to retain. The BOM
 			   exception the field arm carries cannot apply here: this line
@@ -3628,8 +3827,8 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		tokenize(P.tmp, rest, ':', 0, SHCL_RULES_CURRENT, &tok);
 		ShclStr comment = tok.has_comment ? s_slice(rest, tok.comment, rest.n) : s_empty();
 		size_t parent;
-		if (!resolve_parent(&P, indent, &parent)) { p_refuse(&P, lineno, "E012", s_lit("indentation matches no open level"), out_kind(OUT_DROPPED), indent); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
-		if (parent == DEAD) { skip_under_dead(&P, lineno, indent); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
+		if (!resolve_parent(&P, indent, found, &parent)) { misplaced(&P, lineno, "E012", indent, rest, had_blank, line_fence(&tok, rest).ok); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
+		if (parent == DEAD) { misplaced(&P, lineno, "E018", indent, rest, had_blank, line_fence(&tok, rest).ok); i = skip_field_line(&P, lines.data, lines.len, i, indent, &tok, rest); continue; }
 		ShclPathScan scan = path_of(&own->line, &tok, rest);
 		if (!scan.ok) {
 			ShclSB m = {0}; sb_puts(P.line, &m, "malformed line skipped: "); sb_putS(P.line, &m, scan.err);
@@ -3721,6 +3920,9 @@ static void parse_body(shcl_doc *d, ShclParseOwn *own, const char *text, size_t 
 		sb_puts(a, &m, " more not listed, "); sb_put_u64(a, &m, P.unlisted_errors); sb_puts(a, &m, " of them errors");
 		push_diag(d, 0, P.unlisted_errors ? SHCL_SEV_ERROR : SHCL_SEV_HINT, "E022", sb_S(&m)); /* line 0: about the list */
 	}
+	/* The parser's scratch is dead by now, and the settle builds in it. */
+	d->kept = P.kept_any;
+	settle_kept(d);
 }
 
 /* -Wclobbered guesses at which locals an unwind could leave indeterminate, and
@@ -4087,6 +4289,60 @@ size_t shcl_paths(shcl_doc *d, shcl_str **out) {
 	*out = arr; return n;
 }
 
+size_t shcl_instance_paths(shcl_doc *d, shcl_str **out) {
+	ShclArena *a = &d->reads;
+	// Same reset as shcl_paths: this read takes no path.
+	arena_reset(&d->scratch);
+	ShclArena *t = &d->scratch;
+	typedef struct { size_t node; ShclStr path; } PEnt;
+	typedef struct { size_t node; size_t total; size_t at; } NCount; // node names the count's name
+	PEnt *stack = NULL; size_t sn = 0, sc = 0;
+	shcl_str *arr = NULL; size_t n = 0, cap = 0;
+	#define PPUSH(N, P) do { if (sn == sc) { size_t nc = sc ? sc * 2 : 16; stack = (PEnt *)arena_grow(t, stack, sc, nc, sizeof(PEnt)); sc = nc; } stack[sn].node = (N); stack[sn].path = (P); sn++; } while (0)
+	PPUSH(ROOT, s_empty());
+	while (sn) {
+		PEnt e = stack[--sn];
+		if (e.node != ROOT) {
+			if (n == cap) { size_t nc = cap ? cap * 2 : 16; arr = (shcl_str *)arena_grow(a, arr, cap, nc, sizeof(shcl_str)); cap = nc; }
+			arr[n].p = e.path.p; arr[n].n = e.path.n; n++;
+		}
+		ShclVecSize kids = NODE(d, e.node).children;
+		if (!kids.len) continue;
+		ShclCMap names; memset(&names, 0, sizeof names);
+		NCount *counts = (NCount *)arena_alloc(t, kids.len * sizeof(NCount));
+		size_t *which = (size_t *)arena_alloc(t, kids.len * sizeof(size_t));
+		size_t nn = 0;
+		for (size_t i = 0; i < kids.len; i++) {
+			ShclStr name = NODE(d, kids.data[i]).name;
+			uint64_t h = cmap_hash(name, s_empty());
+			size_t hit = NIL;
+			for (ShclCMapEnt *en = cmap_first(&names, h); en; en = cmap_next(en, h))
+				if (s_eq(NODE(d, counts[en->val].node).name, name)) { hit = en->val; break; }
+			if (hit == NIL) { hit = nn++; counts[hit].node = kids.data[i]; counts[hit].total = 0; counts[hit].at = 0; cmap_put(t, &names, h, hit); }
+			counts[hit].total++;
+			which[i] = hit;
+		}
+		PEnt *mine = (PEnt *)arena_alloc(t, kids.len * sizeof(PEnt));
+		for (size_t i = 0; i < kids.len; i++) {
+			ShclStr seg = emit_name(a, NODE(d, kids.data[i]).name);
+			ShclSB b = {0};
+			if (e.path.n) { sb_putS(a, &b, e.path); sb_putc(a, &b, '.'); }
+			sb_putS(a, &b, seg);
+			NCount *c = &counts[which[i]];
+			if (c->total > 1) {
+				char ix[32]; int len = snprintf(ix, sizeof ix, "[#%llu]", (unsigned long long)c->at++);
+				ShclStr ixs; ixs.p = ix; ixs.n = (size_t)len;
+				sb_putS(a, &b, ixs);
+			}
+			mine[i].node = kids.data[i]; mine[i].path = sb_S(&b);
+		}
+		for (size_t i = kids.len; i > 0; i--) PPUSH(mine[i - 1].node, mine[i - 1].path);
+	}
+	#undef PPUSH
+	if (!arr) arr = (shcl_str *)arena_alloc(a, sizeof(shcl_str));
+	*out = arr; return n;
+}
+
 shcl_str shcl_quote_segment(shcl_doc *d, const char *name, size_t len) {
 	ShclStr in; in.p = name; in.n = len;
 	ShclStr q = emit_name(&d->reads, in);
@@ -4163,16 +4419,28 @@ size_t shcl_lines(shcl_doc *d, const char *path, size_t plen, size_t **out) {
 size_t shcl_children(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
 	// Names come back as stored (already arena-owned); only the array is new.
 	ShclArena *a = &d->reads; ShclStr p; p.p = path; p.n = plen;
-	size_t node = ROOT;
-	if (s_trim(p).n != 0) {
+	arena_reset(&d->scratch); // the node list is dead after the call
+	ShclVecSize nodes = {0};
+	if (s_trim(p).n == 0) {
+		ShclVecSize_push(&d->scratch, &nodes, ROOT);
+	} else {
 		ShclResolved r;
-		if (!resolve(d, p, &r) || r.kind != R_ONE) { *out = (shcl_str *)arena_alloc(a, sizeof(shcl_str)); return 0; }
-		node = r.one;
+		if (!resolve(d, p, &r)) { *out = (shcl_str *)arena_alloc(a, sizeof(shcl_str)); return 0; }
+		if (r.kind == R_ONE) ShclVecSize_push(&d->scratch, &nodes, r.one);
+		else if (r.kind == R_MANY) for (size_t k = 0; k < r.many.len; k++) ShclVecSize_push(&d->scratch, &nodes, r.many.data[k]);
+		else if (r.kind == R_SLOTS)
+			for (size_t k = 0; k < r.slots.len; k++)
+				if (r.slots.data[k].present) ShclVecSize_push(&d->scratch, &nodes, r.slots.data[k].idx);
 	}
-	ShclVecSize kids = NODE(d, node).children;
-	shcl_str *arr = (shcl_str *)arena_alloc(a, (kids.len ? kids.len : 1) * sizeof(shcl_str));
-	for (size_t k = 0; k < kids.len; k++) { arr[k].p = NODE(d, kids.data[k]).name.p; arr[k].n = NODE(d, kids.data[k]).name.n; }
-	*out = arr; return kids.len;
+	size_t total = 0;
+	for (size_t k = 0; k < nodes.len; k++) total += NODE(d, nodes.data[k]).children.len;
+	shcl_str *arr = (shcl_str *)arena_alloc(a, (total ? total : 1) * sizeof(shcl_str));
+	size_t n = 0;
+	for (size_t k = 0; k < nodes.len; k++) {
+		ShclVecSize kids = NODE(d, nodes.data[k]).children;
+		for (size_t j = 0; j < kids.len; j++) { arr[n].p = NODE(d, kids.data[j]).name.p; arr[n].n = NODE(d, kids.data[j]).name.n; n++; }
+	}
+	*out = arr; return n;
 }
 
 // --- Writer ------------------------------------------------------------------
@@ -4355,6 +4623,7 @@ static void w_settle_fence_name(shcl_doc *d, size_t parent, ShclStr name) {
 	for (size_t k = 0; k < cands.len; k++) {
 		ShclNode *nd = &NODE(d, cands.data[k]);
 		if (seen_empty && nd->value.kind == V_RAW && nd->trivia && nd->trivia->trailing.n) trailing_to_leading(d, nd);
+		else if (seen_empty && stacks(nd)) unstack(d, nd);
 		else if (v_is_empty(&nd->value)) seen_empty = 1;
 	}
 }
@@ -4454,6 +4723,8 @@ static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	if (d->probe) { arena_release(&d->arena, m); arena_reset_smallest(&d->scratch); return 1; }
 	if (!w_place(d, path, &idx)) { arena_release(&d->arena, m); return 0; }
 	NODE(d, idx).value = v;
+	/* No longer the list the lines among its elements sat in. */
+	unstack(d, &NODE(d, idx));
 	/* An empty binding or a raw block can put a fence after an empty sibling
 	   of its name. */
 	int fence_side = v.kind == V_EMPTY || v.kind == V_RAW;
@@ -4462,6 +4733,7 @@ static int w_set_marked(shcl_doc *d, ShclStr path, ShclValue v, ShclMark m) {
 	w_collapse_dup(d, idx);
 	if (fence_side) w_settle_fence_name(d, parent, name);
 	settle_first_blank(d);
+	settle_kept(d);
 	return 1;
 }
 
@@ -4515,6 +4787,7 @@ size_t shcl_remove(shcl_doc *d, const char *path, size_t plen) {
 		kids->len = w;
 	}
 	settle_first_blank(d);
+	settle_kept(d);
 	return targets.len;
 }
 
@@ -4554,6 +4827,7 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	}
 	ShclVecLead_push(a, &t->leading, lead);
 	settle_first_blank(d);
+	settle_kept(d);
 	return 1;
 }
 
@@ -4699,6 +4973,11 @@ static ShclTrivia *w_clone_trivia(ShclArena *a, const ShclTrivia *st) {
 	for (size_t i = 0; i < st->leading.len; i++) ShclVecLead_push(a, &nt->leading, lead_make(s_dup(a, st->leading.data[i].text), st->leading.data[i].blank_before, st->leading.data[i].depth));
 	for (size_t i = 0; i < st->after.len; i++) ShclVecLead_push(a, &nt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before, st->after.data[i].depth));
 	for (size_t i = 0; i < st->inside.len; i++) ShclVecLead_push(a, &nt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before, st->inside.data[i].depth));
+	for (size_t i = 0; i < st->among.len; i++) {
+		ShclAmong am; am.before = st->among.data[i].before;
+		am.lead = lead_make(s_dup(a, st->among.data[i].lead.text), st->among.data[i].lead.blank_before, st->among.data[i].lead.depth);
+		ShclVecAmong_push(a, &nt->among, am);
+	}
 	return nt;
 }
 static size_t w_clone_subtree(shcl_doc *d, const shcl_doc *over, size_t oi, size_t parent) {
@@ -4745,6 +5024,12 @@ static void adopt_trivia(shcl_doc *d, size_t base, const shcl_doc *over, size_t 
 		ShclVecLead_push(a, &bt->after, lead_make(s_dup(a, st->after.data[i].text), st->after.data[i].blank_before, st->after.data[i].depth));
 	for (size_t i = 0; i < st->inside.len; i++)
 		ShclVecLead_push(a, &bt->inside, lead_make(s_dup(a, st->inside.data[i].text), st->inside.data[i].blank_before, st->inside.data[i].depth));
+	for (size_t i = 0; i < st->among.len; i++) {
+		ShclAmong am; am.before = st->among.data[i].before;
+		am.lead = lead_make(s_dup(a, st->among.data[i].lead.text), st->among.data[i].lead.blank_before, st->among.data[i].lead.depth);
+		ShclVecAmong_push(a, &bt->among, am);
+	}
+	among_sort(&bt->among);
 }
 
 // One grouping pass over each side, then a single children rebuild: the old
@@ -4859,9 +5144,14 @@ static void w_overlay(shcl_doc *d, size_t bp, const shcl_doc *over, size_t op, S
 					const ShclTrivia *bt = NODE(d, b).trivia;
 					if (!bt) continue;
 					const ShclVecLead *lists[3] = { &bt->leading, &bt->inside, &bt->after };
-					for (size_t li = 0; li < 3; li++)
+					for (size_t li = 0; li < 3; li++) {
 						for (size_t k = 0; k < lists[li]->len; k++)
 							if (!(lists[li]->data[k].text.n && lists[li]->data[k].text.p[0] == '#')) ShclVecLead_push(t, &kept, lists[li]->data[k]);
+						/* The lines among a list's elements come after its leading ones. */
+						if (li == 0)
+							for (size_t k = 0; k < bt->among.len; k++)
+								if (!(bt->among.data[k].lead.text.n && bt->among.data[k].lead.text.p[0] == '#')) ShclVecLead_push(t, &kept, bt->among.data[k].lead);
+					}
 				}
 				if (kept.len) {
 					ShclTrivia *ct = triv_mut(a, &NODE(d, rep[gi].data[0]));
@@ -4952,6 +5242,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 	if (over == d) return;
 	index_drop(d);
 	d->lost += over->lost;
+	d->kept |= over->kept;
 	ShclArena *a = &d->arena;
 	arena_reset(&d->scratch); // merge temporaries (compare keys, clone lists) die here
 	/* Only a block the overlay visited can have a changed child list or
@@ -4980,6 +5271,7 @@ void shcl_merge(shcl_doc *d, const shcl_doc *over) {
 		ShclVecLead_push(a, &d->orphans, lead_make(s_dup(a, ot), over->orphans.data[i].blank_before, depth));
 	}
 	settle_first_blank(d);
+	settle_kept(d);
 }
 
 int64_t shcl_get_int(shcl_doc *d, const char *path, size_t plen, int64_t def) {
@@ -5394,32 +5686,184 @@ static int comment_line(ShclArena *a, ShclStr text, ShclStr *out) {
 static void emit_trailing(ShclArena *a, ShclSB *out, ShclStr trailing) {
 	if (trailing.n) { sb_puts(a, out, "  "); sb_putS(a, out, trailing); }
 }
+/* Which trivia list a line sits in. */
+typedef enum { SITE_LEADING, SITE_INSIDE, SITE_AFTER, SITE_AMONG, SITE_ORPHANS } ShclSite;
+typedef struct { size_t node; ShclSite site; size_t i; size_t depth; } ShclFell;
+DEFINE_VEC(ShclVecFell, ShclFell)
+
+/* Canonical text on its way out, with a model of the level stack a reload of
+   it will have at this point: the sentinel and one level per tab up to open,
+   which the last binding line leaves, then what the lines refused since then
+   pushed, and the indent of a kept misplaced line that the lines under it are
+   kept with. All of it lives in scratch. */
+typedef struct {
+	ShclArena *a;
+	ShclSB out;
+	ptrdiff_t open;
+	ShclVecStack tail;
+	int has_hold; ShclStr hold;
+	const char *tabs; size_t ntabs;
+	/* settle_kept only: the lines written as comments, where they sit and at
+	   what depth, and how many went out as written. */
+	int record; ShclVecFell fell; size_t verbatim;
+} ShclEmit;
+
+static void emit_init(ShclEmit *e, ShclArena *a, size_t cap, int record) {
+	memset(e, 0, sizeof *e);
+	e->a = a; e->open = -1; e->record = record;
+	e->out.cap = cap ? cap : 16;
+	e->out.data = (char *)arena_alloc(a, e->out.cap);
+}
+
+/* n tabs, from a buffer that only ever gets a bigger successor, so a slice
+   handed out earlier stays good. */
+static ShclStr emit_tabs(ShclEmit *e, size_t n) {
+	if (n > e->ntabs) {
+		size_t nc = e->ntabs ? e->ntabs : 64;
+		while (nc < n) nc *= 2;
+		char *b = (char *)arena_alloc(e->a, nc);
+		memset(b, '\t', nc);
+		e->tabs = b; e->ntabs = nc;
+	}
+	ShclStr t; t.p = e->tabs; t.n = n;
+	return t;
+}
+
+/* A binding line at this depth: the stack is its levels and nothing else. */
+static void emit_bound(ShclEmit *e, size_t depth) {
+	e->open = (ptrdiff_t)depth;
+	e->tail.len = 0;
+	e->has_hold = 0;
+}
+
+/* A line at this indent through the reload's resolve_parent(): the parent it
+   finds, and the model as it leaves it, not yet taken. */
+typedef struct { int found; size_t parent; ptrdiff_t open; const ShclStackEnt *tail; size_t ntail; } ShclTrial;
+static ShclTrial emit_resolve(ShclEmit *e, ShclStr indent) {
+	size_t levels = (size_t)(e->open + 2);
+	ShclStackEnt *st = (ShclStackEnt *)arena_alloc(e->a, (levels + e->tail.len + 1) * sizeof(ShclStackEnt));
+	st[0].indent = s_empty(); st[0].node = ROOT;
+	for (size_t k = 0; k + 1 < levels; k++) { st[k + 1].indent = emit_tabs(e, k); st[k + 1].node = ROOT; }
+	for (size_t k = 0; k < e->tail.len; k++) st[levels + k] = e->tail.data[k];
+	size_t len = levels + e->tail.len;
+	ShclLocated r = locate_in(st, len, indent);
+	if (r.push) {
+		if (r.held) len = r.to;
+		st[len].indent = indent; st[len].node = UNOPENED; len++;
+	} else {
+		len = r.to;
+	}
+	ShclTrial t; t.found = r.found; t.parent = r.parent;
+	if (len <= levels) { t.open = (ptrdiff_t)len - 2; t.tail = NULL; t.ntail = 0; }
+	else { t.open = e->open; t.tail = st + levels; t.ntail = len - levels; }
+	return t;
+}
+
+static void emit_take(ShclEmit *e, const ShclTrial *t) {
+	e->open = t->open;
+	e->tail.len = 0;
+	for (size_t k = 0; k < t->ntail; k++) ShclVecStack_push(e->a, &e->tail, t->tail[k]);
+}
+
+/* Take a resolve, then the refusal's push: a refused line holds its own column
+   unless it already sits there as a skipped line's. */
+static void emit_refused(ShclEmit *e, ShclStr indent, const ShclTrial *t) {
+	emit_take(e, t);
+	if (!(e->tail.len && s_eq(e->tail.data[e->tail.len - 1].indent, indent) && e->tail.data[e->tail.len - 1].node == UNOPENED)) {
+		ShclStackEnt se; se.indent = indent; se.node = DEAD; ShclVecStack_push(e->a, &e->tail, se);
+	}
+}
+
+/* A line a reload binds, such as a list element: it resolves, then holds its
+   column with a live node. */
+static void emit_placed(ShclEmit *e, ShclStr indent) {
+	ShclTrial t = emit_resolve(e, indent);
+	emit_take(e, &t);
+	ShclStackEnt se; se.indent = indent; se.node = ROOT; ShclVecStack_push(e->a, &e->tail, se);
+	e->has_hold = 0;
+}
+
+/* A misplaced line's text as the comment it falls back to. */
+static ShclStr commented(ShclArena *a, ShclStr text) {
+	ShclSB b = {0};
+	sb_puts(a, &b, "# "); sb_putS(a, &b, s_slice(text, leading_ws(text).n, text.n));
+	return sb_S(&b);
+}
+
+/* Write a run of comments and kept lines, base levels deep. A misplaced line
+   kept as written (its text carries its own indent, a comment's never does)
+   goes back as it was only where a reload keeps it again, which the model of
+   the reload's stack answers the way the parser will: refused for its indent,
+   or under the kept line before it. A merge or an edit can leave it where it
+   would bind, and there it is written as a comment, which reads the same.
+   node, site and first name the list and the index of its first line, for
+   settle_kept. */
+static void push_leads(ShclEmit *e, const ShclLead *leads, size_t n, size_t base, size_t node, ShclSite site, size_t first) {
+	ShclArena *a = e->a;
+	size_t last_comment = 0;
+	for (size_t i = 0; i < n; i++) {
+		const ShclLead *c = &leads[i];
+		if (c->blank_before && e->out.len) sb_putc(a, &e->out, '\n');
+		if (c->text.n && (c->text.p[0] == ' ' || c->text.p[0] == '\t')) {
+			ShclStr indent = leading_ws(c->text);
+			ShclTrial t = emit_resolve(e, indent);
+			int under = e->has_hold && indent.n > e->hold.n && memcmp(indent.p, e->hold.p, e->hold.n) == 0;
+			int keep = !t.found ? memchr(indent.p, ' ', indent.n) != NULL : t.parent == DEAD ? under : 0;
+			if (keep) {
+				if (!t.found) { e->has_hold = 1; e->hold = indent; }
+				emit_refused(e, indent, &t);
+				e->verbatim++;
+				sb_putS(a, &e->out, c->text); sb_putc(a, &e->out, '\n');
+			} else {
+				/* Level with the comment before it, so the run's nesting reads
+				   back the same. */
+				if (e->record) { ShclFell f; f.node = node; f.site = site; f.i = first + i; f.depth = last_comment; ShclVecFell_push(a, &e->fell, f); }
+				sb_putS(a, &e->out, emit_tabs(e, base + last_comment));
+				sb_puts(a, &e->out, "# "); sb_putS(a, &e->out, s_slice(c->text, indent.n, c->text.n)); sb_putc(a, &e->out, '\n');
+			}
+			continue;
+		}
+		size_t pad = base + c->depth;
+		if (c->text.n && c->text.p[0] == '#') last_comment = c->depth;
+		else {
+			/* A kept malformed line resolves and holds its column on a reload. */
+			ShclStr ind = emit_tabs(e, pad);
+			ShclTrial t = emit_resolve(e, ind);
+			e->has_hold = 0;
+			emit_refused(e, ind, &t);
+		}
+		sb_putS(a, &e->out, emit_tabs(e, pad));
+		sb_putS(a, &e->out, c->text); sb_putc(a, &e->out, '\n');
+	}
+}
+
 // Emit a sibling run. The parent walk already knows whether an earlier
 // same-name sibling is empty (the raw same-line-fence hazard), so one
 // seen-empties set here replaces a per-child rescan of the whole run.
-static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclSB *out);
-static void emit_children(shcl_doc *d, const ShclVecSize *kids, size_t depth, ShclSB *out) {
+static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclEmit *e);
+static void emit_children(shcl_doc *d, const ShclVecSize *kids, size_t depth, ShclEmit *e) {
 	ShclCMap empties; memset(&empties, 0, sizeof empties);
 	for (size_t i = 0; i < kids->len; i++) {
 		size_t c = kids->data[i];
 		ShclNode *n = &NODE(d, c);
 		uint64_t h = cmap_hash(n->name, s_empty());
 		int seen = 0; /* entries name the empty sibling, so a hit verifies */
-		for (ShclCMapEnt *e = cmap_first(&empties, h); e; e = cmap_next(e, h))
-			if (s_eq(NODE(d, e->val).name, n->name)) { seen = 1; break; }
+		for (ShclCMapEnt *en = cmap_first(&empties, h); en; en = cmap_next(en, h))
+			if (s_eq(NODE(d, en->val).name, n->name)) { seen = 1; break; }
 		int wm = n->value.kind == V_RAW && seen;
 		if (v_is_empty(&n->value) && !seen)
 			cmap_put(&d->scratch, &empties, h, c);
-		emit_node(d, c, depth, wm, out);
+		emit_node(d, c, depth, wm, e);
 	}
 }
 
-static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclSB *out) {
+static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, ShclEmit *e) {
 	/* The whole emit - the output buffer and the quoted/escaped spellings both -
 	   is built in scratch; shcl_to_canonical copies the finished bytes into the
 	   document arena once. Building it there instead retained several times the
 	   output on every save, in an arena that cannot give it back. */
 	ShclArena *a = &d->scratch;
+	ShclSB *out = &e->out;
 	ShclNode *node = &NODE(d, idx);
 	ShclValue *v = &node->value;
 	ShclVecLead lead = triv_leading(node);
@@ -5429,11 +5873,7 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	   comment joins the leading lines instead; the flag comes from the
 	   parent's walk. Each blank rides its own comment (or the binding line),
 	   never as the first output line. */
-	for (size_t k = 0; k < lead.len; k++) {
-		if (lead.data[k].blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth + lead.data[k].depth; z++) sb_putc(a, out, '\t');
-		sb_putS(a, out, lead.data[k].text); sb_putc(a, out, '\n');
-	}
+	push_leads(e, lead.data, lead.len, depth, idx, SITE_LEADING, 0);
 	if (node->blank_before && out->len) sb_putc(a, out, '\n');
 	if (would_merge && trailing.n) {
 		for (size_t z = 0; z < depth; z++) sb_putc(a, out, '\t');
@@ -5442,7 +5882,27 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 	for (size_t k = 0; k < depth; k++) sb_putc(a, out, '\t');
 	sb_putS(a, out, emit_name(a, node->name));
 	sb_putc(a, out, ':');
+	emit_bound(e, depth);
 	if (v->kind == V_EMPTY) { emit_trailing(a, out, trailing); sb_putc(a, out, '\n'); }
+	else if (v->kind == V_CELL && stacks(node)) {
+		/* Stacked, with the kept lines where they sat. */
+		emit_trailing(a, out, trailing);
+		sb_putc(a, out, '\n');
+		ShclVecAmong am = triv_among(node);
+		size_t next = 0;
+		for (size_t i = 0; i < v->nels; i++) {
+			size_t from = next;
+			while (next < am.len && am.data[next].before <= i) next++;
+			for (size_t j = from; j < next; j++) push_leads(e, &am.data[j].lead, 1, depth + 1, idx, SITE_AMONG, j);
+			ShclStr column = emit_tabs(e, depth + 1);
+			sb_putS(a, out, column);
+			sb_puts(a, out, "* ");
+			sb_putS(a, out, emit_element(a, &v->els[i]));
+			sb_putc(a, out, '\n');
+			emit_placed(e, column);
+		}
+		for (size_t j = next; j < am.len; j++) push_leads(e, &am.data[j].lead, 1, depth + 1, idx, SITE_AMONG, j);
+	}
 	else if (v->kind == V_CELL) {
 		sb_putc(a, out, ' ');
 		sb_putS(a, out, emit_cell(a, v->els, v->nels));
@@ -5469,43 +5929,92 @@ static void emit_node(shcl_doc *d, size_t idx, size_t depth, int would_merge, Sh
 		sb_putc(a, out, '\n');
 	}
 	ShclVecSize ch = NODE(d, idx).children;
-	emit_children(d, &ch, depth + 1, out);
+	emit_children(d, &ch, depth + 1, e);
 	/* Comments this block owns with no child to carry them, one deeper. */
 	ShclVecLead ins = triv_inside(&NODE(d, idx));
-	for (size_t k = 0; k < ins.len; k++) {
-		const ShclLead *c = &ins.data[k];
-		if (c->blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth + 1 + c->depth; z++) sb_putc(a, out, '\t');
-		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
-	}
+	push_leads(e, ins.data, ins.len, depth + 1, idx, SITE_INSIDE, 0);
 	/* Comments that hung on this block after its last child. */
 	ShclVecLead aft = triv_after(&NODE(d, idx));
-	for (size_t k = 0; k < aft.len; k++) {
-		const ShclLead *c = &aft.data[k];
-		if (c->blank_before && out->len) sb_putc(a, out, '\n');
-		for (size_t z = 0; z < depth + c->depth; z++) sb_putc(a, out, '\t');
-		sb_putS(a, out, c->text); sb_putc(a, out, '\n');
-	}
+	push_leads(e, aft.data, aft.len, depth, idx, SITE_AFTER, 0);
 }
+
+static void emit_all(shcl_doc *d, ShclEmit *e) {
+	ShclVecSize rc = NODE(d, ROOT).children;
+	emit_children(d, &rc, 0, e);
+	/* Comments that never found a following line re-emit at the end. */
+	push_leads(e, d->orphans.data, d->orphans.len, 0, ROOT, SITE_ORPHANS, 0);
+}
+
 /* The canonical text, built in scratch (valid until the next resolve). Emit's
    own temporaries go there too, so a program that saves periodically does not
    grow by several times the output on every save. */
 static ShclStr emit_canonical(shcl_doc *d) {
 	arena_reset(&d->scratch);
-	ShclSB out = {0};
 	/* Pre-sized by node count, so the builder does not double its way up. */
-	out.cap = d->nodes.len * 24;
-	out.data = (char *)arena_alloc(&d->scratch, out.cap);
-	ShclVecSize rc = NODE(d, ROOT).children;
-	emit_children(d, &rc, 0, &out);
-	/* Comments that never found a following line re-emit at the end. */
-	for (size_t k = 0; k < d->orphans.len; k++) {
-		if (d->orphans.data[k].blank_before && out.len) sb_putc(&d->scratch, &out, '\n');
-		for (size_t z = 0; z < d->orphans.data[k].depth; z++) sb_putc(&d->scratch, &out, '\t');
-		sb_putS(&d->scratch, &out, d->orphans.data[k].text); sb_putc(&d->scratch, &out, '\n');
-	}
-	return sb_S(&out);
+	ShclEmit e; emit_init(&e, &d->scratch, d->nodes.len * 24, 0);
+	emit_all(d, &e);
+	return sb_S(&e.out);
 }
+
+/* One pass of settle_kept: returns whether a line moved out of a list. */
+static int settle_kept_once(shcl_doc *d) {
+	arena_reset(&d->scratch);
+	ShclEmit e; emit_init(&e, &d->scratch, 0, 1);
+	emit_all(d, &e);
+	d->kept = e.verbatim > 0;
+	ShclArena *a = &d->arena;
+	size_t among = 0;
+	for (size_t k = 0; k < e.fell.len; k++) {
+		const ShclFell *f = &e.fell.data[k];
+		ShclVecLead *list;
+		if (f->site == SITE_AMONG) { among++; continue; }
+		if (f->site == SITE_ORPHANS) list = &d->orphans;
+		else {
+			ShclTrivia *t = triv_mut(a, &NODE(d, f->node));
+			list = f->site == SITE_LEADING ? &t->leading : f->site == SITE_INSIDE ? &t->inside : &t->after;
+		}
+		ShclLead *l = &list->data[f->i];
+		l->text = commented(a, l->text);
+		l->depth = f->depth;
+	}
+	/* Out of each list latest first, so a removal leaves the earlier indices
+	   alone, then onto the end of the leading lines in order. */
+	ShclVecLead moved = {0};
+	for (size_t k = e.fell.len; k-- > 0;) {
+		const ShclFell *f = &e.fell.data[k];
+		if (f->site != SITE_AMONG) continue;
+		ShclTrivia *t = triv_mut(a, &NODE(d, f->node));
+		ShclVecLead_push(&d->scratch, &moved, t->among.data[f->i].lead);
+		memmove(&t->among.data[f->i], &t->among.data[f->i + 1], (t->among.len - f->i - 1) * sizeof(ShclAmong));
+		t->among.len--;
+		size_t j = k;
+		while (j-- > 0 && e.fell.data[j].site != SITE_AMONG) {}
+		if (j != (size_t)-1 && e.fell.data[j].node == f->node) continue;
+		size_t depth = 0;
+		for (size_t q = t->leading.len; q-- > 0;) if (t->leading.data[q].text.n && t->leading.data[q].text.p[0] == '#') { depth = t->leading.data[q].depth; break; }
+		for (size_t q = moved.len; q-- > 0;) {
+			ShclLead l = moved.data[q];
+			l.text = commented(a, l.text);
+			l.depth = depth;
+			ShclVecLead_push(a, &t->leading, l);
+		}
+		moved.len = 0;
+	}
+	return among > 0;
+}
+
+/* Make a misplaced line kept as written into the comment the emitter writes it
+   as, wherever it would now bind as written, so the document is the one its
+   saved text reloads as and the next edit lands the same either way. One among
+   a list's elements goes above the list, as a reload files a comment there.
+   A line moved out of a list can leave it written inline, which changes what
+   the lines after it sit under, so it goes again until nothing moves. Runs
+   after a load and after each edit, and only while the document holds such a
+   line. */
+static void settle_kept(shcl_doc *d) {
+	while (d->kept && settle_kept_once(d)) {}
+}
+
 shcl_str shcl_to_canonical(shcl_doc *d) {
 	/* The returned bytes live in the document arena - that is the documented
 	   contract. A save goes through emit_canonical directly, so it retains
@@ -5748,6 +6257,7 @@ void shcl_compact(shcl_doc *d) {
 	for (size_t i = 0; i < d->orphans.len; i++) ShclVecLead_push(a, &n->orphans, lead_make(s_dup(a, d->orphans.data[i].text), d->orphans.data[i].blank_before, d->orphans.data[i].depth));
 	n->strictness = d->strictness;
 	n->lost = d->lost;
+	n->kept = d->kept;
 	n->probe_doc = d->probe_doc;
 	doc_guard(n, NULL);
 	doc_guard(d, NULL);
