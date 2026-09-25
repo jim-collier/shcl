@@ -188,16 +188,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Features and enhancements
 
-- 🔘 A save that edits only the lines that changed, and writes every other line back byte for byte.
-	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
-	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
-	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
-	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
-	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
-	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
-	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
-	- Opened: 20260925-095454
-
 - Code review 20260924d:
 
 	- 🔘 Idea 1: stage 7's fallback destination `~/.local/bin` is now also the dogfood runner's link and the installer's user link.
@@ -4695,6 +4685,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 #### Done - Features and enhancements
 
+- ✅ The large-document gate waits on Python, which takes two minutes or more at 100 MiB.
+	- Decided: 20260925, a smaller document for Python, even though the gate then covers less.
+	- Done: Python formats a 16 MiB copy and has to match the reference's output for it. The cap is a fifth field in `largedoc.bash`'s limits table.
+	- Measured: the whole gate went to 23 s here, with Python at 20 s.
+	- Verified: a Python that adds one line fails as `DIFFERS from rust at 16 MiB`, and a reference that writes nothing for the small copy fails too. `--mib 1` still passes.
+	- Opened: n/a
+	- Closed: 20260925-110645
+
 - ✅ Keep a line at a bad indent (E012), and the lines under it (E018), on save, the way an E019 line is kept.
 	- Reproduced: `window:` / `opacity: 1.0` at one tab / `margin: 4` at four spaces / `columns: 160` at one tab, through `fmt`. The `margin` line is gone and counts as lost, so `save_file` refuses.
 	- Note: a missing capability. One stray space in a hand-edited config stops every save, including ones nobody asked for, like a program saving its window size. Wanted: the line written as it was, and a lost count of 0.
@@ -8403,6 +8401,17 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-122219
 
 ### Future and/or deferred
+
+- ✋ A save that edits only the lines that changed, and writes every other line back byte for byte.
+	- Note: reported from SilkTerm. Every settings save goes through the whole-document writer, so setting the window size also rewrites quotes and indents nobody touched.
+	- Reproduced: `a: 'x'`, `c: "8"` and `e: "true"` through `fmt` come back as `a: "x"`, `c: 8` and `e: true`. That is the canonical form by design, so the writer has no bug here. It is just the part SilkTerm sees most.
+	- Decided: 20260925, the canonical quoting stays as it is. Keeping the author's quote style in `fmt` was weighed and dropped.
+	- Note: it would also let a program save beside a line that cannot be placed. The line is never rewritten, so nothing is lost and the save gate has nothing to refuse. SilkTerm holds its own item waiting on that.
+	- Note: the known answer is the one `toml_edit` uses. Each node keeps its source span, and a save writes out only the nodes an edit touched. It is a new save path in all four bindings and the veneer, with its own fixpoint and merge questions.
+	- Keep: `fmt` and the full save stay canonical, tabs included (`design.md` -> Load outcomes). Untouched lines keep their own spelling only under the new save.
+	- Note: SilkTerm's short-file growth, in the same report, is its own bug. Nothing filed here.
+	- Decided: 20260925, after the `v3.0.0-beta1` cut.
+	- Opened: 20260925-095454
 
 - ✋ Code review 20260924c idea 17: `install.ps1` runs on Windows only.
 	- Note: `install.bash` covers Linux, and there are no macOS binaries. Porting the Linux layout would also mean changing the `shell-regress.bash` row that removes the Windows check by its text.

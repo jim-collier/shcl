@@ -9,6 +9,8 @@
 ##		Generates one document, formats it through every binding, and requires
 ##		them to agree byte for byte on the result - then checks the reference's
 ##		own invariants at that scale and gates wall clock and peak memory.
+##		A slow binding can get a smaller copy of the document; the limits
+##		table below says which.
 ##	Syntax:
 ##		largedoc.bash [--mib N] [--keep] NAME|CLI [NAME|CLI ...]
 ##		  --mib N   document size to generate, in MiB (default 100)
@@ -44,9 +46,15 @@ esac; done
 if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positive integer" >&2; exit 2; fi
 
 ## Per-binding ceilings, "name|seconds per input MiB|peak RSS MiB per input MiB|
-## peak RSS MiB floor". Expressed per-MiB so they follow --mib instead of being
-## pinned to one size; the floor is the runtime's own footprint, which does not
-## scale with the input and at one or two MiB is most of what is measured.
+## peak RSS MiB floor|largest document in MiB". Expressed per-MiB so they follow
+## --mib instead of being pinned to one size; the floor is the runtime's own
+## footprint, which does not scale with the input and at one or two MiB is most
+## of what is measured.
+## The last field caps a slow binding's document, which is generated the same
+## way at the smaller size and checked against the reference's output for it.
+## Python at 100 MiB was the whole gate's critical path, two minutes and more;
+## 16 MiB still shows a quadratic parse or a buffer that grows wrong. Empty means
+## the full --mib. The reference always runs the full size.
 ## Time carries wide headroom - the pipeline runs the reference unoptimized (about
 ## six times slower than a release build), and a shared CI runner is slower again;
 ## the target is a growth-rate regression, not a stopwatch. Memory is held much
@@ -55,13 +63,13 @@ if ! [[ "${mib}" =~ ^[1-9][0-9]*$ ]]; then echo "largedoc: --mib wants a positiv
 ## and 33-41 (concurrent GC moves it run to run, so its ceiling carries more
 ## slack), c 0.04 and 30, python 1.11 and 47.
 limits=(
-	"rust|3.00|32|16"
-	"go|1.00|55|24"
-	"c|1.00|45|8"
-	"python|4.00|65|48"
+	"rust|3.00|32|16|"
+	"go|1.00|55|24|"
+	"c|1.00|45|8|"
+	"python|4.00|65|48|16"
 )
 
-fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss, 4=rss floor); empty when unlisted
+fLimit() {   ## $1 = binding name, $2 = field (2=secs, 3=rss, 4=rss floor, 5=max MiB); empty when unlisted
 	local e
 	for e in "${limits[@]}"; do [[ "${e%%|*}" == "$1" ]] && { cut -d'|' -f"$2" <<<"${e}"; return 0; }; done
 	return 0   ## an unlisted binding is measured and reported, just not gated
@@ -73,7 +81,8 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/shcl-largedoc.XXXXXX")"
 ## Room for the document plus every binding's formatted copy, since the runs
 ## overlap, with slack.
 avail_kib="$(df -Pk "${work}" | awk 'NR==2{print $4}')"
-need_kib=$(( mib * 1024 * (${#bindings[@]} + 2) ))
+## Two more for one capped size: its document and the reference's output for it.
+need_kib=$(( mib * 1024 * (${#bindings[@]} + 4) ))
 ((avail_kib >= need_kib)) || {
 	echo "largedoc: need ~$((need_kib/1024)) MiB free for ${work}, have $((avail_kib/1024)) MiB" >&2
 	exit 1
@@ -88,6 +97,32 @@ largedoc_gen "${mib}" > "${doc}"
 
 actualMib=$(( $(stat -c%s "${doc}") / 1048576 ))
 echo "largedoc: ${actualMib} MiB, $(grep -c '' "${doc}") lines"
+
+refName="${bindings[0]%%|*}"
+refCli="${bindings[0]#*|}"
+refOut="${work}/out-${refName}.shcl"
+
+## Which document each binding formats, its size, and the reference output it
+## has to match. A capped size gets its own document and its own reference run.
+declare -A docOf=() mibOf=() refOutOf=()
+smallSizes=()
+for entry in "${bindings[@]}"; do
+	name="${entry%%|*}"
+	docOf["${name}"]="${doc}"; mibOf["${name}"]="${actualMib}"; refOutOf["${name}"]="${refOut}"
+	[[ "${name}" == "${refName}" ]] && continue
+	maxMib="$(fLimit "${name}" 5)"
+	if [[ -n "${maxMib}" ]] && ((maxMib < mib)); then
+		small="${work}/large-${maxMib}.shcl"
+		if ! [[ -f "${small}" ]]; then
+			echo "largedoc: generating ${maxMib} MiB for ${name} -> ${small}"
+			largedoc_gen "${maxMib}" > "${small}"
+			smallSizes+=("${maxMib}")
+		fi
+		docOf["${name}"]="${small}"
+		mibOf["${name}"]=$(( $(stat -c%s "${small}") / 1048576 ))
+		refOutOf["${name}"]="${work}/ref-${maxMib}.shcl"
+	fi
+done
 
 ## Wall clock and peak RSS for one run. VmHWM is the kernel's own high-water
 ## mark and only ever climbs, so sampling it is exact up to the last sample.
@@ -112,10 +147,6 @@ fRunMeasured() {
 	runRssMib=$(( hwm / 1024 ))
 }
 
-refName="${bindings[0]%%|*}"
-refCli="${bindings[0]#*|}"
-refOut="${work}/out-${refName}.shcl"
-
 ## The runs overlap. Each binding's own run, plus the reference's three
 ## invariant reads below, are jobs, and a job starts only while the memory
 ## ceilings of everything running fit in what the machine has free, less a
@@ -130,7 +161,7 @@ for entry in "${bindings[@]}"; do
 	ceilMib["${name}"]=0
 	for e in "${limits[@]}"; do
 		IFS='|' read -r lName _ lRss lFloor <<<"${e}"
-		if [[ "${lName}" == "${name}" ]]; then ceilMib["${name}"]=$((lRss * actualMib + lFloor)); fi
+		if [[ "${lName}" == "${name}" ]]; then ceilMib["${name}"]=$((lRss * ${mibOf[${name}]} + lFloor)); fi
 	done
 	if ((ceilMib["${name}"] > maxCeil)); then maxCeil=${ceilMib["${name}"]}; fi
 done
@@ -147,8 +178,13 @@ fJobRun() {
 	case "$1" in
 		fmt\|*)
 			local name="${1#fmt|}"
-			fRunMeasured "${work}/out-${name}.shcl" "${cliOf[${name}]}" fmt "${doc}"
+			fRunMeasured "${work}/out-${name}.shcl" "${cliOf[${name}]}" fmt "${docOf[${name}]}"
 			echo "${runSecs} ${runRssMib} ${runRc}" > "${work}/res-${name}"
+			;;
+		## The reference's output for a capped binding's smaller document.
+		ref\|*)
+			local size="${1#ref|}"
+			"${refCli}" fmt "${work}/large-${size}.shcl" > "${work}/ref-${size}.shcl" 2>/dev/null || true
 			;;
 		## The generator promises a document nothing in it merges into and that
 		## loads clean; the profiler's numbers depend on it. A hint per unit once
@@ -175,6 +211,7 @@ for entry in "${bindings[@]}"; do
 	## A missing CLI is reported in the table; there is nothing to run.
 	if [[ -r "${cliOf[${name}]}" ]]; then queue+=("fmt|${name}"); fi
 done
+for size in "${smallSizes[@]}"; do queue+=("ref|${size}"); done
 queue+=(check)
 declare -i nLive=0 usedMib=0
 while ((${#queue[@]} || nLive)); do
@@ -196,7 +233,6 @@ while ((${#queue[@]} || nLive)); do
 done
 
 rc=0
-refSum=""
 printf '\n%-8s %8s %10s   %s\n' "binding" "secs" "peak MiB" "result"
 
 for entry in "${bindings[@]}"; do
@@ -214,20 +250,26 @@ for entry in "${bindings[@]}"; do
 		note="FAILED (exit ${runRc}): $(head -c 200 "${out}.err" | tr '\n' ' ')"
 		rc=1
 	else
+		ownMib="${mibOf[${name}]}"
+		against="${refOutOf[${name}]}"
 		sum="$(sha256sum "${out}" | cut -d' ' -f1)"
-		if [[ -z "${refSum}" ]]; then refSum="${sum}"; note="reference"
-		elif [[ "${sum}" == "${refSum}" ]]; then note="agrees"
-		else note="DIFFERS from ${refName}"; rc=1
+		sizeNote=""
+		((ownMib == actualMib)) || sizeNote=" at ${ownMib} MiB"
+		if [[ "${name}" == "${refName}" ]]; then note="reference"
+		## Empty agrees with empty, the same hole the invariants below guard.
+		elif ! [[ -s "${against}" ]]; then note="FAILED: ${refName} wrote nothing${sizeNote}"; rc=1
+		elif [[ "${sum}" == "$(sha256sum "${against}" | cut -d' ' -f1)" ]]; then note="agrees${sizeNote}"
+		else note="DIFFERS from ${refName}${sizeNote}"; rc=1
 		fi
 
 		maxSecs="$(fLimit "${name}" 2)"
 		if [[ -n "${maxSecs}" ]]; then
 			maxRss="$(fLimit "${name}" 3)"; rssFloor="$(fLimit "${name}" 4)"
-			if awk -v s="${runSecs}" -v m="${maxSecs}" -v n="${actualMib}" 'BEGIN{exit !(s > m*n)}'; then
-				note="${note}; TOO SLOW (over $(awk -v m="${maxSecs}" -v n="${actualMib}" 'BEGIN{printf "%.0f", m*n}')s)"; rc=1
+			if awk -v s="${runSecs}" -v m="${maxSecs}" -v n="${ownMib}" 'BEGIN{exit !(s > m*n)}'; then
+				note="${note}; TOO SLOW (over $(awk -v m="${maxSecs}" -v n="${ownMib}" 'BEGIN{printf "%.0f", m*n}')s)"; rc=1
 			fi
-			if ((runRssMib > maxRss * actualMib + rssFloor)); then
-				note="${note}; TOO BIG (over $((maxRss * actualMib + rssFloor)) MiB)"; rc=1
+			if ((runRssMib > maxRss * ownMib + rssFloor)); then
+				note="${note}; TOO BIG (over $((maxRss * ownMib + rssFloor)) MiB)"; rc=1
 			fi
 		fi
 	fi
@@ -279,3 +321,5 @@ exit "${rc}"
 ##		  poll no longer forks per sample.
 ##		- 2026-09-22 JC: The bindings and the invariant reads run at once, as far
 ##		  as their memory ceilings fit in free memory. 188 s to 132 s here.
+##		- 2026-09-25 JC: Python formats a 16 MiB document, checked against the
+##		  reference's output for it. At 100 MiB it was the gate's critical path.
