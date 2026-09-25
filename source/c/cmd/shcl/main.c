@@ -105,6 +105,8 @@ static const char *HELP =
 	"  literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax\n"
 	"  raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block\n"
 	"  empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH\n"
+	"  clear-comments<TAB>PATH                                 drop comments above\n"
+	"  banner<TAB>on|off                                       add or drop info block\n"
 	"string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.\n"
 	"\n"
 	"Types (get only; default --string):\n"
@@ -1283,7 +1285,8 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	{
 		int bad = 0;
 		static const struct { const char *op; size_t want; } counts[] = {
-			{ "empty", 2 }, { "remove", 2 }, { "raw", 4 }, { "raw-default", 4 },
+			{ "empty", 2 }, { "remove", 2 }, { "clear-comments", 2 }, { "banner", 2 },
+			{ "raw", 4 }, { "raw-default", 4 },
 			{ "int", 3 }, { "float", 3 }, { "bool", 3 }, { "string", 3 },
 			{ "datetime", 3 }, { "literal", 3 }, { "comment", 3 },
 			{ "int-default", 3 }, { "float-default", 3 }, { "bool-default", 3 },
@@ -1344,6 +1347,13 @@ static int apply_op(shcl_doc *d, const char *line, size_t linelen, size_t lineno
 	else if (OP("empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (OP("comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = unescape_ops(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (OP("remove") && !only_absent) shcl_remove(d, path, plen);
+	else if (OP("clear-comments") && !only_absent) shcl_clear_comments(d, path, plen);
+	// The second field is on or off, not a path.
+	else if (OP("banner") && !only_absent) {
+		if (plen == 2 && memcmp(path, "on", 2) == 0) shcl_set_banner(d, 1);
+		else if (plen == 3 && memcmp(path, "off", 3) == 0) shcl_set_banner(d, 0);
+		else { op_err(lineno, "bad banner: %.*s (on or off)", (int)plen, path); rc = 1; }
+	}
 	else { op_err(lineno, "unknown op: %.*s", (int)opn_full, fp[0]); rc = 1; }
 	if (rc == 0 && !wrote) {
 		// Which half of the op had no spelling: the reader is otherwise sent to

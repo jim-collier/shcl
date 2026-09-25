@@ -296,6 +296,9 @@ int main() {
 		CHECK(w.set_empty("blank") && w.read_string("blank").status == shcl::Status::Empty);
 		CHECK(w.set_comment("port", "the port") && w.to_canonical().find("# the port\nport: 9090\n") != std::string::npos);
 		CHECK(!w.set_comment("port", "two\nlines"));
+		CHECK(w.clear_comments("port") == 1 && w.to_canonical().find("# the port") == std::string::npos);
+		CHECK(w.set_banner(true) == 0 && w.to_canonical().find("## This config file format is SHCL.\n") != std::string::npos);
+		CHECK(w.set_banner(false) == 1 && w.to_canonical().find("##") == std::string::npos);
 		CHECK(!w.set_int("a[*]", 1) && w.write_reason("a[*]") == shcl::WriteReason::Wildcard);
 		CHECK(w.remove("blank") == 1 && !w.exists("blank") && w.remove("blank") == 0);
 

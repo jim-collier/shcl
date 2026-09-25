@@ -6224,6 +6224,103 @@ impl Document {
 		}
 	}
 
+	/// Take off the comment lines above the node(s) at a path, the lines
+	/// `set_comment` adds to, so a program can replace a comment rather than
+	/// stack another one on it. Which lines those are is where the load put
+	/// them: everything between the node and the binding line before it, so a
+	/// heading written for a group of fields goes too. A comment on the
+	/// node's own line stays, and so does a line kept as written for being
+	/// malformed. Returns how many lines came off, 0 when the path reaches
+	/// nothing.
+	pub fn clear_comments(&mut self, path: &str) -> usize {
+		let targets: Vec<usize> = match self.resolve_group(path) {
+			Ok(Resolved::One(n)) => vec![n],
+			Ok(Resolved::Many(v)) => v,
+			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
+			_ => Vec::new(),
+		};
+		let mut cleared = 0;
+		for t in targets {
+			let nd = &mut self.arena[t];
+			let Some(tr) = nd.trivia.as_deref_mut() else {
+				continue;
+			};
+			let before = tr.leading.len();
+			// The blank above the run is the one that separates it from what
+			// comes before, so it stays with whatever is now first.
+			let blank = tr.leading.first().is_some_and(|l| l.blank_before);
+			tr.leading.retain(|l| !l.text.starts_with('#'));
+			let gone = before - tr.leading.len();
+			if gone == 0 {
+				continue;
+			}
+			cleared += gone;
+			if let Some(first) = tr.leading.first_mut() {
+				first.blank_before |= blank;
+			} else {
+				nd.blank_before |= blank;
+			}
+		}
+		if cleared > 0 {
+			settle_first_blank(&mut self.arena, &mut self.orphans);
+			self.resettle_kept();
+		}
+		cleared
+	}
+
+	/// Put the info block (`GEN_BANNER`) at the end of the document, or with
+	/// `on` false just take it off. An old block in the footer comes off
+	/// first, found by its `This config file format is SHCL.` line or its
+	/// version line, never by its links or Legal line, which a later release
+	/// may spell differently. A version line `migrate` stamped counts too. A
+	/// block is a run of `##` lines with no blank inside, so a `##` comment of
+	/// the file's own, written right against it, goes with it. The library
+	/// save never adds the block by itself; this is for a program that wants
+	/// it in a file it writes. Returns how many old blocks came off.
+	pub fn set_banner(&mut self, on: bool) -> usize {
+		let is_block_line =
+			|t: &str| t == "## This config file format is SHCL." || t.starts_with(FORMAT_LINE_HEAD);
+		let mut keep: Vec<Lead> = Vec::with_capacity(self.orphans.len());
+		let mut removed = 0;
+		let mut i = 0;
+		while i < self.orphans.len() {
+			let mut end = i + 1;
+			if self.orphans[i].text.starts_with("##") {
+				while end < self.orphans.len()
+					&& self.orphans[end].text.starts_with("##")
+					&& !self.orphans[end].blank_before
+				{
+					end += 1;
+				}
+				if self.orphans[i..end].iter().any(|l| is_block_line(&l.text)) {
+					// The blank that set the block off moves to whatever
+					// followed it, so the lines around it stay apart.
+					let blank = self.orphans[i].blank_before;
+					if let Some(next) = self.orphans.get_mut(end) {
+						next.blank_before |= blank;
+					}
+					removed += 1;
+					i = end;
+					continue;
+				}
+			}
+			keep.extend(self.orphans[i..end].iter().cloned());
+			i = end;
+		}
+		self.orphans = keep;
+		if on {
+			let open = !self.orphans.is_empty() || !self.arena[ROOT].children.is_empty();
+			for (n, line) in GEN_BANNER.lines().enumerate() {
+				let mut l = Lead::plain(line.to_string());
+				l.blank_before = n == 0 && open;
+				self.orphans.push(l);
+			}
+		}
+		settle_first_blank(&mut self.arena, &mut self.orphans);
+		self.resettle_kept();
+		removed
+	}
+
 	/// Bind an integer at a path, creating the path as needed; false = path not
 	/// writable (write_reason says why - same for every setter). The setters are
 	/// must_use because an ignored false means the save that follows writes a

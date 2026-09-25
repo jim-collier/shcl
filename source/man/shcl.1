@@ -3,7 +3,7 @@
 .\"
 .\" Carries no version string on purpose: the release bump touches eight files
 .\" and this is not one of them. Keep it in step with HELP in the four CLIs.
-.TH SHCL 1 2026-09-24 shcl "User Commands"
+.TH SHCL 1 2026-09-25 shcl "User Commands"
 .SH NAME
 shcl \- read, edit, validate and format Simple Hierarchical Config Language files
 .SH SYNOPSIS
@@ -563,13 +563,22 @@ literal[\-default]<TAB>PATH<TAB>TEXT
 raw[\-default]<TAB>PATH<TAB>INFO<TAB>CONTENT
 empty<TAB>PATH
 comment<TAB>PATH<TAB>TEXT
+clear\-comments<TAB>PATH
 remove<TAB>PATH
+banner<TAB>on|off
 .fi
 .RE
 .PP
 The
 .B \-default
-forms write only if the path is absent. String, comment and raw values decode
+forms write only if the path is absent.
+.B clear\-comments
+takes off the comment lines above the node, all of them, so a comment can be
+replaced instead of added to.
+.B banner on
+puts the info block at the end, taking off an old one first;
+.B banner off
+only takes it off. String, comment and raw values decode
 .BR \en ,
 .B \et
 and

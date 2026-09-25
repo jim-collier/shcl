@@ -116,6 +116,8 @@ With --write, a FILE that does not exist yet is created. PATH ends at the first
   literal[-default]<TAB>PATH<TAB>TEXT                     set from value syntax
   raw[-default]<TAB>PATH<TAB>INFO<TAB>CONTENT             set a raw block
   empty<TAB>PATH   comment<TAB>PATH<TAB>TEXT   remove<TAB>PATH
+  clear-comments<TAB>PATH                                 drop comments above
+  banner<TAB>on|off                                       add or drop info block
 string/raw values decode \\n \\t \\\\; a line starting with # is a script comment.
 
 Types (get only; default --string):
@@ -2104,7 +2106,7 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 	// literal tab lost everything after it and still reported success; the
 	// escape for a tab inside a value is `\t`.
 	let want = match f.first().copied().unwrap_or("") {
-		"empty" | "remove" => 2,
+		"empty" | "remove" | "clear-comments" | "banner" => 2,
 		"raw" | "raw-default" => 4,
 		"int" | "float" | "bool" | "string" | "datetime" | "literal" | "comment"
 		| "int-default" | "float-default" | "bool-default" | "string-default"
@@ -2219,6 +2221,18 @@ fn apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.remove(path);
 			true
 		}
+		"clear-comments" => {
+			doc.clear_comments(path);
+			true
+		}
+		// The second field is on or off, not a path.
+		"banner" => match path {
+			"on" | "off" => {
+				doc.set_banner(path == "on");
+				true
+			}
+			_ => return Err(format!("bad banner: {} (on or off)", path)),
+		},
 		other => return Err(format!("unknown op: {}", other)),
 	};
 	if !wrote {

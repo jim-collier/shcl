@@ -189,24 +189,6 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 	- Decided: 20260925, if the edited text doesn't reload to the same document, it writes the canonical form instead, same as every save does today, and tells the caller which one it did.
 	- Opened: 20260925-095454
 
-- From nemo-anywhere:
-
-	- 🔘 No way to replace a node's comment.
-		- Reproduced: `comment g.k summary` twice in one `set` gives `# summary` twice above `k`, exit 0. `set_comment` only ever adds a line, it says so, so not a bug.
-		- Note: they asked for a replace, or a call that clears first. Their workaround only comments a key when it's first made.
-		- Note: "the node's comments" is whatever the parser put above it, which can be a header meant for several keys. Doc that, don't try to guess.
-		- Opened: 20260925-115006
-
-	- 🔘 Nothing helps a program that writes `GEN_BANNER` itself take the old one off.
-		- Reproduced: a file ending in the info block, loaded and saved with a new block, has two. On reload the old one is just footer comments.
-		- Note: they match its lines by text, which breaks when the Legal year changes. Find it by the `This config file format is SHCL.` and `Format` lines, never the links or Legal text.
-		- Keep: the library save still never adds the block by itself. Only a program asking for it gets it.
-		- Opened: 20260925-115006
-
-	- 🔘 C string and list reads grow the read arena until `shcl_reads_release`, about 19 MB per 200,000 reads.
-		- Note: documented, and the release call is cheap. A read that copies into the caller's buffer means nobody has to remember it. Lower priority. Rust, Go and Python return owned strings already.
-		- Opened: 20260925-115006
-
 - 🔘 Cut `v3.0.0-beta1`, after everything above.
 	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
 	- Opened: 20260925-115006
@@ -4723,6 +4705,36 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Closed: 20260721-104508
 
 #### Done - Features and enhancements
+
+- From nemo-anywhere:
+
+	- ✅ No way to replace a node's comment.
+		- Reproduced: `comment g.k summary` twice in one `set` gives `# summary` twice above `k`, exit 0. `set_comment` only ever adds a line, it says so, so not a bug.
+		- Note: they asked for a replace, or a call that clears first. Their workaround only comments a key when it's first made.
+		- Note: "the node's comments" is whatever the parser put above it, which can be a header meant for several keys. Doc that, don't try to guess.
+		- Done: `clear_comments(path)` in all four and the veneer, and a `clear-comments` op. Takes every comment line above the node, returns how many. The comment on the node's own line stays, and so does a kept malformed line. The blank above the run stays with the node.
+		- Verified: corpus 148 in all four runners, crosscheck, cli-regress. The shared edit-and-reload fixture and the Rust fuzz both pick it now, 2M clean.
+		- Swept: the eight op dispatch sites, help in four CLIs, man page, spec, changelog.
+		- Opened: 20260925-115006
+		- Closed: 20260925-121058
+
+	- ✅ Nothing helps a program that writes `GEN_BANNER` itself take the old one off.
+		- Reproduced: a file ending in the info block, loaded and saved with a new block, has two. On reload the old one is just footer comments.
+		- Note: they match its lines by text, which breaks when the Legal year changes. Find it by the `This config file format is SHCL.` and `Format` lines, never the links or Legal text.
+		- Keep: the library save still never adds the block by itself. Only a program asking for it gets it.
+		- Done: `set_banner(on)` in all four and the veneer, and a `banner on|off` op. It drops any `##` run in the footer holding the SHCL line or a `Format` line, `migrate`'s stamp included, then with on adds the current block. Returns how many it took off.
+		- Note: only the footer is searched. A block at the top of a file is left alone.
+		- Verified: corpus 149 (an old block, a stamp, a user `##` note kept, twice in a row) and its bad ops, cli-regress rows for off and a bad value, a probe of seven edge cases agreeing in all four CLIs.
+		- Opened: 20260925-115006
+		- Closed: 20260925-121058
+
+	- ✅ C string and list reads grow the read arena until `shcl_reads_release`, about 19 MB per 200,000 reads.
+		- Note: documented, and the release call is cheap. A read that copies into the caller's buffer means nobody has to remember it. Lower priority. Rust, Go and Python return owned strings already.
+		- Reproduced: 200,000 reads of a three-string array grew 18.8 MB. A plain one-string read grew nothing, it already points into the document. A string read of an array's joined text grew 6 MB.
+		- Done: `shcl_read_string_to` and a `_to` form of each of the five array reads. Each copies into the caller's buffer and gives the read arena back to where it was. The veneer already releases before every read, so it doesn't wrap them.
+		- Verified: a C test does 20,000 rounds of all six with the arena unchanged after, plus short buffers and a missing path. With the release taken out it fails. Sanitizers clean.
+		- Opened: 20260925-115006
+		- Closed: 20260925-121058
 
 - ✅ The large-document gate waits on Python, which takes two minutes or more at 100 MiB.
 	- Decided: 20260925, a smaller document for Python, even though the gate then covers less.

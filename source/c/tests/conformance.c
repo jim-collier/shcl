@@ -325,6 +325,11 @@ static int try_apply_op_c(shcl_doc *d, char *line) {
 	else if (!strcmp(op, "empty") && !only_absent) wrote = shcl_set_empty(d, path, plen);
 	else if (!strcmp(op, "comment") && !only_absent) { char *b = (char *)xrealloc(NULL, vn ? vn : 1); size_t m = cf_unescape(v, vn, b); wrote = shcl_set_comment(d, path, plen, b, m); free(b); }
 	else if (!strcmp(op, "remove") && !only_absent) shcl_remove(d, path, plen);
+	else if (!strcmp(op, "clear-comments") && !only_absent) shcl_clear_comments(d, path, plen);
+	else if (!strcmp(op, "banner") && !only_absent) {
+		if (!strcmp(path, "on") || !strcmp(path, "off")) shcl_set_banner(d, !strcmp(path, "on"));
+		else rc = 1;
+	}
 	else rc = 2; // no such op here: a misspelled bad-ops row is a fixture bug
 	if (rc == 0 && !wrote) rc = 1;
 	#undef SET
@@ -557,7 +562,7 @@ static void edits_and_merges_match_a_reload(void) {
 				seq_put(&path, pick.p, pick.n);
 			}
 			char v[8]; snprintf(v, sizeof v, "v%zu", seq_below(3));
-			size_t op = seq_below(9);
+			size_t op = seq_below(11);
 			seq_doc(&layer);
 			shcl_doc *docs[2] = {live, back};
 			int applied = 0;
@@ -571,7 +576,9 @@ static void edits_and_merges_match_a_reload(void) {
 				case 5: applied += shcl_set_comment(d, path.p, path.n, v, strlen(v)); break;
 				case 6: applied += shcl_set_empty(d, path.p, path.n); break;
 				case 7: applied += shcl_set_raw(d, path.p, path.n, "body", 4, v, strlen(v)); break;
-				default: applied += shcl_set_int_default(d, path.p, path.n, 1); break;
+				case 8: applied += shcl_set_int_default(d, path.p, path.n, 1); break;
+				case 9: applied += (int)shcl_clear_comments(d, path.p, path.n); break;
+				default: applied += (int)shcl_set_banner(d, strcmp(v, "v0") != 0); break;
 				}
 			}
 			(void)applied;
@@ -1789,6 +1796,30 @@ int main(int argc, char **argv) {
 			shcl_reads_release(ad);
 		}
 		if (arena_bytes(&ad->reads) > 4096) fail("array_retain", "releasing per read did not keep the arena flat");
+		shcl_free(ad);
+	}
+	// The copy-out reads leave the read arena as they found it, so a caller
+	// that never releases still stays flat. Short buffers get what fits and
+	// the whole count. C-only, for the same reason as above.
+	{
+		const char *at = "ports: 80, 443, 8080\nnames: a, \"b c\"\nwhen: 2026-01-02T03:04:05.25Z, 2027-01-01\nflags: true, false\nf: 1.5, 2\n";
+		shcl_doc *ad = shcl_parse(at, strlen(at));
+		size_t readsBefore = arena_bytes(&ad->reads);
+		int64_t iv[3]; double fv[2]; int bv[2]; shcl_datetime dv[2]; shcl_str sv[2]; shcl_status sl[3];
+		char buf[64]; size_t n = 0, len = 0;
+		for (int i = 0; i < 20000; i++) {
+			if (shcl_read_int_array_to(ad, "ports", 5, iv, sl, 3, &n) != SHCL_GOOD || n != 3 || iv[2] != 8080 || sl[1] != SHCL_GOOD) { fail("copy_out", "int array"); break; }
+			if (shcl_read_float_array_to(ad, "f", 1, fv, NULL, 2, &n) != SHCL_GOOD || n != 2 || fv[0] != 1.5) { fail("copy_out", "float array"); break; }
+			if (shcl_read_bool_array_to(ad, "flags", 5, bv, NULL, 2, &n) != SHCL_GOOD || n != 2 || bv[0] != 1 || bv[1] != 0) { fail("copy_out", "bool array"); break; }
+			if (shcl_read_datetime_array_to(ad, "when", 4, dv, NULL, 2, &n) != SHCL_GOOD || n != 2 || dv[0].year != 2026 || dv[0].frac.n != 2 || memcmp(dv[0].frac.p, "25", 2) != 0) { fail("copy_out", "datetime array"); break; }
+			if (shcl_read_string_array_to(ad, "names", 5, sv, NULL, 2, &n) != SHCL_GOOD || n != 2 || sv[1].n != 3 || memcmp(sv[1].p, "b c", 3) != 0) { fail("copy_out", "string array"); break; }
+			if (shcl_read_string_to(ad, "names", 5, buf, sizeof buf, &len) != SHCL_GOOD || len != 8 || strcmp(buf, "a, \"b c\"") != 0) { fail("copy_out", "joined string"); break; }
+		}
+		if (arena_bytes(&ad->reads) != readsBefore) fail("copy_out", "copy-out reads grew the read arena");
+		if (shcl_read_int_array_to(ad, "ports", 5, iv, sl, 1, &n) != SHCL_GOOD || n != 3 || iv[0] != 80) fail("copy_out", "short int buffer");
+		if (shcl_read_string_to(ad, "names", 5, buf, 4, &len) != SHCL_GOOD || len != 8 || strcmp(buf, "a, ") != 0) fail("copy_out", "short string buffer");
+		if (shcl_read_string_to(ad, "nope", 4, buf, sizeof buf, &len) != SHCL_NOT_FOUND || len != 0 || buf[0]) fail("copy_out", "missing path");
+		if (shcl_read_int_array_to(ad, "nope", 4, iv, sl, 3, &n) != SHCL_NOT_FOUND || n != 0) fail("copy_out", "missing array");
 		shcl_free(ad);
 	}
 	// Every field of shcl_datetime is public, so a caller can hand the renderer

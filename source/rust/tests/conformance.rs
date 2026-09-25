@@ -152,6 +152,17 @@ fn try_apply_op(doc: &mut Document, line: &str) -> Result<(), String> {
 			doc.remove(path);
 			true
 		}
+		"clear-comments" => {
+			doc.clear_comments(path);
+			true
+		}
+		"banner" => match path {
+			"on" | "off" => {
+				doc.set_banner(path == "on");
+				true
+			}
+			_ => return Err(format!("bad banner: {}", path)),
+		},
 		other => return Err(format!("{}{}", UNKNOWN_OP, other)),
 	};
 	if !wrote {

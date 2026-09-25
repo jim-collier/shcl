@@ -44,6 +44,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `format_version()` and `migrate_unstamped()` in every binding, for a program that writes its own info block.
 
+- `set_banner()` in every binding, and the `banner` op, put the info block at the end of a file and take an old one off first.
+
+- `clear_comments()` in every binding, and the `clear-comments` op, take off the comment lines above a node, so a comment can be replaced.
+
+- C: `shcl_read_string_to` and a `_to` form of each array read copy into the caller's buffer, so the read arena stays flat without `shcl_reads_release`.
+
 - `shcl explain [CODE]` gives the rule behind a diagnostic code, or lists every code.
 
 - `shcl help CMD` and `CMD --help` show one subcommand's help.

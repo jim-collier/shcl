@@ -524,6 +524,15 @@ func tryApplyOpTest(doc *Document, line string) error {
 	case "remove":
 		doc.Remove(path)
 		wrote = true
+	case "clear-comments":
+		doc.ClearComments(path)
+		wrote = true
+	case "banner":
+		if path != "on" && path != "off" {
+			return fmt.Errorf("bad banner: %s", path)
+		}
+		doc.SetBanner(path == "on")
+		wrote = true
 	default:
 		return fmt.Errorf("%w: %s", errUnknownOp, f[0])
 	}
@@ -2622,7 +2631,7 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 				path = paths[g.below(len(paths))]
 			}
 			v := "v" + strconv.Itoa(g.below(3))
-			op := g.below(9)
+			op := g.below(11)
 			layer := g.doc()
 			for _, d := range []*Document{live, back} {
 				switch op {
@@ -2640,8 +2649,12 @@ func TestEditsAndMergesMatchAReload(t *testing.T) {
 					d.SetEmpty(path)
 				case 7:
 					d.SetRaw(path, "body", v)
-				default:
+				case 8:
 					d.SetIntDefault(path, 1)
+				case 9:
+					d.ClearComments(path)
+				default:
+					d.SetBanner(v != "v0")
 				}
 			}
 			if op <= 1 {
