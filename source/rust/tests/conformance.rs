@@ -461,6 +461,11 @@ fn reads_match_expected() {
 				assert_eq!(got, expected, "{}", at);
 				continue;
 			}
+			if kind == "comments" {
+				let got = doc.comments(query).join("|");
+				assert_eq!(got, expected, "{}", at);
+				continue;
+			}
 
 			let (got_value, got_status, got_slots): (String, shcl::Status, Vec<shcl::Status>) =
 				match kind {
@@ -1922,6 +1927,22 @@ fn lost_and_save_gate() {
 	assert!(matches!(kept.save_file(bads), Err(shcl::SaveError::Io(_))));
 	assert!(matches!(
 		lost.save_file(bads),
+		Err(shcl::SaveError::Refused { lost: 1, .. })
+	));
+	// A save that keeps lines writes the dropped line back as it was, so it
+	// refuses only when it falls back to canonical. Here removing the line
+	// above it would make it a child of `a`.
+	let mut keep =
+		Document::parse_keep_lines("a:\n\t\tb: 1\n\tc: 2\n", Strictness::Standard).unwrap();
+	assert!(keep.set_int("a.b", 5));
+	assert!(matches!(keep.save_file_keep_lines(fs), Ok(true)));
+	assert_eq!(
+		std::fs::read_to_string(fs).unwrap(),
+		"a:\n\t\tb: 5\n\tc: 2\n"
+	);
+	assert_eq!(keep.remove("a.b"), 1);
+	assert!(matches!(
+		keep.save_file_keep_lines(fs),
 		Err(shcl::SaveError::Refused { lost: 1, .. })
 	));
 	let _ = std::fs::remove_file(&f);

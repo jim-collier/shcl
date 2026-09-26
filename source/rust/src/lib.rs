@@ -3857,7 +3857,8 @@ impl Document {
 	/// re-emit - bad indentation, an unusable selector, a line past the depth
 	/// cap. Content-malformed lines do NOT count: those are retained as trivia
 	/// and survive a save. Nonzero means a save_file would delete hand-written
-	/// content, so save_file refuses then (save_file_lossy overrides).
+	/// content, so save_file refuses then (save_file_lossy overrides), and
+	/// save_file_keep_lines does when it cannot keep the lines.
 	pub fn lost_count(&self) -> usize {
 		self.lost
 	}
@@ -4025,16 +4026,17 @@ impl Document {
 	}
 
 	/// save_file with to_text_keep_lines(): Ok(true) when it kept the lines,
-	/// Ok(false) when it wrote the canonical form instead. Refuses the same
-	/// way save_file does.
+	/// Ok(false) when it wrote the canonical form instead. A line the load
+	/// dropped comes back as written when the lines are kept, so this
+	/// refuses the way save_file does only when it would write canonical.
 	pub fn save_file_keep_lines(&self, path: &str) -> Result<bool, SaveError> {
-		if self.lost > 0 {
+		let (text, kept) = self.to_text_keep_lines();
+		if !kept && self.lost > 0 {
 			return Err(SaveError::Refused {
 				path: path.to_string(),
 				lost: self.lost,
 			});
 		}
-		let (text, kept) = self.to_text_keep_lines();
 		write_file_atomic(path, &text).map_err(SaveError::Io)?;
 		Ok(kept)
 	}
@@ -4948,10 +4950,26 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			out.push_str(eol);
 		}
 	};
+	// The lines no group stands for that sat right after a kept group, when
+	// the group that followed it then does not follow it now. They go out
+	// before the next source group, a new line not indented past them, or
+	// the end. A new line indented past them goes first, since one written
+	// under a dropped line would be dropped with it. A line the load dropped
+	// comes back this way.
+	let flush = |out: &mut String, left: &mut [bool], from: usize, to: usize| {
+		for (k, l) in left.iter_mut().enumerate().take(to).skip(from) {
+			if *l {
+				out.push_str(line(k));
+				*l = false;
+			}
+		}
+	};
 	let mut indents: Vec<Option<String>> = vec![Some(String::new())];
 	// The line of the group just written while it is a source one, and the
 	// end of the last source group met, kept or not.
 	let (mut prev, mut reach) = (0, 0);
+	// The last kept group whose following lines are still to go out.
+	let mut owed = 0;
 	for (i, u) in is.iter().enumerate() {
 		let l = u.line;
 		let known = l != 0 && l <= n && at[l] != NIL;
@@ -4985,6 +5003,23 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		// lines. The same before the first group. Before any other group from
 		// the source, its own blank lines.
 		break_line(&mut out);
+		let depth = tabs(&now.out[u.start..u.end]);
+		if owed != 0
+			&& if known {
+				!(kept && prev == owed && next[prev] == l)
+			} else {
+				let ind = indent_for(&indents, depth, step);
+				(end[owed] + 1..next[owed])
+					.find(|&k| left[k])
+					.is_some_and(|k| ind.len() <= indent(k).len() || !ind.starts_with(indent(k)))
+			} {
+			flush(&mut out, &mut left, end[owed] + 1, next[owed]);
+			break_line(&mut out);
+			owed = 0;
+		}
+		if known {
+			owed = 0;
+		}
 		if i == 0 {
 			if kept && claimed.first() == Some(&l) {
 				(1..l).for_each(|k| {
@@ -5013,7 +5048,6 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 		} else {
 			(0..u.blanks).for_each(|_| out.push_str(eol));
 		}
-		let depth = tabs(&now.out[u.start..u.end]);
 		if kept {
 			// A spliced line's value replaces the lines it took, as a
 			// stacked list's elements.
@@ -5034,6 +5068,7 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 				note_indent(&mut indents, depth, indent(head));
 			}
 			prev = l;
+			owed = l;
 		} else {
 			// A binding the edits rewrote keeps its line's indent and name.
 			let mut from = u.start;
@@ -5050,6 +5085,10 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 			prev = 0;
 		}
 	}
+	if owed != 0 {
+		break_line(&mut out);
+		flush(&mut out, &mut left, end[owed] + 1, n + 1);
+	}
 	// The blank lines the source ends with stay at the end.
 	break_line(&mut out);
 	let tail = claimed.iter().map(|&l| end[l] + 1).max().unwrap_or(1);
@@ -5065,10 +5104,59 @@ fn keep_lines(src: &str, doc: &Document) -> Option<String> {
 	}
 	// The reload has to be the document, and it may not load with an error
 	// the source did not have: a child the edits gave an element list that
-	// stayed stacked reads back the same and is E001 (20260925b item 1).
+	// stayed stacked reads back the same and is E001 (20260925b item 1). A
+	// line the load dropped went out as written, so the reload drops it
+	// again, and may drop nothing more.
 	let back = Parser::new().parse(&out, doc.strictness);
-	(back.lost == 0 && back.to_canonical() == now.out && errors_within(&back, &loaded_doc))
-		.then_some(out)
+	(back.lost <= loaded_doc.lost
+		&& back.to_canonical() == now.out
+		&& errors_within(&back, &loaded_doc))
+	.then_some(out)
+}
+
+/// Take each run of `##` lines holding the info block's SHCL line or a
+/// version line out of `leads`. Returns how many came off, and whether the
+/// last one had a blank above it with no line after it to take that blank.
+fn drop_banners(leads: &mut Vec<Lead>) -> (usize, bool) {
+	let is_block_line =
+		|t: &str| t == "## This config file format is SHCL." || t.starts_with(FORMAT_LINE_HEAD);
+	let mut keep: Vec<Lead> = Vec::with_capacity(leads.len());
+	let (mut removed, mut owed) = (0, false);
+	let mut i = 0;
+	while i < leads.len() {
+		let mut end = i + 1;
+		if leads[i].text.starts_with("##") {
+			while end < leads.len() && leads[end].text.starts_with("##") && !leads[end].blank_before
+			{
+				end += 1;
+			}
+			if leads[i..end].iter().any(|l| is_block_line(&l.text)) {
+				// The blank that set the block off moves to whatever
+				// followed it, so the lines around it stay apart.
+				let blank = leads[i].blank_before;
+				match leads.get_mut(end) {
+					Some(next) => next.blank_before |= blank,
+					None => owed = blank,
+				}
+				removed += 1;
+				i = end;
+				continue;
+			}
+		}
+		keep.extend(leads[i..end].iter().cloned());
+		i = end;
+	}
+	if removed > 0 {
+		// A reload puts a comment at most one level past the one before it,
+		// and the first at none, so what followed a block steps up to that.
+		let mut room = 0;
+		for l in keep.iter_mut().filter(|l| l.text.starts_with('#')) {
+			l.depth = l.depth.min(room);
+			room = l.depth + 1;
+		}
+		*leads = keep;
+	}
+	(removed, owed)
 }
 
 /// Each error code `d` loads with, `of` loaded with at least as often.
@@ -6942,6 +7030,26 @@ impl Document {
 		}
 	}
 
+	/// The comment lines above the node(s) at a path, the ones clear_comments
+	/// takes, in file order, each from its `#` on. A program can tell its own
+	/// comment from one a user wrote there, and set_comment puts a line it
+	/// gave back as it was. Empty when the path reaches nothing.
+	pub fn comments(&self, path: &str) -> Vec<String> {
+		let targets: Vec<usize> = match self.resolve_group(path) {
+			Ok(Resolved::One(n)) => vec![n],
+			Ok(Resolved::Many(v)) => v,
+			Ok(Resolved::Slots(s)) => s.into_iter().filter_map(|r| r.ok()).collect(),
+			_ => Vec::new(),
+		};
+		targets
+			.iter()
+			.filter_map(|&t| self.arena[t].trivia.as_deref())
+			.flat_map(|tr| &tr.leading)
+			.filter(|l| l.text.starts_with('#'))
+			.map(|l| l.text.clone())
+			.collect()
+	}
+
 	/// Take off the comment lines above the node(s) at a path, the lines
 	/// `set_comment` adds to, so a program can replace a comment rather than
 	/// stack another one on it. Which lines those are is where the load put
@@ -6987,45 +7095,43 @@ impl Document {
 	}
 
 	/// Put the info block (`GEN_BANNER`) at the end of the document, or with
-	/// `on` false just take it off. An old block in the footer comes off
-	/// first, found by its `This config file format is SHCL.` line or its
-	/// version line, never by its links or Legal line, which a later release
-	/// may spell differently. A version line `migrate` stamped counts too. A
-	/// block is a run of `##` lines with no blank inside, so a `##` comment of
-	/// the file's own, written right against it, goes with it. The library
-	/// save never adds the block by itself; this is for a program that wants
-	/// it in a file it writes. Returns how many old blocks came off.
+	/// `on` false just take it off. An old block comes off first, found by its
+	/// `This config file format is SHCL.` line or its version line, never by
+	/// its links or Legal line, which a later release may spell differently.
+	/// A version line `migrate` stamped counts too. A block is a run of `##`
+	/// lines with no blank inside, so a `##` comment of the file's own,
+	/// written right against it, goes with it. It is looked for in the
+	/// footer and above every field but the first, since a field added
+	/// below it by hand takes it as its comment; a block at the top of the
+	/// file is left alone. The library save never adds the block by itself;
+	/// this is for a program that wants it in a file it writes. Returns how
+	/// many old blocks came off.
 	pub fn set_banner(&mut self, on: bool) -> usize {
-		let is_block_line =
-			|t: &str| t == "## This config file format is SHCL." || t.starts_with(FORMAT_LINE_HEAD);
-		let mut keep: Vec<Lead> = Vec::with_capacity(self.orphans.len());
 		let mut removed = 0;
-		let mut i = 0;
-		while i < self.orphans.len() {
-			let mut end = i + 1;
-			if self.orphans[i].text.starts_with("##") {
-				while end < self.orphans.len()
-					&& self.orphans[end].text.starts_with("##")
-					&& !self.orphans[end].blank_before
-				{
-					end += 1;
-				}
-				if self.orphans[i..end].iter().any(|l| is_block_line(&l.text)) {
-					// The blank that set the block off moves to whatever
-					// followed it, so the lines around it stay apart.
-					let blank = self.orphans[i].blank_before;
-					if let Some(next) = self.orphans.get_mut(end) {
-						next.blank_before |= blank;
-					}
-					removed += 1;
-					i = end;
-					continue;
-				}
-			}
-			keep.extend(self.orphans[i..end].iter().cloned());
-			i = end;
+		// The first line's comments are the top of the file, on the first
+		// node down, as a dotted line puts them on its last name.
+		let mut top = Vec::new();
+		let mut n = ROOT;
+		while let Some(&c) = self.arena[n].children.first() {
+			top.push(c);
+			n = c;
 		}
-		self.orphans = keep;
+		let mut stack: Vec<usize> = self.arena[ROOT].children.clone();
+		while let Some(n) = stack.pop() {
+			stack.extend_from_slice(&self.arena[n].children);
+			if top.contains(&n) {
+				continue;
+			}
+			let Some(tr) = self.arena[n].trivia.as_deref_mut() else {
+				continue;
+			};
+			let (gone, blank) = drop_banners(&mut tr.leading);
+			if gone > 0 {
+				removed += gone;
+				self.arena[n].blank_before |= blank;
+			}
+		}
+		removed += drop_banners(&mut self.orphans).0;
 		if on {
 			let open = !self.orphans.is_empty() || !self.arena[ROOT].children.is_empty();
 			for (n, line) in GEN_BANNER.lines().enumerate() {

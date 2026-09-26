@@ -1749,6 +1749,28 @@ func TestLostAndSaveGate(t *testing.T) {
 	if err := lost.SaveFile(bad); !errors.As(err, &refused) || refused.Lost != 1 {
 		t.Errorf("refusal did not survive an unwritable path: %v", err)
 	}
+	// A save that keeps lines writes the dropped line back as it was, so it
+	// refuses only when it falls back to canonical. Here removing the line
+	// above it would make it a child of `a`.
+	keep, err := ParseKeepLines("a:\n\t\tb: 1\n\tc: 2\n", Standard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keep.SetInt("a.b", 5) {
+		t.Fatal("SetInt a.b refused")
+	}
+	if k, err := keep.SaveFileKeepLines(f); err != nil || !k {
+		t.Errorf("keep save with a dropped line: kept %v, err %v", k, err)
+	}
+	if got, _ := os.ReadFile(f); string(got) != "a:\n\t\tb: 5\n\tc: 2\n" {
+		t.Errorf("keep save wrote %q", got)
+	}
+	if keep.Remove("a.b") != 1 {
+		t.Fatal("Remove a.b")
+	}
+	if _, err := keep.SaveFileKeepLines(f); !errors.As(err, &refused) || refused.Lost != 1 {
+		t.Errorf("keep save that fell back did not refuse: %v", err)
+	}
 }
 
 func TestStrictFailureCarriesDocument(t *testing.T) {
@@ -2321,6 +2343,12 @@ func TestReadsMatchExpected(t *testing.T) {
 			if kind == "instance_paths" {
 				if got := strings.Join(doc.InstancePaths(), "|"); got != expected {
 					t.Errorf("%s: instance_paths: got %q want %q", at, got, expected)
+				}
+				continue
+			}
+			if kind == "comments" {
+				if got := strings.Join(doc.Comments(query), "|"); got != expected {
+					t.Errorf("%s: comments: got %q want %q", at, got, expected)
 				}
 				continue
 			}

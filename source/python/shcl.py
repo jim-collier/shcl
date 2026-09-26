@@ -3556,10 +3556,24 @@ def _keep_lines(src, doc):
 		if last_piece and not last_piece.endswith("\n"):
 			out.append(eol)
 
+	# The lines no group stands for that sat right after a kept group, when the
+	# group that followed it then does not follow it now. They go out before
+	# the next source group, a new line not indented past them, or the end. A
+	# new line indented past them goes first, since one written under a
+	# dropped line would be dropped with it. A line the load dropped comes
+	# back this way.
+	def flush(frm, to):
+		for g in range(frm, to):
+			if left[g]:
+				out.append(line(g))
+				left[g] = False
+
 	indents: list[str | None] = [""]
 	# The line of the group just written while it is a source one, and the end
 	# of the last source group met, kept or not.
 	prev = reach = 0
+	# The last kept group whose following lines are still to go out.
+	owed = 0
 	for i, u in enumerate(is_):
 		k = u.line
 		known = k != 0 and k <= n and at[k] != no
@@ -3584,6 +3598,20 @@ def _keep_lines(src, doc):
 		# The same before the first group. Before any other group from the
 		# source, its own blank lines.
 		break_line()
+		depth = _tabs(now.text, u.start)
+		if owed != 0:
+			if known:
+				due = not (kept and prev == owed and nxt[prev] == k)
+			else:
+				ind = _indent_for(indents, depth, step)
+				g = next((g for g in range(end[owed] + 1, nxt[owed]) if left[g]), 0)
+				due = g != 0 and (len(ind) <= len(indent(g)) or not ind.startswith(indent(g)))
+			if due:
+				flush(end[owed] + 1, nxt[owed])
+				break_line()
+				owed = 0
+		if known:
+			owed = 0
 		if i == 0:
 			if kept and claimed and claimed[0] == k:
 				out.extend(lines[:k - 1])
@@ -3604,7 +3632,6 @@ def _keep_lines(src, doc):
 			out.extend(lines[g - 1:k - 1])
 		else:
 			out.extend([eol] * u.blanks)
-		depth = _tabs(now.text, u.start)
 		if kept:
 			# A spliced line's value replaces the lines it took, as a stacked
 			# list's elements.
@@ -3620,6 +3647,7 @@ def _keep_lines(src, doc):
 			if w is not None and not now.text.startswith(" ", u.start + depth):
 				_note_indent(indents, depth, indent(was_runs[w.parts[0]].line))
 			prev = k
+			owed = k
 		else:
 			# A binding the edits rewrote keeps its line's indent and name.
 			frm = u.start
@@ -3633,6 +3661,9 @@ def _keep_lines(src, doc):
 					frm = first
 			_write_run(out, now, frm, u.end, indents, step, eol)
 			prev = 0
+	if owed != 0:
+		break_line()
+		flush(end[owed] + 1, n + 1)
 	# The blank lines the source ends with stay at the end.
 	break_line()
 	tail = max((end[k] + 1 for k in claimed), default=1)
@@ -3647,11 +3678,53 @@ def _keep_lines(src, doc):
 	text = bom + text
 	# The reload has to be the document, and it may not load with an error the
 	# source did not have: a child the edits gave an element list that stayed
-	# stacked reads back the same and is E001 (20260925b item 1).
+	# stacked reads back the same and is E001 (20260925b item 1). A line the
+	# load dropped went out as written, so the reload drops it again, and may
+	# drop nothing more.
 	back = _Parser().parse(text, doc._strictness)
-	if back._lost == 0 and back.to_canonical() == now.text and _errors_within(back, loaded_doc):
+	if back._lost <= loaded_doc._lost and back.to_canonical() == now.text and _errors_within(back, loaded_doc):
 		return text
 	return None
+
+
+def _drop_banners(leads):
+	"""Take each run of "##" lines holding the info block's SHCL line or a
+	version line out of `leads`. Returns how many came off, whether the last
+	one had a blank above it with no line after it to take that blank, and
+	the lines left."""
+	def is_block_line(t):
+		return t == "## This config file format is SHCL." or t.startswith(FORMAT_LINE_HEAD)
+
+	keep: list[_Lead] = []
+	removed, owed = 0, False
+	i = 0
+	while i < len(leads):
+		end = i + 1
+		if leads[i].text.startswith("##"):
+			while end < len(leads) and leads[end].text.startswith("##") and not leads[end].blank_before:
+				end += 1
+			if any(is_block_line(c.text) for c in leads[i:end]):
+				# The blank that set the block off moves to whatever followed
+				# it, so the lines around it stay apart.
+				blank = leads[i].blank_before
+				if end < len(leads):
+					leads[end].blank_before = leads[end].blank_before or blank
+				else:
+					owed = blank
+				removed += 1
+				i = end
+				continue
+		keep.extend(leads[i:end])
+		i = end
+	if removed:
+		# A reload puts a comment at most one level past the one before it,
+		# and the first at none, so what followed a block steps up to that.
+		room = 0
+		for c in keep:
+			if c.text.startswith("#"):
+				c.depth = min(c.depth, room)
+				room = c.depth + 1
+	return removed, owed, (keep if removed else leads)
 
 
 def _errors_within(d, of):
@@ -3819,7 +3892,8 @@ class Document:
 		re-emit - bad indentation, an unusable selector, a line past the depth
 		cap. Content-malformed lines do NOT count: those are retained as trivia
 		and survive a save. Nonzero means a save_file would delete hand-written
-		content, so save_file refuses then (save_file_lossy overrides)."""
+		content, so save_file refuses then (save_file_lossy overrides), and
+		save_file_keep_lines does when it cannot keep the lines."""
 		return self._lost
 
 	def error_count(self) -> int:
@@ -3909,11 +3983,12 @@ class Document:
 
 	def save_file_keep_lines(self, path: str | os.PathLike[str]) -> bool:
 		"""save_file with to_text_keep_lines(): True when it kept the lines,
-		False when it wrote the canonical form instead. Refuses the same way
-		save_file does."""
-		if self._lost > 0:
-			raise SaveRefused(path, self._lost)
+		False when it wrote the canonical form instead. A line the load dropped
+		comes back as written when the lines are kept, so this refuses the way
+		save_file does only when it would write canonical."""
 		text, kept = self.to_text_keep_lines()
+		if not kept and self._lost > 0:
+			raise SaveRefused(path, self._lost)
 		err = write_file_atomic(path, text)
 		if err is not None:
 			raise SaveFailed(err)
@@ -4764,6 +4839,24 @@ class Document:
 		self._resettle_kept()
 		return True
 
+	def comments(self, path: str) -> list[str]:
+		"""The comment lines above the node(s) at a path, the ones
+		clear_comments takes, in file order, each from its "#" on. A program
+		can tell its own comment from one a user wrote there, and set_comment
+		puts a line it gave back as it was. Empty when the path reaches
+		nothing."""
+		r = self._resolve(path, True)
+		tag = r[0]
+		if tag == "one":
+			targets = [r[1]]
+		elif tag == "many":
+			targets = list(r[1])
+		elif tag == "slots":
+			targets = [n for n in r[1] if isinstance(n, int)]
+		else:
+			targets = []
+		return [c.text for t in targets if (tr := self.arena[t].trivia) is not None for c in tr.leading if c.text.startswith("#")]
+
 	def clear_comments(self, path: str) -> int:
 		"""Take off the comment lines above the node(s) at a path, the lines
 		set_comment adds to, so a program can replace a comment rather than
@@ -4808,38 +4901,39 @@ class Document:
 
 	def set_banner(self, on: bool) -> int:
 		"""Put the info block (GEN_BANNER) at the end of the document, or with
-		on False just take it off. An old block in the footer comes off first,
-		found by its "This config file format is SHCL." line or its version
-		line, never by its links or Legal line, which a later release may spell
-		differently. A version line migrate stamped counts too. A block is a
-		run of "##" lines with no blank inside, so a "##" comment of the file's
-		own, written right against it, goes with it. The library save never
-		adds the block by itself; this is for a program that wants it in a file
-		it writes. Returns how many old blocks came off."""
+		on False just take it off. An old block comes off first, found by its
+		"This config file format is SHCL." line or its version line, never by
+		its links or Legal line, which a later release may spell differently.
+		A version line migrate stamped counts too. A block is a run of "##"
+		lines with no blank inside, so a "##" comment of the file's own,
+		written right against it, goes with it. It is looked for in the footer
+		and above every field but the first, since a field added below it by
+		hand takes it as its comment; a block at the top of the file is left
+		alone. The library save never adds the block by itself; this is for a
+		program that wants it in a file it writes. Returns how many old blocks
+		came off."""
 		_want("set_banner", on, "bool")
-
-		def is_block_line(t):
-			return t == "## This config file format is SHCL." or t.startswith(FORMAT_LINE_HEAD)
-
-		orphans = self.orphans
-		keep: list[_Lead] = []
 		removed = 0
-		i = 0
-		while i < len(orphans):
-			end = i + 1
-			if orphans[i].text.startswith("##"):
-				while end < len(orphans) and orphans[end].text.startswith("##") and not orphans[end].blank_before:
-					end += 1
-				if any(is_block_line(c.text) for c in orphans[i:end]):
-					# The blank that set the block off moves to whatever
-					# followed it, so the lines around it stay apart.
-					if end < len(orphans):
-						orphans[end].blank_before = orphans[end].blank_before or orphans[i].blank_before
-					removed += 1
-					i = end
-					continue
-			keep.extend(orphans[i:end])
-			i = end
+		# The first line's comments are the top of the file, on the first node
+		# down, as a dotted line puts them on its last name.
+		top = []
+		n = ROOT
+		while self.arena[n].children:
+			n = self.arena[n].children[0]
+			top.append(n)
+		stack = list(self.arena[ROOT].children)
+		while stack:
+			n = stack.pop()
+			nd = self.arena[n]
+			stack.extend(nd.children)
+			if n in top or nd.trivia is None:
+				continue
+			gone, blank, nd.trivia.leading = _drop_banners(nd.trivia.leading)
+			if gone:
+				removed += gone
+				nd.blank_before = nd.blank_before or blank
+		gone, _, keep = _drop_banners(self.orphans)
+		removed += gone
 		self.orphans = keep
 		if on:
 			open_ = bool(keep) or bool(self.arena[ROOT].children)

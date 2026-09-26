@@ -171,7 +171,8 @@ const char *shcl_diag_code(const shcl_doc *d, size_t i);
 // re-emit - bad indentation, an unusable selector, a line past the depth cap.
 // Content-malformed lines do NOT count: those are retained as trivia and
 // survive a save. Nonzero means a save would delete hand-written content, so
-// shcl_save_file refuses then (shcl_save_file_lossy overrides).
+// shcl_save_file refuses then (shcl_save_file_lossy overrides), and
+// shcl_save_file_keep_lines does when it cannot keep the lines.
 size_t shcl_lost_count(const shcl_doc *d);
 // How many error-severity diagnostics the document carries - the "did this
 // file have errors?" predicate, so recover-and-continue can't read as success
@@ -276,8 +277,9 @@ int shcl_write_file_atomic(const char *path, const char *data, size_t n);
 // shcl_load_file_with, keeping the text for shcl_to_text_keep_lines.
 shcl_doc *shcl_load_file_keep_lines(const char *path, shcl_strictness s, shcl_file_status *status);
 // shcl_save_file with shcl_to_text_keep_lines: *kept (when not NULL) is 1 when
-// it kept the lines, 0 when it wrote the canonical form instead. Refuses the
-// same way shcl_save_file does.
+// it kept the lines, 0 when it wrote the canonical form instead. A line the
+// load dropped comes back as written when the lines are kept, so this refuses
+// the way shcl_save_file does only when it would write canonical.
 shcl_save_result shcl_save_file_keep_lines(shcl_doc *d, const char *path, int *kept);
 #endif
 
@@ -433,7 +435,7 @@ shcl_status shcl_read_datetime_array_to(shcl_doc *d, const char *path, size_t pl
 shcl_status shcl_read_string_array_to(shcl_doc *d, const char *path, size_t plen, shcl_str *out, shcl_status *slots, size_t cap, size_t *n);
 
 // Give back everything the read calls have handed out. Every result from a read
-// - shcl_read_*, shcl_children, shcl_paths, shcl_instance_paths, shcl_instances, shcl_lines,
+// - shcl_read_*, shcl_children, shcl_paths, shcl_instance_paths, shcl_comments, shcl_instances, shcl_lines,
 // shcl_quote_segment, shcl_to_canonical, shcl_generate - is invalid after this; the document itself is untouched
 // and stays readable, so the next read works normally. Optional: leave it alone
 // and results live until shcl_free, which is the documented contract and what a
@@ -572,6 +574,12 @@ int shcl_exists(shcl_doc *d, const char *path, size_t plen);       // 0/1
 // A removed node's storage is not reclaimed until shcl_compact or shcl_free.
 size_t shcl_remove(shcl_doc *d, const char *path, size_t plen);    // count deleted
 int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *text, size_t tlen);
+// The comment lines above the node(s) at a path, the ones shcl_clear_comments
+// takes, in file order, each from its `#` on. A program can tell its own
+// comment from one a user wrote there, and shcl_set_comment puts a line it gave
+// back as it was. Returns the count, 0 when the path reaches nothing; *out
+// stays valid until shcl_free, or until shcl_reads_release.
+size_t shcl_comments(shcl_doc *d, const char *path, size_t plen, shcl_str **out);
 // Take off the comment lines above the node(s) at a path, the ones
 // shcl_set_comment adds to, so a comment can be replaced rather than stacked.
 // Those are the lines the load put between the node and the binding line
@@ -580,14 +588,16 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 // malformed. Returns how many lines came off, 0 when the path reaches nothing.
 size_t shcl_clear_comments(shcl_doc *d, const char *path, size_t plen);
 // Put the info block (SHCL_GEN_BANNER) at the end of the document, or with on
-// 0 just take it off. An old block in the footer comes off first, found by its
-// "This config file format is SHCL." line or its version line, never by its
-// links or Legal line, which a later release may spell differently. A version
-// line shcl_migrate stamped counts too. A block is a run of "##" lines with no
-// blank inside, so a "##" comment of the file's own, written right against it,
-// goes with it. The library save never adds the block by itself; this is for a
-// program that wants it in a file it writes. Returns how many old blocks came
-// off.
+// 0 just take it off. An old block comes off first, found by its "This config
+// file format is SHCL." line or its version line, never by its links or Legal
+// line, which a later release may spell differently. A version line
+// shcl_migrate stamped counts too. A block is a run of "##" lines with no blank
+// inside, so a "##" comment of the file's own, written right against it, goes
+// with it. It is looked for in the footer and above every field but the first,
+// since a field added below it by hand takes it as its comment; a block at the
+// top of the file is left alone. The library save never adds the block by
+// itself; this is for a program that wants it in a file it writes. Returns how
+// many old blocks came off.
 size_t shcl_set_banner(shcl_doc *d, int on);
 int shcl_set_empty(shcl_doc *d, const char *path, size_t plen);
 // Why a write at this path would fail - the reason behind a setter's bare 0,
@@ -4917,6 +4927,31 @@ int shcl_set_comment(shcl_doc *d, const char *path, size_t plen, const char *tex
 	return 1;
 }
 
+size_t shcl_comments(shcl_doc *d, const char *path, size_t plen, shcl_str **out) {
+	ShclArena *a = &d->reads;
+	arena_reset(&d->scratch);
+	ShclArena *t = &d->scratch; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
+	shcl_str *arr = NULL; size_t n = 0, cap = 0;
+	ShclVecSize targets = {0};
+	if (resolve_group(d, p, &r)) {
+		if (r.kind == R_ONE) ShclVecSize_push(t, &targets, r.one);
+		else if (r.kind == R_MANY) targets = r.many;
+		else if (r.kind == R_SLOTS) for (size_t i = 0; i < r.slots.len; i++) if (r.slots.data[i].present) ShclVecSize_push(t, &targets, r.slots.data[i].idx);
+	}
+	for (size_t i = 0; i < targets.len; i++) {
+		const ShclTrivia *tr = NODE(d, targets.data[i]).trivia;
+		if (!tr) continue;
+		for (size_t k = 0; k < tr->leading.len; k++) {
+			ShclStr l = tr->leading.data[k].text;
+			if (!(l.n && l.p[0] == '#')) continue;
+			if (n == cap) { size_t nc = cap ? cap * 2 : 8; arr = (shcl_str *)arena_grow(a, arr, cap, nc, sizeof(shcl_str)); cap = nc; }
+			arr[n].p = l.p; arr[n].n = l.n; n++;
+		}
+	}
+	if (!arr) arr = (shcl_str *)arena_alloc(a, sizeof(shcl_str));
+	*out = arr; return n;
+}
+
 size_t shcl_clear_comments(shcl_doc *d, const char *path, size_t plen) {
 	ShclArena *a = &d->scratch; ShclStr p; p.p = path; p.n = plen; ShclResolved r;
 	if (!resolve_group(d, p, &r)) return 0;
@@ -4950,25 +4985,70 @@ static int banner_line(ShclStr t) {
 	return s_eq(t, s_lit("## This config file format is SHCL.")) || s_starts(t, SHCL_FORMAT_LINE_HEAD);
 }
 
-size_t shcl_set_banner(shcl_doc *d, int on) {
-	ShclVecLead *o = &d->orphans;
+/* Take each run of "##" lines holding the info block's SHCL line or a version
+   line out of v. Returns how many came off; *owed says whether the last one
+   had a blank above it with no line after it to take that blank. */
+static size_t drop_banners(ShclVecLead *v, int *owed) {
 	size_t w = 0, removed = 0, i = 0;
-	while (i < o->len) {
+	*owed = 0;
+	while (i < v->len) {
 		size_t end = i + 1;
-		if (s_starts(o->data[i].text, "##")) {
-			while (end < o->len && s_starts(o->data[end].text, "##") && !o->data[end].blank_before) end++;
+		if (s_starts(v->data[i].text, "##")) {
+			while (end < v->len && s_starts(v->data[end].text, "##") && !v->data[end].blank_before) end++;
 			int hit = 0;
-			for (size_t k = i; k < end && !hit; k++) hit = banner_line(o->data[k].text);
+			for (size_t k = i; k < end && !hit; k++) hit = banner_line(v->data[k].text);
 			if (hit) {
 				/* The blank that set the block off moves to whatever followed
 				   it, so the lines around it stay apart. */
-				if (end < o->len) o->data[end].blank_before |= o->data[i].blank_before;
+				if (end < v->len) v->data[end].blank_before |= v->data[i].blank_before;
+				else *owed = v->data[i].blank_before;
 				removed++; i = end; continue;
 			}
 		}
-		for (; i < end; i++) o->data[w++] = o->data[i];
+		for (; i < end; i++) v->data[w++] = v->data[i];
 	}
-	o->len = w;
+	v->len = w;
+	if (removed) {
+		/* A reload puts a comment at most one level past the one before it,
+		   and the first at none, so what followed a block steps up to that. */
+		size_t room = 0;
+		for (size_t k = 0; k < v->len; k++) {
+			if (!s_starts(v->data[k].text, "#")) continue;
+			if (v->data[k].depth > room) v->data[k].depth = room;
+			room = v->data[k].depth + 1;
+		}
+	}
+	return removed;
+}
+
+size_t shcl_set_banner(shcl_doc *d, int on) {
+	ShclArena *t = &d->scratch;
+	arena_reset(t);
+	size_t removed = 0;
+	int owed;
+	/* The first line's comments are the top of the file, on the first node
+	   down, as a dotted line puts them on its last name. */
+	ShclVecSize top = {0};
+	for (size_t n = ROOT; NODE(d, n).children.len;) {
+		n = NODE(d, n).children.data[0];
+		ShclVecSize_push(t, &top, n);
+	}
+	ShclVecSize stack = {0};
+	for (size_t i = 0; i < NODE(d, ROOT).children.len; i++) ShclVecSize_push(t, &stack, NODE(d, ROOT).children.data[i]);
+	while (stack.len) {
+		size_t n = stack.data[--stack.len];
+		for (size_t i = 0; i < NODE(d, n).children.len; i++) ShclVecSize_push(t, &stack, NODE(d, n).children.data[i]);
+		int at_top = 0;
+		for (size_t i = 0; i < top.len && !at_top; i++) at_top = top.data[i] == n;
+		if (at_top || !NODE(d, n).trivia) continue;
+		size_t gone = drop_banners(&NODE(d, n).trivia->leading, &owed);
+		if (gone) {
+			removed += gone;
+			NODE(d, n).blank_before |= owed;
+		}
+	}
+	ShclVecLead *o = &d->orphans;
+	removed += drop_banners(o, &owed);
 	if (on) {
 		int open = o->len || NODE(d, ROOT).children.len;
 		/* The lines point into the literal, which outlives any document. */
@@ -6633,6 +6713,16 @@ static int errors_within(ShclArena *a, const shcl_doc *d, const shcl_doc *of) {
    and the edited document's runs that match one exactly take that line's
    text. 0 when the result would not reload as d. *out lives in d's scratch,
    or is the source itself. */
+/* The lines no group stands for that sat right after a kept group, when the
+   group that followed it then does not follow it now. They go out before the
+   next source group, a new line not indented past them, or the end. A new line
+   indented past them goes first, since one written under a dropped line would
+   be dropped with it. A line the load dropped comes back this way. */
+static void kl_flush(ShclArena *a, ShclSB *ob, const ShclVecS *lines, unsigned char *left, size_t from, size_t to) {
+	for (size_t k = from; k < to; k++)
+		if (left[k]) { sb_putS(a, ob, lines->data[k - 1]); left[k] = 0; }
+}
+
 static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *out) {
 	/* A text that was canonical keeps its lines as the canonical form. */
 	if (d->source.n == 0) { *out = emit_canonical(d); return 1; }
@@ -6738,6 +6828,8 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	/* The line of the group just written while it is a source one, and the
 	   end of the last source group met, kept or not. */
 	size_t prev = 0, reach = 0;
+	/* The last kept group whose following lines are still to go out. */
+	size_t owed = 0;
 	for (size_t i = 0; i < isU.len; i++) {
 		const ShclUnit *u = &isU.data[i];
 		size_t l = u->line;
@@ -6766,6 +6858,27 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 		   lines. The same before the first group. Before any other group from
 		   the source, its own blank lines. */
 		if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
+		size_t depth = tabs_of(s_slice(nowS, u->start, u->end));
+		if (owed != 0) {
+			int pay;
+			if (known) pay = !(kept && prev == owed && next[prev] == l);
+			else {
+				ShclStr ind = indent_for(a, &indents, depth, step);
+				size_t k = end[owed] + 1;
+				while (k < next[owed] && !left[k]) k++;
+				pay = 0;
+				if (k < next[owed]) {
+					ShclStr li = leading_ws(KL_LINE(k));
+					pay = ind.n <= li.n || (li.n && memcmp(ind.p, li.p, li.n) != 0);
+				}
+			}
+			if (pay) {
+				kl_flush(a, &ob, &lines, left, end[owed] + 1, next[owed]);
+				if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
+				owed = 0;
+			}
+		}
+		if (known) owed = 0;
 		if (i == 0) {
 			if (kept && claimed.len && claimed.data[0] == l)
 				for (size_t k = 1; k < l; k++) { sb_putS(a, &ob, KL_LINE(k)); left[k] = 0; }
@@ -6782,7 +6895,6 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 		} else {
 			for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
 		}
-		size_t depth = tabs_of(s_slice(nowS, u->start, u->end));
 		if (kept) {
 			/* A spliced line's value replaces the lines it took, as a stacked
 			   list's elements. */
@@ -6794,6 +6906,7 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 			if (!(u->start + depth < nowS.n && nowS.p[u->start + depth] == ' '))
 				note_indent(a, &indents, depth, leading_ws(KL_LINE(wasR.data[from->part_from].line)));
 			prev = l;
+			owed = l;
 		} else {
 			/* A binding the edits rewrote keeps its line's indent and name. */
 			size_t start = u->start;
@@ -6810,6 +6923,10 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 			write_run(a, &ob, &now, start, u->end, &indents, step, eol);
 			prev = 0;
 		}
+	}
+	if (owed != 0) {
+		if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
+		kl_flush(a, &ob, &lines, left, end[owed] + 1, n + 1);
 	}
 	/* The blank lines the source ends with stay at the end. */
 	if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
@@ -6828,11 +6945,13 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	ShclStr text = sb_S(&ob);
 	/* The reload has to be the document, and it may not load with an error
 	   the source did not have: a child the edits gave an element list that
-	   stayed stacked reads back the same and is E001 (20260925b item 1). */
+	   stayed stacked reads back the same and is E001 (20260925b item 1). A line
+	   the load dropped went out as written, so the reload drops it again, and
+	   may drop nothing more. */
 	shcl_doc *back = own->back = do_parse(text.p, text.n, d->strictness, 0, 0, 0);
 	if (!back) arena_panic(panic);
 	doc_guard(back, panic);
-	if (back->lost != 0 || !s_eq(emit_canonical(back), nowS) || !errors_within(a, back, ld)) return 0;
+	if (back->lost > ld->lost || !s_eq(emit_canonical(back), nowS) || !errors_within(a, back, ld)) return 0;
 	*out = text;
 	return 1;
 }
@@ -8454,7 +8573,8 @@ void shcl_suppress_declared_reopens(shcl_doc *schema, shcl_doc *doc) { suppress_
 // re-emit - bad indentation, an unusable selector, a line past the depth cap.
 // Content-malformed lines do NOT count: those are retained as trivia and
 // survive a save. Nonzero means a save would delete hand-written content, so
-// shcl_save_file refuses then (shcl_save_file_lossy overrides).
+// shcl_save_file refuses then (shcl_save_file_lossy overrides), and
+// shcl_save_file_keep_lines does when it cannot keep the lines.
 size_t shcl_lost_count(const shcl_doc *d) { return d->lost; }
 
 size_t shcl_error_count(const shcl_doc *d) {
@@ -9264,13 +9384,14 @@ shcl_save_result shcl_save_file_lossy(shcl_doc *d, const char *path) {
 }
 
 // shcl_save_file with shcl_to_text_keep_lines: *kept (when not NULL) is 1 when
-// it kept the lines, 0 when it wrote the canonical form instead. Refuses the
-// same way shcl_save_file does.
+// it kept the lines, 0 when it wrote the canonical form instead. A line the
+// load dropped comes back as written when the lines are kept, so this refuses
+// the way shcl_save_file does only when it would write canonical.
 shcl_save_result shcl_save_file_keep_lines(shcl_doc *d, const char *path, int *kept) {
 	if (kept) *kept = 0;
-	if (d->lost > 0) return SHCL_SAVE_REFUSED;
 	ShclStr t;
 	int k = keep_text(d, &t);
+	if (!k && d->lost > 0) return SHCL_SAVE_REFUSED;
 	if (kept) *kept = k;
 	return shcl_write_file_atomic(path, t.p, t.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;
 }

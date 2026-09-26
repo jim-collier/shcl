@@ -1359,14 +1359,15 @@ fn write_back(doc: &Document, file: &str, o: &Opts, read: Option<&str>, keep: bo
 	// idempotent `--set-default` in a provisioning script reported a change on
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
-	// dropped content refuses the write whatever the bytes say.
-	let text = if keep {
-		doc.to_text_keep_lines().0
+	// dropped content refuses the write whatever the bytes say, unless the
+	// lines were kept, which writes the dropped lines back as they were.
+	let (text, kept) = if keep {
+		doc.to_text_keep_lines()
 	} else {
-		doc.to_canonical()
+		(doc.to_canonical(), false)
 	};
 	if let Some(before) = read
-		&& (o.lossy || doc.lost_count() == 0)
+		&& (o.lossy || kept || doc.lost_count() == 0)
 		&& text == before
 	{
 		return 0;

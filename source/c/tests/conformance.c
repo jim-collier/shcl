@@ -831,6 +831,12 @@ int main(int argc, char **argv) {
 					if (strcmp(joined, exp)) fail(at, "instance_paths mismatch");
 					free(joined); shcl_free(rd); continue;
 				}
+				if (!strcmp(kind, "comments")) {
+					shcl_str *cs; size_t n = shcl_comments(rd, query, qn, &cs);
+					char *joined = join_pipe(cs, n);
+					if (strcmp(joined, exp)) fail(at, "comments mismatch");
+					free(joined); shcl_free(rd); continue;
+				}
 				shcl_status st; const shcl_status *slots; size_t nslots;
 				char *val = scalar_read(rd, kind, query, qn, &st, &slots, &nslots);
 				if (strcmp(shcl_status_name(st), status)) fail(at, "status mismatch");
@@ -1645,6 +1651,21 @@ int main(int argc, char **argv) {
 		snprintf(bad, sizeof bad, "%s/nope/t.shcl", tdir);
 		if (shcl_save_file(kd, bad) != SHCL_SAVE_FAILED) fail("lost", "a failed write did not report as one");
 		if (shcl_save_file(lo, bad) != SHCL_SAVE_REFUSED) fail("lost", "refusal did not survive an unwritable path");
+		// A save that keeps lines writes the dropped line back as it was, so it
+		// refuses only when it falls back to canonical. Here removing the line
+		// above it would make it a child of `a`.
+		shcl_doc *kl = shcl_parse_keep_lines(lt2, strlen(lt2), SHCL_STANDARD);
+		if (!shcl_set_int(kl, "a.b", 3, 5)) fail("lost", "keep set failed");
+		int klk = 0;
+		if (shcl_save_file_keep_lines(kl, tfile, &klk) != SHCL_SAVE_OK || !klk) fail("lost", "keep save did not keep a dropped line");
+		size_t kll = 0; shcl_file_status kls;
+		char *klt = shcl_read_file(tfile, 0, &kll, &kls);
+		const char *klw = "a:\n\t\tb: 5\n\tc: 2\n";
+		if (!klt || kll != strlen(klw) || memcmp(klt, klw, kll) != 0) fail("lost", "keep save text mismatch");
+		free(klt);
+		if (shcl_remove(kl, "a.b", 3) != 1) fail("lost", "keep remove failed");
+		if (shcl_save_file_keep_lines(kl, tfile, &klk) != SHCL_SAVE_REFUSED) fail("lost", "keep save did not refuse its fallback");
+		shcl_free(kl);
 		shcl_free(lo); shcl_free(kd);
 		remove(tfile); rmdir(tdir);
 	}

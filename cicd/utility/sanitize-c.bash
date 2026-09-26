@@ -145,7 +145,7 @@ fReadRow(){
 		children)     fCli children "${strictArg[@]}" "$input" "$query" ;;
 		paths)        fCli paths "${strictArg[@]}" "$input" ;;
 		lost)         : ;;   ## no CLI surface, like crosscheck.bash's own arm
-		instance_paths) : ;; ## library only, the same
+		instance_paths|comments) : ;; ## library only, the same
 		int'[]'|float'[]'|bool'[]'|datetime'[]'|string'[]')
 		              fCli get "--${type%[]}" --array "${strictArg[@]}" "$input" "$query"
 		              fCli get "--${type%[]}" --array --slots "${strictArg[@]}" "$input" "$query" ;;
