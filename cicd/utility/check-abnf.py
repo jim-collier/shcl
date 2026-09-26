@@ -99,6 +99,11 @@ SAMPLES: list[tuple[str, str, bool]] = [
 	("file", "a: 1", True),
 	("file", "a: 1\n", True),
 	("file", "a: 1\r\n", True),
+	("file", "a: 1\r\r\n", True),
+	## Every line may end in blanks and a CR is one, so `file` derives a CR run
+	## under `[ CR ] LF` as well. Only the rule itself tells the two apart.
+	("newline", "\r\r\n", True),
+	("newline", "\n", True),
 ]
 
 Node = tuple[Any, ...]
@@ -409,6 +414,12 @@ def fTie(cli: Path, work: Path, rule: str, text: str) -> bool:
 		## label trimmed, so that is what the sample is compared against.
 		rc, out = fRun(cli, ["get", "--rawinfo", "s.shcl", "p"], work)
 		return rc == 0 and out == [text.strip(" \t\r")]
+	if rule == "newline":
+		## The whole run ends the line, so the value reads back with none of it.
+		## Bytes, since text mode would read a stray CR as a line end too.
+		fWrite(work, f"a: 1{text}")
+		r = subprocess.run([str(cli), "get", "s.shcl", "a"], cwd=work, capture_output=True, check=False)
+		return fClean(cli, work) and r.returncode == 0 and r.stdout == b"1\n"
 	if rule == "fmt-bareword":
 		## The formatter's class, so the formatter is what answers: the value
 		## goes in as data and the emitter picks the spelling.
@@ -521,3 +532,4 @@ if __name__ == "__main__":
 ##		            the fence labels the parser reads (20260918b item 51).
 ##		2026-09-21  Every sample is also read by the real CLI, so the rows
 ##		            cannot drift away from the parser and the formatter.
+##		2026-09-26  The newline rule takes a whole CR run.

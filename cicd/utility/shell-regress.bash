@@ -2293,6 +2293,52 @@ for a in gawk mawk "busybox awk" awk; do
 done
 [[ -n "${first}" ]] || fBad "no awk found to run the float generator"
 
+##	The crosscheck's own failure paths, which a real run reaches only on the day
+##	two bindings disagree. Stub CLIs answer every call with its words, paths cut
+##	to the base name since each binding writes under its own root, and the
+##	stub's file name picks the one place it breaks. 20260726 item 4: a second
+##	divergence and the summary were lost to the diff pipeline's status.
+##	20260716 items 15, 16 and 27: a dropped final newline compared equal, a run
+##	with too few comparisons passed, and a last reads.tsv row with no newline
+##	after it was never read. The usage block always compares, so an empty
+##	corpus has a check of its own.
+xcDir="${tmpDir}/xc"
+mkdir -p "${xcDir}/corpus/001-a" "${xcDir}/empty" "${xcDir}/nodump"
+cat > "${xcDir}/ref" <<'EOF'
+#!/usr/bin/env bash
+line=""; for a in "$@"; do line+="${a##*/} "; done
+case "${0##*/}:${line}" in
+	two:version\ |two:about\ ) echo "other" ;;
+	nonl:version\ ) printf '%s' "${line}" ;;
+	tsv:count\ *zz\ ) echo "other" ;;
+	*) printf '%s\n' "${line}" ;;
+esac
+EOF
+chmod +x "${xcDir}/ref"
+for m in two nonl tsv; do cp "${xcDir}/ref" "${xcDir}/${m}"; done
+printf 'a: 1\n' > "${xcDir}/corpus/001-a/input.shcl"
+printf 'query\ttype\texpected\tstatus\na\tint\t1\tok\nzz\tcount\t0\tok' > "${xcDir}/corpus/001-a/reads.tsv"
+fCrosscheck(){  ## fCrosscheck ARGS...: crosscheck's stdout and stderr in xcOut, its exit in xcRc
+	xcRc=0
+	xcOut="$(cd "${repoDir}" && CPU_CAP=2 bash cicd/utility/crosscheck.bash "$@" 2>&1)" || xcRc=$?
+}
+fCrosscheck --corpus "${xcDir}/corpus" "ref|${xcDir}/ref" "other|${xcDir}/ref"
+[[ "${xcRc}" == 0 && "${xcOut}" == *"bindings agree on"* ]] || fBad "crosscheck self-test: two identical stubs did not agree (exit ${xcRc}): ${xcOut@Q}"
+fCrosscheck --corpus "${xcDir}/corpus" "ref|${xcDir}/ref" "two|${xcDir}/two"
+[[ "${xcRc}" == 1 && "${xcOut}" == *"DIVERGE usage version:"* && "${xcOut}" == *"DIVERGE usage about:"* \
+	&& "${xcOut}" =~ crosscheck:\ 2/[0-9]+\ comparison ]] \
+	|| fBad "crosscheck did not report both divergences and the count (exit ${xcRc}): ${xcOut@Q}"
+fCrosscheck --corpus "${xcDir}/corpus" "ref|${xcDir}/ref" "nonl|${xcDir}/nonl"
+[[ "${xcRc}" == 1 && "${xcOut}" == *"DIVERGE usage version:"* ]] || fBad "crosscheck missed a dropped final newline (exit ${xcRc})"
+fCrosscheck --corpus "${xcDir}/corpus" "ref|${xcDir}/ref" "tsv|${xcDir}/tsv"
+[[ "${xcRc}" == 1 && "${xcOut}" == *"DIVERGE count zz:"* ]] || fBad "crosscheck skipped a last reads.tsv row with no final newline (exit ${xcRc})"
+fCrosscheck --corpus "${xcDir}/empty" "ref|${xcDir}/ref" "other|${xcDir}/ref"
+[[ "${xcRc}" == 2 && "${xcOut}" == *"no case directories"* ]] || fBad "crosscheck took an empty corpus (exit ${xcRc})"
+fCrosscheck --corpus "${xcDir}/corpus" --extra "${xcDir}/nodump" "ref|${xcDir}/ref" "other|${xcDir}/ref"
+[[ "${xcRc}" == 2 ]] || fBad "crosscheck took an --extra directory with no *.shcl (exit ${xcRc})"
+fCrosscheck --corpus "${xcDir}/corpus" --min 1000000 "ref|${xcDir}/ref" "other|${xcDir}/ref"
+[[ "${xcRc}" == 2 && "${xcOut}" == *"need at least 1000000"* ]] || fBad "crosscheck passed below its --min floor (exit ${xcRc})"
+
 if ((nBad)); then
 	echo "shell-regress: ${nBad} check(s) failed" >&2
 	exit 1
