@@ -38,9 +38,19 @@ for b in "${bindings[@]}"; do
 	[[ -x "${cli}" ]] || { echo "cli-regress: binding CLI not executable: ${cli}" >&2; exit 2; }
 done
 
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) onWindows=1 ;; *) onWindows=0 ;; esac
+startDir="${PWD}"
+
 ##	The unwritable directory below has to be made writable again or the cleanup
 ##	cannot empty it.
-tmpDir="$(mktemp -d)"; trap 'chmod -R u+w "${tmpDir}" 2>/dev/null; rm -rf "${tmpDir}"' EXIT
+fCleanup(){
+	if [[ "${onWindows}" == 1 ]]; then
+		MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "${tmpDir}/nowrite")" /remove:d '*S-1-1-0' >/dev/null 2>&1 || true
+	fi
+	chmod -R u+w "${tmpDir}" 2>/dev/null || true
+	rm -rf "${tmpDir}"
+}
+tmpDir="$(mktemp -d)"; trap fCleanup EXIT
 printf 'a: 1\n'          > "${tmpDir}/ok.shcl"
 printf 'a: 1\n  bad\nb 2\n' > "${tmpDir}/bad.shcl"
 ## A second damaged file, so a layered load has two to tell apart.
@@ -100,6 +110,19 @@ printf 'field: x.y\n\ttype: int\n' > "${tmpDir}/dotschema.shcl"
 mkdir -p "${tmpDir}/nowrite"
 printf 'a: 1\n' > "${tmpDir}/nowrite/f.shcl"
 chmod 500 "${tmpDir}/nowrite"
+## Windows decides a create by the ACL, not the mode bits, so there the
+## directory is denied adding a file instead. The fix (20260902 item 44) was
+## windows-only, and the chmod left its row nothing to judge. A deny that does
+## not hold for this account would pass the old code too, so a create is tried
+## first; the path conversion is off so /deny reaches icacls as written.
+nowriteHeld=1
+if [[ "${onWindows}" == 1 ]]; then
+	nowriteHeld=0
+	if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "${tmpDir}/nowrite")" /deny '*S-1-1-0:(WD,AD)' >/dev/null \
+		&& ! (: > "${tmpDir}/nowrite/probe") 2>/dev/null; then
+		nowriteHeld=1
+	fi
+fi
 ## A raw block against a string `allowed`: the body carries its own newlines, so
 ## one diagnostic used to span several stderr lines.
 #  shellcheck disable=2016  ## the backticks are the fence the fixture needs.
@@ -218,6 +241,16 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 printf '# note\nName:   "x"   # c\nblock:\n    a: 1\n' > "${tmpDir}/keepsrc.shcl"
 ## The load drops the tab-indented stray line. The keep save writes it back.
 printf 'font:\n\tsize: 12\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n' > "${tmpDir}/keeplost.shcl"
+## A schema key nothing knows, on schema line 2.
+printf 'field: a\n\tbogus: 1\n' > "${tmpDir}/unkey.shcl"
+## A file and a name that both start with a dash, so only `--` makes them data.
+## The row that names it runs from inside the temp dir.
+printf -- '-h: 7\n' > "${tmpDir}/-dash.shcl"
+## A value outside ASCII, for a stdout whose locale cannot spell it.
+printf 'n: "caf\303\251 \342\202\254"\n' > "${tmpDir}/nonascii.shcl"
+## Seventy of each: the C CLI once held these in fixed arrays of 64.
+manyLayers="$(printf -- '--layer=%%F%% %.0s' {1..70})"
+manySets="$(for i in {0..69}; do printf -- '--set=k%d=%d ' "${i}" "${i}"; done)"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
 ##	The last field is optional: when given, %C% must hold exactly that text
@@ -264,15 +297,17 @@ printf 'font:\n\tsize: 12\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n' > "${t
 ##	line indented and behind a non-ASCII name, %CR% one behind a carriage
 ##	return that is not indent, %SG%/%DG% a schema with an int
 ##	and a float range and a document that breaks both, %NC% a file that loads
-##	clean and is not canonical.
+##	clean and is not canonical, %SU% a schema with an unknown key on line 2,
+##	%DD% a file named -dash.shcl holding the name -h (the row runs from the
+##	temp dir), %NA% a value outside ASCII, %XF% a byte that is not UTF-8.
 ##	stdin: printf %b text, '-' none, '@closedin' / '@closedout' close that
 ##	stream, '@fullout' / '@fullerr' point it at a device that is always full,
 ##	'@appear' / '@change' make %C% or change it while the command waits on
-##	stdin for its ops.
+##	stdin for its ops, '@asciilocale' none, with an ASCII-only locale and
+##	PYTHONIOENCODING.
 ##	stdout and stderr: '-' means unchecked; an empty stdout field means exactly empty.
 ##	A stderr regex starting with '!' must match NO line.
 ##	Each row names the round and item it pins.
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) onWindows=1 ;; *) onWindows=0 ;; esac
 rows=(
 	## 20260830 item 15: a second '-' read an empty document that looked like an answer.
 	'dup-stdin-schema|check --schema=- -|a: 1\n|1||named only once'
@@ -727,6 +762,32 @@ rows=(
 	## spells it, so `min: 1.0` reads as 1.
 	'range-max-names-value|check --schema=%SG% %DG%|-|6|line 1: Error: V006\nline 2: Error: V005\nfailed: 2 diagnostic(s), 2 error(s)\n|V006 value above max 10 at .ns.: 20$'
 	'range-min-names-bound|check --schema=%SG% %DG%|-|6|-|V005 value below min 1 at .fs.: 0\.5$'
+	## 20260802 item 12: the whole command line was scanned for help and version
+	## flags, so a value spelled like one printed the help at exit 0.
+	'help-flag-as-default|get --default -h %F% nope|-|0|-h\n|-'
+	'version-flag-as-default|get --default --version %F% nope|-|0|--version\n|-'
+	## 20260802 item 25: `--` ends the options, so a FILE and a PATH that start
+	## with a dash are data, and init refuses a FILE.
+	'double-dash-ends-options|get -- %DD% -h|-|0|7\n|-'
+	'init-extra-arg|init --schema=%S2% extra|-|1||^init takes no file argument \(see --help\)$'
+	## 20260725 item 14: past 64 of either, the C CLI exited 1 with nothing on
+	## stdout.
+	"many-layers|get --int ${manyLayers}%F% a|-|0|1\n|-"
+	"many-sets|get --int ${manySets}%F% k69|-|0|69\n|-"
+	## 20260725 item 17: check --schema numbered a schema fault as a document
+	## line. stderr names the schema; stdout keeps the one form.
+	'check-schema-line-v090|check --schema=%SU% %F%|-|6|line 2: Error: V090\nfailed: 1 diagnostic(s), 1 error(s)\n|^schema line 2: Error: V090 unknown schema key .bogus.$'
+	'check-schema-line-v091|check --schema=%S3% %F%|-|6|line 5: Error: V091\nfailed: 1 diagnostic(s), 1 error(s)\n|^schema line 5: Error: V091 unknown schema type .nope.$'
+	'check-schema-line-v092|check --schema=%S8% %F%|-|6|-|^schema line 3: Error: V092 bad schema constraint .default.$'
+	'check-schema-line-v093|check --schema=%SM% %F%|-|6|-|^schema line 3: Error: V093 bad schema path'
+	## 20260716 item 24: an argument that is not UTF-8 panicked the reference at
+	## 134 while the ports exited 3. POSIX-only: windows hands a program UTF-16.
+	'argv-not-utf8|get %F% %XF%|-|1||^invalid argument encoding \(expected UTF-8\)$'
+	'argv-not-utf8-value|get --default=a%XF% %F% nope|-|1||^invalid argument encoding \(expected UTF-8\)$'
+	## 20260830 item 12: Python wrote stdout in the locale's encoding, which
+	## raised on a non-ASCII value wherever that was not UTF-8.
+	'ascii-locale-get|get %NA% n|@asciilocale|0|caf\xc3\xa9 \xe2\x82\xac\n|^$'
+	'ascii-locale-fmt|fmt %NA%|@asciilocale|0|n: "caf\xc3\xa9 \xe2\x82\xac"\n|^$'
 )
 
 declare -i nRun=0 nBad=0
@@ -786,6 +847,13 @@ for row in "${rows[@]}"; do
 	argv="${argv//%RF2%/${tmpDir}/rawfmt2.shcl}"
 	argv="${argv//%RF3%/${tmpDir}/rawfmt3.shcl}"
 	argv="${argv//%ML%/${tmpDir}/mlost.shcl}"
+	argv="${argv//%SU%/${tmpDir}/unkey.shcl}"
+	argv="${argv//%NA%/${tmpDir}/nonascii.shcl}"
+	runIn=""
+	if [[ "${argv}" == *%DD%* ]]; then
+		runIn="${tmpDir}"
+		argv="${argv//%DD%/-dash.shcl}"
+	fi
 	freshCopy=0
 	if [[ "${argv}" == *%W%* ]]; then
 		freshCopy=1
@@ -832,10 +900,10 @@ for row in "${rows[@]}"; do
 	argv="${argv//%M%/${tmpDir}/not-there.shcl}"
 	## A device that is always full exists on linux and not on windows; the
 	## rows that need one are skipped out loud rather than passing vacuously.
-	## On windows the msys layer answers for /dev/full and takes the write, a
-	## closed stdout is an invalid handle each runtime spells its own way, and
-	## a chmod does not make a directory unwritable - so those rows are POSIX
-	## rows and say so there.
+	## On windows the msys layer answers for /dev/full and takes the write, and
+	## a closed stdout is an invalid handle each runtime spells its own way, so
+	## those rows are POSIX rows and say so there. The unwritable directory is
+	## an ACL deny there instead of a chmod.
 	if [[ "${stdinSpec}" == @full* && ! -w /dev/full ]]; then
 		##	Under the gate a skip is a failure, the way the other gates read it:
 		##	these rows are the only cover a full-disk write has, and a runner
@@ -849,10 +917,20 @@ for row in "${rows[@]}"; do
 		echo "cli-regress ${id}" >> "${SHCL_GATE_SKIPS:-/dev/null}"
 		continue
 	fi
-	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${stdinSpec}" == @change || "${id}" == write-names-the-phase ) ]]; then
+	if [[ "${onWindows}" == 1 && ( "${stdinSpec}" == @full* || "${stdinSpec}" == @closedout || "${stdinSpec}" == @appear || "${stdinSpec}" == @change || "${argv}" == *%XF%* ) ]]; then
 		echo "cli-regress: skipping ${id} (POSIX fixture; not judged on windows)"
 		continue
 	fi
+	##	A developer box may run as an account the deny does not bind; the hosted
+	##	job may not, since the row is the only cover the windows fix has.
+	if [[ "${argv}" == *"${tmpDir}/nowrite/"* && "${nowriteHeld}" == 0 ]]; then
+		if [[ -z "${WINRUN_PARTIAL:-}" ]]; then
+			echo "cli-regress: ${id}: the directory deny did not hold, so the row cannot be judged" >&2; nBad+=1; continue
+		fi
+		echo "cli-regress: skipping ${id} (the directory deny does not bind this account)"
+		continue
+	fi
+	argv="${argv//%XF%/$'\xff'}"
 	read -r -a args <<<"${argv}"
 	for k in "${!args[@]}"; do
 		if [[ "${args[k]}" == "%E%" ]]; then args[k]=""; fi
@@ -868,6 +946,7 @@ for row in "${rows[@]}"; do
 		((freshCreate)) && rm -f "${tmpDir}/created.shcl"
 		((freshKeep)) && cp "${tmpDir}/keepsrc.shcl" "${tmpDir}/created.shcl"
 		((freshKeepLost)) && cp "${tmpDir}/keeplost.shcl" "${tmpDir}/created.shcl"
+		if [[ -n "${runIn}" ]]; then cli="$(realpath -- "${cli}")"; cd -- "${runIn}"; fi
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;
@@ -875,6 +954,7 @@ for row in "${rows[@]}"; do
 			@fullout)   "${cli}" "${args[@]}" 2>"${tmpDir}/err" >/dev/full || rc=$?; : >"${tmpDir}/out" ;;
 			@fullerr)   "${cli}" "${args[@]}" >"${tmpDir}/out" 2>/dev/full || rc=$?; : >"${tmpDir}/err" ;;
 			-)          "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
+			@asciilocale) PYTHONIOENCODING=ascii LC_ALL=C "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" </dev/null || rc=$? ;;
 			## The file turns up while the command waits on stdin: after its
 			## notice and before the ops, so the create has already been decided.
 			## @change: the file is there first and changes during the wait.
@@ -899,6 +979,7 @@ for row in "${rows[@]}"; do
 				;;
 			*)          printf '%b' "${stdinSpec}" | "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" || rc=$? ;;
 		esac
+		cd -- "${startDir}"
 		nRun+=1
 		if ((rc != wantRc)); then
 			echo "cli-regress: ${id} [${name}]: exit ${rc}, expected ${wantRc}" >&2; nBad+=1; continue
@@ -933,6 +1014,55 @@ for row in "${rows[@]}"; do
 		fi
 	done
 done
+
+## 20260716 item 25: a reader that leaves early got three exit codes, 134 from
+## the reference's abort, 141 from Go and 0 from Python. Settled as dying of
+## SIGPIPE the way cat and head do, with nothing on stderr. The document has to
+## outlast the pipe buffer, or the write is done before the reader goes. An
+## ignored SIGPIPE carries through exec and would let Go and C exit quietly, so
+## the default goes back on first. Not a closed stdout: that is EBADF, and the
+## closed-stdout row above already pins it.
+awk 'BEGIN{ for (i = 0; i < 40000; i++) printf "k%d: %d\n", i, i }' > "${tmpDir}/big.shcl"
+if [[ "${onWindows}" == 1 ]]; then
+	echo "cli-regress: skipping broken-pipe (POSIX signal; not judged on windows)"
+else
+	for b in "${bindings[@]}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		##	The status is kept from inside the pipeline: under pipefail a 141 there
+		##	would end this script, and the || that stops that also resets PIPESTATUS.
+		{ rc=0; env --default-signal=PIPE "${cli}" fmt "${tmpDir}/big.shcl" 2>"${tmpDir}/err" </dev/null || rc=$?; echo "${rc}" >"${tmpDir}/rc"; } | head -c1 >/dev/null
+		rc="$(<"${tmpDir}/rc")"; nRun+=1
+		gotErr=""; IFS= read -r -d '' gotErr <"${tmpDir}/err" || true
+		if [[ "${rc}" != 141 || -n "${gotErr}" ]]; then
+			echo "cli-regress: broken-pipe [${name}]: exit ${rc}, expected 141 with nothing on stderr; stderr ${gotErr@Q}" >&2; nBad+=1
+		fi
+	done
+fi
+
+## 20260716 item 26: the C CLI's own allocations went unchecked, so running out
+## of memory was a segfault where the library's path exits 70. Two inputs under
+## an address-space cap: one too big to read, which is the CLI's own buffer, and
+## the pipe document above, which reads in about a megabyte and parses in over
+## twenty, which is the library handing back NULL. The first is sparse and costs
+## no disk. Only the C CLI makes this promise, and ulimit -v is POSIX.
+if [[ "${onWindows}" == 1 ]]; then
+	echo "cli-regress: skipping out-of-memory (POSIX fixture; not judged on windows)"
+else
+	truncate -s 64M "${tmpDir}/huge.shcl"
+	for b in "${bindings[@]}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		[[ "${name}" == c ]] || continue
+		for doc in huge big; do
+			rc=0
+			(ulimit -v 12288; exec "${cli}" fmt "${tmpDir}/${doc}.shcl" >/dev/null 2>"${tmpDir}/err" </dev/null) || rc=$?
+			nRun+=1
+			gotErr=""; IFS= read -r -d '' gotErr <"${tmpDir}/err" || true
+			if [[ "${rc}" != 70 || "${gotErr}" != $'shcl: out of memory\n' ]]; then
+				echo "cli-regress: out-of-memory-${doc} [${name}]: exit ${rc}, expected 70; stderr ${gotErr@Q}" >&2; nBad+=1
+			fi
+		done
+	done
+fi
 
 ## What a save does with each thing it can find at the path, one case per row of
 ## the Save outcomes table in design.md, which is the rule. A FIFO, a link whose

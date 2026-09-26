@@ -7,10 +7,10 @@
 //! build used to abort there ("failed printing to stdout"), so piping `fmt`
 //! into `more` or `Select-Object -First` on windows was an abort.
 //!
-//! On linux this passes whether or not the macros handle the error, because
-//! the restored SIGPIPE default ends the process before the write result is
-//! read. Only the windows job pins the macros; a green run here says nothing
-//! about them.
+//! On unix only the signal passes. The runtime ignores SIGPIPE unless the CLI
+//! puts the default back, and then the write error ends in a quiet exit 0,
+//! which is not what the other three bindings do (20260716 item 25). The
+//! macros' handling of that error is pinned by the windows job alone.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -53,9 +53,10 @@ fn early_closed_stdout_is_quiet() {
 	#[cfg(unix)]
 	{
 		use std::os::unix::process::ExitStatusExt;
-		assert!(
-			status.signal() == Some(13) || status.success(),
-			"expected SIGPIPE or a clean exit, got {status:?}"
+		assert_eq!(
+			status.signal(),
+			Some(13),
+			"expected death by SIGPIPE, got {status:?}"
 		);
 	}
 	#[cfg(not(unix))]

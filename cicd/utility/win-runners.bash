@@ -210,7 +210,9 @@ fRunClosedStdin() {
 ## The CLI rows the corpus cannot reach - closed streams, a bare CR ending an
 ## ops line, the message a failed write names. One of them pins a windows-only
 ## fix, and until now no cli-regress ran here at all. Python's CLI is a script
-## with no executable bit on windows, so the three built CLIs are judged.
+## with no executable bit on windows, and cli-regress runs each CLI as one
+## path, so it goes through a wrapper; msys counts a file opening with #! as
+## executable. Its CRLF and locale-encoding fixes were windows fixes too.
 fRunCliRegress() {
 	local clis=()
 	fBuildCcli || return 1
@@ -222,6 +224,11 @@ fRunCliRegress() {
 	if fHave go; then
 		go -C source/go/cmd build -o "${work}/shcl-go${exe}" ./shcl || return 1
 		clis+=("go|${work}/shcl-go${exe}")
+	fi
+	if fHave "${py}"; then
+		printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' "${py}" "${root}/source/python/cmd/shcl/main.py" > "${work}/shcl-py"
+		chmod +x "${work}/shcl-py"
+		clis+=("python|${work}/shcl-py")
 	fi
 	bash cicd/utility/cli-regress.bash "${clis[@]}"
 }
