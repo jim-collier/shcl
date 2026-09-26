@@ -295,9 +295,10 @@ LARGEDOC_MIB=100
 ## This build is the only thing that compiles the feature-gated sampler block,
 ## and it is deliberately not in the `--ci` gate: the pprof chain comes from
 ## crates.io, which the gate must not need - the same reason the comparison
-## tool's rust half is out. `--ci` runs only the calibration, below. A full local run hard-fails on it, which is where it
-## is caught. The rule that the chain never reaches an artifact is enforced
-## separately, on the files themselves, by package.bash.
+## tool's rust half is out. `--ci` runs only the calibration, below. A full
+## local run hard-fails on it, which is where it is caught. The rule that the
+## chain never reaches an artifact is enforced separately, on the files
+## themselves, by package.bash.
 PROFILE_ENABLE=1
 PROFILE_SECS=8
 PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
