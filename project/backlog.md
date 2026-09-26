@@ -98,6 +98,26 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 
 ### Bugs
 
+- From the SilkTerm and gitsby:
+
+	- 🔘 The line-keeping save falls back to canonical when the load lost a line, even when the edit is nowhere near it.
+		- Note: a missing capability, not a silent loss. The save gate refuses, so nothing goes at exit 0. The feature's own note said a kept save could write such a line back.
+		- Reproduced, SilkTerm: `font:\n\tsize: 12\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n` (tab-only E012 on `stray`). `shcl set --set font.size=13` prints it without `stray`, and `-w` refuses at exit 7.
+		- Reproduced, gitsby: `account: w\n\temail: a@x\n* stray\naccount: v\n\temail: v@x\n` (E007). Setting `account[#1].email` gives kept false and no `* stray`. Go's `SaveFileKeepLines` checks `LostCount() > 0` before it tries to keep lines, so it refuses either way.
+		- Expected: the edit goes in, the lost line comes back byte for byte, kept is true. The keep save refuses only when it falls back to canonical.
+		- Probable fix: let the reload check accept the same lost lines the source had, the way `errors_within` does for error codes, and move the save's lost-line refusal after the keep attempt. `set --write` too.
+		- Note: retained lines, E012 with a space and E003, already survive. Only dropped, value-dropped and stopped lines force the fallback. SilkTerm's line-saving item waits on this.
+		- Opened: 20260925-190824
+
+- From nemo-anywhere:
+
+	- 🔘 `set_banner` misses an info block that a hand edit moved out of the footer.
+		- Reproduced: `a:\n\tb: 1\n##\n## This config file format is SHCL.\n##    Format   3\n##\nc.d: 1\n`, then `banner off`. Returns 0 and the block stays, now the leading comment of `c`.
+		- Expected: 1, and the block gone. A `##` run holding the SHCL line can't be anything else.
+		- Note: a line added below the block is the most likely hand edit. A program calling `set_banner(1)` on every save then carries two blocks from there on.
+		- Note: a block at the top of a file can stay out of scope, per the original item. They keep their own text match for now.
+		- Opened: 20260925-190824
+
 - Code review 20260924d:
 
 	- 🔘 Item 4: `dogfood_shcl --no-update` runs whatever the fixed-name link points at, not only a held dogfood build.
@@ -180,6 +200,14 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 - 🔘 Cut `v3.0.0-beta1`, after everything above.
 	- Note: short release notes that just say issues were fixed, and a short changelog that names the fixes. This release only.
 	- Opened: 20260925-115006
+
+- From nemo-anywhere:
+
+	- 🔘 No way to read a node's comment lines.
+		- Note: `clear_comments` takes every comment line above a node, a user's note included. With no read, a program can't tell its own comment from the user's, or safely replace one it wrote in an older release.
+		- Wanted: a read that returns the comment lines above a node, or a `clear_comments` form that only takes lines matching given text.
+		- Note: they comment a key only when it is first made, so a reworded summary never reaches a key already set.
+		- Opened: 20260925-190824
 
 - Code review 20260924d:
 
