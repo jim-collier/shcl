@@ -2100,6 +2100,65 @@ int main(int argc, char **argv) {
 		if (shcl_error_count(pd) != 0 || shcl_diag_count(pd) != 0) fail("oneshot", "plain doc not clean");
 		shcl_free(pd);
 	}
+	// A schema that does not load would otherwise drop the constraints on its
+	// broken lines, or report every field as unknown - blaming the document.
+	// Same fixture in every runner.
+	{
+		const char *bt = "host: example\n";
+		const char *bs = "field: apikey\n\ttype: string\n  required: true\n";
+		shcl_doc *bd = shcl_load_and_validate(bt, strlen(bt), bs, strlen(bs), SHCL_STANDARD);
+		if (shcl_diag_count(bd) != 1) fail("oneshot_broken", "expected only the schema fault");
+		else if (strcmp(shcl_diag_code(bd, 0), "V099")) fail("oneshot_broken", "code not V099");
+		if (shcl_error_count(bd) != 1) fail("oneshot_broken", "error_count not 1");
+		shcl_free(bd);
+		// A schema that loads still validates normally.
+		shcl_doc *ld = shcl_load_and_validate(bt, strlen(bt), "field: host\n", 12, SHCL_STANDARD);
+		if (shcl_error_count(ld) != 0) fail("oneshot_broken", "loading schema not clean");
+		shcl_free(ld);
+		// An empty schema still means "skip validation", not "everything unknown".
+		shcl_doc *ed = shcl_load_and_validate(bt, strlen(bt), "", 0, SHCL_STANDARD);
+		if (shcl_error_count(ed) != 0) fail("oneshot_broken", "empty schema not clean");
+		shcl_free(ed);
+	}
+	// The unknown-field chain key is length-prefixed, not NUL-joined: a single
+	// field whose name literally contains a NUL must not impersonate the
+	// two-segment path x.y. Same fixture in every runner.
+	{
+		static const char nt[] = "\"x\0y\": 1\n";
+		shcl_doc *ns = shcl_parse("field: x.y\n", 11);
+		shcl_doc *nd = shcl_parse(nt, sizeof nt - 1);
+		shcl_validation *nv = shcl_validate(nd, ns);
+		if (!nv) fail("nul_name", "validate returned NULL");
+		else {
+			if (shcl_validation_count(nv) != 1) fail("nul_name", "NUL-bearing name slipped past the sweep");
+			else {
+				shcl_str m = shcl_validation_message(nv, 0);
+				if (strcmp(shcl_validation_code(nv, 0), "V001")) fail("nul_name", "code not V001");
+				if (m.n < 14 || memcmp(m.p, "unknown field ", 14) != 0) fail("nul_name", "message not 'unknown field ...'");
+			}
+			shcl_validation_free(nv);
+		}
+		// The genuinely two-segment spelling still validates clean.
+		shcl_doc *od = shcl_parse("x:\n\ty: 1\n", 9);
+		shcl_validation *ov = shcl_validate(od, ns);
+		if (!ov || shcl_validation_count(ov) != 0) fail("nul_name", "x.y did not validate clean");
+		if (ov) shcl_validation_free(ov);
+		shcl_free(od); shcl_free(nd); shcl_free(ns);
+	}
+	// (NULL, 0) is the usual C spelling of "no text", and a fast path that
+	// hands it to memchr breaks glibc's nonnull contract. Only the sanitized
+	// build of this runner can see that.
+	{
+		shcl_doc *zd = shcl_parse("", 0);
+		if (!shcl_set_literal(zd, "l", 1, NULL, 0)) fail("null_span", "set_literal refused (NULL, 0)");
+		if (!shcl_set_raw(zd, "r", 1, NULL, 0, NULL, 0)) fail("null_span", "set_raw refused (NULL, 0)");
+		if (!shcl_set_literal_default(zd, "l2", 2, NULL, 0)) fail("null_span", "set_literal_default refused (NULL, 0)");
+		if (!shcl_set_raw_default(zd, "r2", 2, NULL, 0, NULL, 0)) fail("null_span", "set_raw_default refused (NULL, 0)");
+		shcl_str zc = shcl_to_canonical(zd);
+		const char *zwant = "l:\n\nr:\n\t```\n\t```\n\nl2:\n\nr2:\n\t```\n\t```\n";
+		if (zc.n != strlen(zwant) || memcmp(zc.p, zwant, zc.n) != 0) fail("null_span", "document differs from empty literal and raw values");
+		shcl_free(zd);
+	}
 	// Every arena a validate arms has to be disarmed before the call returns,
 	// or the guard still names a frame that has gone. The suggestion scratch is
 	// armed down inside the unknown-field sweep, so the sweep has to run: the
@@ -2433,6 +2492,40 @@ int main(int argc, char **argv) {
 			swprintf(gone, sizeof gone / sizeof *gone, L"%ls\\gone.shcl", wd);
 			if (GetFileAttributesW(gone) != INVALID_FILE_ATTRIBUTES) fail("windangle", "a read through a dangling link left a file");
 			DeleteFileW(gone);
+			remove(link);
+		}
+		free(wl); free(wd);
+		_rmdir(sdir);
+	}
+	{
+		/* A save through a dangling link creates the file it points at and
+		   keeps the link, as on POSIX. The windows resolve could not open the
+		   link, fell through to its own name, and published a regular file over
+		   it with the target never created. */
+		char sdir[256], link[320];
+		snprintf(sdir, sizeof sdir, "%s/shcl-dsave-%ld", tmp_root(), (long)getpid());
+		if (_mkdir(sdir) != 0) fail("windsave", "mkdir failed");
+		snprintf(link, sizeof link, "%s/link.shcl", sdir);
+		wchar_t *wl = shcl_widen(link), *wd = shcl_widen(sdir);
+		int made = wl && wd && CreateSymbolicLinkW(wl, L"gone.shcl", 0x2 /* ALLOW_UNPRIVILEGED_CREATE */);
+		if (made) {
+			DWORD la = GetFileAttributesW(wl);
+			made = la != INVALID_FILE_ATTRIBUTES && (la & FILE_ATTRIBUTE_REPARSE_POINT);
+		}
+		if (!made) printf("conformance: windsave skipped (no symlink)\n");
+		else {
+			shcl_doc *sd = shcl_parse("a: 1\n", 5);
+			if (shcl_save_file(sd, link) != SHCL_SAVE_OK) fail("windsave", "save through a dangling link failed");
+			shcl_free(sd);
+			DWORD a = GetFileAttributesW(wl);
+			if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_REPARSE_POINT))
+				fail("windsave", "the save replaced the link with a regular file");
+			char gone[320];
+			snprintf(gone, sizeof gone, "%s/gone.shcl", sdir);
+			size_t rn; char *rt = read_file(gone, &rn);
+			if (!rt || rn != 5 || memcmp(rt, "a: 1\n", 5) != 0) fail("windsave", "file not created behind the link");
+			free(rt);
+			remove(gone);
 			remove(link);
 		}
 		free(wl); free(wd);

@@ -169,6 +169,30 @@ int main(void) {
 	}
 	shcl_free(d);
 
+	// The datetime reads split their text in the document arena, which nothing
+	// resets, so a long-running reader grew without bound where the int read
+	// stayed flat. One read per loop, for the same reason as above.
+	{
+		const char *dtext = "t: 2026-01-02 03:04:05.123456 +01:30\nts: Jan 02 2026, 2026-01-03T04:05:06.5Z, 20260104\n";
+		d = shcl_parse(dtext, strlen(dtext));
+		if (!d) { fail("document for the datetime loop did not parse"); return 1; }
+		for (int which = 0; which < 2; which++) {
+			size_t arena0 = 0;
+			for (int pass = 0; pass < 2; pass++) {
+				if (pass == 1) { before = allocated; arena0 = arena_bytes(&d->arena); }
+				for (int i = 0; i < 20000; i++) {
+					int ok = which == 0 ? shcl_read_datetime(d, "t", 1).status == SHCL_GOOD : shcl_read_datetime_array(d, "ts", 2).n == 3;
+					if (!ok) { fail("datetime loop: wrong result"); break; }
+					shcl_reads_release(d);
+				}
+			}
+			size_t agrew = arena_bytes(&d->arena) - arena0, grew = allocated - before;
+			printf("mem_bounds: datetime loop %d: arena +%zu, %zu bytes allocated over 20000 released reads\n", which, agrew, grew);
+			if (agrew != 0 || grew > 4096) fail("a datetime read grew the document");
+		}
+		shcl_free(d);
+	}
+
 	// A setter encodes into the document arena before the path is validated, so
 	// a refused write used to cost the document the whole encoded value, for as
 	// long as it lived.
@@ -230,6 +254,27 @@ int main(void) {
 	if (shcl_diag_count(d) != own_diags + 1) fail("schema build faults accumulated across generate calls");
 	if (own_diags < 1 || strcmp(shcl_diag_code(d, 0), "E014") != 0) fail("the schema's own diagnostic was dropped");
 	shcl_free(d);
+	// The hint filters build the schema they read, and used to build it in the
+	// schema's own arena, so a program holding one schema grew it per call.
+	{
+		const char *hschema = "field: item\n\trepeat: 0, 5\nfield: sect\n\treopen: true\n";
+		const char *htext = "item: a\nsect:\n\tk: 1\nother: 1\nitem: b\nsect:\n\tj: 2\n";
+		shcl_doc *hs = shcl_parse(hschema, strlen(hschema));
+		size_t sheld = arena_bytes(&hs->arena), dgrew = 0;
+		for (int i = 0; i < 2000; i++) {
+			shcl_doc *hd = shcl_parse(htext, strlen(htext));
+			size_t dheld = arena_bytes(&hd->arena);
+			if (shcl_diag_count(hd) != 2) { fail("hint filter: the document lost its hints before the filter"); shcl_free(hd); break; }
+			shcl_suppress_declared_repeats(hs, hd);
+			shcl_suppress_declared_reopens(hs, hd);
+			dgrew += arena_bytes(&hd->arena) - dheld;
+			if (shcl_diag_count(hd) != 0) fail("hint filter: a declared hint stayed");
+			shcl_free(hd);
+		}
+		printf("mem_bounds: hint filter: schema arena %zu -> %zu, documents +%zu over 2000 calls\n", sheld, arena_bytes(&hs->arena), dgrew);
+		if (arena_bytes(&hs->arena) != sheld || dgrew != 0) fail("a hint filter kept its working set in a document it does not own");
+		shcl_free(hs);
+	}
 	d = shcl_parse("field: a\n\trequired: yes\n", 25);
 	held = arena_bytes(&d->arena);
 	for (int i = 0; i < 200; i++) { shcl_str t = shcl_generate(d, 1, &gok); if (!gok || !t.n) fail("generation failed"); shcl_reads_release(d); }
@@ -447,6 +492,9 @@ int main(void) {
 	shcl_str got = shcl_to_canonical(d);
 	printf("mem_bounds: writes: fresh %zu, after 100k rewrites %zu, compacted %zu\n", fresh, grown, compacted);
 	if (grown < 1000000) fail("the rewrite loop did not grow the arena (the test measures nothing)");
+	// The replaced value and little else: the path scan once stayed behind
+	// too, about a kilobyte per call.
+	if ((grown - fresh) / 100000 > 256) fail("a setter kept its path scan in the document arena");
 	if (compacted > fresh * 2 + 4096) fail("compaction did not give the replaced values back");
 	if (got.n != wn || memcmp(got.p, wcopy, wn) != 0 || shcl_get_int_or(d, "group.key", 9, -1) != 99999) fail("compaction changed the document");
 	free(wcopy);

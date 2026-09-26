@@ -6,6 +6,7 @@
 # binding must pass; column meanings live in project/conformance/README.md. Plain
 # stdlib (no pytest) so cicd runs it with a bare python3. Exit nonzero on any miss.
 
+import ast
 import collections
 import math
 import os
@@ -1092,6 +1093,46 @@ def main():
 	oplain = shcl.Document.load_and_validate("a: 1\n", "", shcl.Strictness.Standard)
 	if (oplain.error_count(), len(oplain.diagnostics())) != (0, 0):
 		raise SystemExit("empty-schema load_and_validate not clean")
+	# A schema that does not load would otherwise drop the constraints on its
+	# broken lines, or report every field as unknown - blaming the document.
+	# Same fixture in every runner.
+	bschema = "field: apikey\n\ttype: string\n  required: true\n"
+	bdoc = shcl.Document.load_and_validate("host: example\n", bschema, shcl.Strictness.Standard)
+	bds = bdoc.diagnostics()
+	if [d.code for d in bds] != ["V099"]:
+		raise SystemExit(f"broken schema: expected only the schema fault, got {[d.code for d in bds]}")
+	if bdoc.error_count() != 1:
+		raise SystemExit(f"broken schema: error_count got {bdoc.error_count()}")
+	# A schema that loads still validates normally.
+	if shcl.Document.load_and_validate("host: example\n", "field: host\n", shcl.Strictness.Standard).error_count() != 0:
+		raise SystemExit("loading schema: load_and_validate not clean")
+	# An empty schema still means "skip validation", not "everything unknown".
+	if shcl.Document.load_and_validate("host: example\n", "", shcl.Strictness.Standard).error_count() != 0:
+		raise SystemExit("empty schema: load_and_validate not clean")
+	# The unknown-field chain key is length-prefixed, not NUL-joined: a single
+	# field whose name literally contains a NUL must not impersonate the
+	# two-segment path x.y. Same fixture in every runner.
+	nschema = shcl.Document.parse("field: x.y\n")
+	nvs = shcl.Document.parse("\"x\x00y\": 1\n").validate(nschema)
+	if len(nvs) != 1:
+		raise SystemExit(f"NUL-bearing name slipped past the sweep: {[d.code for d in nvs]}")
+	if nvs[0].code != "V001" or not nvs[0].message.startswith("unknown field "):
+		raise SystemExit(f"NUL name: got {nvs[0].code} {nvs[0].message!r}")
+	# The genuinely two-segment spelling still validates clean.
+	if shcl.Document.parse("x:\n\ty: 1\n").validate(nschema) != []:
+		raise SystemExit("x.y did not validate clean")
+	# A docstring below the first statement is an inert expression, and the
+	# method has no documentation. merge lost its own that way, and no linter
+	# says so.
+	if not (shcl.Document.merge.__doc__ or "").strip():
+		raise SystemExit("Document.merge has no docstring")
+	with open(shcl.__file__, encoding="utf-8") as src:
+		stree = ast.parse(src.read())
+	for snode in ast.walk(stree):
+		if isinstance(snode, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+			for sst in snode.body[1:]:
+				if isinstance(sst, ast.Expr) and isinstance(sst.value, ast.Constant) and isinstance(sst.value.value, str):
+					raise SystemExit(f"shcl.py:{sst.lineno}: a string statement below the first one documents nothing")
 	# write_reason: the reason behind a setter's bare False. Same fixture in
 	# every runner.
 	wdoc = shcl.Document.parse("a:\n\tb: 1\n")

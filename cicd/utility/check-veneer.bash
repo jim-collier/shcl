@@ -9,6 +9,8 @@
 ##		outside a comment, which also counts a function passed by pointer.
 ##		The list has to stay true as well: a listed call the veneer now makes,
 ##		or one shcl.h no longer declares, fails too.
+##		It also compiles a get<int> snippet, which has to stop at get<T>'s
+##		static_assert rather than build and fail at the link.
 ##	Syntax:
 ##		check-veneer.bash
 ##	Exit: 0 = every public call is made or listed, 1 = one is not (named),
@@ -76,9 +78,29 @@ for name in "${!covered[@]}"; do
 	fi
 done
 
-((rc)) || echo "check-veneer: OK: each of the ${#declared[@]} public calls in shcl.h is made by shcl.hpp or listed with a reason (${#covered[@]})"
+## get<T> with a T it has no read for has to stop at compile time with the
+## static_assert's text. Without the assert it was a bare undefined-symbol link
+## error. The same snippet must compile with a supported T, or a broken snippet
+## would pass as the refusal.
+cxx="${CXX:-g++}"
+command -v "${cxx}" >/dev/null || { echo "check-veneer: no C++ compiler (${cxx})" >&2; exit 2; }
+work="$(mktemp -d)"; trap 'rm -rf "${work}"' EXIT
+fGetSnippet(){ printf '#include "shcl.hpp"\nint main() { auto d = shcl::Document::parse("a: 1\\n"); return d.get<%s>("a").value == 1 ? 0 : 1; }\n' "$1" >"${work}/get.cpp"; }
+fGetSnippet int64_t
+if ! "${cxx}" -std=c++17 -fsyntax-only -I"${srcDir}" "${work}/get.cpp" 2>"${work}/good.err"; then
+	echo "check-veneer: the get<T> snippet does not compile with a supported T" >&2; cat "${work}/good.err" >&2; rc=1
+fi
+fGetSnippet int
+if "${cxx}" -std=c++17 -fsyntax-only -I"${srcDir}" "${work}/get.cpp" 2>"${work}/bad.err"; then
+	echo "check-veneer: get<int> compiles; an unsupported T has to fail at compile time" >&2; rc=1
+elif ! grep -qF 'T must be exactly int64_t' "${work}/bad.err"; then
+	echo "check-veneer: get<int> fails without the static_assert's message:" >&2; head -5 "${work}/bad.err" >&2; rc=1
+fi
+
+((rc)) || echo "check-veneer: OK: each of the ${#declared[@]} public calls in shcl.h is made by shcl.hpp or listed with a reason (${#covered[@]}), and get<int> stops at the static_assert"
 exit "${rc}"
 
 
 ##	History:
 ##		- 2026-09-16 JC: Created.
+##		- 2026-09-26 JC: get<int> compile-fail check.
