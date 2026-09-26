@@ -519,7 +519,11 @@ fUsage(){
 ##	worker has its own scratch directory and leaves its counts in a file there;
 ##	one with no counts file did not finish, and fails the run.
 units=(usage)
-for caseDir in "$corpus"/*/; do
+## The usage block always compares, so the floor at the end cannot see a
+## corpus with no case in it.
+caseDirs=("$corpus"/*/)
+[[ -d "${caseDirs[0]}" ]] || { echo "crosscheck: no case directories under ${corpus}" >&2; exit 2; }
+for caseDir in "${caseDirs[@]}"; do
 	## A case directory with no input.shcl is a mistake, not a non-case.
 	[[ -f "${caseDir}input.shcl" ]] || { echo "crosscheck: ${caseDir} has no input.shcl" >&2; exit 2; }
 	# NUL-bearing cases (e.g. the merge-key NUL case) are pinned by the native
@@ -623,3 +627,4 @@ echo "crosscheck: ${#bindings[@]} bindings agree on ${nCompared} comparison(s)"
 ##		- 20260922: The work split into units (each case, each fuzz input, the
 ##		               usage block) that CPU_CAP background workers take in
 ##		               turn. 229 s to 25 s at 16 workers.
+##		- 20260926: A corpus with no case directory exits 2 on its own check.

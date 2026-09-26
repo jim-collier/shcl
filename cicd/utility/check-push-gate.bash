@@ -261,6 +261,7 @@ TEST_EXTRA=('if [[ -n "${STUB_SKIP:-}" ]]; then echo stub >> "${SHCL_GATE_SKIPS}
 CROSS_CHECKS=('stub|[[ -z "${STUB_CROSS_FAIL:-}" ]]')
 BINDING_CLIS=(); LARGEDOC_MIB=0; CROSS_TARGETS=(); PROFILE_ENABLE=0; PACKAGE_ENABLE=0; GIF_ENABLE=0
 DOGFOOD_FIXED_DESTS=(); GIT_PUBLISH=(); RELEASE_NATIVE_CMD=()
+PROFILE_CHECK_BUILD_CMD=()
 CFG
 { git -C "${eng}" add --all && git -C "${eng}" commit -q -m base; } || { echo "check-push-gate: engine repo commit failed" >&2; exit 2; }
 engTree="$(git -C "${eng}" rev-parse 'HEAD^{tree}')"
