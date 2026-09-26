@@ -10,6 +10,7 @@ package shcl
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -804,6 +805,54 @@ func TestOneShotLoadAndValidate(t *testing.T) {
 	}
 }
 
+func TestOneShotLoadReportsABrokenSchema(t *testing.T) {
+	// A schema that does not load would otherwise drop the constraints on its
+	// broken lines, or report every field as unknown - blaming the document.
+	// Same fixture in every runner.
+	schema := "field: apikey\n\ttype: string\n  required: true\n"
+	doc := LoadAndValidate("host: example\n", schema, Standard)
+	ds := doc.Diagnostics()
+	if len(ds) != 1 {
+		t.Fatalf("expected only the schema fault, got %v", ds)
+	}
+	if ds[0].Code != "V099" {
+		t.Errorf("code: got %s, want V099", ds[0].Code)
+	}
+	if got := doc.ErrorCount(); got != 1 {
+		t.Errorf("error count: got %d, want 1", got)
+	}
+	// A schema that loads still validates normally.
+	if got := LoadAndValidate("host: example\n", "field: host\n", Standard).ErrorCount(); got != 0 {
+		t.Errorf("loading schema: got %d errors, want 0", got)
+	}
+	// An empty schema still means "skip validation", not "everything unknown".
+	if got := LoadAndValidate("host: example\n", "", Standard).ErrorCount(); got != 0 {
+		t.Errorf("empty schema: got %d errors, want 0", got)
+	}
+}
+
+func TestNulNameDoesNotSatisfyADottedSchemaPath(t *testing.T) {
+	// The unknown-field chain key is length-prefixed, not NUL-joined: a single
+	// field whose name literally contains a NUL must not impersonate the
+	// two-segment path x.y. Same fixture in every runner.
+	schema := Parse("field: x.y\n")
+	doc := Parse("\"x\x00y\": 1\n")
+	vs := doc.Validate(schema)
+	if len(vs) != 1 {
+		t.Fatalf("NUL-bearing name slipped past the sweep: %v", vs)
+	}
+	if vs[0].Code != "V001" {
+		t.Errorf("code: got %s, want V001", vs[0].Code)
+	}
+	if !strings.HasPrefix(vs[0].Message, "unknown field ") {
+		t.Errorf("message: got %q", vs[0].Message)
+	}
+	// The genuinely two-segment spelling still validates clean.
+	if vs := Parse("x:\n\ty: 1\n").Validate(schema); len(vs) != 0 {
+		t.Errorf("x.y: got %v, want none", vs)
+	}
+}
+
 func TestWriteReasonNamesTheFailure(t *testing.T) {
 	// The reason behind a setter's bare false. Same fixture in every runner.
 	doc := Parse("a:\n\tb: 1\n")
@@ -1214,6 +1263,18 @@ func TestFileTierLoadSave(t *testing.T) {
 			// fixture passed wherever it fired.
 			t.Logf("skipping the set-id fixture (mode came back %v, want %v)", idOf(born), wantID)
 		}
+	}
+}
+
+func TestSaveFileErrorWrapsTheCause(t *testing.T) {
+	// A caller tells a missing directory from a full disk with errors.Is, not
+	// by matching the message, so the save wraps the i/o error.
+	err := Parse("a: 1\n").SaveFile(filepath.Join(t.TempDir(), "missing", "t.shcl"))
+	if err == nil {
+		t.Fatal("save into a missing directory succeeded")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error does not wrap fs.ErrNotExist: %v", err)
 	}
 }
 

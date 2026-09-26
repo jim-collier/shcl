@@ -4201,6 +4201,25 @@ impl Document {
 	}
 
 	fn emit_node(&self, idx: usize, pos: usize, depth: usize, would_merge: bool, e: &mut Emit) {
+		self.emit_line(idx, pos, depth, would_merge, e);
+		self.emit_children(&self.arena[idx].children, depth + 1, e);
+		e.near(idx, pos);
+		// Comments this block owns with no child to carry them, one deeper.
+		push_leads(
+			e,
+			self.arena[idx].inside(),
+			depth + 1,
+			(idx, Site::Inside, 0),
+		);
+		// Comments that hung on this block after its last child.
+		push_leads(e, self.arena[idx].after(), depth, (idx, Site::After, 0));
+	}
+
+	// Kept out of emit_node, which recurses once per level: its temporaries
+	// would otherwise sit in every frame, and a document at the nesting cap
+	// ran past a 1 MB stack in a debug build.
+	#[inline(never)]
+	fn emit_line(&self, idx: usize, pos: usize, depth: usize, would_merge: bool, e: &mut Emit) {
 		let node = &self.arena[idx];
 		e.near(idx, pos);
 		let pad: String = "\t".repeat(depth);
@@ -4314,17 +4333,6 @@ impl Document {
 				}
 			}
 		}
-		self.emit_children(&self.arena[idx].children, depth + 1, e);
-		e.near(idx, pos);
-		// Comments this block owns with no child to carry them, one deeper.
-		push_leads(
-			e,
-			self.arena[idx].inside(),
-			depth + 1,
-			(idx, Site::Inside, 0),
-		);
-		// Comments that hung on this block after its last child.
-		push_leads(e, self.arena[idx].after(), depth, (idx, Site::After, 0));
 	}
 }
 
@@ -6137,7 +6145,7 @@ fn quote_double(t: &str) -> String {
 // since a float or a datetime has to read back as that type and not merely as
 // the same text.
 
-/// The value half of a binding line, the way `emit_node` writes it.
+/// The value half of a binding line, the way `emit_line` writes it.
 fn emit_cell(els: &[Element]) -> String {
 	let mut out = String::new();
 	emit_cell_into(&mut out, els);

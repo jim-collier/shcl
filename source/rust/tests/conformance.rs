@@ -2042,6 +2042,7 @@ fn generation_bounds_a_multiplying_schema() {
 fn one_shot_load_reports_a_broken_schema() {
 	// A schema that does not load would otherwise drop the constraints on its
 	// broken lines, or report every field as unknown - blaming the document.
+	// Same fixture in every runner.
 	let schema = "field: apikey\n\ttype: string\n  required: true\n";
 	let doc = Document::load_and_validate("host: example\n", schema, Strictness::Standard);
 	let ds = doc.diagnostics();

@@ -73,6 +73,10 @@ TOOL_PINS=(
 	## export data from a Go newer than the release it was cut against, so the
 	## two move together.
 	"go|1.26|go version"
+	## Builds the stub .deb and .rpm the packaging rows in shell-regress read
+	## back, and the release packages. A go-installed nfpm says "dev" to
+	## --version, so the version comes off the module it was built from.
+	"nfpm|2.43.0|go version -m \"\$(command -v nfpm)\""
 	## Only check-readme needs zig (the Zig example), and only shell-regress
 	## needs Pillow (the demo gif's output order). Both fail a skip under --ci.
 	"zig|0.16.0|zig version"
@@ -291,9 +295,10 @@ LARGEDOC_MIB=100
 ## This build is the only thing that compiles the feature-gated sampler block,
 ## and it is deliberately not in the `--ci` gate: the pprof chain comes from
 ## crates.io, which the gate must not need - the same reason the comparison
-## tool's rust half is out. A full local run hard-fails on it, which is where it
-## is caught. The rule that the chain never reaches an artifact is enforced
-## separately, on the files themselves, by package.bash.
+## tool's rust half is out. `--ci` runs only the calibration, below. A full
+## local run hard-fails on it, which is where it is caught. The rule that the
+## chain never reaches an artifact is enforced separately, on the files
+## themselves, by package.bash.
 PROFILE_ENABLE=1
 PROFILE_SECS=8
 PROFILE_BUILD_CMD=(cargo build --profile profiling --features profiling -j "${CPU_CAP}" --manifest-path "${MANIFEST}")
@@ -303,6 +308,18 @@ PROFILE_WORKLOAD_GEN='source cicd/utility/include/largedoc-gen.bash; largedoc_ge
 ## Two inlined loops of known cost ratio, sampled the same way; exit 1 when
 ## the graph would split them wrong.
 PROFILE_CHECK='SHCL_PROFILE_CHECK=1 "${PROFILE_BIN}"'
+## The calibration is the one pin on the sampler's attribution fix, and --ci
+## turns the profiler off, so --ci builds for it alone. No LTO: the loops are
+## inlined into one function without it, and the check still fails with the
+## fix taken out. Its own target dir, so the full profiling build is left as it
+## is. Offline, since the gate must not need crates.io: the probe says whether
+## the local cache holds the sampler's crates, and when it does not the check
+## is a noted skip.
+PROFILE_CHECK_PROBE_CMD=(cargo fetch --offline --manifest-path "${MANIFEST}")
+PROFILE_CHECK_BUILD_CMD=(env CARGO_PROFILE_PROFILING_LTO=false CARGO_PROFILE_PROFILING_CODEGEN_UNITS=16
+	cargo build --offline --profile profiling --features profiling -j "${CPU_CAP}" --manifest-path "${MANIFEST}"
+	--target-dir source/rust/target/profile-check)
+PROFILE_CHECK_BIN="source/rust/target/profile-check/profiling/${EXE_NAME}"
 PROFILE_RUN='SHCL_PROFILE_OUT="${PROFILE_OUT}" SHCL_PROFILE_SECS="${PROFILE_SECS}" "${PROFILE_BIN}" fmt "${PROFILE_WORKLOAD}" >/dev/null 2>&1'
 ## Wall-clock per surface, logged after the flamegraph: the graph shows where
 ## time goes inside fmt, these catch merge/validate/generate/set/read going
@@ -438,3 +455,4 @@ PUBLISH_AUTO_MESSAGE=""
 ##		- 2026-09-19 JC: green-tree.bash in the shellcheck list; shell-regress now holds the list to the tracked shell files.
 ##		- 2026-09-21 JC: cppcheck keeps a result cache in the git dir and checks its two files side by side.
 ##		- 2026-09-22 JC: PROFILE_CHECK, the sampler's attribution against two loops of known cost.
+##		- 2026-09-26 JC: PROFILE_CHECK_*: --ci runs the calibration on a build without LTO.

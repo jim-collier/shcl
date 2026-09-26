@@ -488,6 +488,20 @@ if ((PROFILE_ENABLE)); then
 	fi
 else
 	fEcho_Clean "profiler skipped"
+	## The calibration alone, on the config's cheaper build, since the graph's
+	## attribution is otherwise unchecked under --ci. It runs offline, and a
+	## cache without the sampler's crates is a noted skip rather than a fetch.
+	if ((ci_mode)) && [[ -n "${PROFILE_CHECK:-}" ]] && declare -p PROFILE_CHECK_BUILD_CMD &>/dev/null && ((${#PROFILE_CHECK_BUILD_CMD[@]})); then
+		if "${PROFILE_CHECK_PROBE_CMD[@]}" >/dev/null 2>&1; then
+			fEcho_Clean "building: ${PROFILE_CHECK_BUILD_CMD[*]}"
+			"${PROFILE_CHECK_BUILD_CMD[@]}" || fDie "profiler check build failed (app problem)"
+			( PROFILE_BIN="${PROFILE_CHECK_BIN}"; eval "${PROFILE_CHECK}" ) \
+				|| fDie "profiler attribution check failed; its graph would name the wrong code"
+		else
+			fEcho_Clean "profiler attribution check skipped: the sampler's crates are not in the local cache"
+			echo profiler-check >> "${SHCL_GATE_SKIPS}"
+		fi
+	fi
 fi
 
 ## Stage 6: native release + cross targets, collected under versioned names plus
@@ -711,3 +725,4 @@ fEcho_Clean
 ##		- 2026-09-21 JC: CPU_CAP set by the caller wins, so a runner with nothing else on it can use every core.
 ##		- 2026-09-22 JC: The profiler stage runs the config's attribution check before it draws a graph.
 ##		- 2026-09-23 JC: The record waits for the cross checks, and --no-cross holds it back.
+##		- 2026-09-26 JC: --ci runs the profiler's attribution check alone, on the config's cheaper build.

@@ -5027,6 +5027,16 @@ func (d *Document) emitChildren(kids []int, depth int, e *emit) {
 }
 
 func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
+	d.emitLine(idx, pos, depth, wouldMerge, e)
+	d.emitChildren(d.arena[idx].children, depth+1, e)
+	e.near(idx, pos)
+	// Comments this block owns with no child to carry them, one deeper.
+	pushLeads(e, d.arena[idx].inside(), depth+1, idx, siteInside, 0)
+	// Comments that hung on this block after its last child.
+	pushLeads(e, d.arena[idx].after(), depth, idx, siteAfter, 0)
+}
+
+func (d *Document) emitLine(idx, pos, depth int, wouldMerge bool, e *emit) {
 	node := &d.arena[idx]
 	e.near(idx, pos)
 	pad := strings.Repeat("\t", depth)
@@ -5125,12 +5135,6 @@ func (d *Document) emitNode(idx, pos, depth int, wouldMerge bool, e *emit) {
 			e.bodies = append(e.bodies, [3]int{body, end, depth + 1})
 		}
 	}
-	d.emitChildren(d.arena[idx].children, depth+1, e)
-	e.near(idx, pos)
-	// Comments this block owns with no child to carry them, one deeper.
-	pushLeads(e, d.arena[idx].inside(), depth+1, idx, siteInside, 0)
-	// Comments that hung on this block after its last child.
-	pushLeads(e, d.arena[idx].after(), depth, idx, siteAfter, 0)
 }
 
 // escapeName emits a stored (escape-resolved) name in a spelling that reads
@@ -5947,7 +5951,7 @@ func quoteDouble(t string) string {
 // since a float or a datetime has to read back as that type and not merely as
 // the same text.
 
-// emitCell is the value half of a binding line, the way emitNode writes it.
+// emitCell is the value half of a binding line, the way emitLine writes it.
 func emitCell(els []element) string {
 	var out strings.Builder
 	for i := range els {

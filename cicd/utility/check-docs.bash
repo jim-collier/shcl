@@ -281,6 +281,28 @@ if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 		/Copyright.*ID:/ { print FILENAME "\t" $0; nextfile }' "${mkFiles[@]}")
 fi
 
+##	20260920b item 21: a contact address people read is spelled with the
+##	circled A, not as a plain address, and three had sat on an old domain. The
+##	code of conduct is the Contributor Covenant's own text, nfpm.yaml is read
+##	by a packaging tool as an email, and the backlog quotes old findings.
+if git -C "${repoDir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	while IFS= read -r hit; do
+		fBad "${hit%%:*}: a plain shcl@ address where a reader wants the circled-A form (line ${hit#*:})"
+	done < <(git -C "${repoDir}" grep -nIE -o 'shcl@[A-Za-z0-9-]+\.[A-Za-z]' -- . ':!*code_of_conduct.md' ':!cicd/packaging/nfpm.yaml' ':!project/backlog.md' | cut -d: -f1,2 || true)
+fi
+
+##	20260920b item 22: the C file's section rules are `// --- <title> ---`, and
+##	`// ====` is kept for the one header and implementation split. The Rust and
+##	Go three-line form and a second `// ====` both turned up there once.
+cHeader="${repoDir}/source/c/shcl.h"
+if [[ -f "${cHeader}" ]]; then
+	nSplit="$(grep -cE '^// =+$' "${cHeader}" || true)"
+	[[ "${nSplit}" == 1 ]] || fBad "source/c/shcl.h has ${nSplit} '// ====' lines; the one header and implementation split is the only one"
+	while IFS= read -r hit; do
+		fBad "source/c/shcl.h:${hit%%:*}: a section rule not in the C form '// --- <title> ---'"
+	done < <(grep -nE '^// -{3}' "${cHeader}" | { grep -vE '^[0-9]+:// --- .*[^ -].* -+$' || true ;})
+fi
+
 ##	The repo moved to the yottacore org, and a sweep for the old owner path
 ##	missed the man page's troff spelling. The old path redirects, so nothing
 ##	breaks when one comes back; it just goes stale. Past changelog entries and
@@ -378,6 +400,69 @@ if [[ -f "${cmpResults}" && -f "${designDoc}" ]]; then
 			#  shellcheck disable=2016  ## the backticks are the document's own markdown.
 			grep -qF "${rustRatio}x behind \`toml\` in Rust" "${designDoc}" \
 				|| fBad "project/design.md: the Rust tier figure does not print the newest run's ratio (${rustRatio})"
+		fi
+		##	20260918b item 47: three more sentences had drifted from the file
+		##	they cite - SHCL's place in each tier, how close its gzipped file
+		##	comes to the smallest, and the schema shape's read time and sizes.
+		fRead(){  ## fRead TYPE PATH: every value at PATH under the newest run, one per line
+			"${cmpBin}" get "--$1" --array "${cmpResults}" "run[${newestStamp}].$2" 2>/dev/null || true
+		}
+		fPlace(){  ## fPlace TIER: shcl's place by rank-parse-secs, as the documents word it
+			awk -v m="$(fRead float "tier[$1].library[shcl].rank-parse-secs")" '
+				BEGIN { split("first second third fourth fifth sixth seventh eighth ninth tenth", ord, " ")
+					split("one two three four five six seven eight nine ten", num, " ") }
+				{ n++; if ($1 + 0 < m + 0) p++ }
+				END { p++; if (m == "" || n < 2 || n > 10) exit; print (p == n) ? "last" : ord[p] " of " num[n] }' \
+				<<<"$(fRead float "tier[$1].library[*].rank-parse-secs")"
+		}
+		rustPlace="$(fPlace rust)"; pyPlace="$(fPlace python)"
+		if [[ -z "${rustPlace}" || -z "${pyPlace}" ]]; then
+			fBad "could not read the newest comparison run's tier order out of results.shcl"
+		else
+			for verb in sorts loads; do
+				grep -qF "SHCL ${verb} ${rustPlace} in Rust and ${pyPlace} in Python" "${designDoc}" \
+					|| fBad "project/design.md: 'SHCL ${verb} ...' does not give the newest run's places (${rustPlace} in Rust, ${pyPlace} in Python)"
+			done
+		fi
+		##	The gzip spread is the widest over the Rust tier's shapes, rounded up,
+		##	so "within N%" is both true and the tightest whole number.
+		gzSpread=""
+		while IFS= read -r shape; do
+			[[ -n "${shape}" ]] || continue
+			gzSpread="$(awk -v m="$(fRead int "tier[rust].shape[${shape}].library[shcl].gzip-bytes")" -v w="${gzSpread:-0}" '
+				NR == 1 || $1 + 0 < lo { lo = $1 + 0 }
+				END { if (m == "" || lo <= 0) exit; s = (m / lo - 1) * 100; if (s < w) s = w; print s }' \
+				<<<"$(fRead int "tier[rust].shape[${shape}].library[*].gzip-bytes")")"
+			[[ -n "${gzSpread}" ]] || break
+		done < <("${cmpBin}" instances "${cmpResults}" "run[${newestStamp}].tier[rust].shape" 2>/dev/null || true)
+		if [[ -z "${gzSpread}" ]]; then
+			fBad "could not read the newest comparison run's gzip sizes out of results.shcl"
+		else
+			gzPct="$(awk -v s="${gzSpread}" 'BEGIN { c = int(s); if (c < s) c++; print c }')"
+			grep -qF "Gzipped, SHCL is within ${gzPct}% of the smallest file" "${designDoc}" \
+				|| fBad "project/design.md: the gzip sentence does not say within ${gzPct}%, the newest run's widest gap"
+		fi
+		##	The README's schema section: SHCL's size against JSON and XML, and a
+		##	read time given as a fraction of a second, which has to be true.
+		ddlSecs="$(fRead float "tier[rust].shape[ddl].library[shcl].parse-secs")"
+		ddlSizes="$(fRead int "tier[rust].shape[ddl].library[shcl].bytes") $(fRead int "tier[rust].shape[ddl].library[json].bytes") $(fRead int "tier[rust].shape[ddl].library[xml].bytes")"
+		read -r ddlShcl ddlJson ddlXml <<<"${ddlSizes}"
+		if [[ -z "${ddlSecs}" || -z "${ddlXml:-}" ]]; then
+			fBad "could not read the newest comparison run's schema shape out of results.shcl"
+		else
+			vsJson="$(awk -v a="${ddlShcl}" -v b="${ddlJson}" 'BEGIN { printf "%.0f", (1 - a / b) * 100 }')"
+			vsXml="$(awk -v a="${ddlShcl}" -v b="${ddlXml}" 'BEGIN { printf "%.0f", (1 - a / b) * 100 }')"
+			grep -qF "SHCL is ${vsJson}% smaller than JSON and ${vsXml}% smaller than XML" "${readme}" \
+				|| fBad "README.md: the schema sentence does not give the newest run's sizes (${vsJson}% smaller than JSON, ${vsXml}% than XML)"
+			frac="$(sed -nE 's/.*reads in under an? ([a-z]+) of a second.*/\1/p' "${readme}" | head -n1)"
+			denom="$(awk -v f="${frac}" 'BEGIN { split("tenth 10 twentieth 20 thirtieth 30 fortieth 40 fiftieth 50 sixtieth 60 seventieth 70 eightieth 80 ninetieth 90 hundredth 100 thousandth 1000", t, " ")
+				for (i = 1; i < 24; i += 2) if (t[i] == f) print t[i + 1] }')"
+			if [[ -z "${denom}" ]]; then
+				fBad "README.md: no 'reads in under a ... of a second' sentence to check the schema read time against"
+			else
+				awk -v s="${ddlSecs}" -v d="${denom}" 'BEGIN { exit !(s * d < 1) }' \
+					|| fBad "README.md: SHCL reads the schema shape in ${ddlSecs} s, which is not under a ${frac} of a second"
+			fi
 		fi
 	elif [[ -n "${SHCL_GATE_STRICT:-}" ]]; then
 		fBad "no debug binary to read results.shcl with, and the gate requires it"
@@ -587,6 +672,82 @@ if [[ -n "${help}" ]]; then
 		/^\.B[IR]? \\-\\-/ { spell = $2; sub(/=.*/, "", spell); gsub(/\\-/, "-", spell); next }
 		/^\.RB \(/ && spell != "" { print spell "\t" $0; spell = "" }' "${man}")
 	((manOpts >= 10)) || fBad "shcl.1: only ${manOpts} option(s) could be matched with the help's list"
+
+	##	20260904 item 31: the fmt synopsis had lost `[options]` and `-w` in the
+	##	help and the man page alike. Every word of a help synopsis has to be in
+	##	the man page's .SY block for that subcommand. The man page may say more,
+	##	since the help's column is narrow, and may spell a placeholder longer
+	##	(S there, SCHEMA here). ` | ` between two subcommands starts another.
+	##	`[options]` may also be spelled out, as long as every option the
+	##	subcommand's own help lists is there.
+	declare -A manSy=()
+	while IFS=$'\t' read -r cmds words; do
+		for c in ${cmds}; do manSy["${c}"]="${words}"; done
+	done < <(awk '
+		/^\.SH SYNOPSIS$/ { on = 1; next }
+		on && /^\.SH / { exit }
+		/^\.SY shcl$/ && on { sy = 1; n = 0; words = ""; next }
+		sy && /^\.YS$/ { print cmds "\t" words; sy = 0; next }
+		sy {
+			t = $0; sub(/^\.[A-Z]+ /, "", t); gsub(/\\-/, "-", t); gsub(/[][|=]/, " ", t)
+			if (++n == 1) cmds = t; else words = words " " t
+		}' "${man}")
+	((${#manSy[@]} >= 10)) || fBad "shcl.1: only ${#manSy[@]} subcommand(s) found in SYNOPSIS"
+	declare -A helpSy=()
+	while IFS= read -r syn; do
+		rest="${syn}"
+		while [[ -n "${rest}" ]]; do
+			seg="${rest%% | *}"
+			if [[ "${rest}" == *" | "* ]]; then rest="${rest#* | }"; else rest=""; fi
+			read -r -a w <<<"${seg//[][|=]/ }"
+			helpSy["${w[0]}"]=1
+			if [[ ! -v "manSy[${w[0]}]" ]]; then fBad "shcl.1: SYNOPSIS has no entry for ${w[0]}"; continue; fi
+			read -r -a mw <<<"${manSy[${w[0]}]}"
+			for word in "${w[@]:1}"; do
+				found=0
+				for m in "${mw[@]}"; do
+					if [[ "${m}" == "${word}" || ( "${word}" =~ ^[A-Z]+$ && "${m}" =~ ^[A-Z]+$ && "${m}" == "${word}"* ) ]]; then found=1; break; fi
+				done
+				if ((! found)) && [[ "${word}" == options ]]; then
+					found=1; nOpt=0
+					while IFS= read -r o; do
+						nOpt=$((nOpt + 1))
+						[[ " ${mw[*]} " == *" ${o} "* ]] || found=0
+					done < <("${repoDir}/source/rust/target/debug/shcl" help "${w[0]}" 2>/dev/null \
+						| awk '/^Options/ { on = 1; next } on && /^  --/ { o = $1; sub(/=.*/, "", o); print o }')
+					((nOpt)) || found=0
+				fi
+				((found)) || fBad "shcl.1: the SYNOPSIS for ${w[0]} does not say '${word}', which the help's does"
+			done
+		done
+	done < <(printf '%s\n' "${help}" | sed -n 's/^  shcl \([a-z].*\)$/\1/p' | sed 's/  .*//')
+	for c in "${!manSy[@]}"; do
+		[[ -v "helpSy[${c}]" ]] || fBad "shcl.1: SYNOPSIS names ${c}, which the help's synopsis lines do not"
+	done
+
+	##	The same round: the spec said two options shared the ordered list where
+	##	the CLI has five, and never named `--slots`. The edit options are read
+	##	from the help's own sentence, so a sixth has to reach the spec too.
+	editOpts="$(printf '%s\n' "${help}" | sed -n '/Edits go in as the repeatable/,/ options, which/p' | { grep -oE -- '--[a-z-]+' || true ;})"
+	nEdit="$(grep -c . <<<"${editOpts}" || true)"
+	numWords=(zero one two three four five six seven eight nine ten)
+	#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+	editSpec="$(sed -n '/^- A `--set` value goes in as/,/share one ordered list/p' "${repoDir}/project/spec.md")"
+	if ((nEdit < 2 || nEdit > 10)); then
+		fBad "found ${nEdit} edit option(s) in the help's set paragraph, so the spec's list went unread"
+	elif [[ -z "${editSpec}" ]]; then
+		fBad "spec.md: no sentence saying which edit options share one ordered list"
+	else
+		grep -qF -- "all ${numWords[nEdit]} share one ordered list" <<<"${editSpec}" \
+			|| fBad "spec.md: the edit options do not say all ${numWords[nEdit]} share one ordered list"
+		while IFS= read -r opt; do
+			grep -qE -- "\`${opt}[=\`]" <<<"${editSpec}" || fBad "spec.md: ${opt} is an edit option in the help and not in the spec's list"
+		done <<<"${editOpts}"
+		if grep -q -- '--slots' <<<"${help}"; then
+			#  shellcheck disable=2016  ## the backticks are the document's own markdown.
+			grep -qF -- '`--slots`' <<<"${editSpec}" || fBad "spec.md: the edit options paragraph does not name --slots"
+		fi
+	fi
 fi
 
 ##	Every subcommand that loads a document prints the load's diagnostics, so a
@@ -808,3 +969,7 @@ echo "check-docs: OK"
 ##		2026-09-24  Every PowerShell file is ASCII with no byte-order mark.
 ##		2026-09-25  No British spelling outside the code of conduct and the
 ##		            backlog.
+##		2026-09-26  The help's synopsis lines against the man page's, the spec's
+##		            edit options against the help, four more comparison
+##		            sentences against results.shcl, plain contact addresses,
+##		            and the C header's section rules.
