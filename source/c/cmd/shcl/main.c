@@ -939,9 +939,11 @@ static int write_back(shcl_doc *d, const char *file, Opts *o, const char *read, 
 	// idempotent --set-default in a provisioning script reported a change on
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
-	// dropped content refuses the write whatever the bytes say.
-	shcl_str c = keep ? shcl_to_text_keep_lines(d, NULL) : shcl_to_canonical(d);
-	if (read && (o->lossy || shcl_lost_count(d) == 0)
+	// dropped content refuses the write whatever the bytes say, unless the
+	// lines were kept, which writes the dropped lines back as they were.
+	int kept = 0;
+	shcl_str c = keep ? shcl_to_text_keep_lines(d, &kept) : shcl_to_canonical(d);
+	if (read && (o->lossy || kept || shcl_lost_count(d) == 0)
 		&& c.n == read_len && (c.n == 0 || memcmp(c.p, read, c.n) == 0)) return 0;
 	shcl_save_result r;
 	if (o->lossy && keep) r = shcl_write_file_atomic(file, c.p, c.n) ? SHCL_SAVE_OK : SHCL_SAVE_FAILED;

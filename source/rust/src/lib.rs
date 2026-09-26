@@ -5147,6 +5147,13 @@ fn drop_banners(leads: &mut Vec<Lead>) -> (usize, bool) {
 		i = end;
 	}
 	if removed > 0 {
+		// A reload puts a comment at most one level past the one before it,
+		// and the first at none, so what followed a block steps up to that.
+		let mut room = 0;
+		for l in keep.iter_mut().filter(|l| l.text.starts_with('#')) {
+			l.depth = l.depth.min(room);
+			room = l.depth + 1;
+		}
 		*leads = keep;
 	}
 	(removed, owed)
@@ -7096,9 +7103,9 @@ impl Document {
 	/// written right against it, goes with it. It is looked for in the
 	/// footer and above every field but the first, since a field added
 	/// below it by hand takes it as its comment; a block at the top of the
-	/// file is left alone. The library save never adds the block by itself; this is
-	/// for a program that wants it in a file it writes. Returns how many old
-	/// blocks came off.
+	/// file is left alone. The library save never adds the block by itself;
+	/// this is for a program that wants it in a file it writes. Returns how
+	/// many old blocks came off.
 	pub fn set_banner(&mut self, on: bool) -> usize {
 		let mut removed = 0;
 		// The first line's comments are the top of the file, on the first

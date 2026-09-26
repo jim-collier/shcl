@@ -1035,6 +1035,11 @@ def main():
 				if got != expected:
 					fails.append(f"{at}: instance_paths got {got!r} want {expected!r}")
 				continue
+			if kind == "comments":
+				got = "|".join(doc.comments(query))
+				if got != expected:
+					fails.append(f"{at}: comments got {got!r} want {expected!r}")
+				continue
 
 			got_value, got_status, got_slots = scalar_read(doc, kind, query)
 			if got_status.name != status:
@@ -1912,6 +1917,25 @@ def main():
 		try:
 			lostdoc.save_file(bad)
 			raise SystemExit("save_file did not refuse an unwritable path")
+		except shcl.SaveRefused as e:
+			if e.lost != 1:
+				raise SystemExit(f"SaveRefused lost got {e.lost}") from None
+		# A save that keeps lines writes the dropped line back as it was, so it
+		# refuses only when it falls back to canonical. Here removing the line
+		# above it would make it a child of `a`.
+		keep = shcl.Document.parse_keep_lines("a:\n\t\tb: 1\n\tc: 2\n", shcl.Strictness.Standard)
+		if not keep.set_int("a.b", 5):
+			raise SystemExit("keep set_int a.b failed")
+		if keep.save_file_keep_lines(fpath) is not True:
+			raise SystemExit("save_file_keep_lines did not keep the dropped line")
+		with open(fpath, encoding="utf-8", newline="") as fh:
+			if fh.read() != "a:\n\t\tb: 5\n\tc: 2\n":
+				raise SystemExit("save_file_keep_lines wrote the wrong text")
+		if keep.remove("a.b") != 1:
+			raise SystemExit("keep remove a.b failed")
+		try:
+			keep.save_file_keep_lines(fpath)
+			raise SystemExit("save_file_keep_lines did not refuse a canonical fallback")
 		except shcl.SaveRefused as e:
 			if e.lost != 1:
 				raise SystemExit(f"SaveRefused lost got {e.lost}") from None

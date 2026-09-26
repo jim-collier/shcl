@@ -1420,14 +1420,16 @@ func writeBack(doc *shcl.Document, file string, o *opts, read *string, keep bool
 	// idempotent --set-default in a provisioning script reported a change on
 	// every run, watchers fired, other hard links broke, and a canonical file
 	// in a read-only directory failed. The refusal comes first: a load that
-	// dropped content refuses the write whatever the bytes say.
+	// dropped content refuses the write whatever the bytes say, unless the
+	// lines were kept, which writes the dropped lines back as they were.
 	var text string
+	kept := false
 	if keep {
-		text, _ = doc.ToTextKeepLines()
+		text, kept = doc.ToTextKeepLines()
 	} else {
 		text = doc.ToCanonical()
 	}
-	if read != nil && (o.lossy || doc.LostCount() == 0) && text == *read {
+	if read != nil && (o.lossy || kept || doc.LostCount() == 0) && text == *read {
 		return 0
 	}
 	var werr error

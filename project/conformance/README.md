@@ -346,7 +346,7 @@ Case `159` pins a line the load dropped, a tab-only indent that matches no level
 
 Case `160` pins a dropped list element between two instances of a block, kept as written when the second one is edited.
 
-Case `161` pins info blocks a hand edit moved out of the footer, one above a plain field and one above a dotted line. `banner on` takes both off and adds one at the end.
+Case `161` pins info blocks a hand edit moved out of the footer, one above a plain field and one above a dotted line. `banner on` takes both off and adds one at the end. A comment nested under a footer block moves out to the column the block was at.
 
 Case `162` pins the `comments` read: the lines above a node from the `#` on, both instances' lines for a repeated leaf, nothing for a node with none or a missing path.
 

@@ -3791,7 +3791,8 @@ func (d *Document) Diagnostics() []Diagnostic {
 // output cannot re-emit - bad indentation, an unusable selector, a line past
 // the depth cap. Content-malformed lines do NOT count: those are retained as
 // trivia and survive a save. Nonzero means a SaveFile would delete
-// hand-written content, so SaveFile refuses then (SaveFileLossy overrides).
+// hand-written content, so SaveFile refuses then (SaveFileLossy overrides),
+// and SaveFileKeepLines does when it cannot keep the lines.
 func (d *Document) LostCount() int {
 	return d.lost
 }
@@ -3910,13 +3911,14 @@ func (d *Document) ToTextKeepLines() (string, bool) {
 }
 
 // SaveFileKeepLines is SaveFile with ToTextKeepLines(): true when it kept the
-// lines, false when it wrote the canonical form instead. Refuses the same way
-// SaveFile does.
+// lines, false when it wrote the canonical form instead. A line the load
+// dropped comes back as written when the lines are kept, so this refuses the
+// way SaveFile does only when it would write canonical.
 func (d *Document) SaveFileKeepLines(path string) (bool, error) {
-	if d.lost > 0 {
+	text, kept := d.ToTextKeepLines()
+	if !kept && d.lost > 0 {
 		return false, &SaveRefused{Path: path, Lost: d.lost}
 	}
-	text, kept := d.ToTextKeepLines()
 	if err := WriteFileAtomic(path, text); err != nil {
 		return false, err
 	}
@@ -4733,10 +4735,26 @@ func keepLines(src string, doc *Document) (string, bool) {
 			out.WriteString(eol)
 		}
 	}
+	// The lines no group stands for that sat right after a kept group, when
+	// the group that followed it then does not follow it now. They go out
+	// before the next source group, a new line not indented past them, or the
+	// end. A new line indented past them goes first, since one written under
+	// a dropped line would be dropped with it. A line the load dropped comes
+	// back this way.
+	flush := func(from, to int) {
+		for k := from; k < to; k++ {
+			if left[k] {
+				out.WriteString(line(k))
+				left[k] = false
+			}
+		}
+	}
 	indents := []*string{new(string)}
 	// The line of the group just written while it is a source one, and the end
 	// of the last source group met, kept or not.
 	prev, reach := 0, 0
+	// The last kept group whose following lines are still to go out.
+	owed := 0
 	for i, u := range is {
 		l := u.line
 		known := l != 0 && l <= n && at[l] != none
@@ -4768,6 +4786,29 @@ func keepLines(src string, doc *Document) (string, bool) {
 		// The same before the first group. Before any other group from the
 		// source, its own blank lines.
 		breakLine()
+		depth := tabs(nowText[u.start:u.end])
+		pay := false
+		if owed != 0 {
+			if known {
+				pay = !(kept && prev == owed && next[prev] == l)
+			} else {
+				ind := indentFor(indents, depth, step)
+				for k := end[owed] + 1; k < next[owed]; k++ {
+					if left[k] {
+						pay = len(ind) <= len(indent(k)) || !strings.HasPrefix(ind, indent(k))
+						break
+					}
+				}
+			}
+		}
+		if pay {
+			flush(end[owed]+1, next[owed])
+			breakLine()
+			owed = 0
+		}
+		if known {
+			owed = 0
+		}
 		switch {
 		case i == 0:
 			if kept && len(claimed) > 0 && claimed[0] == l {
@@ -4805,7 +4846,6 @@ func keepLines(src string, doc *Document) (string, bool) {
 				out.WriteString(eol)
 			}
 		}
-		depth := tabs(nowText[u.start:u.end])
 		if kept {
 			// A spliced line's value replaces the lines it took, as a stacked
 			// list's elements.
@@ -4822,6 +4862,7 @@ func keepLines(src string, doc *Document) (string, bool) {
 				indents = noteIndent(indents, depth, indent(wasRuns[was[at[l]].partFrom].line))
 			}
 			prev = l
+			owed = l
 		} else {
 			// A binding the edits rewrote keeps its line's indent and name.
 			from := u.start
@@ -4837,6 +4878,10 @@ func keepLines(src string, doc *Document) (string, bool) {
 			indents = writeRun(&out, now, nowText, from, u.end, indents, step, eol)
 			prev = 0
 		}
+	}
+	if owed != 0 {
+		breakLine()
+		flush(end[owed]+1, n+1)
 	}
 	// The blank lines the source ends with stay at the end.
 	breakLine()
@@ -4865,12 +4910,70 @@ func keepLines(src string, doc *Document) (string, bool) {
 	}
 	// The reload has to be the document, and it may not load with an error the
 	// source did not have: a child the edits gave an element list that stayed
-	// stacked reads back the same and is E001 (20260925b item 1).
+	// stacked reads back the same and is E001 (20260925b item 1). A line the
+	// load dropped went out as written, so the reload drops it again, and may
+	// drop nothing more.
 	back := newParser().parse(text, doc.strictness)
-	if back.lost == 0 && back.ToCanonical() == nowText && errorsWithin(back, loadedDoc) {
+	if back.lost <= loadedDoc.lost && back.ToCanonical() == nowText && errorsWithin(back, loadedDoc) {
 		return text, true
 	}
 	return "", false
+}
+
+// dropBanners takes each run of "##" lines holding the info block's SHCL line
+// or a version line out of leads. It returns how many came off, and whether
+// the last one had a blank above it with no line after it to take that blank.
+func dropBanners(leads *[]lead) (int, bool) {
+	isBlockLine := func(t string) bool {
+		return t == "## This config file format is SHCL." || strings.HasPrefix(t, FormatLineHead)
+	}
+	ls := *leads
+	keep := make([]lead, 0, len(ls))
+	removed, owed := 0, false
+	for i := 0; i < len(ls); {
+		end := i + 1
+		if strings.HasPrefix(ls[i].text, "##") {
+			for end < len(ls) && strings.HasPrefix(ls[end].text, "##") && !ls[end].blankBefore {
+				end++
+			}
+			hit := false
+			for _, l := range ls[i:end] {
+				if isBlockLine(l.text) {
+					hit = true
+					break
+				}
+			}
+			if hit {
+				// The blank that set the block off moves to whatever followed
+				// it, so the lines around it stay apart.
+				if end < len(ls) {
+					ls[end].blankBefore = ls[end].blankBefore || ls[i].blankBefore
+				} else {
+					owed = ls[i].blankBefore
+				}
+				removed++
+				i = end
+				continue
+			}
+		}
+		keep = append(keep, ls[i:end]...)
+		i = end
+	}
+	if removed > 0 {
+		// A reload puts a comment at most one level past the one before it,
+		// and the first at none, so what followed a block steps up to that.
+		room := 0
+		for k := range keep {
+			if strings.HasPrefix(keep[k].text, "#") {
+				if keep[k].depth > room {
+					keep[k].depth = room
+				}
+				room = keep[k].depth + 1
+			}
+		}
+		*leads = keep
+	}
+	return removed, owed
 }
 
 // errorsWithin: each error code d loads with, of loaded with at least as
@@ -6880,6 +6983,43 @@ func (d *Document) SetComment(path, text string) bool {
 	return true
 }
 
+// Comments returns the comment lines above the node(s) at a path, the ones
+// ClearComments takes, in file order, each from its '#' on. A program can tell
+// its own comment from one a user wrote there, and SetComment puts a line it
+// gave back as it was. Empty when the path reaches nothing.
+func (d *Document) Comments(path string) []string {
+	r, ok := d.resolveGroup(path)
+	if !ok {
+		return nil
+	}
+	var targets []int
+	switch r.kind {
+	case resOne:
+		targets = []int{r.one}
+	case resMany:
+		targets = r.many
+	case resSlots:
+		for _, s := range r.slots {
+			if s >= 0 {
+				targets = append(targets, s)
+			}
+		}
+	}
+	var out []string
+	for _, t := range targets {
+		tr := d.arena[t].trivia
+		if tr == nil {
+			continue
+		}
+		for _, l := range tr.leading {
+			if strings.HasPrefix(l.text, "#") {
+				out = append(out, l.text)
+			}
+		}
+	}
+	return out
+}
+
 // ClearComments takes off the comment lines above the node(s) at a path, the
 // lines SetComment adds to, so a program can replace a comment rather than
 // stack another one on it. Which lines those are is where the load put them:
@@ -6942,48 +7082,45 @@ func (d *Document) ClearComments(path string) int {
 }
 
 // SetBanner puts the info block (GenBanner) at the end of the document, or
-// with on false just takes it off. An old block in the footer comes off first,
-// found by its "This config file format is SHCL." line or its version line,
-// never by its links or Legal line, which a later release may spell
-// differently. A version line Migrate stamped counts too. A block is a run of
-// "##" lines with no blank inside, so a "##" comment of the file's own, written
-// right against it, goes with it. The library save never adds the block by
-// itself; this is for a program that wants it in a file it writes. Returns how
-// many old blocks came off.
+// with on false just takes it off. An old block comes off first, found by its
+// "This config file format is SHCL." line or its version line, never by its
+// links or Legal line, which a later release may spell differently. A version
+// line Migrate stamped counts too. A block is a run of "##" lines with no
+// blank inside, so a "##" comment of the file's own, written right against
+// it, goes with it. It is looked for in the footer and above every field but
+// the first, since a field added below it by hand takes it as its comment; a
+// block at the top of the file is left alone. The library save never adds the
+// block by itself; this is for a program that wants it in a file it writes.
+// Returns how many old blocks came off.
 func (d *Document) SetBanner(on bool) int {
-	isBlockLine := func(t string) bool {
-		return t == "## This config file format is SHCL." || strings.HasPrefix(t, FormatLineHead)
-	}
-	keep := make([]lead, 0, len(d.orphans))
 	removed := 0
-	for i := 0; i < len(d.orphans); {
-		end := i + 1
-		if strings.HasPrefix(d.orphans[i].text, "##") {
-			for end < len(d.orphans) && strings.HasPrefix(d.orphans[end].text, "##") && !d.orphans[end].blankBefore {
-				end++
-			}
-			hit := false
-			for _, l := range d.orphans[i:end] {
-				if isBlockLine(l.text) {
-					hit = true
-					break
-				}
-			}
-			if hit {
-				// The blank that set the block off moves to whatever followed
-				// it, so the lines around it stay apart.
-				if end < len(d.orphans) {
-					d.orphans[end].blankBefore = d.orphans[end].blankBefore || d.orphans[i].blankBefore
-				}
-				removed++
-				i = end
-				continue
-			}
-		}
-		keep = append(keep, d.orphans[i:end]...)
-		i = end
+	// The first line's comments are the top of the file, on the first node
+	// down, as a dotted line puts them on its last name.
+	var top []int
+	for n := root; len(d.arena[n].children) > 0; {
+		n = d.arena[n].children[0]
+		top = append(top, n)
 	}
-	d.orphans = keep
+	stack := append([]int(nil), d.arena[root].children...)
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = append(stack[:len(stack)-1], d.arena[n].children...)
+		first := false
+		for _, t := range top {
+			first = first || t == n
+		}
+		tr := d.arena[n].trivia
+		if first || tr == nil {
+			continue
+		}
+		gone, blank := dropBanners(&tr.leading)
+		if gone > 0 {
+			removed += gone
+			d.arena[n].blankBefore = d.arena[n].blankBefore || blank
+		}
+	}
+	gone, _ := dropBanners(&d.orphans)
+	removed += gone
 	if on {
 		open := len(d.orphans) > 0 || len(d.arena[root].children) > 0
 		for n, line := range strings.Split(strings.TrimSuffix(GenBanner, "\n"), "\n") {

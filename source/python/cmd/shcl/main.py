@@ -836,9 +836,10 @@ def write_back(doc, file, o, read=None, keep=False):
 	# idempotent --set-default in a provisioning script reported a change on
 	# every run, watchers fired, other hard links broke, and a canonical file
 	# in a read-only directory failed. The refusal comes first: a load that
-	# dropped content refuses the write whatever the bytes say.
-	text = doc.to_text_keep_lines()[0] if keep else doc.to_canonical()
-	if read is not None and (o.lossy or doc.lost_count() == 0) and text == read:
+	# dropped content refuses the write whatever the bytes say, unless the
+	# lines were kept, which writes the dropped lines back as they were.
+	text, kept = doc.to_text_keep_lines() if keep else (doc.to_canonical(), False)
+	if read is not None and (o.lossy or kept or doc.lost_count() == 0) and text == read:
 		return 0
 	try:
 		if o.lossy and keep:

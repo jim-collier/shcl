@@ -438,6 +438,17 @@ public:
 		return r;
 	}
 
+	// The comment lines above the node(s) at a path, the ones clear_comments
+	// takes, each from its `#` on, so a program can tell its own comment from
+	// one a user wrote there.
+	std::vector<std::string> comments(std::string_view p) const {
+		shcl_reads_release(d_.get());
+		shcl_str *v; std::size_t n = shcl_comments(d_.get(), p.data(), p.size(), &v);
+		std::vector<std::string> r; r.reserve(n);
+		for (std::size_t i = 0; i < n; i++) r.push_back(to_str(v[i]));
+		return r;
+	}
+
 	// Instance display values at a path, in file order.
 	std::vector<std::string> instances(std::string_view p) const {
 		shcl_reads_release(d_.get());
