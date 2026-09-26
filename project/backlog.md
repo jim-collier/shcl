@@ -227,10 +227,18 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Fixed: a test for each, watched to fail against the old behavior. Corpus 163 to 169, runner fixtures in the three ports, C memory bounds, a veneer compile-fail check, 14 `cli-regress` rows, installer and hook rows, a crosscheck self-test, and new `check-docs` checks.
 		- Fixed: `cli_pipe.rs` accepted a clean exit, and the NUL-name fixture its comment said was in every runner was in Rust only.
 		- Fixed: the package-stub rows skipped silently in hosted CI. They go through `fHave` now, and `ci.yml` installs nfpm and rpm.
-		- Fixed: `--ci` runs the profiler's attribution check on a build without LTO. It is a noted skip where the sampler's crates are not cached, as in hosted CI.
+		- Fixed: `--ci` runs the profiler's attribution check on a build without LTO. It is a noted skip where the sampler's crates are not in the local cache.
 		- Note: the Windows rows run only in the hosted windows job.
 		- Opened: 20260926-101656
-		- Closed: 20260926-101656
+		- Closed: 20260926-110903
+
+	- ✅ The Rust CLI's debug build on Windows crashes on the deepest legal document.
+		- Reproduced: the windows job's `deep-nesting` row exits 127 on dev. A debug build needs about 1.1 MB of stack for `fmt` at 511 levels, and Windows gives a main thread 1 MB. It needed 804 KB before the line-keeping save. Release went from 167 KB to 231 KB.
+		- Fixed: `emit_node` writes the binding line through `emit_line`, so the frame each level adds holds only the walk. The same split in Go, Python and C. Debug needs 255 KB and release 167 KB.
+		- Pinned by: `cli-regress.bash` runs `fmt` and `set` on that document under a 1 MB stack, all four CLIs.
+		- Note: a merge of two such documents needs 1.5 MB in a debug build, as it did before. Release needs 487 KB.
+		- Opened: 20260926-110903
+		- Closed: 20260926-110903
 
 - From the SilkTerm and gitsby:
 

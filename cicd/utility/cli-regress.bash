@@ -114,12 +114,14 @@ chmod 500 "${tmpDir}/nowrite"
 ## directory is denied adding a file instead. The fix (20260902 item 44) was
 ## windows-only, and the chmod left its row nothing to judge. A deny that does
 ## not hold for this account would pass the old code too, so a create is tried
-## first; the path conversion is off so /deny reaches icacls as written.
+## first; the path conversion is off so /deny reaches icacls as written. The
+## try is a native one: on the hosted runner a create from bash goes through
+## the deny while a native process is refused.
 nowriteHeld=1
 if [[ "${onWindows}" == 1 ]]; then
 	nowriteHeld=0
 	if MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' icacls "$(cygpath -w "${tmpDir}/nowrite")" /deny '*S-1-1-0:(WD,AD)' >/dev/null \
-		&& ! (: > "${tmpDir}/nowrite/probe") 2>/dev/null; then
+		&& ! powershell.exe -NoProfile -NonInteractive -Command "try { [IO.File]::Create('$(cygpath -w "${tmpDir}/nowrite/probe")').Close(); exit 0 } catch { exit 1 }" >/dev/null 2>&1; then
 		nowriteHeld=1
 	fi
 fi
@@ -1059,6 +1061,30 @@ else
 			gotErr=""; IFS= read -r -d '' gotErr <"${tmpDir}/err" || true
 			if [[ "${rc}" != 70 || "${gotErr}" != $'shcl: out of memory\n' ]]; then
 				echo "cli-regress: out-of-memory-${doc} [${name}]: exit ${rc}, expected 70; stderr ${gotErr@Q}" >&2; nBad+=1
+			fi
+		done
+	done
+fi
+
+## The deepest legal document inside the stack windows gives a main thread,
+## 1 MB. The reference emits one frame per level, and a debug build of it grew
+## past that while linux, at 8 MB, never noticed: only the windows job ran it
+## (deep-nesting). fmt, and a set that keeps lines, which emits twice.
+if [[ "${onWindows}" == 1 ]]; then
+	echo "cli-regress: skipping small-stack (POSIX fixture; the windows stack is the deep-nesting row)"
+else
+	deepPath="n0"; for i in {1..510}; do deepPath+=".n${i}"; done; deepPath+=".leaf"
+	for b in "${bindings[@]}"; do
+		name="${b%%|*}"; cli="${b#*|}"
+		for cmd in fmt set; do
+			args=(fmt "${tmpDir}/deep.shcl")
+			[[ "${cmd}" == set ]] && args=(set "--set=${deepPath}=2" "${tmpDir}/deep.shcl")
+			rc=0
+			(ulimit -s 1024; exec "${cli}" "${args[@]}" >/dev/null 2>"${tmpDir}/err" </dev/null) || rc=$?
+			nRun+=1
+			gotErr=""; IFS= read -r -d '' gotErr <"${tmpDir}/err" || true
+			if [[ "${rc}" != 0 || -n "${gotErr}" ]]; then
+				echo "cli-regress: small-stack-${cmd} [${name}]: exit ${rc}, expected 0; stderr ${gotErr@Q}" >&2; nBad+=1
 			fi
 		done
 	done

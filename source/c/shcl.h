@@ -5861,7 +5861,7 @@ static ShclStr diag_value(ShclArena *a, const ShclValue *v) {
 // the same text. Every check builds in the arena it is handed - scratch at
 // each call site, dead by the time the setter returns.
 
-/* The value half of a binding line, the way emit_node writes it. */
+/* The value half of a binding line, the way emit_line writes it. */
 static ShclStr emit_cell(ShclArena *a, const ShclElement *els, size_t n) {
 	ShclSB out = {0, 0, 0};
 	for (size_t i = 0; i < n; i++) { if (i) sb_puts(a, &out, ", "); sb_putS(a, &out, emit_element(a, &els[i])); }
@@ -6175,7 +6175,24 @@ static void emit_children(shcl_doc *d, const ShclVecSize *kids, size_t depth, Sh
 	}
 }
 
+static void emit_line(shcl_doc *d, size_t idx, size_t pos, size_t depth, int would_merge, ShclEmit *e);
 static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int would_merge, ShclEmit *e) {
+	emit_line(d, idx, pos, depth, would_merge, e);
+	ShclVecSize ch = NODE(d, idx).children;
+	emit_children(d, &ch, depth + 1, e);
+	emit_near(e, idx, pos);
+	/* Comments this block owns with no child to carry them, one deeper. */
+	ShclVecLead ins = triv_inside(&NODE(d, idx));
+	push_leads(e, ins.data, ins.len, depth + 1, idx, SITE_INSIDE, 0);
+	/* Comments that hung on this block after its last child. */
+	ShclVecLead aft = triv_after(&NODE(d, idx));
+	push_leads(e, aft.data, aft.len, depth, idx, SITE_AFTER, 0);
+}
+
+/* Kept out of emit_node, which recurses once per level: its locals would
+   otherwise sit in every frame, and a document at the nesting cap ran past a
+   1 MB stack in the reference's debug build. */
+static void emit_line(shcl_doc *d, size_t idx, size_t pos, size_t depth, int would_merge, ShclEmit *e) {
 	/* The whole emit - the output buffer and the quoted/escaped spellings both -
 	   is built in scratch; shcl_to_canonical copies the finished bytes into the
 	   document arena once. Building it there instead retained several times the
@@ -6258,15 +6275,6 @@ static void emit_node(shcl_doc *d, size_t idx, size_t pos, size_t depth, int wou
 			ShclVecSize_push(e->a, &e->bodies, depth + 1);
 		}
 	}
-	ShclVecSize ch = NODE(d, idx).children;
-	emit_children(d, &ch, depth + 1, e);
-	emit_near(e, idx, pos);
-	/* Comments this block owns with no child to carry them, one deeper. */
-	ShclVecLead ins = triv_inside(&NODE(d, idx));
-	push_leads(e, ins.data, ins.len, depth + 1, idx, SITE_INSIDE, 0);
-	/* Comments that hung on this block after its last child. */
-	ShclVecLead aft = triv_after(&NODE(d, idx));
-	push_leads(e, aft.data, aft.len, depth, idx, SITE_AFTER, 0);
 }
 
 static void emit_all(shcl_doc *d, ShclEmit *e) {

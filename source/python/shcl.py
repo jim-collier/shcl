@@ -4026,7 +4026,7 @@ class Document:
 				_push_leads(e, nd.inside(), depth + 1, (idx, "inside", 0))
 				_push_leads(e, nd.after(), depth, (idx, "after", 0))
 				continue
-			self._emit_node(idx, pos, depth, would_merge, e)
+			self._emit_line(idx, pos, depth, would_merge, e)
 			if e.record or self.arena[idx].after() or self.arena[idx].inside():
 				# The marker sits under the children, so it pops after them.
 				stack.append((idx, depth, None, pos))
@@ -4136,7 +4136,7 @@ class Document:
 			entries.append((c, depth, wm, pos))
 		stack.extend(reversed(entries))
 
-	def _emit_node(self, idx, pos, depth, would_merge, e):
+	def _emit_line(self, idx, pos, depth, would_merge, e):
 		node = self.arena[idx]
 		if e.record:
 			e.near.append((idx, pos))
@@ -6627,7 +6627,7 @@ def _encodable(text):
 
 
 def _emit_cell(els):
-	"""The value half of a binding line, the way _emit_node writes it."""
+	"""The value half of a binding line, the way _emit_line writes it."""
 	return ", ".join(_emit_element(e) for e in els)
 
 
