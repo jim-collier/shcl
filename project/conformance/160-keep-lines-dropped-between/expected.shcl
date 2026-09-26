@@ -1,0 +1,6 @@
+# A list element with no parent field is dropped. An edit to the block
+# after it keeps it as written.
+account: w
+	email: a@x
+account: v
+	email: v@x

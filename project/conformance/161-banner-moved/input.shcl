@@ -1,0 +1,16 @@
+# Info blocks that were in the footer until fields were added below them
+# by hand. banner takes them off wherever they sit after the first field.
+a:
+	b: 1
+##
+## This config file format is SHCL.
+##    Format   3
+##
+c: 1
+
+##
+## This config file format is SHCL.
+##    Format   2
+##
+# a note of the file's own
+e.f: 1

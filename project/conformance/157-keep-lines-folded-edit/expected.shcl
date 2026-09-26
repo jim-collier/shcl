@@ -1,6 +1,5 @@
-# A block given twice loads as one. An edit that rewrites the line above
-# the second header would leave that header out, so the save gives the
-# canonical form.
+# A block given twice loads as one. A new child under the last field of
+# the first one goes above the second header, which stays as written.
 db:
 	host: localhost
 	port: 5432
