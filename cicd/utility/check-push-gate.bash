@@ -55,6 +55,9 @@ cat > "${repo}/cicd/cicd.bash" <<'EOF'
 echo "ran ${SHCL_GATE_REF:-}" >> "${STUB_LOG}"
 echo "$*" > "${STUB_LOG}.args"
 echo "${GIT_DIR:-unset}" > "${STUB_LOG}.gitdir"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+readlink "${here}/source/rust/target" > "${STUB_LOG}.target" || echo none > "${STUB_LOG}.target"
+git -C "${here}" rev-parse HEAD >> "${STUB_LOG}.head"
 exit "${STUB_RC:-0}"
 EOF
 printf 'one\n' > "${repo}/a.txt"
@@ -107,12 +110,13 @@ prc=0; "${helper}" passed "${repo}" '.*' 2>/dev/null || prc=$?
 ((prc == 2)) || fail "passed took '.*' as a tree (exit ${prc})"
 
 export STUB_LOG="${work}/stub.log"
-fPush(){  ## fPush BRANCH SHA -> hookRc, hookOut, ran (times the stubbed gate ran)
-	: > "${STUB_LOG}"
+fPushLines(){  ## fPushLines LINES -> hookRc, hookOut, ran (times the stubbed gate ran)
+	: > "${STUB_LOG}"; : > "${STUB_LOG}.head"
 	hookRc=0
-	hookOut="$(printf 'refs/heads/x %s refs/heads/%s %s\n' "$2" "$1" "${zeros}" | bash "${repo}/cicd/hooks/pre-push" 2>&1)" || hookRc=$?
+	hookOut="$(printf '%s' "$1" | bash "${repo}/cicd/hooks/pre-push" 2>&1)" || hookRc=$?
 	ran="$(wc -l < "${STUB_LOG}")"
 }
+fPush(){ fPushLines "$(printf 'refs/heads/x %s refs/heads/%s %s' "$2" "$1" "${zeros}")"$'\n' ;}  ## fPush BRANCH SHA
 
 printf 'six\n' > "${repo}/d.txt"
 git -C "${repo}" add d.txt && git -C "${repo}" commit -q -m six
@@ -126,12 +130,21 @@ grep -qx 'ran main' "${STUB_LOG}" || fail "the hook did not tell the gate it sta
 ## 20260918 item 24: the stub ran whatever it was asked to, so the hook could
 ## have called a quick or partial gate and passed here all the same.
 [[ "$(cat "${STUB_LOG}.args")" == "--ci --no-largedoc" ]] || fail "the hook called the gate as: $(cat "${STUB_LOG}.args")"
+## 20260830 item 5: the gate's worktree got the checkout's own target dir, so
+## its build baked the worktree's path into the checkout's test binaries.
+[[ "$(cat "${STUB_LOG}.target")" == */source/rust/target-gate ]] \
+	|| fail "the hook linked the gate's target dir to $(cat "${STUB_LOG}.target"), not the checkout's target-gate"
 export STUB_RC=1; fPush main "${sha}"; unset STUB_RC
 ((hookRc == 1)) || fail "a red gate did not refuse the push (exit ${hookRc})"
 fPush feature "${sha}"
 ((hookRc == 0 && ran == 0)) || fail "a feature branch push: exit ${hookRc}, gate ran ${ran} time(s)"
 fPush dev "${sha}"
 ((hookRc == 0 && ran == 0)) || fail "a commit nothing recorded, pushed to dev: exit ${hookRc}, gate ran ${ran} time(s)"
+## 20260830 item 6: only the last ref of a multi-ref push was gated. Main
+## first and a feature ref after it: the gate runs once, on main's commit.
+fPushLines "$(printf 'refs/heads/x %s refs/heads/main %s\nrefs/heads/y %s refs/heads/feature %s\n' "${sha}" "${zeros}" "$(git -C "${repo}" rev-parse HEAD~1)" "${zeros}")"$'\n'
+((hookRc == 0 && ran == 1)) && [[ "$(cat "${STUB_LOG}.head")" == "${sha}" ]] \
+	|| fail "a push of main and a feature ref: exit ${hookRc}, gate ran ${ran} time(s), on $(tr '\n' ' ' < "${STUB_LOG}.head")"
 
 "${helper}" record "${repo}" "$(git -C "${repo}" rev-parse 'HEAD^{tree}')" || fail "record refused a clean checkout"
 fPush main "${sha}"
@@ -280,7 +293,7 @@ fEngine GIT_DIR="${eng}/.git" STUB_GITDIR="${work}/eng.gitdir" -- --ci
 [[ "$(cat "${work}/eng.gitdir" 2>/dev/null || true)" == unset ]] \
 	|| fail "cicd.bash passed GIT_DIR on to its gates: $(cat "${work}/eng.gitdir" 2>/dev/null || true)"
 
-(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, only a push to main runs it with the full gate, a red gate refuses, no gate sees a linked worktree's GIT_DIR, the drift check judges the pushed tree as main, and a partial run records nothing"
+(( rc == 0 )) && echo "check-push-gate: OK: the tree matches a commit of the working copy, a recorded tree skips the gate, only a push to main runs it with the full gate, a red gate refuses, the gate builds into target-gate and runs once on main's commit in a multi-ref push, no gate sees a linked worktree's GIT_DIR, the drift check judges the pushed tree as main, and a partial run records nothing"
 exit "${rc}"
 
 
@@ -294,3 +307,5 @@ exit "${rc}"
 ##		  record hold-backs run for real on a stubbed repository.
 ##		- 2026-09-19 JC: A push from a linked worktree, and a direct run with
 ##		  GIT_DIR exported, must not hand GIT_DIR to the gate.
+##		- 2026-09-26 JC: The gate's target link, and a push naming main and a
+##		  feature ref.

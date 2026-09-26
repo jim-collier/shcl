@@ -79,7 +79,10 @@ jobs:
           ## them builds the C library and CLI for windows with mingw's gcc,
           ## which this image does not carry.
           ## perf-gate counts write calls with strace.
-          sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh bash-completion gcc-mingw-w64-x86-64 strace
+          ## The stub-package rows build a .deb and an .rpm and read them back:
+          ## dpkg-deb ships on the image, rpm does not, and nfpm is installed
+          ## with the Go tools below.
+          sudo apt-get update -qq && sudo apt-get install -y -qq nsis zsh bash-completion gcc-mingw-w64-x86-64 strace rpm
           pip install ruff==0.15.22 mypy==2.3.0 cppcheck==1.5.1 build==1.5.0 pillow==11.1.0
           npm install -g markdownlint-cli2@0.23.1
           pwsh -NoProfile -Command 'Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser'
@@ -98,13 +101,15 @@ jobs:
           tar -xJf /tmp/zig-0.16.0.tar.xz -C /tmp
           echo "/tmp/zig-x86_64-linux-0.16.0" >> "$GITHUB_PATH"
       ## The supply-chain trio gates the lint stage and none of it ships on the
-      ## image. Versions match TOOL_PINS, same as everything above. cargo-deny
+      ## image, and nfpm builds the stub packages shell-regress reads back.
+      ## Versions match TOOL_PINS, same as everything above. cargo-deny
       ## comes as a prebuilt binary rather than a cargo install: building it
       ## from source costs minutes here and pulls a dependency tree the gate has
       ## no reason to compile.
       - run: |
           go install honnef.co/go/tools/cmd/staticcheck@2026.1
           go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/cargo-deny.tar.gz \
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-x86_64-unknown-linux-musl.tar.gz"
