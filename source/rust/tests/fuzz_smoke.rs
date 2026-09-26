@@ -1063,8 +1063,9 @@ fn tidy(rng: &mut Rng) -> String {
 /// no error the base did not have, or the canonical form when it cannot; a
 /// load with no edits writes its own text back. On tidy configs, plain
 /// edits keep their lines nearly always, so a change that quietly fell back
-/// to the canonical form every time fails here too, and a new field at the
-/// top keeps every line of the base that is not blank, in order.
+/// to the canonical form every time fails here too. A new field at the top
+/// keeps every line of the base that is not blank, in order, whenever the
+/// save keeps lines at all.
 #[test]
 fn keeping_lines_reloads_as_the_document() {
 	let iters = iter_count(300);
@@ -1088,16 +1089,29 @@ fn keeping_lines_reloads_as_the_document() {
 			(base.clone(), true),
 			"iteration {i}: no edits, text changed:\n{base}"
 		);
-		if shape >= 2 {
-			let mut added = doc.clone();
-			assert!(added.set_int("zz_new", 1));
+		// Any base that keeps its lines and loads clean, not only a tidy one:
+		// a repeat the load folded away comes back too (20260925c item 1). A
+		// kept misplaced line is left out, since it turns into a comment once
+		// a new field above it would take it as a child.
+		let clean = !doc
+			.diagnostics()
+			.iter()
+			.any(|d| d.severity == Severity::Error);
+		let mut added = doc.clone();
+		let set = (clean || shape >= 2) && added.set_int("zz_new", 1);
+		assert!(set || shape < 2, "iteration {i}: no new field:\n{base}");
+		if set {
 			let (text, kept) = added.to_text_keep_lines();
-			let mut rest = text.split_inclusive('\n');
+			let bare = |l: &str| l.trim_end_matches(['\r', '\n']).to_string();
+			let no_bom = |t: &str| t.strip_prefix('\u{feff}').unwrap_or(t).to_string();
+			let (text, base) = (no_bom(&text), no_bom(&base));
+			let mut rest = text.split_inclusive('\n').map(bare);
+			let all_there = base
+				.split_inclusive('\n')
+				.filter(|l| !l.trim().is_empty())
+				.all(|l| rest.any(|t| t == bare(l)));
 			assert!(
-				kept && base
-					.split_inclusive('\n')
-					.filter(|l| !l.trim().is_empty())
-					.all(|l| rest.any(|t| t == l)),
+				(kept || shape < 2) && (!kept || all_there),
 				"iteration {i}: a new field moved or dropped a line:\n{base}--- wrote\n{text}"
 			);
 		}

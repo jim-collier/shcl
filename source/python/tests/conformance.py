@@ -644,6 +644,20 @@ def no_new_errors(text, base):
 	return min(count.values(), default=0) >= 0
 
 
+def keeps_every_line(base):
+	"""On a base that loads clean, a new field saved with the lines kept writes
+	every line of the base that is not blank, in order. A repeat the load
+	folded away comes back too (20260925c item 1). A kept misplaced line is
+	left out, since it turns into a comment once a new field above it would
+	take it as a child."""
+	doc = shcl.Document.parse_keep_lines(base, shcl.Strictness.Standard)
+	if any(d.severity == shcl.Severity.Error for d in doc.diagnostics()) or not doc.set_int("zz_new", 1):
+		return True
+	text, kept = doc.to_text_keep_lines()
+	rest = iter(text.split("\n"))
+	return not kept or all(any(t == ln for t in rest) for ln in base.split("\n") if ln.strip())
+
+
 def edits_and_merges_match_a_reload():
 	# A merge or an edit leaves the document its own saved text reloads as,
 	# comments included, so the next step lands the same whether or not the file
@@ -658,6 +672,8 @@ def edits_and_merges_match_a_reload():
 		# that keeps them reloads as the document, or is the canonical form.
 		live = shcl.Document.parse_keep_lines(base, shcl.Strictness.Standard)
 		log = "base:\n" + base
+		if not keeps_every_line(base):
+			raise SystemExit(f"a new field moved or dropped a line at iteration {i}:\n{log}")
 		for _ in range(2 + g.below(3)):
 			back = shcl.Document.parse(live.to_canonical())
 			paths = live.paths()

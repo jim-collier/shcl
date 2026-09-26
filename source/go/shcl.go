@@ -4691,6 +4691,19 @@ func keepLines(src string, doc *Document) (string, bool) {
 			next[l] = claimed[k]
 		}
 	}
+	// A line no group stands for, as a repeat the load folded away, goes out
+	// only as it was written, between two kept groups or at either end. One
+	// that is not blank and is left out makes the save fall back, since every
+	// line no edit touched has to come back (20260925c item 1).
+	left := make([]bool, n+2)
+	for k := 1; k <= n; k++ {
+		left[k] = !blank(k)
+	}
+	for _, l := range claimed {
+		for k := l; k <= minInt(end[l], n); k++ {
+			left[k] = false
+		}
+	}
 	eol := "\n"
 	if n > 0 && strings.HasSuffix(line(1), "\r\n") {
 		eol = "\r\n"
@@ -4760,6 +4773,7 @@ func keepLines(src string, doc *Document) (string, bool) {
 			if kept && len(claimed) > 0 && claimed[0] == l {
 				for k := 1; k < l; k++ {
 					out.WriteString(line(k))
+					left[k] = false
 				}
 			}
 		case kept && prev != 0 && next[prev] == l:
@@ -4770,6 +4784,7 @@ func keepLines(src string, doc *Document) (string, bool) {
 			for k := end[prev] + 1; k < l; k++ {
 				if blanksStay || !blank(k) {
 					out.WriteString(line(k))
+					left[k] = false
 				}
 			}
 			if !blanks {
@@ -4836,6 +4851,11 @@ func keepLines(src string, doc *Document) (string, bool) {
 	if out.Len() > len(bom) && allBlank {
 		for k := tail; k <= n; k++ {
 			out.WriteString(line(k))
+		}
+	}
+	for _, missed := range left {
+		if missed {
+			return "", false
 		}
 	}
 	text := out.String()

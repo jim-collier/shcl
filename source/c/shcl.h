@@ -6703,6 +6703,15 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 		while (lo < hi) { size_t mid = (lo + hi) / 2; if (claimed.data[mid] <= end[l]) lo = mid + 1; else hi = mid; }
 		next[l] = lo < claimed.len ? claimed.data[lo] : n + 1;
 	}
+	/* A line no group stands for, as a repeat the load folded away, goes out
+	   only as it was written, between two kept groups or at either end. One
+	   that is not blank and is left out makes the save fall back, since every
+	   line no edit touched has to come back (20260925c item 1). */
+	unsigned char *left = (unsigned char *)arena_alloc(a, n + 2);
+	memset(left, 0, n + 2);
+	for (size_t k = 1; k <= n; k++) left[k] = !kl_blank(KL_LINE(k));
+	for (size_t k = 0; k < claimed.len; k++)
+		for (size_t l = claimed.data[k]; l <= end[claimed.data[k]] && l <= n; l++) left[l] = 0;
 	const char *eol = "\n";
 	if (n > 0) { ShclStr l1 = KL_LINE(1); if (l1.n >= 2 && l1.p[l1.n - 2] == '\r' && l1.p[l1.n - 1] == '\n') eol = "\r\n"; }
 	size_t eol_n = strlen(eol);
@@ -6759,12 +6768,12 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 		if (ob.len > bom && ob.data[ob.len - 1] != '\n') sb_puts(a, &ob, eol);
 		if (i == 0) {
 			if (kept && claimed.len && claimed.data[0] == l)
-				for (size_t k = 1; k < l; k++) sb_putS(a, &ob, KL_LINE(k));
+				for (size_t k = 1; k < l; k++) { sb_putS(a, &ob, KL_LINE(k)); left[k] = 0; }
 		} else if (kept && prev != 0 && next[prev] == l) {
 			int blanks = 0;
 			for (size_t k = end[prev] + 1; k < l; k++) if (kl_blank(KL_LINE(k))) blanks = 1;
 			for (size_t k = end[prev] + 1; k < l; k++)
-				if (blanks_stay || !kl_blank(KL_LINE(k))) sb_putS(a, &ob, KL_LINE(k));
+				if (blanks_stay || !kl_blank(KL_LINE(k))) { sb_putS(a, &ob, KL_LINE(k)); left[k] = 0; }
 			if (!blanks) for (size_t k = 0; k < u->blanks; k++) sb_puts(a, &ob, eol);
 		} else if (known && blanks_stay && l > 1 && kl_blank(KL_LINE(l - 1))) {
 			size_t k = l - 1;
@@ -6812,6 +6821,7 @@ static int keep_lines(shcl_doc *d, ShclKeepOwn *own, jmp_buf *panic, ShclStr *ou
 	int all_blank = 1;
 	for (size_t k = tail; k <= n; k++) if (!kl_blank(KL_LINE(k))) all_blank = 0;
 	if (ob.len > bom && all_blank) for (size_t k = tail; k <= n; k++) sb_putS(a, &ob, KL_LINE(k));
+	for (size_t k = 1; k <= n; k++) if (left[k]) return 0;
 	/* So does a last line with no newline. */
 	if (body.n && body.p[body.n - 1] != '\n' && ob.len >= eol_n && memcmp(ob.data + ob.len - eol_n, eol, eol_n) == 0) ob.len -= eol_n;
 	#undef KL_LINE

@@ -550,6 +550,40 @@ static int no_new_errors(const shcl_doc *d, const shcl_doc *of) {
 	return 1;
 }
 
+/* On a base that loads clean, a new field saved with the lines kept writes
+   every line of the base that is not blank, in order. A repeat the load
+   folded away comes back too (20260925c item 1). A kept misplaced line is
+   left out, since it turns into a comment once a new field above it would
+   take it as a child. */
+static int keeps_every_line(const char *base, size_t n) {
+	shcl_doc *d = shcl_parse_keep_lines(base, n, SHCL_STANDARD);
+	int ok = 1, kept = 0, clean = 1;
+	for (size_t i = 0; i < shcl_diag_count(d); i++)
+		if (shcl_diag_severity(d, i) == SHCL_SEV_ERROR) clean = 0;
+	if (clean && shcl_set_int(d, "zz_new", 6, 1)) {
+		shcl_str t = shcl_to_text_keep_lines(d, &kept);
+		size_t at = 0;
+		for (size_t p = 0; kept && ok && p < n;) {
+			size_t e = p;
+			while (e < n && base[e] != '\n') e++;
+			size_t q = p;
+			while (q < e && (base[q] == ' ' || base[q] == '\t')) q++;
+			if (q < e) {
+				ok = 0;
+				while (!ok && at < t.n) {
+					size_t te = at;
+					while (te < t.n && t.p[te] != '\n') te++;
+					ok = te - at == e - p && memcmp(t.p + at, base + p, e - p) == 0;
+					at = te + 1;
+				}
+			}
+			p = e + 1;
+		}
+	}
+	shcl_free(d);
+	return ok;
+}
+
 /* A merge or an edit leaves the document its own saved text reloads as,
    comments included, so the next step lands the same whether or not the file
    was saved in between. Comments were filed one way by a load and another by a
@@ -566,6 +600,10 @@ static void edits_and_merges_match_a_reload(void) {
 		   that keeps lines, which is checked after every step too. */
 		shcl_doc *live = shcl_parse_keep_lines(base.p, base.n, SHCL_STANDARD);
 		log.n = 0; seq_puts(&log, "base:\n"); seq_put(&log, base.p, base.n);
+		if (!keeps_every_line(base.p, base.n)) {
+			fprintf(stderr, "FAIL edits_and_merges: a new field moved or dropped a line at iteration %d:\n%s", i, log.p);
+			nfail++; bad = 1;
+		}
 		for (size_t steps = 2 + seq_below(3); steps > 0 && !bad; steps--) {
 			shcl_str t = shcl_to_canonical(live);
 			shcl_doc *back = shcl_parse(t.p, t.n);

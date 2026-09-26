@@ -3536,6 +3536,13 @@ def _keep_lines(src, doc):
 	for k in claimed:
 		j = bisect.bisect_right(claimed, end[k])
 		nxt[k] = claimed[j] if j < len(claimed) else n + 1
+	# A line no group stands for, as a repeat the load folded away, goes out
+	# only as it was written, between two kept groups or at either end. One
+	# that is not blank and is left out makes the save fall back, since every
+	# line no edit touched has to come back (20260925c item 1).
+	left = [0 < k <= n and not blank(k) for k in range(n + 2)]
+	for k in claimed:
+		left[k:min(end[k], n) + 1] = [False] * (min(end[k], n) + 1 - k)
 	eol = "\r\n" if n > 0 and line(1).endswith("\r\n") else "\n"
 	# One level of the source's indent: a line one level in, or failing that
 	# the first indented line, a list element or a fence.
@@ -3580,12 +3587,14 @@ def _keep_lines(src, doc):
 		if i == 0:
 			if kept and claimed and claimed[0] == k:
 				out.extend(lines[:k - 1])
+				left[1:k] = [False] * (k - 1)
 		elif kept and prev != 0 and nxt[prev] == k:
 			gap = range(end[prev] + 1, k)
 			blanks = any(blank(g) for g in gap)
 			for g in gap:
 				if blanks_stay or not blank(g):
 					out.append(line(g))
+					left[g] = False
 			if not blanks:
 				out.extend([eol] * u.blanks)
 		elif known and blanks_stay and k > 1 and blank(k - 1):
@@ -3629,6 +3638,8 @@ def _keep_lines(src, doc):
 	tail = max((end[k] + 1 for k in claimed), default=1)
 	if _last_piece(out) and all(blank(g) for g in range(tail, n + 1)):
 		out.extend(lines[tail - 1:])
+	if any(left):
+		return None
 	text = "".join(out)
 	# So does a last line with no newline.
 	if body and not body.endswith("\n") and text.endswith(eol):

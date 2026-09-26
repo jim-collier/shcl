@@ -324,7 +324,7 @@ Case `148` pins `clear-comments`: every comment line above a node comes off, a g
 
 Case `149` pins `banner on`: an old info block in the footer comes off, found by its version line, not its links, and so does a bare version stamp from `migrate`. A `##` comment set off by a blank line stays. A second `banner on` changes nothing. Its `write-bad.ops` refuses a value other than `on` or `off`.
 
-Case `150` pins the save that keeps lines on a file kept by hand: four-space indents, padded values, a quoted value and capital letters in names. A changed value goes into its own line with the spacing and comment around it left alone, a new child takes its siblings' indent, a removed field takes its lines with it, and a rewritten raw block keeps the name's spelling. A stacked list given new values comes back inline. The repeated `Retries` line goes, since the new `log` block is written beside it.
+Case `150` pins the save that keeps lines on a file kept by hand: four-space indents, padded values, a quoted value and capital letters in names. A changed value goes into its own line with the spacing and comment around it left alone, a new child takes its siblings' indent, a removed field takes its lines with it, and a rewritten raw block keeps the name's spelling. A stacked list given new values comes back inline.
 
 Case `151` pins the edges of a file: a byte-order mark, CRLF line ends and no newline at the end all stay, and a new line gets CRLF too.
 
@@ -335,6 +335,12 @@ Case `153` pins a comment above a flat dotted line and above a selector line. Th
 Case `154` pins a child under a stacked list. Kept stacked, the list would reload with `E001`, so the save gives the canonical form. There the list goes inline, and a malformed line kept among its elements moves above it.
 
 Case `155` pins a selector that puts a child under an earlier block. The canonical order differs from the file's, so an edit anywhere gives the canonical form.
+
+Case `156` pins a repeated block header and a repeated field between two kept lines. Both stay where they were.
+
+Case `157` pins a repeated block header under a line the edit rewrites. Keeping the other lines would leave the header out, so the save gives the canonical form.
+
+Case `158` pins a repeated field at the end with a new field written after it. The save gives the canonical form, for the same reason.
 
 Beyond the fixed corpus, the differential harness (`cicd/utility/crosscheck.bash`) also derives accessor coverage over the fuzz set: the reference's fuzz dump writes a `<name>.reads.tsv` beside each dumped input (paths it knows exist, cycling type and strictness), which the `--extra` replay runs through the same row machinery. Every scalar read row - corpus and fuzz-derived - is additionally replayed under `--on-bad=error` (an exit-code differential) and `--default=<x>` (a stdout differential), so the on-bad/default policy surface is pinned cross-binding too. It also runs three `set` edits (a changed value, a new child, a removal) on the first paths of every input, corpus and fuzz alike, so the save that keeps lines is compared well past the goldens.
 
