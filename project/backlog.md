@@ -222,7 +222,7 @@ Issues opened by automated code reviews should be grouped under a main bullet wi
 		- Note: retained lines, E012 with a space and E003, already survive. Only dropped, value-dropped and stopped lines force the fallback. SilkTerm's line-saving item waits on this.
 		- Fixed: a line no binding stands for goes out right after the kept line above it, before the next source line. A new line indented past it goes first, since under a dropped line it would be dropped too. The reload may drop the lines the source dropped and nothing more. The keep save and `set --write` refuse only when they fall back.
 		- Note: a repeated header or field the load folded gets the same treatment, so cases 157 and 158 now keep their lines.
-		- Pinned by: corpus 159 and 160, and a save gate fixture in all four runners. The Rust fuzz keep property covers bases with dropped lines. 2M clean.
+		- Pinned by: corpus 159 and 160, a save gate fixture in all four runners, and two `set --write` rows in `cli-regress.bash`. The Rust fuzz keep property covers bases with dropped lines. 2M clean.
 		- Opened: 20260925-190824
 		- Closed: 20260925-210051
 

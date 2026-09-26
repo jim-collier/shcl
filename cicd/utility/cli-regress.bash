@@ -216,6 +216,8 @@ printf 'a:   1\n' > "${tmpDir}/noncanon.shcl"
 ## A file kept by hand, for the save that keeps lines: spacing, a quoted
 ## value, a capital and a four-space indent that the canonical form rewrites.
 printf '# note\nName:   "x"   # c\nblock:\n    a: 1\n' > "${tmpDir}/keepsrc.shcl"
+## The load drops the tab-indented stray line. The keep save writes it back.
+printf 'font:\n\tsize: 12\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n' > "${tmpDir}/keeplost.shcl"
 
 ##	Rows: id | argv | stdin | rc | stdout | stderr-regex [| created-file]
 ##	The last field is optional: when given, %C% must hold exactly that text
@@ -235,7 +237,8 @@ printf '# note\nName:   "x"   # c\nblock:\n    a: 1\n' > "${tmpDir}/keepsrc.shcl
 ##	%BA% a bracket array, %SQ% a selector whose discriminator needs quotes,
 ##	%SV% a schema naming a path the two-error file does not have,
 ##	%NV% two instance values holding a line break beside one plain value,
-##	%K% a fresh copy of a file kept by hand, at the path %C% names,
+##	%K% a fresh copy of a file kept by hand, at the path %C% names, %KL% the
+##	same for a file whose load drops a line,
 ##	%W% a fresh copy of the selector-sugar file, %BS% a fresh copy of a file
 ##	whose value reads differently under the two rule sets, %BW% a fresh copy of
 ##	the bracket array, %V3% a file that already names its format,
@@ -423,6 +426,10 @@ rows=(
 	'set-keeps-lines|set %K% --set=block.a=2|-|0|# note\nName:   "x"   # c\nblock:\n    a: 2\n|-'
 	'set-write-keeps-lines|set --write %K% --set=block.b=3|-|0|-|-|# note\nName:   "x"   # c\nblock:\n    a: 1\n    b: 3\n'
 	'fmt-write-rewrites-all|fmt --write %K%|-|0|-|-|# note\nname: "x"  # c\nblock:\n\ta: 1\n'
+	## A dropped line refuses the write only when the save falls back to
+	## canonical. Removing margin would put stray under window, so that one does.
+	'set-write-keeps-dropped|set --write %KL% --set=font.size=13|-|0|-|E012|font:\n\tsize: 13\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n'
+	'set-write-fallback-refused|set --write %KL% --remove=window.margin|-|7|-|dropped 1 line|font:\n\tsize: 12\nwindow:\n\t\tmargin: 4\n\tstray: 1\nlast: 1\n'
 	"set-open-quote-refused|set --set=a[\"open=1 %X%|-|1|-|bad --set value"
 	## 20260909 item 13: a value built by a setter or a selector read as
 	## unquoted, so quoted thousands were BadType until a save and reload.
@@ -799,6 +806,11 @@ for row in "${rows[@]}"; do
 		freshKeep=1
 		argv="${argv//%K%/${tmpDir}/created.shcl}"
 	fi
+	freshKeepLost=0
+	if [[ "${argv}" == *%KL%* ]]; then
+		freshKeepLost=1
+		argv="${argv//%KL%/${tmpDir}/created.shcl}"
+	fi
 	freshCreate=0
 	if [[ "${argv}" == *%C%* ]]; then
 		freshCreate=1
@@ -855,6 +867,7 @@ for row in "${rows[@]}"; do
 		((freshWide)) && printf 'k: 1\n' > "${tmpDir}/${wideName}"
 		((freshCreate)) && rm -f "${tmpDir}/created.shcl"
 		((freshKeep)) && cp "${tmpDir}/keepsrc.shcl" "${tmpDir}/created.shcl"
+		((freshKeepLost)) && cp "${tmpDir}/keeplost.shcl" "${tmpDir}/created.shcl"
 		rc=0
 		case "${stdinSpec}" in
 			@closedin)  "${cli}" "${args[@]}" >"${tmpDir}/out" 2>"${tmpDir}/err" 0<&- || rc=$? ;;
