@@ -125,7 +125,7 @@ fStub go              'if [ "$1" = env ]; then echo "'"${work}"'/gopath"; else e
 ## One pin at the fixture version, one drifted, one missing, and a cppcheck
 ## wheel version that is not the binary's - which is the pair the plan has to
 ## keep straight.
-cat > "${work}/clone/cicd/config.bash" <<'CFGEOF'
+cat > "${work}/pins.bash" <<'CFGEOF'
 TOOL_PINS=(
 	"ruff|9.9.9|ruff --version"
 	"mypy|9.9.9|mypy --version"
@@ -138,6 +138,7 @@ TOOL_PINS=(
 )
 CPPCHECK_WHEEL="7.7.7"
 CFGEOF
+cp "${work}/pins.bash" "${work}/clone/cicd/config.bash"
 
 ( cd "${work}/clone" && HOME="${work}/home" PATH="${stub}:${PATH}" bash "${script}" --yes >"${work}/plan" 2>&1 </dev/null ) \
 	|| fail "the default path failed inside a clone with every install stubbed: $(tail -n 3 "${work}/plan")"
@@ -149,6 +150,35 @@ grep -qF 'STUB pipx install --force cppcheck==7.7.7' "${work}/stub.log" \
 	|| fail "the cppcheck install did not ask for the wheel version"
 grep -qF 'STUB pipx install --force ruff' "${work}/stub.log" && fail "a tool already at its pin was installed anyway"
 
+## 20260829 item 20: with no terminal, the prompt's own open of /dev/tty
+## failed out loud before the message saying so. setsid leaves no terminal.
+ttyRc=0
+( cd "${work}/clone" && HOME="${work}/home" PATH="${stub}:${PATH}" setsid -w bash "${script}" >/dev/null 2>"${work}/tty.err" </dev/null ) || ttyRc=$?
+[[ "${ttyRc}" != 0 && "$(head -n1 "${work}/tty.err")" == "install-dev.bash: no terminal to confirm on - pass --yes" ]] \
+	|| fail "with no terminal the refusal is not the first thing said (exit ${ttyRc}): $(head -n1 "${work}/tty.err")"
+
+## 20260822 item 1: the script changed into a fresh clone and then looked for
+## it by the relative --dir it was given, so the hooks were skipped at exit 0.
+## The default path from an empty directory, with git's clone taken from this
+## checkout and the pins fetch answered with the fixture config, so nothing
+## leaves the box.
+net="${work}/netstub"; mkdir -p "${net}" "${work}/empty"
+realGit="$(command -v git)"
+# shellcheck disable=SC2016  ## the stub's own text
+printf '#!/bin/sh
+if [ "$1" = clone ]; then exec "%s" clone -q --no-hardlinks "%s" "$3"; fi
+exec "%s" "$@"
+' "${realGit}" "${root}" "${realGit}" > "${net}/git"
+# shellcheck disable=SC2016  ## the stub's own text
+printf '#!/bin/sh
+while [ $# -gt 1 ]; do [ "$1" = -o ] && cp "%s" "$2"; shift; done
+' "${work}/pins.bash" > "${net}/curl"
+chmod +x "${net}/git" "${net}/curl"
+( cd "${work}/empty" && HOME="${work}/home" PATH="${net}:${stub}:${PATH}" bash "${script}" --yes --dir fresh >"${work}/fresh.out" 2>&1 </dev/null ) \
+	|| fail "the default path failed on a fresh clone: $(tail -n 3 "${work}/fresh.out")"
+[[ "$(git -C "${work}/empty/fresh" config --local core.hooksPath || true)" == "cicd/hooks" ]] \
+	|| fail "a fresh clone by a relative --dir did not get the hooks: $(tail -n 3 "${work}/fresh.out")"
+
 ## The wheel version is read out of the config, not carried in the script: with
 ## the line gone the run refuses rather than installing whatever pipx has.
 grep -v '^CPPCHECK_WHEEL=' "${work}/clone/cicd/config.bash" > "${work}/cfg.nowheel"
@@ -158,7 +188,7 @@ if ( cd "${work}/clone" && HOME="${work}/home" PATH="${stub}:${PATH}" bash "${sc
 fi
 grep -qF "no CPPCHECK_WHEEL" "${work}/plan2" || fail "a missing CPPCHECK_WHEEL is not named: $(tail -n 2 "${work}/plan2")"
 
-(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone; the default path refuses one too, and builds its plan off the config's pins"
+(( rc == 0 )) && echo "check-install-dev: OK: --hooks-only sets the hooks path and keepalive, idempotently, and refuses a non-clone; the default path refuses one too, builds its plan off the config's pins, says first that it has no terminal, and hooks up a fresh clone"
 exit "${rc}"
 
 
@@ -167,3 +197,5 @@ exit "${rc}"
 ##		- 2026-09-19 JC: Clears git's local environment first.
 ##		- 2026-09-20 JC: The pin reader, the at-pin test and the plan, against a
 ##		                 fixture config with stubbed tools.
+##		- 2026-09-26 JC: A prompt with no terminal, and a fresh clone by a
+##		                 relative --dir, with git and curl stubbed.

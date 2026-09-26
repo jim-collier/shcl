@@ -73,6 +73,10 @@ TOOL_PINS=(
 	## export data from a Go newer than the release it was cut against, so the
 	## two move together.
 	"go|1.26|go version"
+	## Builds the stub .deb and .rpm the packaging rows in shell-regress read
+	## back, and the release packages. A go-installed nfpm says "dev" to
+	## --version, so the version comes off the module it was built from.
+	"nfpm|2.43.0|go version -m \"\$(command -v nfpm)\""
 	## Only check-readme needs zig (the Zig example), and only shell-regress
 	## needs Pillow (the demo gif's output order). Both fail a skip under --ci.
 	"zig|0.16.0|zig version"
